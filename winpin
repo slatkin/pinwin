@@ -1,0 +1,47 @@
+#!/bin/bash
+# Pin mbv to the left edge of niri. Rule + reservation live in pin.kdl only while running.
+PIN=~/.config/niri/woims/pin.kdl
+COLS=${COLS:-40}
+# Must match the struts in woims/layout.kdl (a struts block replaces, not merges).
+LEFT=24 RIGHT=24 TOP=12 BOTTOM=12
+
+write_pin() { # $1 = extra left strut in px (0 = none yet)
+    cat > "$PIN" <<KDL
+layout {
+    struts {
+        left $((LEFT + $1))
+        right $RIGHT
+        top $TOP
+        bottom $BOTTOM
+    }
+}
+window-rule {
+    match app-id="^dev\\\\.winpin\$"
+    open-floating true
+    default-floating-position x=0 y=$TOP relative-to="top-left"
+    default-window-height { proportion 1.0; }
+}
+KDL
+    niri msg action load-config-file
+}
+cleanup() { : > "$PIN"; niri msg action load-config-file; }
+trap cleanup EXIT
+
+write_pin 0
+ghostty --gtk-single-instance=false --class=dev.winpin --window-width="$COLS" --window-height=1000 -e "${@:-mbv}" &
+gpid=$!
+# Wait for the window and for its size to settle (first reports are pre-configure).
+prev=
+for _ in $(seq 50); do
+    sleep 0.2
+    cur=$(niri msg --json windows | jq -r '.[] | select(.app_id=="dev.winpin") | "\(.id) \(.layout.window_size[0]) \(.layout.window_size[1])"')
+    [ -n "$cur" ] && [ "$cur" = "$prev" ] && break
+    prev=$cur
+done
+read -r id w h <<< "$cur"
+# proportion 1.0 = full working area; shrink so top/bottom struts show.
+niri msg action set-window-height --id "$id" $((h - TOP - BOTTOM))
+write_pin "$w"
+niri msg action focus-window --id "$id"
+nirius toggle-follow-mode --policy if-invisible
+wait $gpid
