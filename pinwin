@@ -6,7 +6,9 @@ GUTTER=${GUTTER:-12} # px between the pin and the first tile
 # Must match the struts in woims/layout.kdl (a struts block replaces, not merges).
 LEFT=24 RIGHT=24 TOP=12 BOTTOM=12
 
-write_pin() { # $1 = pin width in px (0 = not measured yet)
+write_pin() { # $1 $2 = pin width, height in px (0 = not measured yet)
+    local lock=
+    (($2)) && lock="min-height $2; max-height $2;" # width stays resizable
     cat > "$PIN" <<KDL
 layout {
     struts {
@@ -21,14 +23,15 @@ window-rule {
     open-floating true
     default-floating-position x=0 y=$TOP relative-to="top-left"
     default-window-height { proportion 1.0; }
+    $lock
 }
 KDL
     niri msg action load-config-file
 }
-cleanup() { : > "$PIN"; niri msg action load-config-file; }
+cleanup() { pkill -P $$; : > "$PIN"; niri msg action load-config-file; }
 trap cleanup EXIT
 
-write_pin 0
+write_pin 0 0
 ghostty --gtk-single-instance=false --class=dev.pinwin --window-width="$COLS" --window-height=1000 -e "${@:-mbv}" &
 gpid=$!
 # Wait for the window and for its size to settle (first reports are pre-configure).
@@ -41,8 +44,23 @@ for _ in $(seq 50); do
 done
 read -r id w h <<< "$cur"
 # proportion 1.0 = full working area; shrink so top/bottom struts show.
-niri msg action set-window-height --id "$id" $((h - TOP - BOTTOM))
-write_pin "$w"
+h=$((h - TOP - BOTTOM))
+niri msg action set-window-height --id "$id" "$h"
+write_pin "$w" "$h"
 niri msg action focus-window --id "$id"
 nirius toggle-follow-mode --policy if-invisible
+# Once changes to the pin settle: snap it home (a no-op if already there), and follow width with the strut.
+niri msg --json event-stream | jq --unbuffered -r --argjson id "$id" '
+    (.WindowLayoutsChanged?.changes[]? | select(.[0] == $id) | .[1]),
+    (.WindowOpenedOrChanged?.window | select(.id == $id) | .layout)
+    | .window_size[0]' |
+while :; do
+    read -r -t 0.3 line; rc=$?
+    ((rc == 0)) && last=$line && continue
+    ((rc > 128)) || break # timeout loops on, EOF ends
+    [ -n "$last" ] || continue
+    niri msg action move-floating-window --id "$id" -x 0 -y "$TOP"
+    ((last != w)) && w=$last && write_pin "$w" "$h"
+    last=
+done &
 wait $gpid
