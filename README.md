@@ -32,7 +32,6 @@ Requirements:
 - niri
 - Ghostty
 - `jq`
-- [`nirius`](https://sr.ht/~tsdh/nirius/), with `niriusd` running
 
 Steps:
 
@@ -64,7 +63,10 @@ On start, pinwin:
 1. Writes a window rule into `pin.kdl`. The rule matches app-id `dev.pinwin` and opens the window floating at the left edge, full height. pinwin then runs `niri msg action load-config-file`.
 2. Starts `ghostty --gtk-single-instance=false --class=dev.pinwin --window-width=$COLS`. The `--gtk-single-instance=false` makes the command run in its own process instead of being handed to an already-running Ghostty.
 3. Waits until niri reports the same window size twice in a row. It then shrinks the height to respect the top and bottom struts, and writes `left = width + GUTTER` into the struts.
-4. Turns on `nirius` follow mode (`if-invisible`), so the window moves to whichever workspace is active on its output.
+4. Locks the height with `min-height`/`max-height` in the rule. Width stays resizable.
+5. Watches `niri msg --json event-stream` in the background:
+   - When a workspace on the pin's output is activated, it moves the pin there without taking focus.
+   - About 0.3 s after the pin stops changing, it moves the pin back to the left edge, which undoes an accidental drag. If the width changed, it rewrites the strut to match.
 
 On exit, a trap empties `pin.kdl` and reloads niri's config.
 
