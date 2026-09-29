@@ -17,7 +17,7 @@ layout {
     }
 }
 window-rule {
-    match app-id="^dev\\\\.winpin\$"
+    match app-id="^dev\\\\.pinwin\$"
     open-floating true
     default-floating-position x=0 y=$TOP relative-to="top-left"
     default-window-height { proportion 1.0; }
@@ -29,13 +29,13 @@ cleanup() { : > "$PIN"; niri msg action load-config-file; }
 trap cleanup EXIT
 
 write_pin 0
-ghostty --gtk-single-instance=false --class=dev.winpin --window-width="$COLS" --window-height=1000 -e "${@:-mbv}" &
+ghostty --gtk-single-instance=false --class=dev.pinwin --window-width="$COLS" --window-height=1000 -e "${@:-mbv}" &
 gpid=$!
 # Wait for the window and for its size to settle (first reports are pre-configure).
 prev=
 for _ in $(seq 50); do
     sleep 0.2
-    cur=$(niri msg --json windows | jq -r '.[] | select(.app_id=="dev.winpin") | "\(.id) \(.layout.window_size[0]) \(.layout.window_size[1])"')
+    cur=$(niri msg --json windows | jq -r '.[] | select(.app_id=="dev.pinwin") | "\(.id) \(.layout.window_size[0]) \(.layout.window_size[1])"')
     [ -n "$cur" ] && [ "$cur" = "$prev" ] && break
     prev=$cur
 done
