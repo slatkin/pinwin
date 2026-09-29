@@ -6,6 +6,7 @@ Pins a Ghostty window running `mbv` (or any command) to the left edge of niri. T
 winpin            # runs mbv
 winpin htop       # any command
 COLS=60 winpin    # width in terminal columns (default 40)
+GUTTER=8 winpin   # px between the pin and the first tile (default 24)
 ```
 
 ## How it works

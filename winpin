@@ -2,14 +2,15 @@
 # Pin mbv to the left edge of niri. Rule + reservation live in pin.kdl only while running.
 PIN=~/.config/niri/woims/pin.kdl
 COLS=${COLS:-40}
+GUTTER=${GUTTER:-24} # px between the pin and the first tile
 # Must match the struts in woims/layout.kdl (a struts block replaces, not merges).
 LEFT=24 RIGHT=24 TOP=12 BOTTOM=12
 
-write_pin() { # $1 = extra left strut in px (0 = none yet)
+write_pin() { # $1 = pin width in px (0 = not measured yet)
     cat > "$PIN" <<KDL
 layout {
     struts {
-        left $((LEFT + $1))
+        left $(($1 ? $1 + GUTTER : LEFT))
         right $RIGHT
         top $TOP
         bottom $BOTTOM
