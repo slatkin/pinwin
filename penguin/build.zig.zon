@@ -1,0 +1,17 @@
+.{
+    .name = .penguin,
+    .version = "0.1.0",
+    .fingerprint = 0xe5c1a1205f8536b2,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+    .dependencies = .{
+        .ghostty = .{
+            .url = "https://github.com/ghostty-org/ghostty/archive/3a3047f6b62a791fd8b12d9f07a85b3d2160370b.tar.gz",
+            .hash = "ghostty-1.3.2-dev-5UdBC_NkdgUfOe2liYNbk9xGN_-XYinF9yAyQ9qLnuAM",
+        },
+    },
+}
