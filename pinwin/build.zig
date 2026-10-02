@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe_mod = b.createModule(.{
+    const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -14,57 +14,34 @@ pub fn build(b: *std.Build) void {
     // its siblings (src/glue_internal.h is their shared state, design D4) are
     // the only files that include their headers; the @cImport in src/main.zig
     // only sees ghostty/vt.h and pinwin.h.
-    exe_mod.linkSystemLibrary("gtk4", .{});
-    exe_mod.linkSystemLibrary("gtk4-layer-shell-0", .{});
-    exe_mod.linkSystemLibrary("pangocairo", .{});
-    exe_mod.linkSystemLibrary("gio-2.0", .{}); // tray publication (design D2)
-    exe_mod.linkSystemLibrary("dbusmenu-glib-0.4", .{}); // host-rendered menu
-    exe_mod.linkSystemLibrary("util", .{}); // forkpty; also pulls in libc
+    lib_mod.linkSystemLibrary("gtk4", .{});
+    lib_mod.linkSystemLibrary("gtk4-layer-shell-0", .{});
+    lib_mod.linkSystemLibrary("pangocairo", .{});
+    lib_mod.linkSystemLibrary("util", .{}); // forkpty; also pulls in libc
 
-    // Static linkage keeps the installed executable independent of Zig's
-    // build-cache runpath (and of any older system libghostty-vt).
-    if (b.lazyDependency("ghostty", .{})) |dep| {
-        exe_mod.linkLibrary(dep.artifact("ghostty-vt-static"));
-        exe_mod.addIncludePath(dep.path("include"));
+    // Zig static-library artifacts do not merge linked static archives, so
+    // libpinwin.a does NOT bundle libghostty-vt (design D7): the pinned
+    // ghostty archive is installed next to it under the name consumers link.
+    const ghostty = b.lazyDependency("ghostty", .{});
+    if (ghostty) |dep| {
+        const ghostty_lib = dep.artifact("ghostty-vt-static");
+        lib_mod.linkLibrary(ghostty_lib);
+        lib_mod.addIncludePath(dep.path("include"));
+        b.getInstallStep().dependOn(&b.addInstallLibFile(
+            ghostty_lib.getEmittedBin(),
+            "libghostty-vt.a",
+        ).step);
     }
-    exe_mod.addIncludePath(b.path("src"));
-    exe_mod.addCSourceFiles(.{
-        .files = &.{ "src/glue.c", "src/render.c", "src/images.c", "src/pty.c", "src/input.c", "src/fontconfig.c", "src/control.c", "src/options.c", "src/tray.c" },
+    lib_mod.addIncludePath(b.path("src"));
+    lib_mod.addCSourceFiles(.{
+        .files = &.{ "src/glue.c", "src/render.c", "src/images.c", "src/pty.c", "src/input.c", "src/fontconfig.c", "src/options.c" },
         .flags = &.{ "-std=gnu11", "-Wall" },
     });
 
-    const exe = b.addExecutable(.{
+    const lib = b.addLibrary(.{
         .name = "pinwin",
-        .root_module = exe_mod,
+        .linkage = .static,
+        .root_module = lib_mod,
     });
-    b.installArtifact(exe);
-
-    const run_step = b.step("run", "Run pinwin");
-    const run_cmd = b.addRunArtifact(exe);
-    run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
-    run_step.dependOn(&run_cmd.step);
-
-    // The lightweight layout-core check (tools/check_options.c): compiled
-    // against the same system libraries and run (design D5).
-    const check_mod = b.createModule(.{
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    check_mod.addIncludePath(b.path("src"));
-    check_mod.addCSourceFiles(.{
-        .files = &.{ "src/options.c", "src/control.c", "src/tray.c", "tools/check_options.c" },
-        .flags = &.{ "-std=gnu11", "-Wall", "-Wextra" },
-    });
-    check_mod.linkSystemLibrary("gtk4", .{});
-    check_mod.linkSystemLibrary("gio-2.0", .{});
-    check_mod.linkSystemLibrary("dbusmenu-glib-0.4", .{});
-    const check_exe = b.addExecutable(.{
-        .name = "check_options",
-        .root_module = check_mod,
-    });
-    const run_check = b.addRunArtifact(check_exe);
-    const check_step = b.step("check", "Build and run the layout-core check");
-    check_step.dependOn(&run_check.step);
+    b.installArtifact(lib);
 }

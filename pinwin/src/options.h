@@ -1,11 +1,10 @@
 /*
- * options.h - pinwin's layout settings: the six values (docking side, the
- * applied column count and four directional gutters), their launch defaults,
- * strict parsing and checked geometry validation.
+ * options.h - pinwin's layout core: the six values (docking side, the applied
+ * column count and four directional gutters), their launch defaults, strict
+ * parsing and checked geometry validation.
  *
- * Everything here is plain C so the lightweight check in tools/ can compile
- * this module without GTK. The GTK options editor and the GKeyFile config
- * I/O live in options.c alongside these.
+ * Plain C, no GTK/GLib: compiled into libpinwin.a and covered by the Zig unit
+ * tests (design D8).
  */
 #ifndef PINWIN_OPTIONS_H
 #define PINWIN_OPTIONS_H
@@ -67,29 +66,6 @@ int pinwin_layout_validate(const PinwinLayout* layout, int32_t panel_cols,
                             int32_t cell_w, int32_t cell_h, int32_t output_w,
                             int32_t output_h);
 
-/* Result codes for pinwin_config_load. */
-#define PINWIN_CONFIG_LOADED 0
-#define PINWIN_CONFIG_ABSENT 1
-#define PINWIN_CONFIG_INVALID 2
-
-/* Load the saved layout from `$XDG_CONFIG_HOME/pinwin/config` (default
- * ~/.config/pinwin/config). On PINWIN_CONFIG_LOADED, *out holds a valid
- * layout. PINWIN_CONFIG_ABSENT means no config file exists (normal; the
- * caller keeps its launch baseline). PINWIN_CONFIG_INVALID means the file
- * exists but is unreadable, malformed or incomplete; a diagnostic has been
- * printed and the caller falls back to the baseline without rewriting the
- * file. Unknown keys are ignored. The caller initialises out->cols to the
- * launch COLS: a missing cols key leaves it in place, a malformed one
- * rejects the whole saved layout. Font, command and keyboard settings are
- * not part of the config. */
-int pinwin_config_load(PinwinLayout* out);
-
-/* Atomically save the layout to the same path: create the directory when
- * needed, write to a temporary file and rename, mode 0600. The previous file
- * is left untouched on any failure. Returns 0 on success; on failure a
- * diagnostic is printed and non-zero returned. */
-int pinwin_config_save(const PinwinLayout* layout);
-
 /* Implemented in glue.c (it owns the surfaces): validate `layout` against
  * the panel's original monitor and cell metrics, then publish it to both
  * surfaces, resize the terminal grid through the normal resize path and
@@ -104,10 +80,5 @@ void glue_current_layout(PinwinLayout* out);
  * metrics and the original monitor's size in logical pixels. */
 void glue_layout_metrics(int32_t* cols, int32_t* cell_w, int32_t* cell_h,
                          int32_t* output_w, int32_t* output_h);
-
-/* Open the singleton options window (or present the existing one without
- * resetting its pending edits). Implemented in options.c; called from
- * glue.c / tray.c. */
-void pinwin_options_open(void);
 
 #endif /* PINWIN_OPTIONS_H */
