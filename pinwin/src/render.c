@@ -576,6 +576,10 @@ void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
 
     PangoLayout* layout = pango_cairo_create_layout(cr);
 
+    /* Fractional output scales put cell edges between device pixels; antialiased
+     * edges would blend with the fill underneath and show as a grid. Unantialiased
+     * rectangles snap to device pixels and tile exactly. */
+    cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
     while (pinwin_cell_next(&cell)) {
         if (cell.has_bg) {
             set_rgb(cr, cell.br, cell.bg, cell.bb);
@@ -586,6 +590,7 @@ void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
             cairo_fill(cr);
         }
     }
+    cairo_set_antialias(cr, CAIRO_ANTIALIAS_DEFAULT);
     pinwin_frame_rewind();
     while (pinwin_cell_next(&cell)) {
         if (cell.wide == PINWIN_WIDE_SPACER_TAIL) continue; /* do not render */
