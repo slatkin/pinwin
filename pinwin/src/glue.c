@@ -17,8 +17,6 @@
 #include <gio/gio.h>
 #include <glib/gstdio.h>
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -53,8 +51,6 @@ double g_last_x, g_last_y;
 int g_key_layout;
 int32_t g_pty_cols = 40;
 int32_t g_pty_rows = 24;
-int32_t g_pty_xpixel;
-int32_t g_pty_ypixel;
 int g_attached;
 
 PinwinLayout g_layout;
@@ -245,10 +241,7 @@ static void on_activate(GtkApplication* app, gpointer user_data) {
 }
 
 int glue_init(const PinwinLayout* layout, int32_t keyboard_mode) {
-    char theme_name[128];
-
-    theme_colours(theme_name, sizeof(theme_name), g_theme_bg, g_theme_fg);
-    (void)theme_name;
+    theme_colours(g_theme_bg, g_theme_fg);
     g_layout = *layout;
     g_cols = layout->cols;
     g_keyboard_mode = keyboard_mode;
@@ -260,12 +253,6 @@ int glue_init(const PinwinLayout* layout, int32_t keyboard_mode) {
     if (!g_app) return 0;
     g_signal_connect(g_app, "activate", G_CALLBACK(on_activate), NULL);
     return 1;
-}
-
-static gboolean on_tick(gpointer data) {
-    (void)data;
-    glue_queue_draw();
-    return G_SOURCE_CONTINUE;
 }
 
 void glue_queue_draw(void) {

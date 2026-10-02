@@ -71,7 +71,6 @@
 #define PINWIN_MOD_ALT (1u << 2)
 #define PINWIN_MOD_SUPER (1u << 3)
 #define PINWIN_MOD_CAPS_LOCK (1u << 4)
-#define PINWIN_MOD_NUM_LOCK (1u << 5)
 
 /* One grapheme of the frame the C draw callback should paint. */
 typedef struct {
@@ -123,7 +122,7 @@ int32_t glue_cell_height(void);
 void glue_queue_draw(void);
 
 void glue_pty_write(const uint8_t* data, size_t len);
-void glue_pty_resize(int32_t cols, int32_t rows, int32_t xpixel, int32_t ypixel);
+void glue_pty_resize(int32_t cols, int32_t rows);
 
 /* Straight RGBA8 text produced by a keyval, 0 for none. */
 uint32_t glue_keyval_unicode(uint32_t keyval);

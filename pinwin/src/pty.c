@@ -37,7 +37,7 @@ int apply_size(void) {
             if (pinwin_size(g_cols, rows, g_cell_w, g_cell_h) != 0) return 1;
             g_rows = rows;
             g_grid_cols = g_cols;
-            glue_pty_resize(g_cols, g_rows, g_cols * g_cell_w, g_rows * g_cell_h);
+            glue_pty_resize(g_cols, g_rows);
         }
     }
     if (!g_attached) attach_pty();
@@ -92,18 +92,16 @@ void glue_pty_write(const uint8_t* data, size_t len) {
     }
 }
 
-void glue_pty_resize(int32_t cols, int32_t rows, int32_t xpixel, int32_t ypixel) {
+void glue_pty_resize(int32_t cols, int32_t rows) {
     struct winsize ws;
     g_pty_cols = cols;
     g_pty_rows = rows;
-    g_pty_xpixel = xpixel;
-    g_pty_ypixel = ypixel;
     if (g_pty_fd < 0) return;
     memset(&ws, 0, sizeof(ws));
     ws.ws_col = (unsigned short)cols;
     ws.ws_row = (unsigned short)rows;
-    ws.ws_xpixel = (unsigned short)xpixel;
-    ws.ws_ypixel = (unsigned short)ypixel;
+    ws.ws_xpixel = (unsigned short)(cols * g_cell_w);
+    ws.ws_ypixel = (unsigned short)(rows * g_cell_h);
     /* The host's crossterm loop learns of resizes from SIGWINCH (mbv's
      * pin-mbv-in-pinwin, required upstream addition 1): raise it after every
      * successful winsize update. Disposition is process-wide, so the raise
@@ -136,8 +134,6 @@ static void attach_pty(void) {
     ws.ws_ypixel = (unsigned short)(ws.ws_row * g_cell_h);
     g_pty_cols = ws.ws_col;
     g_pty_rows = ws.ws_row;
-    g_pty_xpixel = ws.ws_xpixel;
-    g_pty_ypixel = ws.ws_ypixel;
     if (ioctl(fd, TIOCSWINSZ, &ws) >= 0) raise(SIGWINCH);
 
     g_pty_source = g_unix_fd_add(fd, G_IO_IN | G_IO_HUP | G_IO_ERR,

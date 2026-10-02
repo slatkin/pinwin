@@ -70,43 +70,37 @@ uint32_t glue_keycode_unshifted_codepoint(uint32_t keycode) {
     return result;
 }
 
-static gboolean on_key_pressed(GtkEventControllerKey* controller, guint keyval,
-                               guint keycode, GdkModifierType state,
-                               gpointer user_data) {
+static gboolean on_key(GtkEventControllerKey* controller, guint keyval,
+                       guint keycode, GdkModifierType state, int action) {
     GdkEvent* event = gtk_event_controller_get_current_event(
         GTK_EVENT_CONTROLLER(controller));
     uint32_t consumed = 0;
     int is_modifier = 0;
 
-    (void)user_data;
     if (event) {
         consumed = mods_from_gdk(
             gdk_key_event_get_consumed_modifiers(event));
         is_modifier = gdk_key_event_is_modifier(event);
-        g_key_layout = (int)gdk_key_event_get_layout(event);
+        if (action == PINWIN_KEY_PRESS)
+            g_key_layout = (int)gdk_key_event_get_layout(event);
     }
-    pinwin_key(PINWIN_KEY_PRESS, (int32_t)keyval, (int32_t)keycode,
-                mods_from_gdk(state), consumed, is_modifier);
+    pinwin_key(action, (int32_t)keyval, (int32_t)keycode,
+               mods_from_gdk(state), consumed, is_modifier);
     return TRUE;
+}
+
+static gboolean on_key_pressed(GtkEventControllerKey* controller, guint keyval,
+                               guint keycode, GdkModifierType state,
+                               gpointer user_data) {
+    (void)user_data;
+    return on_key(controller, keyval, keycode, state, PINWIN_KEY_PRESS);
 }
 
 static gboolean on_key_released(GtkEventControllerKey* controller, guint keyval,
                                 guint keycode, GdkModifierType state,
                                 gpointer user_data) {
-    GdkEvent* event = gtk_event_controller_get_current_event(
-        GTK_EVENT_CONTROLLER(controller));
-    uint32_t consumed = 0;
-    int is_modifier = 0;
-
     (void)user_data;
-    if (event) {
-        consumed = mods_from_gdk(
-            gdk_key_event_get_consumed_modifiers(event));
-        is_modifier = gdk_key_event_is_modifier(event);
-    }
-    pinwin_key(PINWIN_KEY_RELEASE, (int32_t)keyval, (int32_t)keycode,
-                mods_from_gdk(state), consumed, is_modifier);
-    return TRUE;
+    return on_key(controller, keyval, keycode, state, PINWIN_KEY_RELEASE);
 }
 
 static uint32_t motion_mods(GtkEventController* controller) {

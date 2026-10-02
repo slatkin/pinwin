@@ -49,8 +49,6 @@ extern double g_last_x, g_last_y;
 extern int g_key_layout;
 extern int32_t g_pty_cols;
 extern int32_t g_pty_rows;
-extern int32_t g_pty_xpixel;
-extern int32_t g_pty_ypixel;
 extern int g_attached;
 
 /* Layout settings. The applied layout is the startup layout supplied to
@@ -62,8 +60,7 @@ extern int g_layout_latch; /* first-draw monitor resolution pending */
 
 /* ---- fontconfig.c: Ghostty config and theme colours --------------------- */
 
-void theme_colours(char* theme_name, size_t theme_name_len, uint8_t* bg,
-                   uint8_t* fg);
+void theme_colours(uint8_t* bg, uint8_t* fg);
 void font_config_load(char** family, double* size);
 
 /* ---- render.c: cell metrics, text, sprite and nerd-font drawing --------- */
