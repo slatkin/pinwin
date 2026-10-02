@@ -34,7 +34,7 @@ window it called, and the no-exit audit (§4) is the final sweep over the finish
 
 ## 5. Build leftovers (design OQ-b)
 
-- [ ] 5.1 Delete the `Makefile` `install` target (the executable it installed no longer exists). `pinwin.sh` untouched. Verify: `make -n install` fails and `git status` shows `pinwin.sh` unmodified.
+- [x] 5.1 Delete the `Makefile` `install` target (the executable it installed no longer exists). `pinwin.sh` untouched. Verify: `make -n install` fails and `git status` shows `pinwin.sh` unmodified.
 
 ## 6. Tests (design D8)
 
