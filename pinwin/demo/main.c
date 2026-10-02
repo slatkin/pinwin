@@ -100,7 +100,8 @@ int main(int argc, char** argv) {
     side = PINWIN_SIDE_RIGHT;
     apply(side);
 
-    printf("commands: <enter> toggle side/width, 'b' rejected layout, 'q' quit;\n"
+    printf("commands, typed in THIS terminal (not in the panel):\n"
+           "          <enter> toggle side/width, 'b' rejected layout, 'q' quit;\n"
            "          run `exit` in the panel to see a pty hangup survive.\n");
     fflush(stdout);
 
