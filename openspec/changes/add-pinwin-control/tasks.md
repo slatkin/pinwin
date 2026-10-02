@@ -4,7 +4,7 @@
 
 - [x] 1.1 Split `pinwin/src/glue.c` into `glue.c`, `render.c`, `images.c`, `pty.c`, `input.c`, `fontconfig.c` plus `glue_internal.h` for shared state, as in design D4, with no behaviour edits; add the new files to `build.zig`. Verify: `zig build` succeeds with `-Wall` clean and every C file under `pinwin/src/` is under 800 lines (`wc -l`).
 - [x] 1.2 Split `pinwin/src/main.zig` into `main.zig`, `cells.zig`, `input.zig` as in design D4, with no behaviour edits. Verify: `zig build` succeeds and every `.zig` file is under 800 lines.
-- [ ] 1.3 Manual check after the split: `pinwin mbv` draws text and posters (kitty graphics), takes keys after a click, reports mouse clicks, resizes on Apply, and exits with mbv's status. Commit the split on its own.
+- [x] 1.3 Manual check after the split: `pinwin mbv` draws text and posters (kitty graphics), takes keys after a click, reports mouse clicks, resizes on Apply, and exits with mbv's status. Commit the split on its own.
 
 ## 2. Checks and tooling
 
