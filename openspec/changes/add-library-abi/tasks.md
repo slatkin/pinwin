@@ -55,4 +55,4 @@ window it called, and the no-exit audit (§4) is the final sweep over the finish
   host exits 1 cleanly; child hangup: `kill -9` the fish child mid-run → host keeps running and
   `q` still stops cleanly. Keyboard: keys typed in the panel render at the fish prompt (observed
   on-screen; the ABI replay contract test in `zig build check` covers the underlying path).
-- [ ] 7.4 Tag the library-form revision (annotated tag `library-abi` on the landing commit) and make `README.md` name it for consumers, alongside the ghostty pin and the Zig minimum (design OQ-c). Verify: `git tag -l library-abi` lists it and `rg -n "library-abi" README.md` finds the consumer note.
+- [x] 7.4 Tag the library-form revision (annotated tag `library-abi` on the landing commit) and make `README.md` name it for consumers, alongside the ghostty pin and the Zig minimum (design OQ-c). Verify: `git tag -l library-abi` lists it and `rg -n "library-abi" README.md` finds the consumer note.
