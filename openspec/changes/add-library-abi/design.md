@@ -141,7 +141,9 @@ rewires listed here.
 
 **D7. `build.zig` produces `libpinwin.a`; libghostty-vt is linked separately.**
 - `b.addStaticLibrary(.{ .name = "pinwin", .root_module = … })` + `installArtifact` replaces
-  `addExecutable`; `zig build` no longer yields a runnable panel.
+  `addExecutable`; `zig build` no longer yields a runnable `pinwin` panel. A dev-only demo
+  executable (OQ-a, adjudicated) is built only by `zig build demo` as
+  `zig-out/bin/pinwin-demo`, never installed.
 - Zig static-library artifacts do **not** merge linked static archives, so these are
   different claims and the change states it plainly: `libpinwin.a` does NOT bundle
   libghostty-vt. `build.zig` additionally installs the ghostty static archive next to it
@@ -161,8 +163,8 @@ rewires listed here.
 - Contract test: `pinwin_apply_layout` with an invalid layout (bad side / cols 0) returns
   `PINWIN_ERR_INVALID`, distinct from `PINWIN_ERR_NOT_RUNNING`, before any GTK surface
   exists — i.e. exercising Phase 1 (D5) with the GTK thread never started.
-- Manual checks that previously ran `zig-out/bin/pinwin` move to the demo-executable
-  question (OQ-a): automated tests deliberately do not open surfaces.
+- Manual checks that previously ran `zig-out/bin/pinwin` move to the demo executable
+  (OQ-a, adjudicated) or the mbv consumer: automated tests deliberately do not open surfaces.
 
 ## Risks / Trade-offs
 
@@ -181,20 +183,15 @@ rewires listed here.
   (D7). Accepted: bundling would mean re-archiving third-party objects into our artifact
   and lying about provenance; two documented files is the honest shape.
 
-## Open questions (for the planning review to adjudicate)
+## Open questions (adjudicated by the planning review, 2026-10-02)
 
-- **OQ-a. Dev-only demo executable?** Today's manual checks run `zig-out/bin/pinwin` under
-  niri. With no executable, how are the panel's manual checks performed? Candidate: a
-  `demo` executable in `pinwin/tools/` (or a `zig build demo`), explicitly dev-only,
-  never installed, driving the ABI with a canned layout — or drop it and test exclusively
-  through mbv. Tasks carry the no-demo default; review picks.
-- **OQ-b. `pinwin.sh` and the `Makefile`?** `pinwin.sh` (Ghostty-based, independent of the
-  Zig panel) is untouched by this change either way. The `Makefile`'s `install` target
-  installs the executable that no longer exists: delete the target, retarget it at
-  `zig build` for dev convenience, or keep a `demo` install? Tasks assume delete-the-target
-  (plus deleting the now-dead `install-from-checkout` spec requirement); review confirms.
-- **OQ-c. Release/pinning story?** mbv pins a revision (today `eaefd7f`); after this change
-  the pin must name a revision carrying the library ABI. Tag, branch, or bare revision —
-  and where the "minimum consumer Zig/GTK versions" note lives (README vs a version
-  header). Tasks assume README documents the pinned ghostty commit + Zig 0.16 minimum;
-  review confirms.
+- **OQ-a. Dev-only demo executable — ADOPTED.** `zig build demo` yields
+  `zig-out/bin/pinwin-demo`: a dev-only root driving the C ABI with a canned layout over a
+  pty pair it creates itself, never installed, so the panel's manual checks do not depend on
+  the mbv consumer. The default `zig build` still produces only the library.
+- **OQ-b. `pinwin.sh` and the `Makefile` — `pinwin.sh` untouched; the `install` target is
+  deleted.** The executable it installed no longer exists; the `install-from-checkout` spec
+  requirement goes with it.
+- **OQ-c. Release/pinning — README plus a tag.** The README documents the pinned ghostty
+  commit and the Zig 0.16 minimum, and the library-form revision is tagged `library-abi` so
+  consumers (mbv's import task) pin a name, not a bare revision.
