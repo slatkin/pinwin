@@ -63,6 +63,8 @@ extern GtkWindow* g_reserve;
 extern GdkMonitor* g_monitor; /* the visible panel's original monitor */
 extern int g_layout_latch; /* first-draw monitor resolution pending */
 extern int g_no_tray; /* --no-tray: never register a tray entry */
+/* The control socket's path, empty when there is none (add-pinwin-control). */
+extern char g_control_socket_path[];
 
 /* ---- fontconfig.c: Ghostty config, theme colours, terminfo check -------- */
 

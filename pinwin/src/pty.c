@@ -134,6 +134,12 @@ static void spawn_pty(void) {
     if (pid == 0) {
         setenv("TERM", term, 1);
         setenv("COLORTERM", "truecolor", 1);
+        /* The command learns the control socket's address; without a socket,
+         * an inherited value must never point at another instance. */
+        if (g_control_socket_path[0])
+            setenv("PINWIN_SOCKET", g_control_socket_path, 1);
+        else
+            unsetenv("PINWIN_SOCKET");
         execvp(g_argv[0], g_argv);
         fprintf(stderr, "pinwin: %s: %s\n", g_argv[0], strerror(errno));
         _exit(127);
