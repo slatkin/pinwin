@@ -1,6 +1,6 @@
 /* Generated from the pinned ghostty commit (src/font/nerd_font_tables.zig,
- * itself generated there by nerd_font_codegen.py). Do not edit by hand;
- * regenerate with pinwin/tools/gen_nerd_tables.py. */
+ * itself generated there by nerd_font_codegen.py). This header is the source
+ * of truth for pinwin; do not edit by hand. */
 #ifndef PINWIN_NERD_FONT_TABLES_H
 #define PINWIN_NERD_FONT_TABLES_H
 
