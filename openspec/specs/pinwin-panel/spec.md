@@ -233,7 +233,7 @@ far gutter plus whatever strut the compositor itself adds.
 ### Requirement: C ABI lifecycle
 The library SHALL expose `pinwin_start(const PinwinStartup*)`,
 `pinwin_apply_layout(const PinwinLayout*)` and `pinwin_stop(void)` from
-`pinwin/src/pinwin_api.h`. `pinwin_start` takes a host-owned pty master fd, a full layout
+`src/pinwin_api.h`. `pinwin_start` takes a host-owned pty master fd, a full layout
 (side, cols 1..=65535, four gutters) and a keyboard mode, spawns the GTK thread, and returns
 a synchronous result code. `pinwin_stop` closes the panel and joins the thread, and is a
 no-op when not running. A second `pinwin_start` while running returns
