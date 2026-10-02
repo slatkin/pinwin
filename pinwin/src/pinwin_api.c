@@ -78,6 +78,66 @@ static gboolean stop_on_gtk_thread(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+/* The bounded part of Phase 2's invoke-and-wait: a wedged GTK loop must not
+ * block the host thread forever (design D5, Risks). Degrades to
+ * PINWIN_ERR_INTERNAL. */
+#define APPLY_WAIT_TIMEOUT_US (G_GINT64_CONSTANT(5) * 1000000)
+
+/* One in-flight apply: the caller puts the layout here, the GTK main context
+ * runs apply_on_gtk_thread and reports through the cond. Refcounted (caller +
+ * pending callback) because a caller that times out must not free the request
+ * while the GTK thread may still run the callback. */
+typedef struct {
+    const PinwinLayout* layout;
+    GMutex lock;
+    GCond cond;
+    gboolean done;
+    int result;
+    gint refs;
+} ApplyRequest;
+
+static void apply_request_unref(ApplyRequest* req) {
+    if (g_atomic_int_dec_and_test(&req->refs)) {
+        g_cond_clear(&req->cond);
+        g_mutex_clear(&req->lock);
+        g_free(req);
+    }
+}
+
+/* Phase 1, caller thread, no GTK (design D5): a null layout, unknown side or
+ * out-of-range column count is PINWIN_ERR_INVALID before any GTK interaction.
+ * The panel width needs live cell metrics, so its checked arithmetic stays in
+ * Phase 2; with any non-negative panel width the one overflow this phase can
+ * rule out without metrics is the gutters' own sum, which the shared
+ * pinwin_side_geometry check performs. */
+static int apply_layout_structurally_valid(const PinwinLayout* layout) {
+    int32_t margin, reservation;
+
+    if (layout == NULL) return 0;
+    if (layout->side != PINWIN_SIDE_LEFT && layout->side != PINWIN_SIDE_RIGHT)
+        return 0;
+    if (layout->cols < 1 || layout->cols > 65535) return 0;
+    if (!pinwin_side_geometry(layout, 0, &margin, &reservation)) return 0;
+    return 1;
+}
+
+/* Phase 2, GTK thread: validate the layout against the live monitor and cell
+ * metrics and publish it, exactly like the Apply path did (glue_publish_layout
+ * is validate-then-apply). Returns the result to the waiting caller. */
+static gboolean apply_on_gtk_thread(gpointer data) {
+    ApplyRequest* req = data;
+    int geom = glue_publish_layout(req->layout);
+
+    g_mutex_lock(&req->lock);
+    req->result = geom == PINWIN_GEOM_OK ? PINWIN_OK : PINWIN_ERR_INVALID;
+    req->done = TRUE;
+    g_cond_signal(&req->cond);
+    g_mutex_unlock(&req->lock);
+
+    apply_request_unref(req);
+    return G_SOURCE_REMOVE;
+}
+
 /* ---- public ABI --------------------------------------------------------- */
 
 int pinwin_start(const PinwinStartup* startup) {
@@ -109,6 +169,46 @@ int pinwin_start(const PinwinStartup* startup) {
     g_api_running = TRUE;
     g_mutex_unlock(&g_api_lock);
     return PINWIN_OK;
+}
+
+int pinwin_apply_layout(const PinwinLayout* layout) {
+    ApplyRequest* req;
+    int result;
+
+    if (!apply_layout_structurally_valid(layout)) return PINWIN_ERR_INVALID;
+
+    /* Not started → PINWIN_ERR_NOT_RUNNING without blocking (design D5). */
+    g_mutex_lock(&g_api_lock);
+    if (!g_api_running) {
+        g_mutex_unlock(&g_api_lock);
+        return PINWIN_ERR_NOT_RUNNING;
+    }
+    g_mutex_unlock(&g_api_lock);
+
+    req = g_new0(ApplyRequest, 1);
+    req->layout = layout;
+    req->refs = 2; /* caller + the pending GTK callback */
+    g_mutex_init(&req->lock);
+    g_cond_init(&req->cond);
+
+    /* The metrics live on the GTK thread, so the publish (and its validation)
+     * must run there; the caller waits for the synchronous result. */
+    g_main_context_invoke(NULL, apply_on_gtk_thread, req);
+
+    g_mutex_lock(&req->lock);
+    if (!req->done) {
+        gint64 deadline = g_get_monotonic_time() + APPLY_WAIT_TIMEOUT_US;
+        while (!req->done) {
+            if (!g_cond_wait_until(&req->cond, &req->lock, deadline)) break;
+        }
+    }
+    /* A timed-out or never-posted callback leaves done FALSE: report INTERNAL
+     * rather than blocking forever. The request's refcount lets the callback
+     * land later without touching freed memory. */
+    result = req->done ? req->result : PINWIN_ERR_INTERNAL;
+    g_mutex_unlock(&req->lock);
+    apply_request_unref(req);
+    return result;
 }
 
 void pinwin_stop(void) {
