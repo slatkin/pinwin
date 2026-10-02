@@ -238,14 +238,8 @@ int glue_init(const PinwinLayout* layout, int32_t keyboard_mode) {
     g_cols = layout->cols;
     g_keyboard_mode = keyboard_mode;
 
-    if (!gtk_init_check()) {
-        fprintf(stderr, "pinwin: no display\n");
-        return 0;
-    }
-    if (!gtk_layer_is_supported()) {
-        fprintf(stderr, "pinwin: compositor does not support wlr-layer-shell\n");
-        return 0;
-    }
+    if (!gtk_init_check()) return 0;
+    if (!gtk_layer_is_supported()) return 0;
 
     g_app = gtk_application_new(NULL, G_APPLICATION_DEFAULT_FLAGS);
     if (!g_app) return 0;
