@@ -1,0 +1,320 @@
+# Spec Delta
+
+## Purpose
+
+`libpinwin` docks a terminal on a host-supplied pty master at one monitor edge as an
+in-process panel: the host passes a full layout at start, drives layout changes through the C
+ABI, and owns the child side of the pty. There is no executable, no environment configuration,
+no tray, no options window, no config file and no control socket.
+
+## MODIFIED Requirements
+
+### Requirement: Keyboard focus by clicking
+The panel SHALL use layer-shell `on-demand` keyboard interactivity when the startup layout
+requests it: it receives keyboard input only after the user clicks inside it, and gives up
+keyboard input when the user clicks a compositor window. It SHALL NOT take keyboard focus when
+it opens. The keyboard mode is fixed at `pinwin_start` time; there is no runtime override.
+
+#### Scenario: Click to type
+- **WHEN** the user clicks inside the panel and types `j`
+- **THEN** the pty master receives the `j` key
+
+#### Scenario: Click away
+- **WHEN** the panel has keyboard focus and the user clicks a tiled window
+- **THEN** keys go to the tiled window, not the panel
+
+#### Scenario: No focus steal on launch
+- **WHEN** the host starts the panel with `on-demand` mode
+- **THEN** keyboard input stays with the window that had it
+
+#### Scenario: Opt-in keyboard focus
+- **WHEN** the host starts the panel with `exclusive` keyboard mode
+- **THEN** the panel has the keyboard when it opens, without a click
+
+#### Scenario: Invalid keyboard mode
+- **WHEN** the host calls `pinwin_start` with a keyboard mode that is not a
+  `PINWIN_KEYBOARD_*` value
+- **THEN** the call returns `PINWIN_ERR_INVALID` and nothing opens
+
+### Requirement: Terminal features mbv depends on
+The panel's terminal SHALL support, as seen by the host's child: alternate screen; 24-bit and
+256-color text with bold, italic and inverse; the kitty keyboard protocol including
+"disambiguate escape codes", with key press and release and Shift/Ctrl/Alt/Super modifiers;
+mouse reporting in SGR format with coordinates in cells; focus in/out reports (`CSI I` /
+`CSI O`) when the child enables them; `CSI > 1 s` (XTSHIFTESCAPE); and the kitty graphics
+protocol, including answering the kitty graphics query and drawing transmitted images at their
+placements.
+
+#### Scenario: mbv detects kitty graphics
+- **WHEN** the host runs mbv as its child with no image protocol override in mbv's config
+- **THEN** mbv selects the kitty image protocol (not half-blocks) and posters render as images
+
+#### Scenario: Key disambiguation
+- **WHEN** the host's child enables kitty keyboard disambiguation and the user presses Escape
+- **THEN** the child receives the kitty-protocol encoding for Escape rather than a bare `ESC` byte
+
+#### Scenario: Mouse click reported in cells
+- **WHEN** the host's child enables SGR mouse reporting and the user clicks the cell at column 3, row 5
+- **THEN** the child receives an SGR press report for column 3, row 5
+
+#### Scenario: Focus reports
+- **WHEN** the host's child enables focus reporting and the user clicks into the panel, then
+  clicks a tiled window
+- **THEN** the child receives `CSI I` and then `CSI O`
+
+### Requirement: Font follows the Ghostty config
+The panel SHALL render with the font configured for the user's Ghostty terminal: the first
+`font-family` and the `font-size` from `$XDG_CONFIG_HOME/ghostty/config` (default
+`~/.config/ghostty/config`). When the config has no font settings, the panel SHALL fall back
+to `monospace 11`. Opening the Ghostty config SHALL NOT be required: a missing or unreadable
+config SHALL NOT prevent the panel from opening. There are no font environment overrides.
+
+#### Scenario: Configured font
+- **WHEN** the Ghostty config sets a family and size and the host starts the panel
+- **THEN** the panel draws with that family and size
+
+#### Scenario: No Ghostty config
+- **WHEN** no Ghostty config exists
+- **THEN** the panel still opens and draws with `monospace 11`
+
+#### Scenario: Override
+- **WHEN** `PINWIN_FONT` or `PINWIN_FONT_SIZE` is set in the host's environment
+- **THEN** the panel ignores both (there is no font override) and draws with the Ghostty config values, or the fallback when there is no config
+
+### Requirement: Correct size reports
+The panel's terminal SHALL answer terminal queries on the PTY: primary device attributes
+(`CSI c`) and `CSI 16 t` (cell size in pixels). The PTY window size SHALL carry both the
+column/row count and the pixel width/height, and SHALL be updated whenever the panel's size
+changes. The pixel sizes reported SHALL match the cell size actually drawn.
+
+#### Scenario: Cell size query
+- **WHEN** the host's child writes `CSI 16 t`
+- **THEN** it receives `CSI 6 ; <cell height px> ; <cell width px> t` matching the drawn
+  cell size
+
+#### Scenario: Images are not clipped
+- **WHEN** the host's child shows a poster image in the panel
+- **THEN** the whole image is visible, with no part cut off at the right or bottom edge
+
+#### Scenario: Pixel size in window size
+- **WHEN** the host's child reads the terminal size with `TIOCGWINSZ`
+- **THEN** `ws_col`/`ws_row` are the cell grid and `ws_xpixel`/`ws_ypixel` are the grid size
+  in pixels
+
+### Requirement: Wayland layer-shell is required
+The library SHALL run only on a Wayland compositor that implements wlr-layer-shell. When
+layer-shell is unavailable (an X11 session, or a Wayland compositor without it such as GNOME),
+`pinwin_start` SHALL return `PINWIN_ERR_NO_DISPLAY` and open nothing. It SHALL NOT fall back
+to an ordinary window.
+
+#### Scenario: No layer-shell
+- **WHEN** the host calls `pinwin_start` in a session whose compositor lacks wlr-layer-shell
+- **THEN** the call returns `PINWIN_ERR_NO_DISPLAY` and nothing opens
+
+## ADDED Requirements
+
+### Requirement: Directional gutters and docking geometry
+Folded in from the retired `pinwin-tray-options` capability (design D1). Gutters SHALL use
+literal screen directions in the same pixel coordinate system as before, independent of
+docking side. Let panel width be `cols` times the font cell width. On the left, the panel
+SHALL be inset from the left output edge by Left pixels and reserve `Left + panel width +
+Right` pixels at the left edge. On the right, the panel SHALL be inset from the right output
+edge by Right pixels and reserve the same sum at the right edge. Top and Bottom SHALL inset
+the visible panel from the corresponding output edges. Reservation SHALL cover a full-height
+strip even when the panel has vertical insets. Gutters MAY be negative: a negative gutter
+moves the panel's edge beyond its output edge or ends the reservation before the panel's far
+edge, so tiles may overlap the panel; the reservation sum SHALL NOT be negative. Existing
+compositor struts remain additive and SHALL NOT be edited.
+
+#### Scenario: Left docking
+- **WHEN** panel width is 320 pixels, Left is 8, Right is 12 and docking is Left
+- **THEN** the panel starts 8 pixels from the left output edge and reserves 340 pixels at
+  that edge, before any compositor struts
+
+#### Scenario: Right docking
+- **WHEN** the same values are applied with docking Right
+- **THEN** the panel ends 12 pixels before the right output edge and reserves 340 pixels at
+  that edge, releasing its previous left reservation
+
+#### Scenario: Vertical insets
+- **WHEN** Top is 24 and Bottom is 10
+- **THEN** the visible panel begins 24 pixels below the output top and ends 10 pixels above
+  its bottom, while the horizontal reservation remains a full-height strip
+
+#### Scenario: Negative gutter
+- **WHEN** panel width is 320 pixels, Left is -40, Right is 12 and docking is Left
+- **THEN** the panel starts 40 pixels beyond the left output edge and the reservation at that
+  edge is 292 pixels
+
+### Requirement: Apply layout without restarting the terminal
+A successful `pinwin_apply_layout` SHALL update the applied column count, all four gutters and
+the docking side as one logical operation, update the reservation and the panel's pixel width
+to the applied column count times the cell width, and resize the existing terminal grid and
+PTY winsize when necessary. It SHALL NOT recreate the terminal emulator, change the font, or
+touch the host's child. The host's child SHALL observe updated column/row counts and pixel
+sizes matching the drawn grid after the resize.
+
+#### Scenario: Apply new layout
+- **WHEN** the host applies a changed side, gutters or columns
+- **THEN** the running panel moves and resizes with its terminal state preserved
+
+#### Scenario: Widen the panel
+- **WHEN** the host changes columns from 40 to 60
+- **THEN** the panel's pixel width becomes exactly 60 times the cell width, the reserved strip
+  grows by the same amount, and the terminal grid reports 60 columns
+
+#### Scenario: Terminal resize
+- **WHEN** applied columns or top/bottom gutters change the terminal grid's column or row count
+- **THEN** the existing PTY and terminal size reports match the new drawn grid with the host's
+  child untouched
+
+### Requirement: Validate before applying
+`pinwin_apply_layout` SHALL reject an unknown side, a column count outside 1..=65535,
+checked-arithmetic overflow, a reservation sum below zero, vertical space insufficient for one
+complete terminal row, or a horizontal reservation that leaves no output width for other
+windows. It SHALL return `PINWIN_ERR_INVALID` and leave the previous applied layout
+untouched. Purely structural rejection (bad side, out-of-range columns, arithmetic overflow)
+SHALL NOT require any GTK surface to exist.
+
+#### Scenario: Invalid geometry
+- **WHEN** the host applies top/bottom gutters leaving less than one row
+- **THEN** the call returns `PINWIN_ERR_INVALID` and neither the live layout nor anything
+  else changes
+
+#### Scenario: Invalid columns
+- **WHEN** the host applies zero columns, or more than 65535
+- **THEN** the call returns `PINWIN_ERR_INVALID` and the previous applied state is intact
+
+#### Scenario: Too wide for the output
+- **WHEN** the host applies columns whose reservation leaves no output width for other windows
+- **THEN** the call returns `PINWIN_ERR_INVALID` and the live layout is unchanged
+
+#### Scenario: Invalid value
+- **WHEN** a gutter value is outside the int32 range the ABI carries
+- **THEN** the call returns `PINWIN_ERR_INVALID` and the live layout is unchanged
+
+### Requirement: Dock at one edge of the panel's monitor
+The library SHALL present its panel as a layer-shell surface on the `overlay` layer, flush
+against the top and bottom edges of its monitor, spanning that monitor's full height even when
+another bar reserves the top edge. The docking side comes from the ABI-supplied layout
+(`PINWIN_SIDE_LEFT` / `PINWIN_SIDE_RIGHT`): flush against that edge, inset from it only by
+that edge's gutter. The last terminal row's background SHALL reach the bottom edge without a
+dark gap. The panel SHALL stay on its original monitor and SHALL be visible on every workspace
+of that monitor, across workspace switches, focus moves and side changes. It SHALL NOT appear
+on other monitors.
+
+#### Scenario: Opens on the focused monitor
+- **WHEN** DP-2 has focus and the host starts the panel
+- **THEN** the panel appears at DP-2's ABI-supplied edge and nothing appears on DP-1
+
+#### Scenario: Covers an existing top bar without a bottom gap
+- **WHEN** a bar reserves the top edge on the panel's monitor
+- **THEN** the panel covers that bar across its own width and its last row's background reaches
+  the monitor's bottom edge
+
+#### Scenario: Visible across workspace switches
+- **WHEN** the panel is open and the user switches to another workspace on the same monitor
+- **THEN** the panel stays at its docking edge without moving or flickering
+
+#### Scenario: Cannot be moved
+- **WHEN** the user tries to drag or move the panel with the compositor's window actions
+- **THEN** the panel stays at its docking edge
+
+### Requirement: Reserve space so tiles start beside the panel
+The library SHALL reserve a strip at its docking edge equal to the panel width plus the two
+horizontal gutters, so the compositor places tiled windows beside that strip. The reservation
+SHALL apply only to the panel's monitor. The gap between the panel and the first tile is the
+far gutter plus whatever strut the compositor itself adds.
+
+#### Scenario: Tiles move right
+- **WHEN** the panel opens docked left with panel width 320, Left 0 and Right 12
+- **THEN** tiled windows' left edge moves to at least 332 px from the monitor's left edge
+
+#### Scenario: Other monitors unaffected
+- **WHEN** the panel is open on DP-2
+- **THEN** tiled windows on DP-1 keep their original position
+
+### Requirement: C ABI lifecycle
+The library SHALL expose `pinwin_start(const PinwinStartup*)`,
+`pinwin_apply_layout(const PinwinLayout*)` and `pinwin_stop(void)` from
+`pinwin/src/pinwin_api.h`. `pinwin_start` takes a host-owned pty master fd, a full layout
+(side, cols 1..=65535, four gutters) and a keyboard mode, spawns the GTK thread, and returns
+a synchronous result code. `pinwin_stop` closes the panel and joins the thread, and is a
+no-op when not running. A second `pinwin_start` while running returns
+`PINWIN_ERR_ALREADY_RUNNING`; `pinwin_apply_layout` when not running returns
+`PINWIN_ERR_NOT_RUNNING`.
+
+#### Scenario: Start, relayout, stop
+- **WHEN** the host starts the panel, applies a valid layout, then stops it
+- **THEN** each call returns `PINWIN_OK`, the panel follows the layouts, and after stop no
+  surface remains
+
+#### Scenario: Double start
+- **WHEN** the host calls `pinwin_start` twice without stopping
+- **THEN** the second call returns `PINWIN_ERR_ALREADY_RUNNING` and the running panel is
+  unchanged
+
+### Requirement: Host-owned pty
+The library SHALL read and write the pty master fd supplied at start and apply the window
+size to it (`TIOCSWINSZ`); it SHALL NOT fork, wait on a child, or set any child environment
+(`TERM`, `COLORTERM`, `PINWIN_SOCKET` have no equivalent). Hangup on the master drops the
+read source without touching process lifetime.
+
+#### Scenario: Sizes reach the child
+- **WHEN** the panel resizes after a layout apply
+- **THEN** the host's child observes the new grid and pixel sizes via `TIOCGWINSZ`
+
+### Requirement: The library never exits
+No library call SHALL terminate the host process for any reason — bad arguments, bad layout,
+missing display, missing Ghostty config, terminal allocation failure, or GTK errors are
+result codes or degraded states, never `exit()`. Terminal allocation failure keeps the
+previous grid and surfaces as `PINWIN_ERR_INTERNAL`.
+
+#### Scenario: Bad layout does not kill the host
+- **WHEN** the host applies an invalid layout
+- **THEN** the call returns `PINWIN_ERR_INVALID` and the host process keeps running with its
+  previous panel state
+
+### Requirement: No environment, no config file
+The library SHALL NOT read any environment variable and SHALL NOT read or write any config
+file. The full layout arrives with every start and every apply; the host owns persistence.
+A host that previously relied on `COLS`, `GUTTER`, `PINWIN_KEYBOARD`, `PINWIN_FONT` or the
+saved `pinwin/config` layout SHALL pass their equivalents explicitly instead.
+
+#### Scenario: Full layout at start
+- **WHEN** the host starts the panel with side Right, 52 columns and four gutters
+- **THEN** the panel opens with exactly that layout, regardless of any config file or
+  environment present
+
+## REMOVED Requirements
+
+### Requirement: Dock at the left edge of the focused monitor
+Left-only docking is replaced by the ADDED edge-agnostic docking requirement above: the
+docking side arrives over the ABI and the panel no longer always hugs the left edge.
+
+### Requirement: Reserve space so tiles start to its right
+Replaced by the ADDED edge-agnostic reservation requirement above: the strip is reserved at
+whichever edge the ABI-supplied layout docks to.
+
+### Requirement: Launch a command in the panel
+The library spawns no command: the host owns the child side of the pty. Removed with
+`main()` and argv parsing; nothing folds back.
+
+### Requirement: Exit with the command
+There is no command whose exit the library tracks: the host's child lifetime is the host's
+business, and hangup on the master never terminates anything. Panel teardown moves to the
+ADDED lifecycle requirement (`pinwin_stop` closes the surfaces; the compositor releases the
+reservation with no cleanup step and no files written).
+
+### Requirement: Width and gutter settings
+`COLS`/`GUTTER` environment configuration is gone: the layout arrives complete over the ABI
+at start and apply time. Strictness and ranges are preserved by the Validate requirement
+above.
+
+### Requirement: Install from the checkout
+There is no executable to install. `make install` goes away with the `Makefile` target
+(design OQ-b default); consumers link `libpinwin.a` via `zig build`.
+
+### Requirement: Coexists with pinwin
+Vacuous in library form: nothing the library builds or writes touches `pin.kdl` or
+`~/.local/bin/pinwin` paths. `pinwin.sh` itself is untouched by this change.
