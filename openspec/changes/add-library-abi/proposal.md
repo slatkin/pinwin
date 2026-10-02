@@ -55,5 +55,8 @@ openspec keeps the contract reviewable by both repos before either side builds o
 - No new dependencies; gio and dbusmenu-glib leave the link lines.
 - Consumer contract (mbv's `crates/mbv-pinwin` `build.rs`): link `zig-out/lib/libpinwin.a` **and**
   the installed `libghostty-vt` archive (design D7) against GTK4, gtk4-layer-shell, pango/cairo.
-- Open questions for the planning review (design §Open Questions): a dev-only demo executable
-  for manual checks, the fate of `pinwin.sh` and the `Makefile`, and the release/pinning story.
+- Open questions resolved by the planning review (design §Open Questions): a dev-only
+  `pinwin-demo` executable (`zig build demo`, never installed) keeps manual checks
+  independent of the mbv consumer; the `Makefile` `install` target is deleted
+  (`pinwin.sh` untouched); the library-form revision is tagged `library-abi`, with the
+  pinned ghostty commit and the Zig 0.16 minimum documented in the README.

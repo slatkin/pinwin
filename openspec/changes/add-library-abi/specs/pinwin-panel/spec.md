@@ -275,16 +275,25 @@ previous grid and surfaces as `PINWIN_ERR_INTERNAL`.
 - **THEN** the call returns `PINWIN_ERR_INVALID` and the host process keeps running with its
   previous panel state
 
-### Requirement: No environment, no config file
-The library SHALL NOT read any environment variable and SHALL NOT read or write any config
-file. The full layout arrives with every start and every apply; the host owns persistence.
-A host that previously relied on `COLS`, `GUTTER`, `PINWIN_KEYBOARD`, `PINWIN_FONT` or the
-saved `pinwin/config` layout SHALL pass their equivalents explicitly instead.
+### Requirement: No pinwin-owned configuration
+The library SHALL NOT read any pinwin-specific environment variable (`COLS`, `GUTTER`,
+`PINWIN_KEYBOARD`, `PINWIN_FONT`, `PINWIN_FONT_SIZE`, `PINWIN_DEBUG` have no effect) and
+SHALL NOT read or write any configuration file of its own: the full layout arrives with
+every start and every apply, and the host owns persistence. Ghostty font/theme following
+(the requirement above) is appearance, never layout, and is unaffected by this requirement.
+A host that previously relied on those variables or the saved `pinwin/config` layout SHALL
+pass their equivalents explicitly instead.
 
 #### Scenario: Full layout at start
 - **WHEN** the host starts the panel with side Right, 52 columns and four gutters
-- **THEN** the panel opens with exactly that layout, regardless of any config file or
-  environment present
+- **THEN** the panel opens with exactly that layout, regardless of any pinwin-owned
+  configuration or environment present
+
+#### Scenario: Ghostty config affects appearance only
+- **WHEN** the Ghostty config sets a font and theme, and the host starts the panel with a
+  given layout
+- **THEN** the panel draws with that font and theme, and opens with exactly the supplied
+  layout — the Ghostty config never influences layout
 
 ## REMOVED Requirements
 
