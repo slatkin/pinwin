@@ -18,7 +18,7 @@ when the host becomes available and disappear when pinwin exits.
 - **WHEN** the tray host disappears and later returns while pinwin runs
 - **THEN** the child command continues uninterrupted and the tray entry becomes available again
 
-#### Scenario: No pinwin icon in the theme
+#### Scenario: Missing icon
 - **WHEN** the icon theme has no `pinwin` icon
 - **THEN** the tray entry uses the `utilities-terminal` icon and the terminal continues
 
