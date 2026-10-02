@@ -7,6 +7,7 @@
  */
 
 #include "../src/options.h"
+#include "../src/control.h"
 
 #include <glib.h>
 
@@ -353,6 +354,18 @@ static void check_defaults(void) {
     CHECK(l.cols == 1 && l.right == 0);
 }
 
+static void check_control(void) {
+    CHECK(pinwin_control_parse("options", 7) == PINWIN_CONTROL_OPTIONS);
+    CHECK(pinwin_control_parse("options\n", 8) == PINWIN_CONTROL_OPTIONS);
+    /* Anything else is unknown, including the empty line. */
+    CHECK(pinwin_control_parse("resize 60", 9) == PINWIN_CONTROL_UNKNOWN);
+    CHECK(pinwin_control_parse("", 0) == PINWIN_CONTROL_UNKNOWN);
+    CHECK(pinwin_control_parse("\n", 1) == PINWIN_CONTROL_UNKNOWN);
+    CHECK(pinwin_control_parse("options ", 8) == PINWIN_CONTROL_UNKNOWN);
+    CHECK(pinwin_control_parse("Options", 7) == PINWIN_CONTROL_UNKNOWN);
+    CHECK(pinwin_control_parse("optionss", 8) == PINWIN_CONTROL_UNKNOWN);
+}
+
 int main(void) {
     check_parse();
     check_parse_cols();
@@ -360,6 +373,7 @@ int main(void) {
     check_validate();
     check_defaults();
     check_config();
+    check_control();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
