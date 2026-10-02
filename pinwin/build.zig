@@ -59,7 +59,6 @@ pub fn build(b: *std.Build) void {
     });
     check_mod.linkSystemLibrary("gtk4", .{});
     check_mod.linkSystemLibrary("gio-2.0", .{});
-    check_mod.linkSystemLibrary("gdk-pixbuf-2.0", .{}); // tray icon raster
     check_mod.linkSystemLibrary("dbusmenu-glib-0.4", .{});
     const check_exe = b.addExecutable(.{
         .name = "check_options",

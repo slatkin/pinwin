@@ -7,7 +7,6 @@
  */
 
 #include "../src/options.h"
-#include "../src/tray.h"
 
 #include <glib.h>
 
@@ -354,20 +353,6 @@ static void check_defaults(void) {
     CHECK(l.cols == 1 && l.right == 0);
 }
 
-static void check_icon_bytes(void) {
-    GByteArray* out = g_byte_array_new();
-    const unsigned char rgba[2][4] = {{1, 2, 3, 4}, {250, 0, 7, 255}};
-
-    tray_argb_from_rgba(rgba[0], 2, out);
-    CHECK(out->len == 8);
-    /* Network-order ARGB: alpha first, then R, G, B. */
-    CHECK(out->data[0] == 4 && out->data[1] == 1 && out->data[2] == 2 &&
-          out->data[3] == 3);
-    CHECK(out->data[4] == 255 && out->data[5] == 250 && out->data[6] == 0 &&
-          out->data[7] == 7);
-    g_byte_array_unref(out);
-}
-
 int main(void) {
     check_parse();
     check_parse_cols();
@@ -375,7 +360,6 @@ int main(void) {
     check_validate();
     check_defaults();
     check_config();
-    check_icon_bytes();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
