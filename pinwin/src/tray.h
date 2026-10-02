@@ -17,10 +17,4 @@ void tray_init(void);
 /* Best-effort unregister and release of tray resources (command exit). */
 void tray_shutdown(void);
 
-/* Byte conversion for IconPixmap entries: straight RGBA8 pixels become
- * network-order ARGB bytes (A, R, G, B), n_pixels * 4 bytes appended to
- * `out`. Non-static so the lightweight check can cover it (task 4.2). */
-void tray_argb_from_rgba(const unsigned char* rgba, int n_pixels,
-                          GByteArray* out);
-
 #endif /* PINWIN_TRAY_H */
