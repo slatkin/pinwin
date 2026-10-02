@@ -10,9 +10,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // GTK4, gtk4-layer-shell and Pango come from the system. src/glue.c is the
-    // only file that includes their headers (see src/pinwin.h); the @cImport
-    // in src/main.zig only sees ghostty/vt.h and pinwin.h.
+    // GTK4, gtk4-layer-shell and Pango come from the system. src/glue.c and
+    // its siblings (src/glue_internal.h is their shared state, design D4) are
+    // the only files that include their headers; the @cImport in src/main.zig
+    // only sees ghostty/vt.h and pinwin.h.
     exe_mod.linkSystemLibrary("gtk4", .{});
     exe_mod.linkSystemLibrary("gtk4-layer-shell-0", .{});
     exe_mod.linkSystemLibrary("pangocairo", .{});
@@ -28,7 +29,7 @@ pub fn build(b: *std.Build) void {
     }
     exe_mod.addIncludePath(b.path("src"));
     exe_mod.addCSourceFiles(.{
-        .files = &.{ "src/glue.c", "src/options.c", "src/tray.c" },
+        .files = &.{ "src/glue.c", "src/render.c", "src/images.c", "src/pty.c", "src/input.c", "src/fontconfig.c", "src/options.c", "src/tray.c" },
         .flags = &.{ "-std=gnu11", "-Wall" },
     });
 
