@@ -1,12 +1,12 @@
 /*
- * tray.h - this penguin instance's StatusNotifierItem on the session bus,
- * with a dbusmenu tree exposing "Options..." (add-penguin-tray-options).
+ * tray.h - this pinwin instance's StatusNotifierItem on the session bus,
+ * with a dbusmenu tree exposing "Options..." (add-pinwin-tray-options).
  *
  * Everything here is non-fatal: an absent bus, watcher or host leaves the
  * terminal running with a diagnostic.
  */
-#ifndef PENGUIN_TRAY_H
-#define PENGUIN_TRAY_H
+#ifndef PINWIN_TRAY_H
+#define PINWIN_TRAY_H
 
 #include <glib.h>
 
@@ -23,4 +23,4 @@ void tray_shutdown(void);
 void tray_argb_from_rgba(const unsigned char* rgba, int n_pixels,
                           GByteArray* out);
 
-#endif /* PENGUIN_TRAY_H */
+#endif /* PINWIN_TRAY_H */

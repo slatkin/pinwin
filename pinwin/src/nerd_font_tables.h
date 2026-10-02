@@ -1,8 +1,8 @@
 /* Generated from the pinned ghostty commit (src/font/nerd_font_tables.zig,
  * itself generated there by nerd_font_codegen.py). Do not edit by hand;
- * regenerate with penguin/tools/gen_nerd_tables.py. */
-#ifndef PENGUIN_NERD_FONT_TABLES_H
-#define PENGUIN_NERD_FONT_TABLES_H
+ * regenerate with pinwin/tools/gen_nerd_tables.py. */
+#ifndef PINWIN_NERD_FONT_TABLES_H
+#define PINWIN_NERD_FONT_TABLES_H
 
 #include <stdint.h>
 
@@ -777,4 +777,4 @@ static const NerdConstraint nerd_stage3[277] = {
     {3,1,4,4,0,0,0,0,0.964285714286,0.740740740741,0.0357142857143,0.111111111111,-1,2},
 };
 
-#endif /* PENGUIN_NERD_FONT_TABLES_H */
+#endif /* PINWIN_NERD_FONT_TABLES_H */

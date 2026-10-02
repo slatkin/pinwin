@@ -2,7 +2,7 @@
 """Generate src/nerd_font_tables.h from the pinned ghostty commit's
 src/font/nerd_font_tables.zig (which is itself generated there by
 nerd_font_codegen.py). The table maps a Nerd Font codepoint to the constraint
-Ghostty applies when drawing it; penguin ports both the table and the maths
+Ghostty applies when drawing it; pinwin ports both the table and the maths
 (Glyph.RenderOptions.Constraint) so icons are normalised the same way.
 
 Usage: tools/gen_nerd_tables.py /path/to/ghostty/src/font/nerd_font_tables.zig
@@ -85,8 +85,8 @@ def emit(stage1, stage2, rows, out):
     w = out.write
     w('/* Generated from the pinned ghostty commit (src/font/nerd_font_tables.zig,\n'
       ' * itself generated there by nerd_font_codegen.py). Do not edit by hand;\n'
-      ' * regenerate with penguin/tools/gen_nerd_tables.py. */\n')
-    w('#ifndef PENGUIN_NERD_FONT_TABLES_H\n#define PENGUIN_NERD_FONT_TABLES_H\n\n#include <stdint.h>\n\n')
+      ' * regenerate with pinwin/tools/gen_nerd_tables.py. */\n')
+    w('#ifndef PINWIN_NERD_FONT_TABLES_H\n#define PINWIN_NERD_FONT_TABLES_H\n\n#include <stdint.h>\n\n')
     w('/* One Nerd Font glyph constraint, mirroring Glyph.RenderOptions.Constraint.\n'
       ' * max_xy_ratio < 0 means unset. */\n')
     w('typedef struct {\n    uint8_t size, height, align_h, align_v;\n')
@@ -108,7 +108,7 @@ def emit(stage1, stage2, rows, out):
         w('    {%d,%d,%d,%d,%s,%d},\n' % (*row[:4],
                                           ','.join('%.12g' % v for v in row[4:13]),
                                           row[13]))
-    w('};\n\n#endif /* PENGUIN_NERD_FONT_TABLES_H */\n')
+    w('};\n\n#endif /* PINWIN_NERD_FONT_TABLES_H */\n')
 
 
 def main():

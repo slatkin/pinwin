@@ -1,29 +1,29 @@
-# penguin-tray-options Specification
+# pinwin-tray-options Specification
 
 ## Purpose
 
-Lets penguin users edit and persist the running terminal panel's docking side and directional spacing through a system tray options window without restarting its command.
+Lets pinwin users edit and persist the running terminal panel's docking side and directional spacing through a system tray options window without restarting its command.
 
 ## Requirements
 
 ### Requirement: Tray access to options
-Each running penguin instance SHALL expose a system tray entry while a compatible tray host is available. The icon SHALL be loaded from `$HOME/penguin.svg`. Right-click SHALL expose an `Options...` menu item that opens that instance's options window. A missing or unreadable icon SHALL produce a diagnostic and a generic fallback icon rather than stop the terminal. Absence or restart of the tray host SHALL NOT close or restart the panel; the entry SHALL register when the host becomes available and disappear when penguin exits.
+Each running pinwin instance SHALL expose a system tray entry while a compatible tray host is available. The icon SHALL be loaded from `$HOME/pinwin.svg`. Right-click SHALL expose an `Options...` menu item that opens that instance's options window. A missing or unreadable icon SHALL produce a diagnostic and a generic fallback icon rather than stop the terminal. Absence or restart of the tray host SHALL NOT close or restart the panel; the entry SHALL register when the host becomes available and disappear when pinwin exits.
 
 #### Scenario: Open options
-- **WHEN** the user right-clicks the penguin tray icon and selects `Options...`
+- **WHEN** the user right-clicks the pinwin tray icon and selects `Options...`
 - **THEN** that instance opens an options window
 
 #### Scenario: Host returns
-- **WHEN** the tray host disappears and later returns while penguin runs
+- **WHEN** the tray host disappears and later returns while pinwin runs
 - **THEN** the child command continues uninterrupted and the tray entry becomes available again
 
 #### Scenario: Missing icon
-- **WHEN** `$HOME/penguin.svg` cannot be loaded
+- **WHEN** `$HOME/pinwin.svg` cannot be loaded
 - **THEN** the terminal continues, a diagnostic is emitted and a generic tray icon is used
 
 #### Scenario: Exit
 - **WHEN** the command exits
-- **THEN** penguin closes its panel, options window and tray entry, releases the reserved space and retains the command's exit status
+- **THEN** pinwin closes its panel, options window and tray entry, releases the reserved space and retains the command's exit status
 
 ### Requirement: Staged options editing
 The options window SHALL present a labeled numeric `Columns` field (the panel width in terminal columns), followed by labeled numeric fields for Top, Bottom, Left and Right gutters in pixels, a Left/Right docking selector, Apply and Close controls. The Columns field SHALL be presented first. It SHALL initialize from the running instance's applied values. Edits SHALL NOT affect the panel or persistent config until Apply succeeds. Apply SHALL keep the options window open. Closing SHALL discard unapplied edits. Repeated `Options...` activation SHALL present the existing window without duplicating it or resetting pending edits. All controls SHALL be keyboard accessible.
@@ -41,7 +41,7 @@ The options window SHALL present a labeled numeric `Columns` field (the panel wi
 - **THEN** the same window is presented and its pending edits are preserved
 
 ### Requirement: Directional gutters and docking geometry
-Gutters SHALL use literal screen directions in the same pixel coordinate system as penguin's existing layout settings, independent of docking side. Let panel width be `COLS` times the font cell width. On the left, the panel SHALL be inset from the left output edge by Left pixels and reserve `Left + panel width + Right` pixels at the left edge. On the right, the panel SHALL be inset from the right output edge by Right pixels and reserve the same sum at the right edge. Top and Bottom SHALL inset the visible panel from the corresponding output edges. Reservation SHALL cover a full-height strip even when the panel has vertical insets. Gutters MAY be negative: a negative gutter moves the panel's edge beyond its output edge (part of the panel off-screen) or ends the reservation before the panel's far edge, so tiles may overlap the panel; the reservation sum SHALL NOT be negative. Existing compositor struts remain additive and SHALL NOT be edited. Both surfaces SHALL stay on the instance's original monitor, across workspace switches and side changes.
+Gutters SHALL use literal screen directions in the same pixel coordinate system as pinwin's existing layout settings, independent of docking side. Let panel width be `COLS` times the font cell width. On the left, the panel SHALL be inset from the left output edge by Left pixels and reserve `Left + panel width + Right` pixels at the left edge. On the right, the panel SHALL be inset from the right output edge by Right pixels and reserve the same sum at the right edge. Top and Bottom SHALL inset the visible panel from the corresponding output edges. Reservation SHALL cover a full-height strip even when the panel has vertical insets. Gutters MAY be negative: a negative gutter moves the panel's edge beyond its output edge (part of the panel off-screen) or ends the reservation before the panel's far edge, so tiles may overlap the panel; the reservation sum SHALL NOT be negative. Existing compositor struts remain additive and SHALL NOT be edited. Both surfaces SHALL stay on the instance's original monitor, across workspace switches and side changes.
 
 #### Scenario: Left docking
 - **WHEN** panel width is 320 pixels, Left is 8, Right is 12 and docking is Left
@@ -61,7 +61,7 @@ Gutters SHALL use literal screen directions in the same pixel coordinate system 
 
 #### Scenario: Change side after focus moves
 - **WHEN** the user focuses a different monitor and applies a side change
-- **THEN** both penguin surfaces remain on their original monitor
+- **THEN** both pinwin surfaces remain on their original monitor
 
 ### Requirement: Apply without restarting the command
 A successful Apply SHALL update the applied column count and all four gutters and the docking side as one logical operation, update the reservation and the panel's pixel width to the applied column count times the cell width, and resize the existing terminal grid and PTY when necessary. It SHALL NOT respawn the command, recreate the terminal emulator, change the font or change the command. The command SHALL receive updated column counts, rows and pixel sizes matching the drawn grid after the resize. Existing command arguments, terminal rendering and keyboard policy SHALL remain unchanged.
@@ -102,14 +102,14 @@ Apply SHALL reject a Columns value that is non-integer, malformed, zero, negativ
 - **THEN** a save error is shown, the existing config and running layout remain unchanged, and the pending edits remain in the window
 
 ### Requirement: Persist and restore layout settings
-Penguin SHALL save the docking side, the applied column count and all four gutters to `$XDG_CONFIG_HOME/penguin/config`, using `~/.config/penguin/config` when XDG_CONFIG_HOME is unset or empty. Successful saves SHALL replace the file atomically. A valid saved layout SHALL override the legacy GUTTER- and COLS-derived launch values on subsequent launches. With no saved layout, defaults SHALL be Left docking, the `COLS` column count (default 40), Top/Bottom/Left zero and Right equal to the existing `GUTTER` value (default zero). Existing validation of launch environment variables SHALL remain in effect. Missing config SHALL be normal; unreadable, malformed or geometrically unusable saved settings SHALL produce a diagnostic and fall back to those launch defaults without overwriting the file. Launch and merely opening or closing options SHALL NOT write the config. Layout settings SHALL NOT override fonts, keyboard mode or the command.
+Pinwin SHALL save the docking side, the applied column count and all four gutters to `$XDG_CONFIG_HOME/pinwin/config`, using `~/.config/pinwin/config` when XDG_CONFIG_HOME is unset or empty. Successful saves SHALL replace the file atomically. A valid saved layout SHALL override the legacy GUTTER- and COLS-derived launch values on subsequent launches. With no saved layout, defaults SHALL be Left docking, the `COLS` column count (default 40), Top/Bottom/Left zero and Right equal to the existing `GUTTER` value (default zero). Existing validation of launch environment variables SHALL remain in effect. Missing config SHALL be normal; unreadable, malformed or geometrically unusable saved settings SHALL produce a diagnostic and fall back to those launch defaults without overwriting the file. Launch and merely opening or closing options SHALL NOT write the config. Layout settings SHALL NOT override fonts, keyboard mode or the command.
 
 #### Scenario: Restore applied settings
-- **WHEN** the user applies Right docking, a column count and four gutters, quits and launches penguin again
+- **WHEN** the user applies Right docking, a column count and four gutters, quits and launches pinwin again
 - **THEN** the saved layout, including the column count, is restored without needing environment variables
 
 #### Scenario: Legacy launch
-- **WHEN** no saved config exists and penguin starts with `GUTTER=8`
+- **WHEN** no saved config exists and pinwin starts with `GUTTER=8`
 - **THEN** it opens on the left with Top/Bottom/Left zero, Right eight and the `COLS` column count
 
 #### Scenario: Saved layout precedence
@@ -118,7 +118,7 @@ Penguin SHALL save the docking side, the applied column count and all four gutte
 
 #### Scenario: Corrupt config
 - **WHEN** the saved config contains an invalid side, gutter or column count
-- **THEN** penguin reports the problem, uses launch defaults and leaves that file untouched
+- **THEN** pinwin reports the problem, uses launch defaults and leaves that file untouched
 
 #### Scenario: Multiple running instances
 - **WHEN** two instances apply different settings

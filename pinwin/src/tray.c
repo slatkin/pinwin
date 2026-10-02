@@ -72,7 +72,7 @@ static GVariant* g_icon_pixmap; /* a(iiay), built by tray_icon_setup (design D3)
 static char* g_icon_name; /* NULL = empty IconName so hosts prefer pixmaps */
 
 static void tray_diagnostic(const char* what, const char* detail) {
-    fprintf(stderr, "penguin: tray %s%s%s\n", what, detail ? ": " : "",
+    fprintf(stderr, "pinwin: tray %s%s%s\n", what, detail ? ": " : "",
             detail ? detail : "");
 }
 
@@ -94,7 +94,7 @@ static GVariant* item_get_property(GDBusConnection* connection,
     if (strcmp(property_name, "Category") == 0)
         return g_variant_new_string("ApplicationStatus");
     if (strcmp(property_name, "Id") == 0 || strcmp(property_name, "Title") == 0)
-        return g_variant_new_string("penguin");
+        return g_variant_new_string("pinwin");
     if (strcmp(property_name, "Status") == 0) return g_variant_new_string("Active");
     if (strcmp(property_name, "WindowId") == 0) return g_variant_new_int32(0);
     if (strcmp(property_name, "IconName") == 0)
@@ -149,7 +149,7 @@ static void on_options_item_activated(DbusmenuMenuitem* item, guint timestamp,
     (void)item;
     (void)timestamp;
     (void)user_data;
-    penguin_options_open();
+    pinwin_options_open();
 }
 
 static void menu_server_setup(GDBusConnection* bus) {
@@ -341,7 +341,7 @@ static GVariant* pixmap_entry(GdkPixbuf* svg, int size) {
     return entry;
 }
 
-/* Rasterise $HOME/penguin.svg at the standard tray sizes. Missing or
+/* Rasterise $HOME/pinwin.svg at the standard tray sizes. Missing or
  * unloadable artwork is a diagnostic plus a generic fallback, never a
  * terminal failure (spec: Missing icon). */
 static void tray_icon_setup(void) {
@@ -356,7 +356,7 @@ static void tray_icon_setup(void) {
     GVariant* pixmaps;
     int i;
 
-    path = g_build_filename(g_get_home_dir(), "penguin.svg", NULL);
+    path = g_build_filename(g_get_home_dir(), "pinwin.svg", NULL);
     if (g_file_get_contents(path, &data, &len, NULL)) {
         loader = gdk_pixbuf_loader_new_with_type("svg", &err);
         if (loader) {
@@ -389,7 +389,7 @@ static void tray_icon_setup(void) {
 
     tray_diagnostic("icon", err ? err->message : "could not rasterise");
     tray_diagnostic("icon fallback", "using the terminal theme icon; install "
-                                      "artwork at $HOME/penguin.svg to replace it");
+                                      "artwork at $HOME/pinwin.svg to replace it");
     if (err) g_error_free(err);
 
     /* Generic theme icon; if even that is unavailable, a simple in-memory
