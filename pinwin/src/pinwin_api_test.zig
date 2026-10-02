@@ -101,3 +101,45 @@ test "pty data arriving before the terminal is replayed, not dropped" {
     try testing.expect(n >= 6);
     try testing.expectEqualSlices(u8, "\x1b[?6", buf[0..4]);
 }
+
+// ---- SIGWINCH contract ------------------------------------------------------
+// "Resize of the panel results in SIGWINCH delivered to the process after the
+// winsize is updated" (pinwin-panel delta, add-sigwinch-raise).
+
+var sigwinch_seen = false;
+
+fn onSigwinch(_: std.posix.SIG) callconv(.c) void {
+    @atomicStore(bool, &sigwinch_seen, true, .seq_cst);
+}
+
+extern "c" fn posix_openpt(flags: c_int) c_int;
+extern "c" fn grantpt(fd: c_int) c_int;
+extern "c" fn unlockpt(fd: c_int) c_int;
+extern fn glue_pty_resize(cols: c_int, rows: c_int, xpixel: c_int, ypixel: c_int) void;
+
+test "winsize update delivers SIGWINCH to the process" {
+    var act: std.posix.Sigaction = std.mem.zeroes(std.posix.Sigaction);
+    act.handler.handler = onSigwinch;
+    var old: std.posix.Sigaction = undefined;
+    std.posix.sigaction(std.posix.SIG.WINCH, &act, &old);
+    defer std.posix.sigaction(std.posix.SIG.WINCH, &old, null);
+
+    // TIOCSWINSZ needs a real pty master; a pipe rejects it (ENOTTY).
+    const master = posix_openpt(2); // O_RDWR
+    try testing.expect(master >= 0);
+    try testing.expectEqual(@as(c_int, 0), grantpt(master));
+    try testing.expectEqual(@as(c_int, 0), unlockpt(master));
+    defer _ = std.os.linux.close(master);
+    g_pty_fd = master;
+    defer g_pty_fd = -1;
+
+    sigwinch_seen = false;
+    glue_pty_resize(40, 24, 320, 480);
+    try testing.expect(@atomicLoad(bool, &sigwinch_seen, .seq_cst));
+
+    // No pty attached: no winsize update, no signal.
+    g_pty_fd = -1;
+    sigwinch_seen = false;
+    glue_pty_resize(40, 24, 320, 480);
+    try testing.expect(!@atomicLoad(bool, &sigwinch_seen, .seq_cst));
+}
