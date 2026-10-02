@@ -3,11 +3,7 @@
  * layout core (task 1.1/1.2 of add-pinwin-tray-options). No GTK, only
  * GLib (for the config round-trip cases).
  *
- * Exact invocation, from the repository root:
- *
- *   cc -std=gnu11 -Wall -Wextra pinwin/src/options.c pinwin/tools/check_options.c \
- *     $(pkg-config --cflags --libs gtk4) -o /tmp/pinwin-check-options \
- *     && /tmp/pinwin-check-options
+ * Built and run by `zig build check` from the pinwin directory (design D5).
  */
 
 #include "../src/options.h"

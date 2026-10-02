@@ -44,4 +44,28 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
     run_step.dependOn(&run_cmd.step);
+
+    // The lightweight layout-core check (tools/check_options.c): compiled
+    // against the same system libraries and run (design D5).
+    const check_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    check_mod.addIncludePath(b.path("src"));
+    check_mod.addCSourceFiles(.{
+        .files = &.{ "src/options.c", "src/tray.c", "tools/check_options.c" },
+        .flags = &.{ "-std=gnu11", "-Wall", "-Wextra" },
+    });
+    check_mod.linkSystemLibrary("gtk4", .{});
+    check_mod.linkSystemLibrary("gio-2.0", .{});
+    check_mod.linkSystemLibrary("gdk-pixbuf-2.0", .{}); // tray icon raster
+    check_mod.linkSystemLibrary("dbusmenu-glib-0.4", .{});
+    const check_exe = b.addExecutable(.{
+        .name = "check_options",
+        .root_module = check_mod,
+    });
+    const run_check = b.addRunArtifact(check_exe);
+    const check_step = b.step("check", "Build and run the layout-core check");
+    check_step.dependOn(&run_check.step);
 }

@@ -36,13 +36,10 @@ Requirements: Zig 0.16 (`zig version` must print `0.16.`), GTK 4, gtk4-layer-she
 
 **Debugging:** `PINWIN_DEBUG=1` writes libghostty-vt's own log plus every key, mouse, scroll and focus event to stderr.
 
-**Checks:** the layout core (parsing, validation, side formulas, config round-trip, icon byte conversion) has a small assertion-based check. From the repository root:
+**Checks:** the layout core (parsing, validation, side formulas, config round-trip, icon byte conversion) has a small assertion-based check. From the `pinwin` directory:
 
 ```sh
-cc -std=gnu11 -Wall -Wextra pinwin/src/options.c pinwin/src/tray.c \
-  pinwin/tools/check_options.c \
-  $(pkg-config --cflags --libs gtk4 dbusmenu-glib-0.4) -o /tmp/pinwin-check-options
-/tmp/pinwin-check-options
+zig build check
 ```
 
 It prints `check_options: all passed` and exits 0. Config tests run in an isolated temporary directory (`XDG_CONFIG_HOME`); they never touch your real config.
