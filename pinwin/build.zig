@@ -73,4 +73,21 @@ pub fn build(b: *std.Build) void {
         .root_module = demo_mod,
     });
     demo_step.dependOn(&b.addInstallArtifact(demo, .{}).step);
+
+    // Layout-core unit tests (design D8). The test root links the GTK-free
+    // src/options.c directly and runs as `zig build check`.
+    const check_step = b.step("check", "Run the layout-core Zig unit tests");
+    const check_mod = b.createModule(.{
+        .root_source_file = b.path("src/options_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    check_mod.addIncludePath(b.path("src"));
+    check_mod.addCSourceFiles(.{
+        .files = &.{"src/options.c"},
+        .flags = &.{ "-std=gnu11", "-Wall" },
+    });
+    const check_tests = b.addTest(.{ .root_module = check_mod });
+    check_step.dependOn(&b.addRunArtifact(check_tests).step);
 }
