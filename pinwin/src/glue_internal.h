@@ -62,6 +62,7 @@ extern PinwinLayout g_layout;
 extern GtkWindow* g_reserve;
 extern GdkMonitor* g_monitor; /* the visible panel's original monitor */
 extern int g_layout_latch; /* first-draw monitor resolution pending */
+extern int g_no_tray; /* --no-tray: never register a tray entry */
 
 /* ---- fontconfig.c: Ghostty config, theme colours, terminfo check -------- */
 
