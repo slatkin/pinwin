@@ -18,7 +18,6 @@
 /* ---- state (definitions in glue.c) --------------------------------------- */
 
 extern int32_t g_cols;
-extern int32_t g_gutter;
 extern int32_t g_keyboard_mode;
 
 extern char* const* g_argv;
@@ -56,13 +55,12 @@ extern int32_t g_pty_xpixel;
 extern int32_t g_pty_ypixel;
 extern int g_spawned;
 
-/* Layout settings (add-pinwin-tray-options). The applied layout starts as
- * the launch baseline and is loaded from the config / replaced by Apply. */
+/* Layout settings. The applied layout is the startup layout supplied to
+ * glue_init and is replaced by a later publish. */
 extern PinwinLayout g_layout;
 extern GtkWindow* g_reserve;
 extern GdkMonitor* g_monitor; /* the visible panel's original monitor */
 extern int g_layout_latch; /* first-draw monitor resolution pending */
-extern int g_no_tray; /* --no-tray: never register a tray entry */
 
 /* ---- fontconfig.c: Ghostty config, theme colours, terminfo check -------- */
 
@@ -81,7 +79,7 @@ void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
 
 void draw_images(cairo_t* cr);
 
-/* ---- pty.c: spawn, read, write, resize and child exit -------------------- */
+/* ---- pty.c: spawn, read, write and resize -------------------------------- */
 
 void apply_size(void);
 void on_area_resize(GtkWidget* widget, gint width, gint height,
@@ -93,6 +91,7 @@ void attach_controllers(GtkWidget* area);
 
 /* ---- glue.c: layer-shell surfaces and layout application ----------------- */
 
+int glue_init(const PinwinLayout* layout, int32_t keyboard_mode);
 void resolve_layout_monitor(void);
 
 #endif /* PINWIN_GLUE_INTERNAL_H */

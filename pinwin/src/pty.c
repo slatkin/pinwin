@@ -18,7 +18,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -49,16 +48,6 @@ void on_area_resize(GtkWidget* widget, gint width, gint height,
     (void)height;
     (void)user_data;
     apply_size();
-}
-
-static void on_child_exit(GPid pid, gint status, gpointer user_data) {
-    (void)user_data;
-    g_spawn_close_pid(pid);
-    if (WIFEXITED(status)) {
-        glue_exit(WEXITSTATUS(status));
-    } else {
-        glue_exit(128 + WTERMSIG(status));
-    }
 }
 
 static gboolean on_pty_readable(gint fd, GIOCondition condition, gpointer user_data) {
@@ -147,5 +136,4 @@ static void spawn_pty(void) {
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     g_pty_source = g_unix_fd_add(fd, G_IO_IN | G_IO_HUP | G_IO_ERR,
                                  on_pty_readable, NULL);
-    g_child_watch_add(pid, on_child_exit, NULL);
 }
