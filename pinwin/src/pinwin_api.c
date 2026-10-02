@@ -14,6 +14,7 @@
 #include "pinwin_api.h"
 #include "glue_internal.h"
 
+#include <fcntl.h>
 #include <glib.h>
 
 /* ---- lifecycle state ---------------------------------------------------- */
@@ -30,7 +31,10 @@ static PinwinStartup g_api_startup;
  * rejected here too (pinwin-panel spec: Invalid keyboard mode). */
 static int startup_valid(const PinwinStartup* startup) {
     if (startup == NULL) return 0;
+    /* A negative or already-closed fd is a bad argument, reported as an ABI
+     * result before any GTK work (design D2/D3); the library never exits. */
     if (startup->master_fd < 0) return 0;
+    if (fcntl(startup->master_fd, F_GETFL) < 0) return 0;
     if (startup->layout.side != PINWIN_SIDE_LEFT &&
         startup->layout.side != PINWIN_SIDE_RIGHT)
         return 0;
@@ -46,6 +50,10 @@ static int startup_valid(const PinwinStartup* startup) {
  * then own the GtkApplication main loop until pinwin_stop quits it. */
 static gpointer gtk_thread_main(gpointer data) {
     (void)data;
+
+    /* The GTK thread owns the pty attachment from here (design D6): the host's
+     * master fd arrives over the ABI and pty.c takes it non-blocking. */
+    g_pty_fd = g_api_startup.master_fd;
 
     int ok = glue_init(&g_api_startup.layout, g_api_startup.keyboard_mode);
 

@@ -27,8 +27,6 @@
 int32_t g_cols = 40;
 int32_t g_keyboard_mode = PINWIN_KEYBOARD_ON_DEMAND;
 
-char* const* g_argv;
-
 GtkApplication* g_app;
 GtkWindow* g_win;
 GtkWidget* g_area;
@@ -57,7 +55,7 @@ int32_t g_pty_cols = 40;
 int32_t g_pty_rows = 24;
 int32_t g_pty_xpixel;
 int32_t g_pty_ypixel;
-int g_spawned;
+int g_attached;
 
 PinwinLayout g_layout;
 GtkWindow* g_reserve;
