@@ -60,8 +60,11 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(lib);
 
     // The `pinwin` program: a thin host over the C ABI (host/main.c), installed
-    // by the default `zig build`.
-    b.installArtifact(addHost(b, lib, ghostty, target, optimize, "pinwin", "host/main.c"));
+    // by the default `zig build` as bin/pinwin. The Compile step is named
+    // "pinwin-host" (not "pinwin") so a dependent's artifact("pinwin") resolves
+    // unambiguously to the static library.
+    const host = addHost(b, lib, ghostty, target, optimize, "pinwin-host", "host/main.c");
+    b.getInstallStep().dependOn(&b.addInstallFile(host.getEmittedBin(), "bin/pinwin").step);
 
     // Dev-only demo (design OQ-a): drives the C ABI over a pty pair it creates
     // itself, built by `zig build demo` only and never installed.
