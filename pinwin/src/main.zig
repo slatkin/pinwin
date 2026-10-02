@@ -60,10 +60,6 @@ const std = @import("std");
 
 const c = @import("c.zig").c;
 
-const DEFAULT_COLS: u32 = 40;
-const DEFAULT_GUTTER: u32 = 0;
-const DEFAULT_KEYBOARD = "on-demand";
-
 /// Ghostty's own default for `image-storage-limit`, and what mbv's posters fit in.
 const KITTY_STORAGE_LIMIT: u64 = 320 * 1024 * 1024;
 
@@ -81,12 +77,12 @@ pub var mouse_encoder: c.GhosttyMouseEncoder = null;
 pub var mouse_event: c.GhosttyMouseEvent = null;
 pub var placement_iter: c.GhosttyKittyGraphicsPlacementIterator = null;
 
-pub var grid_cols: u16 = DEFAULT_COLS;
+pub var grid_cols: u16 = 40;
 pub var grid_rows: u16 = 24;
 pub var cell_w: u32 = 1;
 pub var cell_h: u32 = 1;
 
-/// PINWIN_DEBUG=1 routes libghostty-vt's own log through stderr.
+/// Routes libghostty-vt's own log through stderr when the host sets it.
 pub var debug_enabled = false;
 
 // The frame and input halves are driven from C through pinwin.h; importing
@@ -96,98 +92,13 @@ comptime {
     _ = @import("input.zig");
 }
 
-pub fn main(init: std.process.Init.Minimal) void {
-    const cols = envSetting(init.environ, "COLS", DEFAULT_COLS, true);
-    const gutter = envSetting(init.environ, "GUTTER", DEFAULT_GUTTER, false);
-    const keyboard = keyboardMode(init.environ);
-
-    const command = commandArgv(init.environ, init.args) catch |err| {
-        std.debug.print("pinwin: {s}\n", .{@errorName(err)});
-        std.process.exit(1);
-    };
-
-    debug_enabled = std.process.Environ.getPosix(init.environ, "PINWIN_DEBUG") != null;
-
-    // Process-global, and must be installed before the terminal exists.
-    _ = c.ghostty_sys_set(c.GHOSTTY_SYS_OPT_DECODE_PNG, @ptrCast(&decodePng));
-    if (debug_enabled) _ = c.ghostty_sys_set(c.GHOSTTY_SYS_OPT_LOG, @ptrCast(&c.ghostty_sys_log_stderr));
-
-    if (c.glue_init(@intCast(cols), @intCast(gutter), keyboard, @intFromBool(command.no_tray)) == 0) std.process.exit(1);
-    c.glue_start(@ptrCast(command.argv.ptr));
-}
-
-/// `COLS` and `GUTTER`, per design D9: an error names the variable and exits 2
-/// before any surface exists.
-fn envSetting(environ: std.process.Environ, name: []const u8, default: u32, must_be_positive: bool) u32 {
-    const raw = std.process.Environ.getPosix(environ, name) orelse return default;
-    const value = std.fmt.parseInt(u32, raw, 10) catch {
-        std.debug.print("pinwin: {s}: expected a non-negative integer, got '{s}'\n", .{ name, raw });
-        std.process.exit(2);
-    };
-    if (must_be_positive and value == 0) {
-        std.debug.print("pinwin: {s}: must be greater than 0\n", .{name});
-        std.process.exit(2);
-    }
-    return value;
-}
-
-/// `PINWIN_KEYBOARD`: layer-shell keyboard interactivity. `on-demand` (the
-/// default) means the panel only gets the keyboard after a click; `exclusive`
-/// takes it as soon as the panel opens; `none` never takes it.
-fn keyboardMode(environ: std.process.Environ) i32 {
-    const raw = std.process.Environ.getPosix(environ, "PINWIN_KEYBOARD") orelse return c.PINWIN_KEYBOARD_ON_DEMAND;
-    if (std.mem.eql(u8, raw, "on-demand")) return c.PINWIN_KEYBOARD_ON_DEMAND;
-    if (std.mem.eql(u8, raw, "exclusive")) return c.PINWIN_KEYBOARD_EXCLUSIVE;
-    if (std.mem.eql(u8, raw, "none")) return c.PINWIN_KEYBOARD_NONE;
-    std.debug.print("pinwin: PINWIN_KEYBOARD: expected on-demand, exclusive or none, got '{s}'\n", .{raw});
-    std.process.exit(2);
-}
-
-/// The command to run in the panel, NUL-terminated for execvp, plus whether
-/// the user passed `--no-tray` (design D2): pinwin's own options precede the
-/// command and `--` ends them; an unknown leading `--...` argument is an
-/// error naming it. With no command, `$SHELL` runs (or `/bin/sh` when `SHELL`
-/// is unset or empty).
-const Command = struct { argv: [:null]?[*:0]const u8, no_tray: bool };
-
-fn commandArgv(environ: std.process.Environ, args: std.process.Args) !Command {
-    var list: std.ArrayList(?[*:0]const u8) = .empty;
-    var iterator = std.process.Args.iterate(args);
-    _ = iterator.skip(); // argv[0], pinwin itself
-    var no_tray = false;
-    var options_done = false;
-    while (iterator.next()) |arg| {
-        if (!options_done) {
-            if (std.mem.eql(u8, arg, "--no-tray")) {
-                no_tray = true;
-                continue;
-            }
-            if (std.mem.eql(u8, arg, "--")) {
-                options_done = true;
-                continue;
-            }
-            if (std.mem.startsWith(u8, arg, "--")) {
-                std.debug.print("pinwin: unknown option '{s}'\n", .{arg});
-                std.process.exit(2);
-            }
-            // The first non-option argument starts the command; everything
-            // after it, option-looking or not, belongs to the command.
-            options_done = true;
-        }
-        try list.append(allocator, arg.ptr);
-    }
-    if (list.items.len == 0) {
-        const shell = std.process.Environ.getPosix(environ, "SHELL") orelse "/bin/sh";
-        try list.append(allocator, if (shell.len > 0) shell.ptr else "/bin/sh");
-    }
-    try list.append(allocator, null);
-    return .{ .argv = list.items[0 .. list.items.len - 1 :null], .no_tray = no_tray };
-}
-
 // ---- terminal -------------------------------------------------------------
 
 fn ensureTerminal() !void {
     if (term != null) return;
+
+    // Process-global, and must be installed before the terminal exists.
+    _ = c.ghostty_sys_set(c.GHOSTTY_SYS_OPT_DECODE_PNG, @ptrCast(&decodePng));
 
     if (c.ghostty_terminal_new(null, &term, grid_cols, grid_rows) != c.GHOSTTY_SUCCESS)
         return error.TerminalNewFailed;

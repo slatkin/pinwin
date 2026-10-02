@@ -55,9 +55,8 @@ int terminfo_exists(const char* name) {
 
 /* The panel follows the Ghostty config (a plain "key = value" file) so that it
  * uses the font the user actually configured for their terminal, with
- * PINWIN_FONT / PINWIN_FONT_SIZE as overrides and "monospace 11" as the
- * fallback. Only the first font-family is used, matching Ghostty's rule that
- * the first family with a glyph wins. */
+ * "monospace 11" as the fallback. Only the first font-family is used, matching
+ * Ghostty's rule that the first family with a glyph wins. */
 /* The terminal's default background and foreground: the panel paints the whole
  * widget with the background (the VT's own default is black, which shows up as
  * a black strip under the last row) and uses the foreground for cells that
@@ -131,7 +130,6 @@ void theme_colours(char* theme_name, size_t theme_name_len,
 void font_config_load(char** family, double* size) {
     char* path;
     char* data = NULL;
-    const char* env;
 
     *family = NULL;
     *size = 11.0;
@@ -174,15 +172,4 @@ void font_config_load(char** family, double* size) {
         g_free(data);
     }
     g_free(path);
-
-    env = getenv("PINWIN_FONT");
-    if (env && *env) {
-        g_free(*family);
-        *family = g_strdup(env);
-    }
-    env = getenv("PINWIN_FONT_SIZE");
-    if (env && *env) {
-        double parsed = g_ascii_strtod(env, NULL);
-        if (parsed > 0) *size = parsed;
-    }
 }

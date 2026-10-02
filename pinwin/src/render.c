@@ -31,8 +31,6 @@ void cell_metrics_update(GtkWidget* widget) {
         g_font = pango_font_description_new();
         pango_font_description_set_family(g_font, family ? family : "monospace");
         pango_font_description_set_size(g_font, (int32_t)(size * PANGO_SCALE));
-        if (getenv("PINWIN_DEBUG"))
-            fprintf(stderr, "pinwin: font %s %g\n", family ? family : "monospace", size);
         g_free(family);
         g_font_bold = pango_font_description_copy(g_font);
         pango_font_description_set_weight(g_font_bold, PANGO_WEIGHT_BOLD);
@@ -287,26 +285,6 @@ static void draw_text(cairo_t* cr, PangoLayout* layout, const PinwinCell* cell) 
      * back to another font for a glyph (box drawing, nerd icons, emoji).
      * Pin the baseline to the cell's instead, or those glyphs drift off the
      * row they belong to. */
-    if (getenv("PINWIN_DEBUG") && cell->y <= 5) {
-        char hex[3 * 32 + 1];
-        size_t i;
-        PangoLayoutIter* it = pango_layout_get_iter(layout);
-        for (i = 0; i < (size_t)cell->len && i < 32; i++)
-            snprintf(hex + i * 3, 4, "%02x ", (unsigned char)cell->text[i]);
-        hex[cell->len < 32 ? (size_t)cell->len * 3 : 96] = '\0';
-        fprintf(stderr, "dbg y=%d x=%d len=%d %s", cell->y, cell->x, cell->len, hex);
-        do {
-            PangoLayoutRun* run = pango_layout_iter_get_run_readonly(it);
-            if (run) {
-                char* d = pango_font_description_to_string(pango_font_describe(run->item->analysis.font));
-                fprintf(stderr, "[%s]", d);
-                g_free(d);
-            }
-        } while (pango_layout_iter_next_run(it));
-        pango_layout_iter_free(it);
-        fprintf(stderr, "\n");
-    }
-
     baseline = (pango_layout_get_baseline(layout) + PANGO_SCALE / 2) / PANGO_SCALE;
 
     if (cell->len > 0) {
@@ -588,10 +566,6 @@ void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
     (void)user_data;
 
     if (g_layout_latch) resolve_layout_monitor();
-    if (getenv("PINWIN_DEBUG"))
-        fprintf(stderr, "pinwin: draw %dx%d latch=%d side=%d margins t%d b%d l%d r%d\n",
-                width, height, g_layout_latch, g_layout.side, g_layout.top,
-                g_layout.bottom, g_layout.left, g_layout.right);
 
     pinwin_colors(bg, fg);
     set_rgb(cr, g_theme_bg[0], g_theme_bg[1], g_theme_bg[2]);
