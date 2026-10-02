@@ -2,20 +2,28 @@
 
 ## Purpose
 
-`pinwin` docks a terminal running one command (mbv by default) at the left edge of one monitor, reserving that space so the compositor tiles windows to its right, and releases the space when the command exits.
+`pinwin` docks a terminal running the user's chosen command (their `$SHELL` by default) at the left edge of one monitor, reserving that space so the compositor tiles windows to its right, and releases the space when the command exits.
 
 ## Requirements
 
 ### Requirement: Launch a command in the panel
-`pinwin` SHALL run the command given as its arguments inside its terminal, or `mbv` when no arguments are given. Arguments SHALL be passed to the command unchanged.
+`pinwin` SHALL run the command given after its own options inside its terminal, or the user's `$SHELL` when no command is given (`/bin/sh` when `SHELL` is unset or empty). Arguments SHALL be passed to the command unchanged. pinwin's own options SHALL precede the command; `--` SHALL end pinwin's options so that the next argument is always taken as the command. A leading argument starting with `--` that is not a pinwin option SHALL make `pinwin` exit with a non-zero status and an error message on stderr naming the argument, before opening any surface.
 
 #### Scenario: Default command
-- **WHEN** the user runs `pinwin` with no arguments
-- **THEN** the panel opens and runs `mbv`
+- **WHEN** the user runs `pinwin` with no arguments and `SHELL=/bin/zsh`
+- **THEN** the panel opens and runs `/bin/zsh`
 
 #### Scenario: Custom command
 - **WHEN** the user runs `pinwin htop -d 10`
 - **THEN** the panel opens and runs `htop` with arguments `-d` and `10`
+
+#### Scenario: Options before the command
+- **WHEN** the user runs `pinwin --no-tray mbv`
+- **THEN** the panel opens without a tray entry and runs `mbv` with no arguments
+
+#### Scenario: Unknown option
+- **WHEN** the user runs `pinwin --sideways mbv`
+- **THEN** `pinwin` prints an error naming `--sideways` to stderr, opens nothing, and exits non-zero
 
 ### Requirement: Dock at the left edge of the focused monitor
 `pinwin` SHALL appear as a layer-shell surface on the `overlay` layer, flush against the left, top and bottom edges of the monitor that has focus when it starts, spanning that monitor's full height even when another bar reserves the top edge. The last terminal row's background SHALL reach the bottom edge without a dark gap. It SHALL stay on that monitor and SHALL be visible on every workspace of that monitor. It SHALL NOT appear on other monitors.
@@ -162,3 +170,10 @@ Adding `pinwin` SHALL NOT change the behavior, files or configuration of the `pi
 #### Scenario: pinwin unchanged
 - **WHEN** the user runs `pinwin` after `pinwin` is installed
 - **THEN** `pinwin` behaves exactly as before, including writing and emptying `~/.config/niri/woims/pin.kdl`
+
+### Requirement: Wayland layer-shell is required
+`pinwin` SHALL run only on a Wayland compositor that implements wlr-layer-shell. When layer-shell is unavailable (an X11 session, or a Wayland compositor without it such as GNOME), `pinwin` SHALL exit with a non-zero status and an error message on stderr, before spawning the command. It SHALL NOT fall back to an ordinary window.
+
+#### Scenario: No layer-shell
+- **WHEN** the user runs `pinwin` in a session whose compositor lacks wlr-layer-shell
+- **THEN** `pinwin` prints an error to stderr, runs no command, and exits non-zero
