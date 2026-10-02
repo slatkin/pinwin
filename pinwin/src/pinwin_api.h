@@ -48,7 +48,10 @@ typedef struct {
 
 /* Start the panel. Validates the arguments purely (no GTK), stores the startup,
  * spawns the GTK thread that owns the GtkApplication main loop, and blocks until
- * that thread reports GTK/layer-shell init success or failure.
+ * the panel is activated with live metrics (GTK/layer-shell init plus the first
+ * draw that resolves the monitor), or that thread reports a startup failure.
+ * Returning only once the panel is live is what lets a valid layout applied
+ * immediately after pinwin_start succeed.
  *
  * Returns PINWIN_OK once the thread is up, PINWIN_ERR_INVALID for a null
  * startup, a negative master_fd, an unknown side or keyboard mode, or cols
@@ -65,7 +68,10 @@ int pinwin_start(const PinwinStartup* startup);
  *
  * Returns PINWIN_OK, PINWIN_ERR_INVALID for a layout the panel refuses (the
  * applied layout is then unchanged), or PINWIN_ERR_NOT_RUNNING when no panel is
- * running. MUST NOT be called from the GTK thread. */
+ * running. PINWIN_ERR_INVALID means only that the layout itself was refused; it
+ * is never used for a panel that is not yet live (pinwin_start only returns
+ * once the panel is live, and a panel without live metrics reports
+ * PINWIN_ERR_NOT_RUNNING). MUST NOT be called from the GTK thread. */
 int pinwin_apply_layout(const PinwinLayout* layout);
 
 /* Stop the panel: close the visible and reservation surfaces, quit the GTK main

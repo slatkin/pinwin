@@ -66,19 +66,4 @@ int pinwin_layout_validate(const PinwinLayout* layout, int32_t panel_cols,
                             int32_t cell_w, int32_t cell_h, int32_t output_w,
                             int32_t output_h);
 
-/* Implemented in glue.c (it owns the surfaces): validate `layout` against
- * the panel's original monitor and cell metrics, then publish it to both
- * surfaces, resize the terminal grid through the normal resize path and
- * force a redraw. Returns PINWIN_GEOM_OK, or the validation error without
- * touching any live state. */
-int glue_publish_layout(const PinwinLayout* layout);
-
-/* Implemented in glue.c: the instance's currently applied layout. */
-void glue_current_layout(PinwinLayout* out);
-
-/* Implemented in glue.c: geometry inputs for validation — COLS, cell
- * metrics and the original monitor's size in logical pixels. */
-void glue_layout_metrics(int32_t* cols, int32_t* cell_w, int32_t* cell_h,
-                         int32_t* output_w, int32_t* output_h);
-
 #endif /* PINWIN_OPTIONS_H */

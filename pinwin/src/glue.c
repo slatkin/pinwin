@@ -113,27 +113,11 @@ static void apply_layout_surfaces(void) {
     if (g_area) gtk_widget_queue_draw(g_area);
 }
 
-/* The instance's currently applied layout. */
-void glue_current_layout(PinwinLayout* out) { *out = g_layout; }
-
-/* Geometry inputs for layout validation (options window Apply). */
-void glue_layout_metrics(int32_t* cols, int32_t* cell_w, int32_t* cell_h,
-                         int32_t* output_w, int32_t* output_h) {
-    *cols = g_cols;
-    *cell_w = g_cell_w;
-    *cell_h = g_cell_h;
-    *output_w = 0;
-    *output_h = 0;
-    if (g_monitor) {
-        GdkRectangle geom;
-        gdk_monitor_get_geometry(g_monitor, &geom);
-        *output_w = geom.width;
-        *output_h = geom.height;
-    }
-}
-
+/* Validate the layout against the live metrics and publish it (the ABI path,
+ * design D4/D5); GLUE_NOT_LIVE means the panel has no metrics yet, which is a
+ * lifecycle state rather than a layout verdict. */
 int glue_publish_layout(const PinwinLayout* layout) {
-    if (!g_monitor || !g_win) return PINWIN_GEOM_ERR_METRICS;
+    if (!g_monitor || !g_win) return GLUE_NOT_LIVE;
     {
         GdkRectangle geom;
         gdk_monitor_get_geometry(g_monitor, &geom);
@@ -157,9 +141,8 @@ static void on_win_map(GtkWidget* widget, gpointer user_data) {
     /* The visible panel's original monitor is resolved on the first frame
      * (g_layout_latch): at map time the compositor has not yet told the
      * surface which output it is on, so gdk_display_get_monitor_at_surface
-     * still reports a fallback. Once resolved, the saved layout is loaded,
-     * validated against that monitor and the reservation is pinned to it
-     * (design D5). */
+     * still reports a fallback. Once resolved, the reservation is pinned to
+     * that monitor (design D4/D5). */
     g_layout_latch = 1;
 
     /* The reservation is created and presented only after the visible panel
@@ -181,7 +164,11 @@ static void on_win_map(GtkWidget* widget, gpointer user_data) {
 }
 
 /* One-shot, from the first draw after map: by then the surface has entered
- * its output, so the monitor reported here is the panel's real monitor. */
+ * its output, so the monitor reported here is the panel's real monitor. This
+ * is also the point where the live metrics exist, so it completes
+ * pinwin_start's handshake (design D2/D5): a valid layout applied right after
+ * pinwin_start then validates against these metrics instead of reporting a
+ * not-live panel as an invalid layout. */
 void resolve_layout_monitor(void) {
     g_layout_latch = 0;
     g_monitor = gdk_display_get_monitor_at_surface(
@@ -189,6 +176,7 @@ void resolve_layout_monitor(void) {
         gtk_native_get_surface(GTK_NATIVE(g_win)));
     apply_layout_surfaces();
     apply_size();
+    pinwin_api_start_result(1);
 }
 
 /* ---- activation / lifecycle --------------------------------------------- */
@@ -217,9 +205,9 @@ static void on_activate(GtkApplication* app, gpointer user_data) {
     gtk_window_set_default_size(g_win, g_cols * g_cell_w, -1);
     gtk_layer_set_exclusive_zone(g_win, -1); /* ignore Noctalia's top zone */
 
-    /* Initial anchors/margins from the launch baseline; the map callback
-     * loads the saved layout, resolves the original monitor and presents the
-     * reservation once those are known. */
+    /* Initial anchors/margins from the startup layout; the map callback
+     * resolves the original monitor and presents the reservation once those
+     * are known. */
     apply_layout_surfaces();
     g_signal_connect(win, "map", G_CALLBACK(on_win_map), NULL);
 
