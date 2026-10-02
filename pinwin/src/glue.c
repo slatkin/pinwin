@@ -25,7 +25,6 @@
 /* ---- state -------------------------------------------------------------- */
 
 int32_t g_cols = 40;
-int32_t g_gutter = 0;
 int32_t g_keyboard_mode = PINWIN_KEYBOARD_ON_DEMAND;
 
 char* const* g_argv;
@@ -64,9 +63,6 @@ PinwinLayout g_layout;
 GtkWindow* g_reserve;
 GdkMonitor* g_monitor; /* the visible panel's original monitor */
 int g_layout_latch; /* first-draw monitor resolution pending */
-int g_no_tray;
-
-/* ---- layout surfaces (add-pinwin-tray-options) -------------------------- */
 
 /* Width follows the applied column count. GTK4 has no gtk_window_resize and
  * gtk_window_set_default_size does not move a mapped window, so the drawing
@@ -211,7 +207,6 @@ static void on_activate(GtkApplication* app, gpointer user_data) {
     gtk_layer_set_keyboard_mode(g_win, (GtkLayerShellKeyboardMode)g_keyboard_mode);
 
     cell_metrics_update(win);
-    g_layout = pinwin_layout_default(g_cols, g_gutter);
 
     g_area = gtk_drawing_area_new();
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(g_area), on_draw, NULL, NULL);
@@ -234,15 +229,14 @@ static void on_activate(GtkApplication* app, gpointer user_data) {
     apply_size();
 }
 
-int glue_init(int32_t cols, int32_t gutter, int32_t keyboard_mode, int no_tray) {
+int glue_init(const PinwinLayout* layout, int32_t keyboard_mode) {
     char theme_name[128];
 
     theme_colours(theme_name, sizeof(theme_name), g_theme_bg, g_theme_fg);
     (void)theme_name;
-    g_cols = cols;
-    g_gutter = gutter;
+    g_layout = *layout;
+    g_cols = layout->cols;
     g_keyboard_mode = keyboard_mode;
-    g_no_tray = no_tray;
 
     if (!gtk_init_check()) {
         fprintf(stderr, "pinwin: no display\n");
@@ -265,16 +259,6 @@ static gboolean on_tick(gpointer data) {
     return G_SOURCE_CONTINUE;
 }
 
-void glue_start(char* const argv[]) {
-    g_argv = argv;
-    g_application_run(G_APPLICATION(g_app), 0, NULL);
-}
-
 void glue_queue_draw(void) {
     if (g_area) gtk_widget_queue_draw(g_area);
-}
-
-void glue_exit(int32_t status) {
-    if (g_pty_source) g_source_remove(g_pty_source);
-    exit(status);
 }

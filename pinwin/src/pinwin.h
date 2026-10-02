@@ -117,17 +117,10 @@ typedef struct {
 
 /* ---- implemented in glue.c, called from Zig ---------------------------- */
 
-/* gtk_init + application setup. Returns 0 on failure. `keyboard_mode` is one
- * of the PINWIN_KEYBOARD_* values. `no_tray` (from --no-tray) suppresses the
- * tray entry entirely (add-pinwin-control). */
-int glue_init(int32_t cols, int32_t gutter, int32_t keyboard_mode, int no_tray);
 /* Window metrics, valid once glue_init returned 1. */
 int32_t glue_cell_width(void);
 int32_t glue_cell_height(void);
-/* Create the surface, spawn argv in a PTY and run the main loop. */
-void glue_start(char* const argv[]);
 void glue_queue_draw(void);
-void glue_exit(int32_t status);
 
 void glue_pty_write(const uint8_t* data, size_t len);
 void glue_pty_resize(int32_t cols, int32_t rows, int32_t xpixel, int32_t ypixel);
