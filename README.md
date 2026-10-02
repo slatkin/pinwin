@@ -65,6 +65,17 @@ Gutters may be negative: the panel's edge moves past the screen (part of the pan
 
 Editing is staged: nothing changes until `Apply`, and `Apply` also saves. A failed Apply (bad value, or a layout that leaves no room for one terminal row or for other windows) shows an inline error and changes nothing. `Close` discards unapplied edits; reopening while the window is open brings back the same window with its pending edits. `Apply` resizes the running panel in place: the reserved strip, the terminal grid and the PTY follow the new column count without restarting the command. Font, keyboard and the command are never touched by an Apply.
 
+**Control API:** each running pinwin instance listens on a Unix socket at `$XDG_RUNTIME_DIR/pinwin/<pid>.sock` (the `pinwin` directory is created with mode 0700, the socket is accessible only to your user) and exports the path to the command it runs as `PINWIN_SOCKET`, so a program inside the panel can drive its own panel instance. The protocol is one request line and one reply line; pinwin then closes the connection. The only request is `options`, which opens that instance's options window exactly as the tray's `Options...` does; anything else replies `error unknown request` and changes nothing:
+
+```sh
+printf 'options\n' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/pinwin/4242.sock
+# -> ok, and that instance's options window opens
+printf 'resize 60\n' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/pinwin/4242.sock
+# -> error unknown request
+```
+
+A connection that closes, or sends more than 256 bytes, before a complete line is dropped without effect. When `XDG_RUNTIME_DIR` is unset or the socket cannot be created, pinwin prints a diagnostic and runs without a control socket — and then removes `PINWIN_SOCKET` from the command's environment, so an inherited value never points at another instance. The socket file is removed when pinwin exits normally.
+
 **Layout settings:** the six values live in `$XDG_CONFIG_HOME/pinwin/config` (`~/.config/pinwin/config` by default):
 
 ```ini
