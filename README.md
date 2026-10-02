@@ -148,14 +148,17 @@ zig build        # library only, into zig-out/lib/
 ```
 
 `zig build` fetches and statically links libghostty-vt from a pinned commit of
-[ghostty](https://github.com/ghostty-org/ghostty) on the first build, and installs two
+[ghostty](https://github.com/ghostty-org/ghostty) on the first build, and installs four
 archives:
 
 - `zig-out/lib/libpinwin.a`
 - `zig-out/lib/libghostty-vt.a`
+- `zig-out/lib/libsimdutf.a`
+- `zig-out/lib/libhighway.a`
 
 Zig static-library artifacts do not merge linked static archives, so `libpinwin.a` does
-**not** bundle libghostty-vt. Consumers link **both** archives.
+**not** bundle libghostty-vt, and ghostty's vendored SIMD libraries (simdutf, highway) are
+separate archives as well. Consumers link **all four**.
 
 ### Link a consumer
 
@@ -167,6 +170,7 @@ both archives plus GTK4, gtk4-layer-shell and pango/cairo:
 cc consumer.c \
     -I path/to/pinwin/src \
     zig-out/lib/libpinwin.a zig-out/lib/libghostty-vt.a \
+    zig-out/lib/libsimdutf.a zig-out/lib/libhighway.a \
     $(pkg-config --cflags --libs gtk4 gtk4-layer-shell-0 pangocairo) \
     -pthread
 ```
@@ -247,7 +251,9 @@ only and never influences layout.
 
 `pinwin/build.zig.zon` pins ghostty at commit
 `3a3047f6b62a791fd8b12d9f07a85b3d2160370b` (`ghostty-1.3.2-dev`), and the minimum supported
-Zig is 0.16.0 (`.minimum_zig_version`, and the `0.16.` compiler check above).
+Zig is 0.16.0 (`.minimum_zig_version`, and the `0.16.` compiler check above). Consumers
+pinning by revision should use the annotated **`library-abi`** tag — the first tag of the
+library form — rather than a bare commit; it names the tree whose README you are reading.
 
 ## Development
 
