@@ -59,34 +59,14 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
+    // The `pinwin` program: a thin host over the C ABI (host/main.c), installed
+    // by the default `zig build`.
+    b.installArtifact(addHost(b, lib, ghostty, target, optimize, "pinwin", "host/main.c"));
+
     // Dev-only demo (design OQ-a): drives the C ABI over a pty pair it creates
-    // itself, built by `zig build demo` only and never installed, so the
-    // default `zig build` still produces only the library.
+    // itself, built by `zig build demo` only and never installed.
     const demo_step = b.step("demo", "Build the dev-only pinwin demo executable");
-    const demo_mod = b.createModule(.{
-        .target = target,
-        .optimize = optimize,
-    });
-    demo_mod.addIncludePath(b.path("src"));
-    demo_mod.addCSourceFiles(.{
-        .files = &.{"demo/main.c"},
-        .flags = &.{ "-std=gnu11", "-Wall" },
-    });
-    // A program may link the panel and may fork: forkpty(3) lives in libutil,
-    // and this dev-only step is the only place that links it.
-    demo_mod.linkLibrary(lib);
-    demo_mod.linkSystemLibrary("gtk4", .{});
-    demo_mod.linkSystemLibrary("gtk4-layer-shell-0", .{});
-    demo_mod.linkSystemLibrary("pangocairo", .{});
-    demo_mod.linkSystemLibrary("util", .{});
-    if (ghostty) |dep| {
-        demo_mod.linkLibrary(dep.artifact("ghostty-vt-static"));
-        demo_mod.addIncludePath(dep.path("include"));
-    }
-    const demo = b.addExecutable(.{
-        .name = "pinwin-demo",
-        .root_module = demo_mod,
-    });
+    const demo = addHost(b, lib, ghostty, target, optimize, "pinwin-demo", "demo/main.c");
     demo_step.dependOn(&b.addInstallArtifact(demo, .{}).step);
 
     // Layout-core unit tests (design D8). The test root links the GTK-free
@@ -126,4 +106,29 @@ pub fn build(b: *std.Build) void {
     }
     const api_check_tests = b.addTest(.{ .root_module = api_check_mod });
     check_step.dependOn(&b.addRunArtifact(api_check_tests).step);
+}
+
+// A program that links the panel and may fork: forkpty(3) lives in libutil.
+fn addHost(
+    b: *std.Build,
+    lib: *std.Build.Step.Compile,
+    ghostty: ?*std.Build.Dependency,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    name: []const u8,
+    source: []const u8,
+) *std.Build.Step.Compile {
+    const mod = b.createModule(.{ .target = target, .optimize = optimize });
+    mod.addIncludePath(b.path("src"));
+    mod.addCSourceFiles(.{ .files = &.{source}, .flags = &.{ "-std=gnu11", "-Wall" } });
+    mod.linkLibrary(lib);
+    mod.linkSystemLibrary("gtk4", .{});
+    mod.linkSystemLibrary("gtk4-layer-shell-0", .{});
+    mod.linkSystemLibrary("pangocairo", .{});
+    mod.linkSystemLibrary("util", .{});
+    if (ghostty) |dep| {
+        mod.linkLibrary(dep.artifact("ghostty-vt-static"));
+        mod.addIncludePath(dep.path("include"));
+    }
+    return b.addExecutable(.{ .name = name, .root_module = mod });
 }

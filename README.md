@@ -130,8 +130,26 @@ The terminal supports alternate screen; 24-bit and 256-color text with bold, ita
 inverse; the kitty keyboard protocol including disambiguate-escape-codes with press/release
 and Shift/Ctrl/Alt/Super; SGR mouse reporting in cells; focus in/out reports; and the kitty
 graphics protocol. It follows the Ghostty config for font and theme (first `font-family` and
-`font-size`, fallback `monospace 11`), with no environment overrides. There is no executable,
-no environment configuration, no config file and no control socket.
+`font-size`, fallback `monospace 11`), with no environment overrides. The library has no
+environment configuration, no config file and no control socket; the `pinwin` program below
+adds a command line and a few environment settings on top of it.
+
+### The `pinwin` program
+
+`zig build` also installs `zig-out/bin/pinwin`, a thin host over the C ABI: it forks the
+command on a pty, docks the panel to the left edge and exits with the command's status when it
+ends.
+
+```sh
+./zig-out/bin/pinwin [--] [command...]   # default: $SHELL (/bin/sh if unset)
+./zig-out/bin/pinwin mbv
+COLS=60 GUTTER=8 ./zig-out/bin/pinwin htop
+PINWIN_KEYBOARD=exclusive ./zig-out/bin/pinwin   # or on-demand (default), none
+```
+
+`COLS` is the width in columns (default 40) and `GUTTER` the extra gap in px (default 0); a bad
+value exits 2 before anything opens. The former tray, options window, control socket and
+layout config file are not part of this program.
 
 ### Build
 
@@ -144,7 +162,7 @@ ordinary window.
 From the `pinwin` directory:
 
 ```sh
-zig build        # library only, into zig-out/lib/
+zig build        # libraries into zig-out/lib/, the pinwin program into zig-out/bin/
 ```
 
 `zig build` fetches and statically links libghostty-vt from a pinned commit of
