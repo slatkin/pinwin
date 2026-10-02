@@ -1,15 +1,14 @@
 # Proposal
 
-Related: slatkin/mbv#864 (mbv-side consumer plan `pin-mbv-in-pinwin`), slatkin/pinwin#1 (prior art only).
+Related: slatkin/pinwin#1 (prior art only).
 
 ## Why
 
-mbv is adopting pinwin as an embedded in-process library instead of running it as a separate
-program (mbv plan `pin-mbv-in-pinwin`, which defers the entire reshape here). Every surface that
-exists only because pinwin was a program — its `main()`, env vars, argv, tray, options window,
-config file and control socket — must go, and what remains becomes a static library with a small
-C ABI that mbv links and drives from its own GTK thread. Doing this reshape in pinwin's own
-openspec keeps the contract reviewable by both repos before either side builds on it.
+pinwin must become a reusable in-process library instead of a standalone program. Every surface
+that exists only because pinwin was a program — its `main()`, env vars, argv, tray, options
+window, config file and control socket — must go, and what remains becomes a static library with
+a small C ABI that a host links and drives from its own GTK thread. Doing this reshape in pinwin's own
+openspec keeps the contract reviewable before consumers build on it.
 
 ## What Changes
 
@@ -45,7 +44,7 @@ openspec keeps the contract reviewable by both repos before either side builds o
 ### Retired Capabilities
 - `pinwin-tray-options`, `pinwin-control`: the surfaces are gone. Tray, options window, config
   file and socket requirements are REMOVED; layout parsing/geometry/validation rules move into
-  `pinwin-panel`. Persistence moves to the host (mbv's `config.toml`); pinwin keeps no config.
+  `pinwin-panel`. Persistence moves to the host; pinwin keeps no config.
 
 ## Impact
 
@@ -53,10 +52,10 @@ openspec keeps the contract reviewable by both repos before either side builds o
   `pinwin/build.zig` (static library, check step), `pinwin/tools/check_options.c` (deleted),
   `README.md` (library consumer docs).
 - No new dependencies; gio and dbusmenu-glib leave the link lines.
-- Consumer contract (mbv's `crates/mbv-pinwin` `build.rs`): link `zig-out/lib/libpinwin.a` **and**
+- Consumer contract: link `zig-out/lib/libpinwin.a` **and**
   the installed `libghostty-vt` archive (design D7) against GTK4, gtk4-layer-shell, pango/cairo.
 - Open questions resolved by the planning review (design §Open Questions): a dev-only
   `pinwin-demo` executable (`zig build demo`, never installed) keeps manual checks
-  independent of the mbv consumer; the `Makefile` `install` target is deleted
+  self-contained; the `Makefile` `install` target is deleted
   (`pinwin.sh` untouched); the library-form revision is tagged `library-abi`, with the
   pinned ghostty commit and the Zig 0.16 minimum documented in the README.
