@@ -38,8 +38,8 @@ static void theme_colour_parse(const char* line, uint8_t* bg, uint8_t* fg) {
     }
 }
 
-void theme_colours(char* theme_name, size_t theme_name_len,
-                   uint8_t* bg, uint8_t* fg) {
+void theme_colours(uint8_t* bg, uint8_t* fg) {
+    char theme_name[128];
     char* path;
     char* data = NULL;
     char* lines;
@@ -61,7 +61,7 @@ void theme_colours(char* theme_name, size_t theme_name_len,
                 memmove(value, value + 1, strlen(value));
             }
             if (strcmp(key, "theme") == 0) {
-                snprintf(theme_name, theme_name_len, "%s", value);
+                snprintf(theme_name, sizeof(theme_name), "%s", value);
                 found_theme = TRUE;
             } else if (strcmp(key, "background") == 0 || strcmp(key, "foreground") == 0) {
                 theme_colour_parse(line, bg, fg);

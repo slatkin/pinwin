@@ -1,7 +1,6 @@
 /*
  * options.h - pinwin's layout core: the six values (docking side, the applied
- * column count and four directional gutters), their launch defaults, strict
- * parsing and checked geometry validation.
+ * column count and four directional gutters) and checked geometry validation.
  *
  * Plain C, no GTK/GLib: compiled into libpinwin.a and covered by the Zig unit
  * tests (design D8).
@@ -29,21 +28,6 @@ typedef struct {
     int32_t cols;                    /* panel width in terminal columns */
     int32_t top, bottom, left, right; /* gutters in pixels, may be negative */
 } PinwinLayout;
-
-/* The launch baseline: left docking, the launch COLS column count,
- * top/bottom/left zero and right = the validated GUTTER value. */
-PinwinLayout pinwin_layout_default(int32_t cols, int32_t gutter);
-
-/* Strict column parsing: digits only (no sign, no whitespace), 1 <= value <=
- * 65535 (the PTY winsize column field). Returns 1 and sets *out on success, 0
- * on anything else. */
-int pinwin_parse_cols(const char* text, int32_t* out);
-
-/* Strict gutter parsing: an optional leading '-' (negative gutters push the
- * panel edge past the output edge or let tiles overlap the panel), then
- * digits only; no whitespace, value fits in int32_t. Returns 1 and sets *out
- * on success, 0 on anything else. */
-int pinwin_parse_gutter(const char* text, int32_t* out);
 
 /* Horizontal placement for the docking side, with checked arithmetic.
  * *edge_margin is the visible panel's margin on its docking edge (Left when

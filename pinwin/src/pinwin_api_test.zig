@@ -115,7 +115,7 @@ fn onSigwinch(_: std.posix.SIG) callconv(.c) void {
 extern "c" fn posix_openpt(flags: c_int) c_int;
 extern "c" fn grantpt(fd: c_int) c_int;
 extern "c" fn unlockpt(fd: c_int) c_int;
-extern fn glue_pty_resize(cols: c_int, rows: c_int, xpixel: c_int, ypixel: c_int) void;
+extern fn glue_pty_resize(cols: c_int, rows: c_int) void;
 
 test "winsize update delivers SIGWINCH to the process" {
     var act: std.posix.Sigaction = std.mem.zeroes(std.posix.Sigaction);
@@ -134,12 +134,12 @@ test "winsize update delivers SIGWINCH to the process" {
     defer g_pty_fd = -1;
 
     sigwinch_seen = false;
-    glue_pty_resize(40, 24, 320, 480);
+    glue_pty_resize(40, 24);
     try testing.expect(@atomicLoad(bool, &sigwinch_seen, .seq_cst));
 
     // No pty attached: no winsize update, no signal.
     g_pty_fd = -1;
     sigwinch_seen = false;
-    glue_pty_resize(40, 24, 320, 480);
+    glue_pty_resize(40, 24);
     try testing.expect(!@atomicLoad(bool, &sigwinch_seen, .seq_cst));
 }
