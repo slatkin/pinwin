@@ -15,6 +15,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -103,7 +104,13 @@ void glue_pty_resize(int32_t cols, int32_t rows, int32_t xpixel, int32_t ypixel)
     ws.ws_row = (unsigned short)rows;
     ws.ws_xpixel = (unsigned short)xpixel;
     ws.ws_ypixel = (unsigned short)ypixel;
-    ioctl(g_pty_fd, TIOCSWINSZ, &ws);
+    /* The host's crossterm loop learns of resizes from SIGWINCH (mbv's
+     * pin-mbv-in-pinwin, required upstream addition 1): raise it after every
+     * successful winsize update. Disposition is process-wide, so the raise
+     * reaches the host's handler from any thread; a host without a handler
+     * ignores the signal (default disposition). A failed ioctl leaves the
+     * winsize untouched and raises nothing. */
+    if (ioctl(g_pty_fd, TIOCSWINSZ, &ws) >= 0) raise(SIGWINCH);
 }
 
 /* Take the host-supplied master fd: non-blocking, the initial winsize (grid
@@ -131,7 +138,7 @@ static void attach_pty(void) {
     g_pty_rows = ws.ws_row;
     g_pty_xpixel = ws.ws_xpixel;
     g_pty_ypixel = ws.ws_ypixel;
-    ioctl(fd, TIOCSWINSZ, &ws);
+    if (ioctl(fd, TIOCSWINSZ, &ws) >= 0) raise(SIGWINCH);
 
     g_pty_source = g_unix_fd_add(fd, G_IO_IN | G_IO_HUP | G_IO_ERR,
                                  on_pty_readable, NULL);
