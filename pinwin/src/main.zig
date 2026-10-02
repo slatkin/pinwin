@@ -90,6 +90,19 @@ pub var debug_enabled = false;
 /// dereferencing null state (design D3).
 var init_failed = false;
 
+/// PTY bytes that arrived before the terminal existed. The host forks its
+/// child before `pinwin_start`, so a child's startup queries (DA1, XTVERSION,
+/// OSC 10/11, kitty `?u`, terminfo) routinely land before the first draw
+/// creates the terminal; dropping them makes programs like fish wait ~10s for
+/// query replies and then warn. Buffer here and replay through the vt in
+/// `ensureTerminal`. Only ever touched from the GTK thread (same as
+/// `pinwin_size`), so no locking.
+var early_pty_data: std.ArrayListUnmanaged(u8) = .empty;
+/// Replay cap: startup traffic is a handful of queries and a first paint, far
+/// below this; a child that floods the pty before the terminal exists loses
+/// the overflow.
+const early_pty_cap: usize = 1 << 20;
+
 // The frame and input halves are driven from C through pinwin.h; importing
 // them here pulls their exported functions into the build.
 comptime {
@@ -131,6 +144,14 @@ fn ensureTerminal() !void {
         return error.MouseEncoderNewFailed;
     if (c.ghostty_mouse_event_new(null, &mouse_event) != c.GHOSTTY_SUCCESS)
         return error.MouseEventNewFailed;
+
+    // Replay what arrived before the terminal existed, now that queries can
+    // be answered and output rendered.
+    if (early_pty_data.items.len > 0) {
+        c.ghostty_terminal_vt_write(term, @ptrCast(early_pty_data.items.ptr), early_pty_data.items.len);
+        early_pty_data.clearRetainingCapacity();
+        c.glue_queue_draw();
+    }
 }
 
 fn writePty(_: c.GhosttyTerminal, _: ?*anyopaque, data: [*c]const u8, len: usize) callconv(.c) void {
@@ -223,7 +244,15 @@ export fn pinwin_size(cols: i32, rows: i32, cw: i32, ch: i32) c_int {
 
 /// Called by the glue with bytes read from the PTY.
 export fn pinwin_pty_data(data: [*c]const u8, len: usize) void {
-    if (term == null) return;
+    if (term == null) {
+        // The terminal is not up yet: buffer for replay in ensureTerminal.
+        // A sticky init failure means there will never be a terminal; drop.
+        if (init_failed) return;
+        const room = early_pty_cap -| early_pty_data.items.len;
+        if (len <= room)
+            early_pty_data.appendSlice(allocator, data[0..len]) catch {};
+        return;
+    }
     c.ghostty_terminal_vt_write(term, data, len);
     c.glue_queue_draw();
 }
