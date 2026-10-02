@@ -21,14 +21,18 @@ A layer-shell panel on the `overlay` layer, docked to the left edge of the focus
 ```sh
 make install                       # from repo root: build and install ~/.local/bin/pinwin
 cd pinwin && zig build            # build without installing
-./zig-out/bin/pinwin              # runs mbv
+./zig-out/bin/pinwin              # runs $SHELL (/bin/sh if unset or empty)
+./zig-out/bin/pinwin mbv          # mbv in the panel
 ./zig-out/bin/pinwin htop         # any command, arguments passed through
+./zig-out/bin/pinwin --no-tray mbv     # without a tray entry (see Control API below)
 COLS=60 GUTTER=8 ./zig-out/bin/pinwin   # width in columns (default 40), extra gap in px (default 0)
 ```
 
-To launch it from the mbv desktop entry, set `Exec=/home/you/.local/bin/pinwin` in `~/.local/share/applications/mbv.desktop` (`Terminal=false`).
+Usage is `pinwin [--no-tray] [--] [command...]`: pinwin's own options precede the command, `--` ends them so the next argument is always taken as the command, and an unknown leading `--...` argument is an error naming it (exit 2, before any surface opens).
 
-Requirements: Zig 0.16 (`zig version` must print `0.16.`), GTK 4, gtk4-layer-shell, Pango and a compositor implementing wlr-layer-shell. The tray options need `dbusmenu-glib-0.4` (build and runtime) and the tray icon needs a GdkPixbuf SVG loader (`librsvg`); both are only used for the tray, and a missing tray never stops the terminal. `zig build` fetches and statically links libghostty-vt from a pinned commit of [ghostty](https://github.com/ghostty-org/ghostty) the first time.
+To launch it from the mbv desktop entry, set `Exec=/home/you/.local/bin/pinwin mbv` in `~/.local/share/applications/mbv.desktop` (`Terminal=false`).
+
+Requirements: Zig 0.16 (`zig version` must print `0.16.`), GTK 4, gtk4-layer-shell, Pango and a compositor implementing wlr-layer-shell. **pinwin is Wayland-only:** without wlr-layer-shell (an X11 session, or a Wayland compositor without it such as GNOME) it exits with an error instead of falling back to an ordinary window. The tray options need `dbusmenu-glib-0.4` (build and runtime); a missing tray never stops the terminal. `zig build` fetches and statically links libghostty-vt from a pinned commit of [ghostty](https://github.com/ghostty-org/ghostty) the first time.
 
 **Font:** the panel uses the font from your Ghostty config (`~/.config/ghostty/config`): the first `font-family` and the `font-size`, so the glyphs and cell size follow your terminal. `PINWIN_FONT` and `PINWIN_FONT_SIZE` override them, and `monospace 11` is the fallback when there is no config. Default foreground and background colours follow the Ghostty config/theme.
 
@@ -36,7 +40,7 @@ Requirements: Zig 0.16 (`zig version` must print `0.16.`), GTK 4, gtk4-layer-she
 
 **Debugging:** `PINWIN_DEBUG=1` writes libghostty-vt's own log plus every key, mouse, scroll and focus event to stderr.
 
-**Checks:** the layout core (parsing, validation, side formulas, config round-trip, icon byte conversion) has a small assertion-based check. From the `pinwin` directory:
+**Checks:** the layout core (parsing, validation, side formulas, config round-trip) has a small assertion-based check. From the `pinwin` directory:
 
 ```sh
 zig build check
@@ -46,7 +50,7 @@ It prints `check_options: all passed` and exits 0. Config tests run in an isolat
 
 **Gaps:** the visible gap between the panel and the first tile is the `Right` gutter (see below) plus whatever left strut niri itself adds (24 in the example layout, or 372 while `pinwin.sh` is running). Other layer surfaces do not push the visible panel down; it covers a bar behind it on the same monitor. By default `GUTTER=0`, so the gap is the strut alone; set `GUTTER` for extra space.
 
-**Tray and options:** every running pinwin puts an entry in the system tray (StatusNotifierItem) named `pinwin`, with its icon loaded from `$HOME/pinwin.svg`. Right-click gives `Options...`, which opens that instance's options window. A tray host (a bar with StatusNotifier support) must be running; without one pinwin keeps running without an entry and registers when a host appears. A missing or unreadable icon falls back to the terminal theme icon with a diagnostic on stderr.
+**Tray and options:** unless started with `--no-tray`, every running pinwin puts an entry in the system tray (StatusNotifierItem) named `pinwin`. The icon comes from your icon theme: the `pinwin` icon if the theme has one, otherwise `utilities-terminal` — install an icon named `pinwin` into your icon theme (e.g. `~/.local/share/icons/hicolor/scalable/apps/pinwin.svg`) to replace the generic one. Right-click gives `Options...`, which opens that instance's options window. A tray host (a bar with StatusNotifier support) must be running; without one pinwin keeps running without an entry and registers when a host appears.
 
 **Options window:** a `Columns` field (the panel width in terminal columns, shown first), four gutter fields in pixels, a `Dock to: Left/Right` selector, `Apply` and `Close`.
 
