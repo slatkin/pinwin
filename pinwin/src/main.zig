@@ -84,6 +84,12 @@ pub var cell_h: u32 = 1;
 
 pub var debug_enabled = false;
 
+/// Latched once `ensureTerminal` fails partway. The handles it created cannot
+/// be trusted from then on (the early `term != null` return would skip the
+/// missing ones), so every later size push reports failure instead of
+/// dereferencing null state (design D3).
+var init_failed = false;
+
 // The frame and input halves are driven from C through pinwin.h; importing
 // them here pulls their exported functions into the build.
 comptime {
@@ -181,6 +187,10 @@ fn decodePng(
 /// means the terminal could not be allocated, in which case the previous grid
 /// stays in effect and the caller degrades (design D3: the library never exits).
 export fn pinwin_size(cols: i32, rows: i32, cw: i32, ch: i32) c_int {
+    // A failed init is sticky: never re-enter ensureTerminal, whose partial
+    // handles would make a "successful" second call deref null state.
+    if (init_failed) return 1;
+
     const prev_cols = grid_cols;
     const prev_rows = grid_rows;
     const prev_cw = cell_w;
@@ -191,12 +201,12 @@ export fn pinwin_size(cols: i32, rows: i32, cw: i32, ch: i32) c_int {
     cell_w = @intCast(@max(cw, 1));
     cell_h = @intCast(@max(ch, 1));
 
-    ensureTerminal() catch |err| {
+    ensureTerminal() catch {
+        init_failed = true;
         grid_cols = prev_cols;
         grid_rows = prev_rows;
         cell_w = prev_cw;
         cell_h = prev_ch;
-        std.debug.print("pinwin: {s}\n", .{@errorName(err)});
         return 1;
     };
     _ = c.ghostty_terminal_resize(term, grid_cols, grid_rows, cell_w, cell_h);
