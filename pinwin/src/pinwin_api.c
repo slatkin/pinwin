@@ -27,6 +27,20 @@ static gboolean g_api_start_done;
 static gboolean g_api_start_ok;
 static PinwinStartup g_api_startup;
 
+/* Completes pinwin_start's handshake (design D2/D5). glue.c calls it with 1
+ * once the panel is activated and its live metrics exist; the GTK thread calls
+ * it with 0 when init fails or the loop returns before going live. Only the
+ * first result counts, so the post-loop call cannot undo a successful start. */
+void pinwin_api_start_result(int ok) {
+    g_mutex_lock(&g_api_lock);
+    if (!g_api_start_done) {
+        g_api_start_ok = ok;
+        g_api_start_done = TRUE;
+        g_cond_signal(&g_api_cond);
+    }
+    g_mutex_unlock(&g_api_lock);
+}
+
 /* Pure argument checks, no GTK (design D2). An out-of-range keyboard mode is
  * rejected here too (pinwin-panel spec: Invalid keyboard mode). */
 static int startup_valid(const PinwinStartup* startup) {
@@ -46,8 +60,10 @@ static int startup_valid(const PinwinStartup* startup) {
     return 1;
 }
 
-/* The GTK thread: init the GTK/layer-shell side, report the handshake result,
- * then own the GtkApplication main loop until pinwin_stop quits it. */
+/* The GTK thread: init the GTK/layer-shell side, then own the GtkApplication
+ * main loop until pinwin_stop quits it. The start handshake is completed by
+ * glue.c once the panel is activated with live metrics (design D2/D5), so it
+ * is not signalled here on success. */
 static gpointer gtk_thread_main(gpointer data) {
     (void)data;
 
@@ -55,15 +71,17 @@ static gpointer gtk_thread_main(gpointer data) {
      * master fd arrives over the ABI and pty.c takes it non-blocking. */
     g_pty_fd = g_api_startup.master_fd;
 
-    int ok = glue_init(&g_api_startup.layout, g_api_startup.keyboard_mode);
+    if (!glue_init(&g_api_startup.layout, g_api_startup.keyboard_mode)) {
+        pinwin_api_start_result(0);
+        return NULL;
+    }
 
-    g_mutex_lock(&g_api_lock);
-    g_api_start_ok = ok;
-    g_api_start_done = TRUE;
-    g_cond_signal(&g_api_cond);
-    g_mutex_unlock(&g_api_lock);
+    g_application_run(G_APPLICATION(g_app), 0, NULL);
 
-    if (ok) g_application_run(G_APPLICATION(g_app), 0, NULL);
+    /* The loop returned: a stop, or an activation that never happened. If the
+     * handshake is still pending, fail it rather than leave pinwin_start
+     * waiting forever. A completed handshake is unaffected. */
+    pinwin_api_start_result(0);
     return NULL;
 }
 
@@ -133,13 +151,21 @@ static int apply_layout_structurally_valid(const PinwinLayout* layout) {
 
 /* Phase 2, GTK thread: validate the layout against the live monitor and cell
  * metrics and publish it, exactly like the Apply path did (glue_publish_layout
- * is validate-then-apply). Returns the result to the waiting caller. */
+ * is validate-then-apply). Returns the result to the waiting caller. A panel
+ * without live metrics is NOT_RUNNING, never INVALID (design D5): INVALID
+ * means the layout itself was refused. */
 static gboolean apply_on_gtk_thread(gpointer data) {
     ApplyRequest* req = data;
     int geom = glue_publish_layout(&req->layout);
+    int result;
+
+    if (geom == GLUE_NOT_LIVE)
+        result = PINWIN_ERR_NOT_RUNNING;
+    else
+        result = geom == PINWIN_GEOM_OK ? PINWIN_OK : PINWIN_ERR_INVALID;
 
     g_mutex_lock(&req->lock);
-    req->result = geom == PINWIN_GEOM_OK ? PINWIN_OK : PINWIN_ERR_INVALID;
+    req->result = result;
     req->done = TRUE;
     g_cond_signal(&req->cond);
     g_mutex_unlock(&req->lock);

@@ -91,4 +91,20 @@ void attach_controllers(GtkWidget* area);
 int glue_init(const PinwinLayout* layout, int32_t keyboard_mode);
 void resolve_layout_monitor(void);
 
+/* Validate `layout` against the panel's original monitor and live cell
+ * metrics, then publish it to both surfaces, resize the terminal grid through
+ * the normal resize path and force a redraw. Runs on the GTK thread, driven by
+ * pinwin_apply_layout (design D4/D5). Returns PINWIN_GEOM_OK, a PINWIN_GEOM_ERR_*
+ * verdict without touching live state, or GLUE_NOT_LIVE when the panel has no
+ * metrics yet (not activated, or already torn down). */
+#define GLUE_NOT_LIVE (-1)
+int glue_publish_layout(const PinwinLayout* layout);
+
+/* ---- pinwin_api.c: start-up handshake (called from glue.c) --------------- */
+
+/* Completes pinwin_start's handshake: 1 once the panel is activated and its
+ * live metrics exist (design D2/D5), 0 when the GTK side failed to come up.
+ * Only the first result counts. */
+void pinwin_api_start_result(int ok);
+
 #endif /* PINWIN_GLUE_INTERNAL_H */
