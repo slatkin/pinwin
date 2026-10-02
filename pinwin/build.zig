@@ -21,6 +21,9 @@ pub fn build(b: *std.Build) void {
     // Zig static-library artifacts do not merge linked static archives, so
     // libpinwin.a does NOT bundle libghostty-vt (design D7): the pinned
     // ghostty archive is installed next to it under the name consumers link.
+    // As a dependency ghostty installs the plain vt archive, not the fat one
+    // its standalone build makes, so its vendored SIMD archives are installed
+    // alongside too: a plain-cc consumer needs all four on the link line.
     const ghostty = b.lazyDependency("ghostty", .{});
     if (ghostty) |dep| {
         const ghostty_lib = dep.artifact("ghostty-vt-static");
@@ -30,6 +33,18 @@ pub fn build(b: *std.Build) void {
             ghostty_lib.getEmittedBin(),
             "libghostty-vt.a",
         ).step);
+        if (dep.builder.lazyDependency("simdutf", .{ .target = target, .optimize = optimize, .no_libcxx = true })) |simdutf| {
+            b.getInstallStep().dependOn(&b.addInstallLibFile(
+                simdutf.artifact("simdutf").getEmittedBin(),
+                "libsimdutf.a",
+            ).step);
+        }
+        if (dep.builder.lazyDependency("highway", .{ .target = target, .optimize = optimize })) |highway| {
+            b.getInstallStep().dependOn(&b.addInstallLibFile(
+                highway.artifact("highway").getEmittedBin(),
+                "libhighway.a",
+            ).step);
+        }
     }
     lib_mod.addIncludePath(b.path("src"));
     lib_mod.addCSourceFiles(.{
