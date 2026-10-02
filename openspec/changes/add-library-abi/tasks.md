@@ -19,7 +19,7 @@ window it called, and the no-exit audit (§4) is the final sweep over the finish
 ## 2. Layout intake rewire (design D4)
 
 - [x] 2.1 Rework `glue_init` off `(cols, gutter, keyboard, no_tray)`: it takes the stored startup layout + keyboard mode, keeps theme/font metrics, the layer-shell check and `GtkApplication` setup; `on_activate` applies the startup layout directly with no `pinwin_layout_default` call. `pinwin/src/pinwin.h` loses `glue_start`, `glue_exit` and the old `glue_init` signature, and `pinwin/src/glue.c` their definitions (the ABI in 3.1 replaces them). Verify: `rg -n "g_gutter|g_no_tray|g_argv|no_tray|glue_start|glue_exit" pinwin/src` finds nothing.
-- [ ] 2.2 Rewire `glue_publish_layout` / `glue_layout_metrics` / `glue_current_layout` onto the ABI path (design D5): keep only what `pinwin_apply_layout` needs, delete the dead options-window bridges in `options.h` alongside them. Verify: `zig build` clean and `rg -n "glue_current_layout|glue_layout_metrics" pinwin/src` shows only ABI-path users.
+- [x] 2.2 Rewire `glue_publish_layout` / `glue_layout_metrics` / `glue_current_layout` onto the ABI path (design D5): keep only what `pinwin_apply_layout` needs, delete the dead options-window bridges in `options.h` alongside them. Verify: `zig build` clean and `rg -n "glue_current_layout|glue_layout_metrics" pinwin/src` shows only ABI-path users.
 
 ## 3. ABI and threading (design D2, D5, D6)
 
