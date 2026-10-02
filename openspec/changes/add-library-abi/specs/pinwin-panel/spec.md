@@ -5,7 +5,7 @@
 `libpinwin` docks a terminal on a host-supplied pty master at one monitor edge as an
 in-process panel: the host passes a full layout at start, drives layout changes through the C
 ABI, and owns the child side of the pty. There is no executable, no environment configuration,
-no tray, no options window, no config file and no control socket.
+no config file and no control socket.
 
 ## MODIFIED Requirements
 
@@ -35,32 +35,6 @@ it opens. The keyboard mode is fixed at `pinwin_start` time; there is no runtime
 - **WHEN** the host calls `pinwin_start` with a keyboard mode that is not a
   `PINWIN_KEYBOARD_*` value
 - **THEN** the call returns `PINWIN_ERR_INVALID` and nothing opens
-
-### Requirement: Terminal features mbv depends on
-The panel's terminal SHALL support, as seen by the host's child: alternate screen; 24-bit and
-256-color text with bold, italic and inverse; the kitty keyboard protocol including
-"disambiguate escape codes", with key press and release and Shift/Ctrl/Alt/Super modifiers;
-mouse reporting in SGR format with coordinates in cells; focus in/out reports (`CSI I` /
-`CSI O`) when the child enables them; `CSI > 1 s` (XTSHIFTESCAPE); and the kitty graphics
-protocol, including answering the kitty graphics query and drawing transmitted images at their
-placements.
-
-#### Scenario: mbv detects kitty graphics
-- **WHEN** the host runs mbv as its child with no image protocol override in mbv's config
-- **THEN** mbv selects the kitty image protocol (not half-blocks) and posters render as images
-
-#### Scenario: Key disambiguation
-- **WHEN** the host's child enables kitty keyboard disambiguation and the user presses Escape
-- **THEN** the child receives the kitty-protocol encoding for Escape rather than a bare `ESC` byte
-
-#### Scenario: Mouse click reported in cells
-- **WHEN** the host's child enables SGR mouse reporting and the user clicks the cell at column 3, row 5
-- **THEN** the child receives an SGR press report for column 3, row 5
-
-#### Scenario: Focus reports
-- **WHEN** the host's child enables focus reporting and the user clicks into the panel, then
-  clicks a tiled window
-- **THEN** the child receives `CSI I` and then `CSI O`
 
 ### Requirement: Font follows the Ghostty config
 The panel SHALL render with the font configured for the user's Ghostty terminal: the first
@@ -113,8 +87,35 @@ to an ordinary window.
 
 ## ADDED Requirements
 
+### Requirement: Terminal features for the host's child
+The panel's terminal SHALL support, as seen by the host's child: alternate screen; 24-bit and
+256-color text with bold, italic and inverse; the kitty keyboard protocol including
+"disambiguate escape codes", with key press and release and Shift/Ctrl/Alt/Super modifiers;
+mouse reporting in SGR format with coordinates in cells; focus in/out reports (`CSI I` /
+`CSI O`) when the child enables them; `CSI > 1 s` (XTSHIFTESCAPE); and the kitty graphics
+protocol, including answering the kitty graphics query and drawing transmitted images at their
+placements.
+
+#### Scenario: Host's child selects kitty graphics
+- **WHEN** the host's child supports the kitty graphics protocol and shows a poster
+- **THEN** the child selects the kitty image protocol (not half-blocks) and the whole poster
+  renders as an image
+
+#### Scenario: Key disambiguation
+- **WHEN** the host's child enables kitty keyboard disambiguation and the user presses Escape
+- **THEN** the child receives the kitty-protocol encoding for Escape rather than a bare `ESC` byte
+
+#### Scenario: Mouse click reported in cells
+- **WHEN** the host's child enables SGR mouse reporting and the user clicks the cell at column 3, row 5
+- **THEN** the child receives an SGR press report for column 3, row 5
+
+#### Scenario: Focus reports
+- **WHEN** the host's child enables focus reporting and the user clicks into the panel, then
+  clicks a tiled window
+- **THEN** the child receives `CSI I` and then `CSI O`
+
 ### Requirement: Directional gutters and docking geometry
-Folded in from the retired `pinwin-tray-options` capability (design D1). Gutters SHALL use
+Folded in from the retired options capability (design D1). Gutters SHALL use
 literal screen directions in the same pixel coordinate system as before, independent of
 docking side. Let panel width be `cols` times the font cell width. On the left, the panel
 SHALL be inset from the left output edge by Left pixels and reserve `Left + panel width +
@@ -257,8 +258,8 @@ no-op when not running. A second `pinwin_start` while running returns
 ### Requirement: Host-owned pty
 The library SHALL read and write the pty master fd supplied at start and apply the window
 size to it (`TIOCSWINSZ`); it SHALL NOT fork, wait on a child, or set any child environment
-(`TERM`, `COLORTERM`, `PINWIN_SOCKET` have no equivalent). Hangup on the master drops the
-read source without touching process lifetime.
+(the host owns its child's `TERM` and `COLORTERM`). Hangup on the master drops the read
+source without touching process lifetime.
 
 #### Scenario: Sizes reach the child
 - **WHEN** the panel resizes after a layout apply
@@ -327,3 +328,8 @@ There is no executable to install. `make install` goes away with the `Makefile` 
 ### Requirement: Coexists with pinwin
 Vacuous in library form: nothing the library builds or writes touches `pin.kdl` or
 `~/.local/bin/pinwin` paths. `pinwin.sh` itself is untouched by this change.
+
+### Requirement: Terminal features mbv depends on
+Replaced by the ADDED "Terminal features for the host's child" requirement: the terminal
+capabilities are unchanged, but the requirement is stated for the host's child rather than a
+named consumer.
