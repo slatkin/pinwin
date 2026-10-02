@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
     }
     lib_mod.addIncludePath(b.path("src"));
     lib_mod.addCSourceFiles(.{
-        .files = &.{ "src/glue.c", "src/render.c", "src/images.c", "src/pty.c", "src/input.c", "src/fontconfig.c", "src/options.c" },
+        .files = &.{ "src/glue.c", "src/render.c", "src/images.c", "src/pty.c", "src/input.c", "src/fontconfig.c", "src/options.c", "src/pinwin_api.c" },
         .flags = &.{ "-std=gnu11", "-Wall" },
     });
 
