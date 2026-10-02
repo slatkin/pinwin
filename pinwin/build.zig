@@ -29,7 +29,7 @@ pub fn build(b: *std.Build) void {
     }
     exe_mod.addIncludePath(b.path("src"));
     exe_mod.addCSourceFiles(.{
-        .files = &.{ "src/glue.c", "src/render.c", "src/images.c", "src/pty.c", "src/input.c", "src/fontconfig.c", "src/options.c", "src/tray.c" },
+        .files = &.{ "src/glue.c", "src/render.c", "src/images.c", "src/pty.c", "src/input.c", "src/fontconfig.c", "src/control.c", "src/options.c", "src/tray.c" },
         .flags = &.{ "-std=gnu11", "-Wall" },
     });
 
@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
     });
     check_mod.addIncludePath(b.path("src"));
     check_mod.addCSourceFiles(.{
-        .files = &.{ "src/options.c", "src/tray.c", "tools/check_options.c" },
+        .files = &.{ "src/options.c", "src/control.c", "src/tray.c", "tools/check_options.c" },
         .flags = &.{ "-std=gnu11", "-Wall", "-Wextra" },
     });
     check_mod.linkSystemLibrary("gtk4", .{});
