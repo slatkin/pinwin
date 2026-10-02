@@ -30,7 +30,7 @@ window it called, and the no-exit audit (§4) is the final sweep over the finish
 
 ## 4. No-exit contract (design D3)
 
-- [ ] 4.1 Remove every exit path as the final sweep: `std.process.exit` in `main.zig` (ABI-boundary errors became result codes in 3.1; `pinwin_size`/`ensureTerminal` failure is reported — `pinwin_size` gains an `int` return, callers keep the previous grid), and any remaining `exit(` in the C sources (the fork, `on_child_exit` and `glue_exit` were deleted in 2.1/3.3). Verify: `rg -n "\<exit\(|_exit\(|std\.process\.exit" pinwin/src` finds nothing, and `rg -n "WEXITSTATUS|WTERMSIG" pinwin/src` finds nothing.
+- [x] 4.1 Remove every exit path as the final sweep: `std.process.exit` in `main.zig` (ABI-boundary errors became result codes in 3.1; `pinwin_size`/`ensureTerminal` failure is reported — `pinwin_size` gains an `int` return, callers keep the previous grid), and any remaining `exit(` in the C sources (the fork, `on_child_exit` and `glue_exit` were deleted in 2.1/3.3). Verify: `rg -n "\<exit\(|_exit\(|std\.process\.exit" pinwin/src` finds nothing, and `rg -n "WEXITSTATUS|WTERMSIG" pinwin/src` finds nothing.
 
 ## 5. Build leftovers (design OQ-b)
 
