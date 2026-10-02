@@ -7,7 +7,7 @@ Lets pinwin users edit and persist the running terminal panel's docking side and
 ## Requirements
 
 ### Requirement: Tray access to options
-Each running pinwin instance SHALL expose a system tray entry while a compatible tray host is available. The icon SHALL be loaded from `$HOME/pinwin.svg`. Right-click SHALL expose an `Options...` menu item that opens that instance's options window. A missing or unreadable icon SHALL produce a diagnostic and a generic fallback icon rather than stop the terminal. Absence or restart of the tray host SHALL NOT close or restart the panel; the entry SHALL register when the host becomes available and disappear when pinwin exits.
+Unless started with `--no-tray`, each running pinwin instance SHALL expose a system tray entry while a compatible tray host is available. The icon SHALL be the icon theme's `pinwin` icon, falling back to the theme's `utilities-terminal` icon when the theme has no `pinwin` icon. Right-click SHALL expose an `Options...` menu item that opens that instance's options window. Absence or restart of the tray host SHALL NOT close or restart the panel; the entry SHALL register when the host becomes available and disappear when pinwin exits.
 
 #### Scenario: Open options
 - **WHEN** the user right-clicks the pinwin tray icon and selects `Options...`
@@ -18,15 +18,15 @@ Each running pinwin instance SHALL expose a system tray entry while a compatible
 - **THEN** the child command continues uninterrupted and the tray entry becomes available again
 
 #### Scenario: Missing icon
-- **WHEN** `$HOME/pinwin.svg` cannot be loaded
-- **THEN** the terminal continues, a diagnostic is emitted and a generic tray icon is used
+- **WHEN** the icon theme has no `pinwin` icon
+- **THEN** the tray entry uses the `utilities-terminal` icon and the terminal continues
 
 #### Scenario: Exit
 - **WHEN** the command exits
 - **THEN** pinwin closes its panel, options window and tray entry, releases the reserved space and retains the command's exit status
 
 ### Requirement: Staged options editing
-The options window SHALL present a labeled numeric `Columns` field (the panel width in terminal columns), followed by labeled numeric fields for Top, Bottom, Left and Right gutters in pixels, a Left/Right docking selector, Apply and Close controls. The Columns field SHALL be presented first. It SHALL initialize from the running instance's applied values. Edits SHALL NOT affect the panel or persistent config until Apply succeeds. Apply SHALL keep the options window open. Closing SHALL discard unapplied edits. Repeated `Options...` activation SHALL present the existing window without duplicating it or resetting pending edits. All controls SHALL be keyboard accessible.
+The options window SHALL present a labeled numeric `Columns` field (the panel width in terminal columns), followed by labeled numeric fields for Top, Bottom, Left and Right gutters in pixels, a Left/Right docking selector, Apply and Close controls. The Columns field SHALL be presented first. It SHALL initialize from the running instance's applied values. Edits SHALL NOT affect the panel or persistent config until Apply succeeds. Apply SHALL keep the options window open. Closing SHALL discard unapplied edits. Repeated opening requests, from the tray's `Options...` or from a control request, SHALL present the existing window without duplicating it or resetting pending edits. All controls SHALL be keyboard accessible.
 
 #### Scenario: Edit without applying
 - **WHEN** the user edits the Columns field, a gutter or the docking side without pressing Apply
@@ -37,7 +37,7 @@ The options window SHALL present a labeled numeric `Columns` field (the panel wi
 - **THEN** the fields show the previously applied values, including the applied column count
 
 #### Scenario: Reopen existing window
-- **WHEN** the user selects `Options...` while its window is already open with pending edits
+- **WHEN** an opening request arrives while the options window is already open with pending edits
 - **THEN** the same window is presented and its pending edits are preserved
 
 ### Requirement: Directional gutters and docking geometry
@@ -123,3 +123,14 @@ Pinwin SHALL save the docking side, the applied column count and all four gutter
 #### Scenario: Multiple running instances
 - **WHEN** two instances apply different settings
 - **THEN** each changes only its own live panel and the last successful save supplies the layout for subsequent launches
+
+### Requirement: Running without a tray
+`pinwin --no-tray` SHALL NOT register a system tray entry at any point in its life. Its options window SHALL remain available through the control API (pinwin-control), and every other behavior SHALL be unchanged.
+
+#### Scenario: Hosted without a tray
+- **WHEN** the user runs `pinwin --no-tray mbv` with a tray host running
+- **THEN** no pinwin tray entry appears, and the panel runs `mbv` normally
+
+#### Scenario: Options without a tray
+- **WHEN** a pinwin started with `--no-tray` receives an `options` control request
+- **THEN** it opens its options window exactly as the tray's `Options...` would
