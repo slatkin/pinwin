@@ -67,3 +67,37 @@ test "invalid and not-running results are distinct codes" {
     try testing.expectEqual(@as(c_int, c.PINWIN_ERR_NOT_RUNNING), not_running);
     try testing.expect(invalid != not_running);
 }
+
+// The ABI drives a real terminal here (the only test that creates one), so it
+// stays last in this file: `term` is process-global and every other test in
+// this file requires that it was never created.
+
+extern var g_pty_fd: c_int;
+extern fn pinwin_pty_data(data: [*c]const u8, len: usize) void;
+extern fn pinwin_size(cols: i32, rows: i32, cw: i32, ch: i32) c_int;
+
+test "pty data arriving before the terminal is replayed, not dropped" {
+    // The host forks its child before pinwin_start, so a child's startup
+    // queries land before the first draw creates the terminal. Regression:
+    // dropping them made fish wait ~10s for query replies and then warn. The
+    // query goes in before pinwin_size, the DA1 reply must come out of the
+    // real pty fd after it.
+    var fds: [2]i32 = undefined;
+    if (std.os.linux.pipe(&fds) != 0) return error.PipeFailed;
+    defer _ = std.os.linux.close(fds[0]);
+    defer _ = std.os.linux.close(fds[1]);
+    g_pty_fd = fds[1];
+    defer g_pty_fd = -1;
+
+    pinwin_pty_data("\x1b[c", 3); // DA1: term is null here, so this buffers
+    try testing.expectEqual(@as(c_int, 0), pinwin_size(40, 24, 8, 16));
+
+    var buf: [64]u8 = undefined;
+    // Poll with a timeout so a regression (no reply) fails instead of hanging.
+    var pfd: std.os.linux.pollfd = .{ .fd = fds[0], .events = std.os.linux.POLL.IN, .revents = 0 };
+    const ready = std.os.linux.poll(@ptrCast(&pfd), 1, 5000);
+    try testing.expect(ready == 1);
+    const n = std.os.linux.read(fds[0], &buf, buf.len);
+    try testing.expect(n >= 6);
+    try testing.expectEqualSlices(u8, "\x1b[?6", buf[0..4]);
+}
