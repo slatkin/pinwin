@@ -1,5 +1,5 @@
 /*
- * options.c - penguin's layout settings: values, validation, GKeyFile
+ * options.c - pinwin's layout settings: values, validation, GKeyFile
  * persistence and the options window. Kept out of glue.c so the renderer /
  * PTY file does not also own the settings editor (design D1).
  *
@@ -20,29 +20,29 @@
 
 #include <glib.h>
 
-/* Result codes for penguin_config_load. */
-#define PENGUIN_CONFIG_LOADED 0
-#define PENGUIN_CONFIG_ABSENT 1
-#define PENGUIN_CONFIG_INVALID 2
+/* Result codes for pinwin_config_load. */
+#define PINWIN_CONFIG_LOADED 0
+#define PINWIN_CONFIG_ABSENT 1
+#define PINWIN_CONFIG_INVALID 2
 
-/* Load the saved layout from `$XDG_CONFIG_HOME/penguin/config` (default
- * ~/.config/penguin/config). On PENGUIN_CONFIG_LOADED, *out holds a valid
- * layout. PENGUIN_CONFIG_ABSENT means no config file exists (normal; the
- * caller keeps its launch baseline). PENGUIN_CONFIG_INVALID means the file
+/* Load the saved layout from `$XDG_CONFIG_HOME/pinwin/config` (default
+ * ~/.config/pinwin/config). On PINWIN_CONFIG_LOADED, *out holds a valid
+ * layout. PINWIN_CONFIG_ABSENT means no config file exists (normal; the
+ * caller keeps its launch baseline). PINWIN_CONFIG_INVALID means the file
  * exists but is unreadable, malformed or geometrically meaningless as a set;
  * a diagnostic has been printed and the caller falls back to the baseline
  * without rewriting the file. Unknown keys are ignored. */
-int penguin_config_load(PenguinLayout* out);
+int pinwin_config_load(PinwinLayout* out);
 
 /* Atomically save the layout to the same path: create the directory when
  * needed, write to a temporary file and rename, mode 0600. The previous file
  * is left untouched on any failure. Returns 0 on success; on failure a
  * diagnostic is printed and non-zero returned. */
-int penguin_config_save(const PenguinLayout* layout);
+int pinwin_config_save(const PinwinLayout* layout);
 
-PenguinLayout penguin_layout_default(int32_t cols, int32_t gutter) {
-    PenguinLayout layout;
-    layout.side = PENGUIN_SIDE_LEFT;
+PinwinLayout pinwin_layout_default(int32_t cols, int32_t gutter) {
+    PinwinLayout layout;
+    layout.side = PINWIN_SIDE_LEFT;
     layout.cols = cols; /* COLS is validated at launch */
     layout.top = 0;
     layout.bottom = 0;
@@ -56,21 +56,21 @@ PenguinLayout penguin_layout_default(int32_t cols, int32_t gutter) {
 #include <gtk/gtk.h>
 
 static char* config_file_path(void) {
-    return g_build_filename(g_get_user_config_dir(), "penguin", "config", NULL);
+    return g_build_filename(g_get_user_config_dir(), "pinwin", "config", NULL);
 }
 
 static void config_diagnostic(const char* path, const char* detail) {
-    fprintf(stderr, "penguin: config %s: %s; using launch defaults\n", path, detail);
+    fprintf(stderr, "pinwin: config %s: %s; using launch defaults\n", path, detail);
 }
 
-int penguin_config_load(PenguinLayout* out) {
+int pinwin_config_load(PinwinLayout* out) {
     GKeyFile* kf;
     GError* err = NULL;
     char* path;
     gchar* side = NULL;
     gchar* cols_text = NULL;
     gchar* values[4] = {NULL, NULL, NULL, NULL};
-    int result = PENGUIN_CONFIG_INVALID;
+    int result = PINWIN_CONFIG_INVALID;
     int i;
     static const char* names[4] = {"top", "bottom", "left", "right"};
 
@@ -79,7 +79,7 @@ int penguin_config_load(PenguinLayout* out) {
     if (!g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, &err)) {
         if (err->code == G_KEY_FILE_ERROR_NOT_FOUND ||
             g_error_matches(err, G_FILE_ERROR, G_FILE_ERROR_NOENT)) {
-            result = PENGUIN_CONFIG_ABSENT; /* normal; not a diagnostic */
+            result = PINWIN_CONFIG_ABSENT; /* normal; not a diagnostic */
         } else {
             config_diagnostic(path, err->message);
         }
@@ -90,9 +90,9 @@ int penguin_config_load(PenguinLayout* out) {
     side = g_key_file_get_string(kf, "layout", "side", &err);
     if (err) goto invalid;
     if (strcmp(side, "left") == 0) {
-        out->side = PENGUIN_SIDE_LEFT;
+        out->side = PINWIN_SIDE_LEFT;
     } else if (strcmp(side, "right") == 0) {
-        out->side = PENGUIN_SIDE_RIGHT;
+        out->side = PINWIN_SIDE_RIGHT;
     } else {
         config_diagnostic(path, "unknown side");
         goto done;
@@ -108,7 +108,7 @@ int penguin_config_load(PenguinLayout* out) {
         } else {
             goto invalid;
         }
-    } else if (!penguin_parse_cols(cols_text, &out->cols)) {
+    } else if (!pinwin_parse_cols(cols_text, &out->cols)) {
         config_diagnostic(path, "invalid cols");
         goto done;
     }
@@ -119,10 +119,10 @@ int penguin_config_load(PenguinLayout* out) {
         values[i] = g_key_file_get_string(kf, "layout", names[i], &err);
         if (err) goto invalid;
     }
-    if (!penguin_parse_gutter(values[0], &out->top) ||
-        !penguin_parse_gutter(values[1], &out->bottom) ||
-        !penguin_parse_gutter(values[2], &out->left) ||
-        !penguin_parse_gutter(values[3], &out->right)) {
+    if (!pinwin_parse_gutter(values[0], &out->top) ||
+        !pinwin_parse_gutter(values[1], &out->bottom) ||
+        !pinwin_parse_gutter(values[2], &out->left) ||
+        !pinwin_parse_gutter(values[3], &out->right)) {
         /* Parse all four before assigning any: an unusable file must not
          * leave a half-written layout behind. */
         config_diagnostic(path, "invalid gutter");
@@ -130,7 +130,7 @@ int penguin_config_load(PenguinLayout* out) {
     }
     g_key_file_free(kf);
     g_free(path);
-    return PENGUIN_CONFIG_LOADED;
+    return PINWIN_CONFIG_LOADED;
 
 invalid:
     config_diagnostic(path, err->message);
@@ -144,7 +144,7 @@ done:
     return result;
 }
 
-int penguin_config_save(const PenguinLayout* layout) {
+int pinwin_config_save(const PinwinLayout* layout) {
     GKeyFile* kf;
     GError* err = NULL;
     char* dir;
@@ -154,7 +154,7 @@ int penguin_config_save(const PenguinLayout* layout) {
     const char* side;
 
     kf = g_key_file_new();
-    side = layout->side == PENGUIN_SIDE_RIGHT ? "right" : "left";
+    side = layout->side == PINWIN_SIDE_RIGHT ? "right" : "left";
     g_key_file_set_string(kf, "layout", "side", side);
     g_key_file_set_integer(kf, "layout", "cols", layout->cols);
     g_key_file_set_integer(kf, "layout", "top", layout->top);
@@ -165,9 +165,9 @@ int penguin_config_save(const PenguinLayout* layout) {
     g_key_file_free(kf);
     if (!data) return 1;
 
-    dir = g_build_filename(g_get_user_config_dir(), "penguin", NULL);
+    dir = g_build_filename(g_get_user_config_dir(), "pinwin", NULL);
     if (g_mkdir_with_parents(dir, S_IRWXU) < 0) {
-        fprintf(stderr, "penguin: config %s: %s\n", dir, g_strerror(errno));
+        fprintf(stderr, "pinwin: config %s: %s\n", dir, g_strerror(errno));
         g_free(dir);
         g_free(data);
         return 1;
@@ -179,7 +179,7 @@ int penguin_config_save(const PenguinLayout* layout) {
      * renames it, so a failure leaves the previous config intact. */
     if (!g_file_set_contents_full(path, data, len, G_FILE_SET_CONTENTS_DURABLE,
                                   S_IRUSR | S_IWUSR, &err)) {
-        fprintf(stderr, "penguin: config %s: %s\n", path, err->message);
+        fprintf(stderr, "pinwin: config %s: %s\n", path, err->message);
         g_error_free(err);
         g_free(path);
         g_free(data);
@@ -209,7 +209,7 @@ static void options_show_error(const char* text) {
 }
 
 static void options_reset_from_applied(void) {
-    PenguinLayout l;
+    PinwinLayout l;
     int i;
 
     glue_current_layout(&l);
@@ -225,8 +225,8 @@ static void options_reset_from_applied(void) {
 static void on_options_destroy(GtkWidget* widget, gpointer user_data) {
     (void)widget;
     (void)user_data;
-    if (getenv("PENGUIN_DEBUG"))
-        fprintf(stderr, "penguin: options window destroyed\n");
+    if (getenv("PINWIN_DEBUG"))
+        fprintf(stderr, "pinwin: options window destroyed\n");
     g_options_window = NULL;
 }
 
@@ -237,7 +237,7 @@ static void on_options_close_clicked(GtkButton* button, gpointer user_data) {
 }
 
 static void on_options_apply_clicked(GtkButton* button, gpointer user_data) {
-    PenguinLayout l;
+    PinwinLayout l;
     int32_t cols, cell_w, cell_h, output_w, output_h;
     int i;
 
@@ -247,7 +247,7 @@ static void on_options_apply_clicked(GtkButton* button, gpointer user_data) {
     /* Strict parsing of the typed text: GTK spin buttons allow arbitrary
      * input, and Apply must not silently clamp negative, fractional or
      * malformed values (design D6). */
-    if (!penguin_parse_cols(gtk_editable_get_text(GTK_EDITABLE(g_cols_spin)),
+    if (!pinwin_parse_cols(gtk_editable_get_text(GTK_EDITABLE(g_cols_spin)),
                             &l.cols)) {
         options_show_error("Columns: enter a whole number of terminal columns "
                            "between 1 and 65535");
@@ -256,7 +256,7 @@ static void on_options_apply_clicked(GtkButton* button, gpointer user_data) {
     for (i = 0; i < 4; i++) {
         const char* text = gtk_editable_get_text(GTK_EDITABLE(g_spin[i]));
         int32_t value;
-        if (!penguin_parse_gutter(text, &value)) {
+        if (!pinwin_parse_gutter(text, &value)) {
             char* msg = g_strdup_printf("%s: enter a whole number of pixels "
                                         "(negative values push that edge past "
                                         "the screen)",
@@ -267,31 +267,31 @@ static void on_options_apply_clicked(GtkButton* button, gpointer user_data) {
         }
         (&l.top)[i] = value;
     }
-    l.side = gtk_check_button_get_active(GTK_CHECK_BUTTON(g_side[PENGUIN_SIDE_RIGHT]))
-                 ? PENGUIN_SIDE_RIGHT
-                 : PENGUIN_SIDE_LEFT;
+    l.side = gtk_check_button_get_active(GTK_CHECK_BUTTON(g_side[PINWIN_SIDE_RIGHT]))
+                 ? PINWIN_SIDE_RIGHT
+                 : PINWIN_SIDE_LEFT;
 
     /* Geometry against the instance's original monitor; the staged column
      * count is the panel width validated here. */
     glue_layout_metrics(&cols, &cell_w, &cell_h, &output_w, &output_h);
     {
-        int r = penguin_layout_validate(&l, l.cols, cell_w, cell_h, output_w, output_h);
-        if (r == PENGUIN_GEOM_ERR_NO_RESERVE) {
+        int r = pinwin_layout_validate(&l, l.cols, cell_w, cell_h, output_w, output_h);
+        if (r == PINWIN_GEOM_ERR_NO_RESERVE) {
             options_show_error("Left + panel width + Right is negative, so there "
                                "is no strip left to reserve");
             return;
         }
-        if (r == PENGUIN_GEOM_ERR_NO_WIDTH) {
+        if (r == PINWIN_GEOM_ERR_NO_WIDTH) {
             options_show_error("This layout would leave no horizontal space "
                                "for other windows on the panel's monitor");
             return;
         }
-        if (r == PENGUIN_GEOM_ERR_NO_ROW) {
+        if (r == PINWIN_GEOM_ERR_NO_ROW) {
             options_show_error("Top and Bottom leave less than one terminal row "
                                "of height on the panel's monitor");
             return;
         }
-        if (r != PENGUIN_GEOM_OK) {
+        if (r != PINWIN_GEOM_OK) {
             options_show_error("These values cannot be applied to the panel's "
                                "monitor");
             return;
@@ -300,7 +300,7 @@ static void on_options_apply_clicked(GtkButton* button, gpointer user_data) {
 
     /* Save first: a failed save must leave both the live layout and the
      * previous config unchanged (design D6). */
-    if (penguin_config_save(&l) != 0) {
+    if (pinwin_config_save(&l) != 0) {
         options_show_error("Could not save the settings "
                            "(is the config directory writable?)");
         return;
@@ -308,7 +308,7 @@ static void on_options_apply_clicked(GtkButton* button, gpointer user_data) {
 
     /* Publish: validated again inside glue.c, then applied to both surfaces
      * and the terminal grid. */
-    if (glue_publish_layout(&l) != PENGUIN_GEOM_OK) {
+    if (glue_publish_layout(&l) != PINWIN_GEOM_OK) {
         options_show_error("Could not apply the layout to the panel");
         return;
     }
@@ -317,7 +317,7 @@ static void on_options_apply_clicked(GtkButton* button, gpointer user_data) {
     /* The draft's baseline is now the applied layout; keep the window open. */
 }
 
-void penguin_options_open(void) {
+void pinwin_options_open(void) {
     GtkWidget* win;
     GtkWidget* grid;
     GtkWidget* apply;
@@ -333,7 +333,7 @@ void penguin_options_open(void) {
     g_options_window = GTK_WINDOW(win);
     gtk_window_set_application(GTK_WINDOW(win),
                                GTK_APPLICATION(g_application_get_default()));
-    gtk_window_set_title(GTK_WINDOW(win), "penguin options");
+    gtk_window_set_title(GTK_WINDOW(win), "pinwin options");
     g_signal_connect(win, "destroy", G_CALLBACK(on_options_destroy), NULL);
 
     grid = gtk_grid_new();
@@ -357,13 +357,13 @@ void penguin_options_open(void) {
 
     /* Side selection. */
     gtk_grid_attach(GTK_GRID(grid), gtk_label_new("Dock to"), 0, 1, 1, 1);
-    g_side[PENGUIN_SIDE_LEFT] = gtk_check_button_new_with_mnemonic("_Left");
-    g_side[PENGUIN_SIDE_RIGHT] =
+    g_side[PINWIN_SIDE_LEFT] = gtk_check_button_new_with_mnemonic("_Left");
+    g_side[PINWIN_SIDE_RIGHT] =
         gtk_check_button_new_with_mnemonic("_Right");
-    gtk_check_button_set_group(GTK_CHECK_BUTTON(g_side[PENGUIN_SIDE_RIGHT]),
-                               GTK_CHECK_BUTTON(g_side[PENGUIN_SIDE_LEFT]));
-    gtk_grid_attach(GTK_GRID(grid), g_side[PENGUIN_SIDE_LEFT], 1, 1, 1, 1);
-    gtk_grid_attach(GTK_GRID(grid), g_side[PENGUIN_SIDE_RIGHT], 2, 1, 1, 1);
+    gtk_check_button_set_group(GTK_CHECK_BUTTON(g_side[PINWIN_SIDE_RIGHT]),
+                               GTK_CHECK_BUTTON(g_side[PINWIN_SIDE_LEFT]));
+    gtk_grid_attach(GTK_GRID(grid), g_side[PINWIN_SIDE_LEFT], 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), g_side[PINWIN_SIDE_RIGHT], 2, 1, 1, 1);
 
     /* Gutter fields; labels are mnemonics for the matching spin button. */
     for (i = 0; i < 4; i++) {
@@ -407,7 +407,7 @@ void penguin_options_open(void) {
     gtk_window_present(GTK_WINDOW(win));
 }
 
-int penguin_parse_cols(const char* text, int32_t* out) {
+int pinwin_parse_cols(const char* text, int32_t* out) {
     long long value = 0;
 
     if (!text || !*text) return 0;
@@ -423,7 +423,7 @@ int penguin_parse_cols(const char* text, int32_t* out) {
     return 1;
 }
 
-int penguin_parse_gutter(const char* text, int32_t* out) {
+int pinwin_parse_gutter(const char* text, int32_t* out) {
     char* end;
     long long value;
     const char* digits;
@@ -448,42 +448,42 @@ int penguin_parse_gutter(const char* text, int32_t* out) {
     return 1;
 }
 
-int penguin_side_geometry(const PenguinLayout* layout, long long panel_width,
+int pinwin_side_geometry(const PinwinLayout* layout, long long panel_width,
                           int32_t* edge_margin, int32_t* reservation) {
     long long sum;
 
-    if (layout->side != PENGUIN_SIDE_LEFT && layout->side != PENGUIN_SIDE_RIGHT)
+    if (layout->side != PINWIN_SIDE_LEFT && layout->side != PINWIN_SIDE_RIGHT)
         return 0;
     if (panel_width < 0 || panel_width > INT32_MAX) return 0;
     sum = (long long)layout->left + (long long)panel_width + (long long)layout->right;
     if (sum > INT32_MAX) return 0;
-    *edge_margin = layout->side == PENGUIN_SIDE_LEFT ? layout->left : layout->right;
+    *edge_margin = layout->side == PINWIN_SIDE_LEFT ? layout->left : layout->right;
     *reservation = (int32_t)sum;
     return 1;
 }
 
-int penguin_layout_validate(const PenguinLayout* layout, int32_t panel_cols,
+int pinwin_layout_validate(const PinwinLayout* layout, int32_t panel_cols,
                             int32_t cell_w, int32_t cell_h, int32_t output_w,
                             int32_t output_h) {
     int32_t reservation;
     int32_t margin;
 
-    if (layout->side != PENGUIN_SIDE_LEFT && layout->side != PENGUIN_SIDE_RIGHT)
-        return PENGUIN_GEOM_ERR_SIDE;
+    if (layout->side != PINWIN_SIDE_LEFT && layout->side != PINWIN_SIDE_RIGHT)
+        return PINWIN_GEOM_ERR_SIDE;
     if (panel_cols < 1 || cell_w < 1 || cell_h < 1 || output_w < 1 || output_h < 1)
-        return PENGUIN_GEOM_ERR_METRICS;
+        return PINWIN_GEOM_ERR_METRICS;
 
-    if (!penguin_side_geometry(layout, (long long)panel_cols * (long long)cell_w,
+    if (!pinwin_side_geometry(layout, (long long)panel_cols * (long long)cell_w,
                                &margin, &reservation))
-        return PENGUIN_GEOM_ERR_OVERFLOW;
-    if (reservation < 0) return PENGUIN_GEOM_ERR_NO_RESERVE;
-    if (reservation >= output_w) return PENGUIN_GEOM_ERR_NO_WIDTH;
+        return PINWIN_GEOM_ERR_OVERFLOW;
+    if (reservation < 0) return PINWIN_GEOM_ERR_NO_RESERVE;
+    if (reservation >= output_w) return PINWIN_GEOM_ERR_NO_WIDTH;
 
     /* Vertical: the visible panel must keep room for one complete row.
      * Negative top/bottom insets give more room, never less. */
     {
         long long height = (long long)layout->top + (long long)layout->bottom;
-        if (height > output_h - (long long)cell_h) return PENGUIN_GEOM_ERR_NO_ROW;
+        if (height > output_h - (long long)cell_h) return PINWIN_GEOM_ERR_NO_ROW;
     }
-    return PENGUIN_GEOM_OK;
+    return PINWIN_GEOM_OK;
 }

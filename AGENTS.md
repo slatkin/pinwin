@@ -2,11 +2,11 @@
 
 ## Project Structure & Module Organization
 
-`pinwin` is the executable Bash script and the only application source file. `README.md` documents installation, usage, behavior, and known caveats. There are no vendored assets or automated tests. At runtime, the script writes `~/.config/niri/woims/pin.kdl`; this generated file is not part of the repository.
+`pinwin.sh` is the executable Bash script and the only application source file. `README.md` documents installation, usage, behavior, and known caveats. There are no vendored assets or automated tests. At runtime, the script writes `~/.config/niri/woims/pin.kdl`; this generated file is not part of the repository.
 
 ## Build, Test, and Development Commands
 
-No build step is required. Run `bash -n pinwin` after editing to check shell syntax. Run `./pinwin` to launch the default `mbv` sidebar, or `./pinwin htop` to try another command. `COLS=60 GUTTER=8 ./pinwin htop` exercises the configurable width and gap. Live runs require niri, Ghostty, and `jq`, plus the niri include described in `README.md`.
+No build step is required. Run `bash -n pinwin.sh` after editing to check shell syntax. Run `./pinwin.sh` to launch the default `mbv` sidebar, or `./pinwin.sh htop` to try another command. `COLS=60 GUTTER=8 ./pinwin.sh htop` exercises the configurable width and gap. Live runs require niri, Ghostty, and `jq`, plus the niri include described in `README.md`.
 
 ## Coding Style & Naming Conventions
 
@@ -14,7 +14,7 @@ Keep the script compatible with Bash and use four spaces inside functions and co
 
 ## Testing Guidelines
 
-There is no test framework or coverage target. Check syntax with `bash -n pinwin`, then test changes in a running niri session. Verify launch, workspace following, width changes, and cleanup when the launched command exits when those paths are affected. Confirm that `pin.kdl` is emptied and niri reloads after a normal exit. If changing struts, keep `LEFT`, `RIGHT`, `TOP`, and `BOTTOM` aligned with the user's niri layout as explained in `README.md`.
+There is no test framework or coverage target. Check syntax with `bash -n pinwin.sh`, then test changes in a running niri session. Verify launch, workspace following, width changes, and cleanup when the launched command exits when those paths are affected. Confirm that `pin.kdl` is emptied and niri reloads after a normal exit. If changing struts, keep `LEFT`, `RIGHT`, `TOP`, and `BOTTOM` aligned with the user's niri layout as explained in `README.md`.
 
 ## Commit & Pull Request Guidelines
 

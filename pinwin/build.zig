@@ -11,8 +11,8 @@ pub fn build(b: *std.Build) void {
     });
 
     // GTK4, gtk4-layer-shell and Pango come from the system. src/glue.c is the
-    // only file that includes their headers (see src/penguin.h); the @cImport
-    // in src/main.zig only sees ghostty/vt.h and penguin.h.
+    // only file that includes their headers (see src/pinwin.h); the @cImport
+    // in src/main.zig only sees ghostty/vt.h and pinwin.h.
     exe_mod.linkSystemLibrary("gtk4", .{});
     exe_mod.linkSystemLibrary("gtk4-layer-shell-0", .{});
     exe_mod.linkSystemLibrary("pangocairo", .{});
@@ -33,12 +33,12 @@ pub fn build(b: *std.Build) void {
     });
 
     const exe = b.addExecutable(.{
-        .name = "penguin",
+        .name = "pinwin",
         .root_module = exe_mod,
     });
     b.installArtifact(exe);
 
-    const run_step = b.step("run", "Run penguin");
+    const run_step = b.step("run", "Run pinwin");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);

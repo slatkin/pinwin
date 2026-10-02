@@ -1,14 +1,14 @@
 /*
- * glue.c - everything in penguin that talks to GTK4, gtk4-layer-shell, Pango,
+ * glue.c - everything in pinwin that talks to GTK4, gtk4-layer-shell, Pango,
  * cairo, GdkPixbuf and the PTY. The Zig side (main.zig) only ever calls the
- * glue_* functions declared in penguin.h and is called back through the
- * penguin_* functions.
+ * glue_* functions declared in pinwin.h and is called back through the
+ * pinwin_* functions.
  *
- * See penguin.h for why this file exists at all (translate-c cannot consume
+ * See pinwin.h for why this file exists at all (translate-c cannot consume
  * the GTK4 headers).
  */
 
-#include "penguin.h"
+#include "pinwin.h"
 #include "options.h"
 #include "tray.h"
 #include "nerd_font_tables.h"
@@ -32,7 +32,7 @@
 
 static int32_t g_cols = 40;
 static int32_t g_gutter = 0;
-static int32_t g_keyboard_mode = PENGUIN_KEYBOARD_ON_DEMAND;
+static int32_t g_keyboard_mode = PINWIN_KEYBOARD_ON_DEMAND;
 
 static char* const* g_argv;
 
@@ -57,7 +57,7 @@ static uint8_t g_theme_fg[3] = {255, 255, 255};
 static int32_t g_cell_w;
 static int32_t g_cell_h;
 static int32_t g_rows;
-static int32_t g_grid_cols; /* cols of the last grid pushed to penguin_size */
+static int32_t g_grid_cols; /* cols of the last grid pushed to pinwin_size */
 
 static int g_pty_fd = -1;
 static guint g_pty_source;
@@ -69,9 +69,9 @@ static int32_t g_pty_xpixel;
 static int32_t g_pty_ypixel;
 static int g_spawned;
 
-/* Layout settings (add-penguin-tray-options). The applied layout starts as
+/* Layout settings (add-pinwin-tray-options). The applied layout starts as
  * the launch baseline and is loaded from the config / replaced by Apply. */
-static PenguinLayout g_layout;
+static PinwinLayout g_layout;
 static GtkWindow* g_reserve;
 static GdkMonitor* g_monitor; /* the visible panel's original monitor */
 static int g_layout_latch; /* first-draw monitor resolution pending */
@@ -118,7 +118,7 @@ static int terminfo_exists(const char* name) {
 
 /* The panel follows the Ghostty config (a plain "key = value" file) so that it
  * uses the font the user actually configured for their terminal, with
- * PENGUIN_FONT / PENGUIN_FONT_SIZE as overrides and "monospace 11" as the
+ * PINWIN_FONT / PINWIN_FONT_SIZE as overrides and "monospace 11" as the
  * fallback. Only the first font-family is used, matching Ghostty's rule that
  * the first family with a glyph wins. */
 /* The terminal's default background and foreground: the panel paints the whole
@@ -238,12 +238,12 @@ static void font_config_load(char** family, double* size) {
     }
     g_free(path);
 
-    env = getenv("PENGUIN_FONT");
+    env = getenv("PINWIN_FONT");
     if (env && *env) {
         g_free(*family);
         *family = g_strdup(env);
     }
-    env = getenv("PENGUIN_FONT_SIZE");
+    env = getenv("PINWIN_FONT_SIZE");
     if (env && *env) {
         double parsed = g_ascii_strtod(env, NULL);
         if (parsed > 0) *size = parsed;
@@ -266,8 +266,8 @@ static void cell_metrics_update(GtkWidget* widget) {
         g_font = pango_font_description_new();
         pango_font_description_set_family(g_font, family ? family : "monospace");
         pango_font_description_set_size(g_font, (int32_t)(size * PANGO_SCALE));
-        if (getenv("PENGUIN_DEBUG"))
-            fprintf(stderr, "penguin: font %s %g\n", family ? family : "monospace", size);
+        if (getenv("PINWIN_DEBUG"))
+            fprintf(stderr, "pinwin: font %s %g\n", family ? family : "monospace", size);
         g_free(family);
         g_font_bold = pango_font_description_copy(g_font);
         pango_font_description_set_weight(g_font_bold, PANGO_WEIGHT_BOLD);
@@ -503,15 +503,15 @@ static NerdGlyph nerd_constrain(const NerdConstraint* c, const NerdMetrics* metr
     return out;
 }
 
-static void draw_text(cairo_t* cr, PangoLayout* layout, const PenguinCell* cell) {
+static void draw_text(cairo_t* cr, PangoLayout* layout, const PinwinCell* cell) {
     const PangoFontDescription* desc = g_font;
     int32_t baseline;
 
-    if ((cell->flags & PENGUIN_BOLD) && (cell->flags & PENGUIN_ITALIC))
+    if ((cell->flags & PINWIN_BOLD) && (cell->flags & PINWIN_ITALIC))
         desc = g_font_bold_italic;
-    else if (cell->flags & PENGUIN_BOLD)
+    else if (cell->flags & PINWIN_BOLD)
         desc = g_font_bold;
-    else if (cell->flags & PENGUIN_ITALIC)
+    else if (cell->flags & PINWIN_ITALIC)
         desc = g_font_italic;
 
     pango_layout_set_font_description(layout, desc);
@@ -522,7 +522,7 @@ static void draw_text(cairo_t* cr, PangoLayout* layout, const PenguinCell* cell)
      * back to another font for a glyph (box drawing, nerd icons, emoji).
      * Pin the baseline to the cell's instead, or those glyphs drift off the
      * row they belong to. */
-    if (getenv("PENGUIN_DEBUG") && cell->y <= 5) {
+    if (getenv("PINWIN_DEBUG") && cell->y <= 5) {
         char hex[3 * 32 + 1];
         size_t i;
         PangoLayoutIter* it = pango_layout_get_iter(layout);
@@ -618,12 +618,12 @@ static void fill_rect(cairo_t* cr, double x, double y, double w, double h) {
  * (src/font/sprite/draw/{block,braille,powerline}.zig in the pinned commit),
  * and the geometry below is a port of those sprites. Returns 1 when cp was
  * drawn. */
-static int draw_sprite(cairo_t* cr, const PenguinCell* cell, uint32_t cp) {
+static int draw_sprite(cairo_t* cr, const PinwinCell* cell, uint32_t cp) {
     const double cw = g_cell_w;
     const double ch = g_cell_h;
     const double x = cell->x * cw;
     const double y = cell->y * ch;
-    const double w = cell->wide == PENGUIN_WIDE_WIDE ? 2 * cw : cw;
+    const double w = cell->wide == PINWIN_WIDE_WIDE ? 2 * cw : cw;
 
     if (cp >= 0x25E2 && cp <= 0x25E5) {
         /* Ghostty draws the four corner triangles as full-cell sprites. */
@@ -764,35 +764,35 @@ static int draw_sprite(cairo_t* cr, const PenguinCell* cell, uint32_t cp) {
     return 0;
 }
 
-static void draw_cursor(cairo_t* cr, const PenguinCursor* cursor, const char* text,
+static void draw_cursor(cairo_t* cr, const PinwinCursor* cursor, const char* text,
                         int text_len) {
     uint8_t bg[3], fg[3];
     double x = cursor->x * g_cell_w;
     double y = cursor->y * g_cell_h;
 
-    penguin_colors(bg, fg);
+    pinwin_colors(bg, fg);
     set_rgb(cr, fg[0], fg[1], fg[2]);
 
     switch (cursor->style) {
-        case PENGUIN_CURSOR_BAR:
+        case PINWIN_CURSOR_BAR:
             cairo_rectangle(cr, x, y, 2, g_cell_h);
             cairo_fill(cr);
             break;
-        case PENGUIN_CURSOR_UNDERLINE:
+        case PINWIN_CURSOR_UNDERLINE:
             cairo_rectangle(cr, x, y + g_cell_h - 2, g_cell_w, 2);
             cairo_fill(cr);
             break;
-        case PENGUIN_CURSOR_BLOCK_HOLLOW:
+        case PINWIN_CURSOR_BLOCK_HOLLOW:
             cairo_set_line_width(cr, 1);
             cairo_rectangle(cr, x + 0.5, y + 0.5, g_cell_w - 1, g_cell_h - 1);
             cairo_stroke(cr);
             break;
-        case PENGUIN_CURSOR_BLOCK:
+        case PINWIN_CURSOR_BLOCK:
         default:
             cairo_rectangle(cr, x, y, g_cell_w, g_cell_h);
             cairo_fill(cr);
             if (text && text_len > 0 && !cursor->wide_tail) {
-                PenguinCell cell;
+                PinwinCell cell;
                 memset(&cell, 0, sizeof(cell));
                 cell.x = cursor->x;
                 cell.y = cursor->y;
@@ -823,7 +823,7 @@ struct image_cache {
 static struct image_cache* g_images;
 static uint64_t g_image_frame;
 
-static cairo_surface_t* image_surface(const PenguinImage* img, uint64_t frame) {
+static cairo_surface_t* image_surface(const PinwinImage* img, uint64_t frame) {
     struct image_cache* e;
     int32_t w = img->image_w, h = img->image_h;
 
@@ -896,10 +896,10 @@ static void image_cache_evict(uint64_t frame) {
 }
 
 static void draw_images(cairo_t* cr) {
-    PenguinImage img;
+    PinwinImage img;
     const uint64_t frame = ++g_image_frame;
 
-    while (penguin_image_next(&img)) {
+    while (pinwin_image_next(&img)) {
         cairo_surface_t* s = image_surface(&img, frame);
         if (!s) continue;
         if (img.sw <= 0 || img.sh <= 0 || img.w <= 0 || img.h <= 0) continue;
@@ -922,8 +922,8 @@ static void resolve_layout_monitor(void);
 static void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
                     gpointer user_data) {
     uint8_t bg[3], fg[3];
-    PenguinCell cell;
-    PenguinCursor cursor;
+    PinwinCell cell;
+    PinwinCursor cursor;
     char cursor_text[32];
     int cursor_text_len = 0;
     int have_cursor_text = 0;
@@ -932,21 +932,21 @@ static void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
     (void)user_data;
 
     if (g_layout_latch) resolve_layout_monitor();
-    if (getenv("PENGUIN_DEBUG"))
-        fprintf(stderr, "penguin: draw %dx%d latch=%d side=%d margins t%d b%d l%d r%d\n",
+    if (getenv("PINWIN_DEBUG"))
+        fprintf(stderr, "pinwin: draw %dx%d latch=%d side=%d margins t%d b%d l%d r%d\n",
                 width, height, g_layout_latch, g_layout.side, g_layout.top,
                 g_layout.bottom, g_layout.left, g_layout.right);
 
-    penguin_colors(bg, fg);
+    pinwin_colors(bg, fg);
     set_rgb(cr, g_theme_bg[0], g_theme_bg[1], g_theme_bg[2]);
     cairo_rectangle(cr, 0, 0, width, height);
     cairo_fill(cr);
 
-    if (!penguin_frame_begin()) return;
+    if (!pinwin_frame_begin()) return;
 
     PangoLayout* layout = pango_cairo_create_layout(cr);
 
-    while (penguin_cell_next(&cell)) {
+    while (pinwin_cell_next(&cell)) {
         if (cell.has_bg) {
             set_rgb(cr, cell.br, cell.bg, cell.bb);
             int row_height = cell.y == height / g_cell_h - 1
@@ -956,32 +956,32 @@ static void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
             cairo_fill(cr);
         }
     }
-    penguin_frame_rewind();
-    while (penguin_cell_next(&cell)) {
-        if (cell.wide == PENGUIN_WIDE_SPACER_TAIL) continue; /* do not render */
-        if (cell.len == 0 || (cell.flags & PENGUIN_INVISIBLE)) continue;
+    pinwin_frame_rewind();
+    while (pinwin_cell_next(&cell)) {
+        if (cell.wide == PINWIN_WIDE_SPACER_TAIL) continue; /* do not render */
+        if (cell.len == 0 || (cell.flags & PINWIN_INVISIBLE)) continue;
         set_rgb(cr, cell.has_fg ? cell.fr : g_theme_fg[0],
                 cell.has_fg ? cell.fg : g_theme_fg[1],
                 cell.has_fg ? cell.fb : g_theme_fg[2]);
         if (!draw_sprite(cr, &cell, first_codepoint(cell.text, cell.len)))
             draw_text(cr, layout, &cell);
 
-        if ((cell.flags & PENGUIN_UNDERLINE) || (cell.flags & PENGUIN_STRIKETHROUGH)) {
+        if ((cell.flags & PINWIN_UNDERLINE) || (cell.flags & PINWIN_STRIKETHROUGH)) {
             double x = cell.x * g_cell_w;
             double y = cell.y * g_cell_h;
             cairo_set_line_width(cr, 1);
-            if (cell.flags & PENGUIN_UNDERLINE) {
+            if (cell.flags & PINWIN_UNDERLINE) {
                 cairo_move_to(cr, x, y + g_ascent + 1.5);
                 cairo_line_to(cr, x + g_cell_w, y + g_ascent + 1.5);
             }
-            if (cell.flags & PENGUIN_STRIKETHROUGH) {
+            if (cell.flags & PINWIN_STRIKETHROUGH) {
                 cairo_move_to(cr, x, y + g_cell_h / 2.0);
                 cairo_line_to(cr, x + g_cell_w, y + g_cell_h / 2.0);
             }
             cairo_stroke(cr);
         }
 
-        if (penguin_cursor(&cursor) && cursor.has_value && cursor.x == cell.x &&
+        if (pinwin_cursor(&cursor) && cursor.has_value && cursor.x == cell.x &&
             cursor.y == cell.y && cell.len > 0 && !have_cursor_text) {
             cursor_text_len = cell.len < (int32_t)sizeof(cursor_text) - 1
                                   ? cell.len
@@ -994,12 +994,12 @@ static void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
 
     g_object_unref(layout);
 
-    if (penguin_cursor(&cursor) && cursor.has_value)
+    if (pinwin_cursor(&cursor) && cursor.has_value)
         draw_cursor(cr, &cursor, have_cursor_text ? cursor_text : NULL,
                     have_cursor_text ? cursor_text_len : 0);
 
     draw_images(cr);
-    penguin_frame_end();
+    pinwin_frame_end();
 }
 
 /* ---- geometry ----------------------------------------------------------- */
@@ -1017,7 +1017,7 @@ static void apply_size(void) {
         if (rows != g_rows || g_cols != g_grid_cols) {
             g_rows = rows;
             g_grid_cols = g_cols;
-            penguin_size(g_cols, g_rows, g_cell_w, g_cell_h);
+            pinwin_size(g_cols, g_rows, g_cell_w, g_cell_h);
             glue_pty_resize(g_cols, g_rows, g_cols * g_cell_w, g_rows * g_cell_h);
         }
     }
@@ -1057,7 +1057,7 @@ static gboolean on_pty_readable(gint fd, GIOCondition condition, gpointer user_d
     for (;;) {
         ssize_t n = read(fd, buf, sizeof(buf));
         if (n > 0) {
-            penguin_pty_data(buf, (size_t)n);
+            pinwin_pty_data(buf, (size_t)n);
             continue;
         }
         if (n < 0 && errno == EINTR) continue;
@@ -1116,14 +1116,14 @@ static void spawn_pty(void) {
 
     pid = forkpty(&fd, NULL, NULL, &ws);
     if (pid < 0) {
-        fprintf(stderr, "penguin: forkpty: %s\n", strerror(errno));
+        fprintf(stderr, "pinwin: forkpty: %s\n", strerror(errno));
         exit(1);
     }
     if (pid == 0) {
         setenv("TERM", term, 1);
         setenv("COLORTERM", "truecolor", 1);
         execvp(g_argv[0], g_argv);
-        fprintf(stderr, "penguin: %s: %s\n", g_argv[0], strerror(errno));
+        fprintf(stderr, "pinwin: %s: %s\n", g_argv[0], strerror(errno));
         _exit(127);
     }
 
@@ -1207,28 +1207,28 @@ int glue_decode_png(const uint8_t* data, size_t len, uint8_t** out_pixels,
 
 static uint32_t mods_from_gdk(GdkModifierType state) {
     uint32_t mods = 0;
-    if (state & GDK_SHIFT_MASK) mods |= PENGUIN_MOD_SHIFT;
-    if (state & GDK_CONTROL_MASK) mods |= PENGUIN_MOD_CTRL;
-    if (state & GDK_ALT_MASK) mods |= PENGUIN_MOD_ALT;
-    if (state & GDK_SUPER_MASK) mods |= PENGUIN_MOD_SUPER;
-    if (state & GDK_LOCK_MASK) mods |= PENGUIN_MOD_CAPS_LOCK;
+    if (state & GDK_SHIFT_MASK) mods |= PINWIN_MOD_SHIFT;
+    if (state & GDK_CONTROL_MASK) mods |= PINWIN_MOD_CTRL;
+    if (state & GDK_ALT_MASK) mods |= PINWIN_MOD_ALT;
+    if (state & GDK_SUPER_MASK) mods |= PINWIN_MOD_SUPER;
+    if (state & GDK_LOCK_MASK) mods |= PINWIN_MOD_CAPS_LOCK;
     return mods;
 }
 
-static int32_t penguin_button_from_gdk(guint button) {
+static int32_t pinwin_button_from_gdk(guint button) {
     switch (button) {
         case GDK_BUTTON_PRIMARY:
-            return PENGUIN_MOUSE_LEFT;
+            return PINWIN_MOUSE_LEFT;
         case GDK_BUTTON_MIDDLE:
-            return PENGUIN_MOUSE_MIDDLE;
+            return PINWIN_MOUSE_MIDDLE;
         case GDK_BUTTON_SECONDARY:
-            return PENGUIN_MOUSE_RIGHT;
+            return PINWIN_MOUSE_RIGHT;
         case 8:
-            return PENGUIN_MOUSE_EIGHT;
+            return PINWIN_MOUSE_EIGHT;
         case 9:
-            return PENGUIN_MOUSE_NINE;
+            return PINWIN_MOUSE_NINE;
         default:
-            return PENGUIN_MOUSE_UNKNOWN;
+            return PINWIN_MOUSE_UNKNOWN;
     }
 }
 
@@ -1282,7 +1282,7 @@ static gboolean on_key_pressed(GtkEventControllerKey* controller, guint keyval,
         is_modifier = gdk_key_event_is_modifier(event);
         g_key_layout = (int)gdk_key_event_get_layout(event);
     }
-    penguin_key(PENGUIN_KEY_PRESS, (int32_t)keyval, (int32_t)keycode,
+    pinwin_key(PINWIN_KEY_PRESS, (int32_t)keyval, (int32_t)keycode,
                 mods_from_gdk(state), consumed, is_modifier);
     return TRUE;
 }
@@ -1301,7 +1301,7 @@ static gboolean on_key_released(GtkEventControllerKey* controller, guint keyval,
             gdk_key_event_get_consumed_modifiers(event));
         is_modifier = gdk_key_event_is_modifier(event);
     }
-    penguin_key(PENGUIN_KEY_RELEASE, (int32_t)keyval, (int32_t)keycode,
+    pinwin_key(PINWIN_KEY_RELEASE, (int32_t)keyval, (int32_t)keycode,
                 mods_from_gdk(state), consumed, is_modifier);
     return TRUE;
 }
@@ -1319,7 +1319,7 @@ static void on_click_pressed(GtkGestureClick* gesture, int n_press, double x,
     g_last_x = x;
     g_last_y = y;
     button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
-    penguin_mouse(PENGUIN_MOUSE_PRESS, x, y, penguin_button_from_gdk(button),
+    pinwin_mouse(PINWIN_MOUSE_PRESS, x, y, pinwin_button_from_gdk(button),
                   motion_mods(GTK_EVENT_CONTROLLER(gesture)));
 }
 
@@ -1329,7 +1329,7 @@ static void on_click_released(GtkGestureClick* gesture, int n_press, double x,
     (void)n_press;
     (void)user_data;
     button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
-    penguin_mouse(PENGUIN_MOUSE_RELEASE, x, y, penguin_button_from_gdk(button),
+    pinwin_mouse(PINWIN_MOUSE_RELEASE, x, y, pinwin_button_from_gdk(button),
                   motion_mods(GTK_EVENT_CONTROLLER(gesture)));
 }
 
@@ -1338,7 +1338,7 @@ static void on_motion(GtkEventControllerMotion* controller, double x, double y,
     (void)user_data;
     g_last_x = x;
     g_last_y = y;
-    penguin_mouse(PENGUIN_MOUSE_MOTION, x, y, PENGUIN_MOUSE_UNKNOWN,
+    pinwin_mouse(PINWIN_MOUSE_MOTION, x, y, PINWIN_MOUSE_UNKNOWN,
                   motion_mods(GTK_EVENT_CONTROLLER(controller)));
 }
 
@@ -1347,7 +1347,7 @@ static gboolean on_scroll(GtkEventControllerScroll* controller, double dx, doubl
     GdkModifierType state =
         gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(controller));
     (void)user_data;
-    penguin_scroll(g_last_x, g_last_y, dx, dy,
+    pinwin_scroll(g_last_x, g_last_y, dx, dy,
                    (int32_t)gtk_event_controller_scroll_get_unit(controller),
                    mods_from_gdk(state));
     return TRUE;
@@ -1356,13 +1356,13 @@ static gboolean on_scroll(GtkEventControllerScroll* controller, double dx, doubl
 static void on_focus_enter(GtkEventControllerFocus* controller, gpointer user_data) {
     (void)controller;
     (void)user_data;
-    penguin_focus(1);
+    pinwin_focus(1);
 }
 
 static void on_focus_leave(GtkEventControllerFocus* controller, gpointer user_data) {
     (void)controller;
     (void)user_data;
-    penguin_focus(0);
+    pinwin_focus(0);
 }
 
 /* ---- window ------------------------------------------------------------- */
@@ -1400,7 +1400,7 @@ static void attach_controllers(GtkWidget* area) {
     gtk_widget_add_controller(area, focus);
 }
 
-/* ---- layout surfaces (add-penguin-tray-options) -------------------------- */
+/* ---- layout surfaces (add-pinwin-tray-options) -------------------------- */
 
 /* Width follows the applied column count. GTK4 has no gtk_window_resize and
  * gtk_window_set_default_size does not move a mapped window, so the drawing
@@ -1420,27 +1420,27 @@ static void apply_panel_width(void) {
 static void apply_layout_surfaces(void) {
     int32_t margin, reservation;
 
-    if (!penguin_side_geometry(&g_layout, g_cols * g_cell_w, &margin, &reservation))
+    if (!pinwin_side_geometry(&g_layout, g_cols * g_cell_w, &margin, &reservation))
         return; /* callers validate first; this is belt and braces */
 
     gtk_layer_set_anchor(g_win, GTK_LAYER_SHELL_EDGE_LEFT,
-                         g_layout.side == PENGUIN_SIDE_LEFT);
+                         g_layout.side == PINWIN_SIDE_LEFT);
     gtk_layer_set_anchor(g_win, GTK_LAYER_SHELL_EDGE_RIGHT,
-                         g_layout.side == PENGUIN_SIDE_RIGHT);
+                         g_layout.side == PINWIN_SIDE_RIGHT);
     gtk_layer_set_anchor(g_win, GTK_LAYER_SHELL_EDGE_TOP, TRUE);
     gtk_layer_set_anchor(g_win, GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
     gtk_layer_set_margin(g_win, GTK_LAYER_SHELL_EDGE_LEFT,
-                         g_layout.side == PENGUIN_SIDE_LEFT ? margin : 0);
+                         g_layout.side == PINWIN_SIDE_LEFT ? margin : 0);
     gtk_layer_set_margin(g_win, GTK_LAYER_SHELL_EDGE_RIGHT,
-                         g_layout.side == PENGUIN_SIDE_RIGHT ? margin : 0);
+                         g_layout.side == PINWIN_SIDE_RIGHT ? margin : 0);
     gtk_layer_set_margin(g_win, GTK_LAYER_SHELL_EDGE_TOP, g_layout.top);
     gtk_layer_set_margin(g_win, GTK_LAYER_SHELL_EDGE_BOTTOM, g_layout.bottom);
 
     if (g_reserve) {
         gtk_layer_set_anchor(g_reserve, GTK_LAYER_SHELL_EDGE_LEFT,
-                             g_layout.side == PENGUIN_SIDE_LEFT);
+                             g_layout.side == PINWIN_SIDE_LEFT);
         gtk_layer_set_anchor(g_reserve, GTK_LAYER_SHELL_EDGE_RIGHT,
-                             g_layout.side == PENGUIN_SIDE_RIGHT);
+                             g_layout.side == PINWIN_SIDE_RIGHT);
         gtk_layer_set_anchor(g_reserve, GTK_LAYER_SHELL_EDGE_TOP, TRUE);
         gtk_layer_set_anchor(g_reserve, GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
         gtk_layer_set_margin(g_reserve, GTK_LAYER_SHELL_EDGE_LEFT, 0);
@@ -1457,18 +1457,18 @@ static void apply_layout_surfaces(void) {
  * cell metrics. Anything unusable falls back to the launch baseline with a
  * diagnostic and without rewriting the file (design D4). */
 static void load_saved_layout(GdkMonitor* monitor) {
-    PenguinLayout saved;
+    PinwinLayout saved;
     GdkRectangle geom;
     int config_result;
 
     saved.cols = g_cols; /* an absent cols key keeps the launch COLS */
-    config_result = penguin_config_load(&saved);
+    config_result = pinwin_config_load(&saved);
 
-    if (config_result != PENGUIN_CONFIG_LOADED) return;
+    if (config_result != PINWIN_CONFIG_LOADED) return;
     gdk_monitor_get_geometry(monitor, &geom);
-    if (penguin_layout_validate(&saved, saved.cols, g_cell_w, g_cell_h,
-                                geom.width, geom.height) != PENGUIN_GEOM_OK) {
-        fprintf(stderr, "penguin: saved layout unusable on this output; "
+    if (pinwin_layout_validate(&saved, saved.cols, g_cell_w, g_cell_h,
+                                geom.width, geom.height) != PINWIN_GEOM_OK) {
+        fprintf(stderr, "pinwin: saved layout unusable on this output; "
                         "using launch defaults\n");
         return;
     }
@@ -1478,7 +1478,7 @@ static void load_saved_layout(GdkMonitor* monitor) {
 }
 
 /* The instance's currently applied layout (options window initialisation). */
-void glue_current_layout(PenguinLayout* out) { *out = g_layout; }
+void glue_current_layout(PinwinLayout* out) { *out = g_layout; }
 
 /* Geometry inputs for layout validation (options window Apply). */
 void glue_layout_metrics(int32_t* cols, int32_t* cell_w, int32_t* cell_h,
@@ -1496,23 +1496,23 @@ void glue_layout_metrics(int32_t* cols, int32_t* cell_w, int32_t* cell_h,
     }
 }
 
-int glue_publish_layout(const PenguinLayout* layout) {
-    if (!g_monitor || !g_win) return PENGUIN_GEOM_ERR_METRICS;
+int glue_publish_layout(const PinwinLayout* layout) {
+    if (!g_monitor || !g_win) return PINWIN_GEOM_ERR_METRICS;
     {
         GdkRectangle geom;
         gdk_monitor_get_geometry(g_monitor, &geom);
         /* Validate the staged column count, not the one already applied: a
          * rejected Apply must leave g_cols untouched (design D3). */
-        if (penguin_layout_validate(layout, layout->cols, g_cell_w, g_cell_h,
-                                    geom.width, geom.height) != PENGUIN_GEOM_OK)
-            return PENGUIN_GEOM_ERR_METRICS;
+        if (pinwin_layout_validate(layout, layout->cols, g_cell_w, g_cell_h,
+                                    geom.width, geom.height) != PINWIN_GEOM_OK)
+            return PINWIN_GEOM_ERR_METRICS;
     }
     g_layout = *layout;
     g_cols = layout->cols;
     apply_panel_width();
     apply_layout_surfaces();
     apply_size();
-    return PENGUIN_GEOM_OK;
+    return PINWIN_GEOM_OK;
 }
 
 static void on_win_map(GtkWidget* widget, gpointer user_data) {
@@ -1532,7 +1532,7 @@ static void on_win_map(GtkWidget* widget, gpointer user_data) {
         GtkApplication* app = GTK_APPLICATION(g_application_get_default());
         GtkWindow* reserve = GTK_WINDOW(gtk_application_window_new(app));
         gtk_layer_init_for_window(reserve);
-        gtk_layer_set_namespace(reserve, "penguin-reserve");
+        gtk_layer_set_namespace(reserve, "pinwin-reserve");
         gtk_layer_set_layer(reserve, GTK_LAYER_SHELL_LAYER_BOTTOM);
         gtk_window_set_default_size(reserve, 1, -1);
         gtk_widget_set_opacity(GTK_WIDGET(reserve), 0.0);
@@ -1563,12 +1563,12 @@ static void on_activate(GtkApplication* app, gpointer user_data) {
     g_win = GTK_WINDOW(win);
 
     gtk_layer_init_for_window(g_win);
-    gtk_layer_set_namespace(g_win, "penguin");
+    gtk_layer_set_namespace(g_win, "pinwin");
     gtk_layer_set_layer(g_win, GTK_LAYER_SHELL_LAYER_OVERLAY);
     gtk_layer_set_keyboard_mode(g_win, (GtkLayerShellKeyboardMode)g_keyboard_mode);
 
     cell_metrics_update(win);
-    g_layout = penguin_layout_default(g_cols, g_gutter);
+    g_layout = pinwin_layout_default(g_cols, g_gutter);
 
     g_area = gtk_drawing_area_new();
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(g_area), on_draw, NULL, NULL);
@@ -1596,8 +1596,8 @@ int glue_init(int32_t cols, int32_t gutter, int32_t keyboard_mode) {
     char theme_name[128];
 
     theme_colours(theme_name, sizeof(theme_name), g_theme_bg, g_theme_fg);
-    if (getenv("PENGUIN_DEBUG") && theme_name[0])
-        fprintf(stderr, "penguin: theme %s bg=#%02x%02x%02x fg=#%02x%02x%02x\n",
+    if (getenv("PINWIN_DEBUG") && theme_name[0])
+        fprintf(stderr, "pinwin: theme %s bg=#%02x%02x%02x fg=#%02x%02x%02x\n",
                 theme_name, g_theme_bg[0], g_theme_bg[1], g_theme_bg[2],
                 g_theme_fg[0], g_theme_fg[1], g_theme_fg[2]);
     g_cols = cols;
@@ -1605,11 +1605,11 @@ int glue_init(int32_t cols, int32_t gutter, int32_t keyboard_mode) {
     g_keyboard_mode = keyboard_mode;
 
     if (!gtk_init_check()) {
-        fprintf(stderr, "penguin: no display\n");
+        fprintf(stderr, "pinwin: no display\n");
         return 0;
     }
     if (!gtk_layer_is_supported()) {
-        fprintf(stderr, "penguin: compositor does not support wlr-layer-shell\n");
+        fprintf(stderr, "pinwin: compositor does not support wlr-layer-shell\n");
         return 0;
     }
 

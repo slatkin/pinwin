@@ -1,15 +1,15 @@
-//! penguin — a terminal docked at the left edge of one monitor via
+//! pinwin — a terminal docked at the left edge of one monitor via
 //! wlr-layer-shell, running one command (mbv by default).
 //!
 //! Layout: `main.zig` owns the terminal (libghostty-vt), the render state and
 //! the input encoders; `glue.c` owns GTK4, gtk4-layer-shell, Pango, cairo,
-//! GdkPixbuf and the PTY. `penguin.h` is the whole interface between them and
+//! GdkPixbuf and the PTY. `pinwin.h` is the whole interface between them and
 //! the only C header besides `ghostty/vt.h` that this file imports: Zig's
-//! translate-c cannot consume the GTK4 headers (see penguin.h).
+//! translate-c cannot consume the GTK4 headers (see pinwin.h).
 //!
 //! Notes recorded while pinning libghostty-vt (ghostty-org/ghostty
 //! 3a3047f6b62a791fd8b12d9f07a85b3d2160370b) — task 1.3 of
-//! `add-penguin-panel`. See design.md D2/D7/D8.
+//! `add-pinwin-panel`. See design.md D2/D7/D8.
 //!
 //! Terminal (include/ghostty/vt/terminal.h):
 //!   ghostty_terminal_new(allocator, &term, cols, rows)
@@ -89,11 +89,11 @@ var cell_h: u32 = 1;
 var frame_open = false;
 var has_pending = false;
 var last_emitted_cp: u32 = 0;
-var pending_cell: c.PenguinCell = undefined;
+var pending_cell: c.PinwinCell = undefined;
 var in_row = false;
 var cell_x: i32 = 0;
 var cell_y: i32 = 0;
-var frame_cursor: c.PenguinCursor = undefined;
+var frame_cursor: c.PinwinCursor = undefined;
 var default_bg: c.GhosttyColorRgb = undefined;
 var default_fg: c.GhosttyColorRgb = undefined;
 
@@ -145,9 +145,9 @@ var any_button_pressed = false;
 /// time, before any enter; programs expect balanced reports, so only actual
 /// changes are reported.
 var focus_gained = false;
-/// Left/right, up/down remainders of a scroll in notches (see penguin_scroll).
+/// Left/right, up/down remainders of a scroll in notches (see pinwin_scroll).
 var scroll_acc: [2]f64 = .{ 0, 0 };
-/// PENGUIN_DEBUG=1 routes libghostty-vt's own log through stderr.
+/// PINWIN_DEBUG=1 routes libghostty-vt's own log through stderr.
 var debug_enabled = false;
 
 pub fn main(init: std.process.Init.Minimal) void {
@@ -156,11 +156,11 @@ pub fn main(init: std.process.Init.Minimal) void {
     const keyboard = keyboardMode(init.environ);
 
     const argv = commandArgv(init.args) catch |err| {
-        std.debug.print("penguin: {s}\n", .{@errorName(err)});
+        std.debug.print("pinwin: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
 
-    debug_enabled = std.process.Environ.getPosix(init.environ, "PENGUIN_DEBUG") != null;
+    debug_enabled = std.process.Environ.getPosix(init.environ, "PINWIN_DEBUG") != null;
 
     // Process-global, and must be installed before the terminal exists.
     _ = c.ghostty_sys_set(c.GHOSTTY_SYS_OPT_DECODE_PNG, @ptrCast(&decodePng));
@@ -175,34 +175,34 @@ pub fn main(init: std.process.Init.Minimal) void {
 fn envSetting(environ: std.process.Environ, name: []const u8, default: u32, must_be_positive: bool) u32 {
     const raw = std.process.Environ.getPosix(environ, name) orelse return default;
     const value = std.fmt.parseInt(u32, raw, 10) catch {
-        std.debug.print("penguin: {s}: expected a non-negative integer, got '{s}'\n", .{ name, raw });
+        std.debug.print("pinwin: {s}: expected a non-negative integer, got '{s}'\n", .{ name, raw });
         std.process.exit(2);
     };
     if (must_be_positive and value == 0) {
-        std.debug.print("penguin: {s}: must be greater than 0\n", .{name});
+        std.debug.print("pinwin: {s}: must be greater than 0\n", .{name});
         std.process.exit(2);
     }
     return value;
 }
 
-/// `PENGUIN_KEYBOARD`: layer-shell keyboard interactivity. `on-demand` (the
+/// `PINWIN_KEYBOARD`: layer-shell keyboard interactivity. `on-demand` (the
 /// default) means the panel only gets the keyboard after a click; `exclusive`
 /// takes it as soon as the panel opens; `none` never takes it.
 fn keyboardMode(environ: std.process.Environ) i32 {
-    const raw = std.process.Environ.getPosix(environ, "PENGUIN_KEYBOARD") orelse return c.PENGUIN_KEYBOARD_ON_DEMAND;
-    if (std.mem.eql(u8, raw, "on-demand")) return c.PENGUIN_KEYBOARD_ON_DEMAND;
-    if (std.mem.eql(u8, raw, "exclusive")) return c.PENGUIN_KEYBOARD_EXCLUSIVE;
-    if (std.mem.eql(u8, raw, "none")) return c.PENGUIN_KEYBOARD_NONE;
-    std.debug.print("penguin: PENGUIN_KEYBOARD: expected on-demand, exclusive or none, got '{s}'\n", .{raw});
+    const raw = std.process.Environ.getPosix(environ, "PINWIN_KEYBOARD") orelse return c.PINWIN_KEYBOARD_ON_DEMAND;
+    if (std.mem.eql(u8, raw, "on-demand")) return c.PINWIN_KEYBOARD_ON_DEMAND;
+    if (std.mem.eql(u8, raw, "exclusive")) return c.PINWIN_KEYBOARD_EXCLUSIVE;
+    if (std.mem.eql(u8, raw, "none")) return c.PINWIN_KEYBOARD_NONE;
+    std.debug.print("pinwin: PINWIN_KEYBOARD: expected on-demand, exclusive or none, got '{s}'\n", .{raw});
     std.process.exit(2);
 }
 
-/// The command to run in the panel, NUL-terminated for execvp: penguin's own
+/// The command to run in the panel, NUL-terminated for execvp: pinwin's own
 /// arguments, or `mbv` when it has none.
 fn commandArgv(args: std.process.Args) ![:null]?[*:0]const u8 {
     var list: std.ArrayList(?[*:0]const u8) = .empty;
     var iterator = std.process.Args.iterate(args);
-    _ = iterator.skip(); // argv[0], penguin itself
+    _ = iterator.skip(); // argv[0], pinwin itself
     while (iterator.next()) |arg| try list.append(allocator, arg.ptr);
     if (list.items.len == 0) try list.append(allocator, "mbv");
     try list.append(allocator, null);
@@ -293,14 +293,14 @@ fn decodePng(
 }
 
 /// Called by glue.c whenever the grid changes.
-export fn penguin_size(cols: i32, rows: i32, cw: i32, ch: i32) void {
+export fn pinwin_size(cols: i32, rows: i32, cw: i32, ch: i32) void {
     grid_cols = @intCast(@max(cols, 1));
     grid_rows = @intCast(@max(rows, 1));
     cell_w = @intCast(@max(cw, 1));
     cell_h = @intCast(@max(ch, 1));
 
     ensureTerminal() catch |err| {
-        std.debug.print("penguin: {s}\n", .{@errorName(err)});
+        std.debug.print("pinwin: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
     _ = c.ghostty_terminal_resize(term, grid_cols, grid_rows, cell_w, cell_h);
@@ -315,7 +315,7 @@ export fn penguin_size(cols: i32, rows: i32, cw: i32, ch: i32) void {
 }
 
 /// Called by glue.c with bytes read from the PTY.
-export fn penguin_pty_data(data: [*c]const u8, len: usize) void {
+export fn pinwin_pty_data(data: [*c]const u8, len: usize) void {
     if (term == null) return;
     c.ghostty_terminal_vt_write(term, data, len);
     c.glue_queue_draw();
@@ -327,7 +327,7 @@ export fn penguin_pty_data(data: [*c]const u8, len: usize) void {
 /// redraw for its own reasons too (focus, exposure, resize), and a frame that
 /// skipped the cells it thinks are unchanged would leave those areas blank,
 /// because the callback paints the panel's background first.
-export fn penguin_frame_begin() i32 {
+export fn pinwin_frame_begin() i32 {
     if (term == null) return 0;
     if (c.ghostty_render_state_update(render_state, term) != c.GHOSTTY_SUCCESS) return 0;
 
@@ -340,7 +340,7 @@ export fn penguin_frame_begin() i32 {
 
     _ = c.ghostty_render_state_get(render_state, c.GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, @ptrCast(&row_iter));
 
-    frame_cursor = std.mem.zeroes(c.PenguinCursor);
+    frame_cursor = std.mem.zeroes(c.PinwinCursor);
     var cursor = std.mem.zeroes(c.GhosttyRenderStateCursor);
     cursor.size = @sizeOf(c.GhosttyRenderStateCursor);
     if (c.ghostty_render_state_get(render_state, c.GHOSTTY_RENDER_STATE_DATA_CURSOR, &cursor) == c.GHOSTTY_SUCCESS and
@@ -365,7 +365,7 @@ export fn penguin_frame_begin() i32 {
 
 /// Revisit the captured cells after painting all backgrounds, so glyphs may
 /// extend into neighboring cells without being covered by their backgrounds.
-export fn penguin_frame_rewind() void {
+export fn pinwin_frame_rewind() void {
     if (!frame_open) return;
     _ = c.ghostty_render_state_get(render_state, c.GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, @ptrCast(&row_iter));
     has_pending = false;
@@ -377,7 +377,7 @@ export fn penguin_frame_rewind() void {
 
 /// The next raw cell of the frame, before grapheme joining. False at the end
 /// of the grid.
-fn nextRawCell(out: [*c]c.PenguinCell) bool {
+fn nextRawCell(out: [*c]c.PinwinCell) bool {
     while (true) {
         if (in_row) {
             if (c.ghostty_render_state_row_cells_next(cells)) {
@@ -407,7 +407,7 @@ fn nextRawCell(out: [*c]c.PenguinCell) bool {
 /// joins ordinary combining marks, but it leaves emoji modifiers, variation
 /// selectors, keycaps and the base after a zero-width joiner in their own
 /// cells, so an emoji arrives as two or three cells and each half is drawn on
-/// its own. Ghostty's own renderer shows them as one glyph, so penguin joins
+/// its own. Ghostty's own renderer shows them as one glyph, so pinwin joins
 /// them back together here (see design D5).
 fn graphemeExtend(cp: u32) bool {
     return switch (cp) {
@@ -452,7 +452,7 @@ fn countRegionals(text: []const u8) u32 {
 /// Join `src` into `dst` when the two cells are halves of one grapheme
 /// cluster. The joined cell keeps `dst`'s position and width; `src` keeps its
 /// colours (its background is still painted) but loses its text.
-fn mergeGrapheme(dst: [*c]c.PenguinCell, src: [*c]c.PenguinCell) bool {
+fn mergeGrapheme(dst: [*c]c.PinwinCell, src: [*c]c.PinwinCell) bool {
     if (dst.*.len <= 0 or src.*.len <= 0) return false;
     const src_text = src.*.text[0..@intCast(src.*.len)];
     const dst_text = dst.*.text[0..@intCast(dst.*.len)];
@@ -508,9 +508,9 @@ fn isSpaceCodepoint(cp: u32) bool {
 /// How many cells this glyph may use once its Nerd Font constraint is applied
 /// (renderer/cell.zig constraintWidth): a symbol may extend into the next cell
 /// when that cell is empty, so icons don't get squeezed into one cell.
-fn constraintWidth(cell: *const c.PenguinCell, prev_cp: u32, next_cp: u32, at_row_end: bool) u32 {
+fn constraintWidth(cell: *const c.PinwinCell, prev_cp: u32, next_cp: u32, at_row_end: bool) u32 {
     const cp = firstCodepoint(cell.*.text[0..@intCast(cell.len)]);
-    if (cell.wide != c.PENGUIN_WIDE_NARROW) return 2;
+    if (cell.wide != c.PINWIN_WIDE_NARROW) return 2;
     if (!isSymbol(cp)) return 1;
     if (at_row_end) return 1;
     if (prev_cp != 0 and isSymbol(prev_cp) and !isGraphicsElement(prev_cp)) return 1;
@@ -520,10 +520,10 @@ fn constraintWidth(cell: *const c.PenguinCell, prev_cp: u32, next_cp: u32, at_ro
 
 /// Cells, with a one-cell lookahead so that a grapheme cluster split over
 /// several cells is drawn as a single glyph at the first of them.
-export fn penguin_cell_next(out: [*c]c.PenguinCell) i32 {
+export fn pinwin_cell_next(out: [*c]c.PinwinCell) i32 {
     if (!frame_open) return 0;
 
-    var next: c.PenguinCell = std.mem.zeroes(c.PenguinCell);
+    var next: c.PinwinCell = std.mem.zeroes(c.PinwinCell);
     while (nextRawCell(&next)) {
         if (!has_pending) {
             pending_cell = next;
@@ -554,7 +554,7 @@ export fn penguin_cell_next(out: [*c]c.PenguinCell) i32 {
 
 /// Give the pending cell its constraint width (it needs the cell to its right)
 /// and hand it to the caller.
-fn emitPending(out: [*c]c.PenguinCell, next: c.PenguinCell) void {
+fn emitPending(out: [*c]c.PinwinCell, next: c.PinwinCell) void {
     const same_row = next.len > 0 and next.y == pending_cell.y;
     const next_cp: u32 = if (same_row) firstCodepoint(next.text[0..@intCast(next.len)]) else 0;
     const prev_cp: u32 = if (pending_cell.x == 0) 0 else last_emitted_cp;
@@ -564,8 +564,8 @@ fn emitPending(out: [*c]c.PenguinCell, next: c.PenguinCell) void {
     last_emitted_cp = firstCodepoint(pending_cell.text[0..@intCast(pending_cell.len)]);
 }
 
-fn fillCell(out: [*c]c.PenguinCell) void {
-    out.* = std.mem.zeroes(c.PenguinCell);
+fn fillCell(out: [*c]c.PinwinCell) void {
+    out.* = std.mem.zeroes(c.PinwinCell);
     out.*.x = cell_x;
     out.*.y = cell_y;
 
@@ -611,13 +611,13 @@ fn fillCell(out: [*c]c.PenguinCell) void {
     }
 
     var flags: u32 = 0;
-    if (style.bold) flags |= c.PENGUIN_BOLD;
-    if (style.italic) flags |= c.PENGUIN_ITALIC;
-    if (style.inverse) flags |= c.PENGUIN_INVERSE;
-    if (style.faint) flags |= c.PENGUIN_FAINT;
-    if (style.invisible) flags |= c.PENGUIN_INVISIBLE;
-    if (style.strikethrough) flags |= c.PENGUIN_STRIKETHROUGH;
-    if (style.underline != 0) flags |= c.PENGUIN_UNDERLINE;
+    if (style.bold) flags |= c.PINWIN_BOLD;
+    if (style.italic) flags |= c.PINWIN_ITALIC;
+    if (style.inverse) flags |= c.PINWIN_INVERSE;
+    if (style.faint) flags |= c.PINWIN_FAINT;
+    if (style.invisible) flags |= c.PINWIN_INVISIBLE;
+    if (style.strikethrough) flags |= c.PINWIN_STRIKETHROUGH;
+    if (style.underline != 0) flags |= c.PINWIN_UNDERLINE;
     out.*.flags = flags;
 
     var fg = default_fg;
@@ -655,13 +655,13 @@ fn fillCell(out: [*c]c.PenguinCell) void {
     }
 }
 
-export fn penguin_cursor(out: [*c]c.PenguinCursor) i32 {
+export fn pinwin_cursor(out: [*c]c.PinwinCursor) i32 {
     if (!frame_open or frame_cursor.has_value == 0) return 0;
     out.* = frame_cursor;
     return 1;
 }
 
-export fn penguin_colors(bg: [*c]u8, fg: [*c]u8) void {
+export fn pinwin_colors(bg: [*c]u8, fg: [*c]u8) void {
     bg[0] = default_bg.r;
     bg[1] = default_bg.g;
     bg[2] = default_bg.b;
@@ -670,7 +670,7 @@ export fn penguin_colors(bg: [*c]u8, fg: [*c]u8) void {
     fg[2] = default_fg.b;
 }
 
-export fn penguin_image_next(out: [*c]c.PenguinImage) i32 {
+export fn pinwin_image_next(out: [*c]c.PinwinImage) i32 {
     if (!frame_open) return 0;
 
     if (!images_started) {
@@ -718,7 +718,7 @@ export fn penguin_image_next(out: [*c]c.PenguinImage) i32 {
             continue;
         if (pixels == null or image_w == 0 or image_h == 0) continue;
 
-        out.* = std.mem.zeroes(c.PenguinImage);
+        out.* = std.mem.zeroes(c.PinwinImage);
         out.*.image_id = image_id;
         out.*.generation = @intCast(generation);
         out.*.z = z;
@@ -763,7 +763,7 @@ export fn penguin_image_next(out: [*c]c.PenguinImage) i32 {
     return 0;
 }
 
-export fn penguin_frame_end() void {
+export fn pinwin_frame_end() void {
     if (!frame_open) return;
     frame_open = false;
     _ = c.ghostty_render_state_clean(render_state);
@@ -795,12 +795,12 @@ fn encodeMouse(out: [*c]u8, len: usize, written: *usize) c.GhosttyResult {
     return c.ghostty_mouse_encoder_encode(mouse_encoder, mouse_event, out, len, written);
 }
 
-export fn penguin_key(action: i32, keyval: i32, keycode: i32, mods: u32, consumed_mods: u32, is_modifier: i32) void {
+export fn pinwin_key(action: i32, keyval: i32, keycode: i32, mods: u32, consumed_mods: u32, is_modifier: i32) void {
     if (term == null) return;
 
     const key_action: c.GhosttyKeyAction = switch (action) {
-        c.PENGUIN_KEY_RELEASE => c.GHOSTTY_KEY_ACTION_RELEASE,
-        c.PENGUIN_KEY_REPEAT => c.GHOSTTY_KEY_ACTION_REPEAT,
+        c.PINWIN_KEY_RELEASE => c.GHOSTTY_KEY_ACTION_RELEASE,
+        c.PINWIN_KEY_REPEAT => c.GHOSTTY_KEY_ACTION_REPEAT,
         else => c.GHOSTTY_KEY_ACTION_PRESS,
     };
 
@@ -862,7 +862,7 @@ fn sendMouse(action: c.GhosttyMouseAction, x: f64, y: f64, button: i32, mods: u3
     c.ghostty_mouse_encoder_setopt(mouse_encoder, c.GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, &pressed);
 
     c.ghostty_mouse_event_set_action(mouse_event, action);
-    if (button == c.PENGUIN_MOUSE_UNKNOWN) {
+    if (button == c.PINWIN_MOUSE_UNKNOWN) {
         c.ghostty_mouse_event_clear_button(mouse_event);
     } else {
         c.ghostty_mouse_event_set_button(mouse_event, @intCast(button));
@@ -877,16 +877,16 @@ fn sendMouse(action: c.GhosttyMouseAction, x: f64, y: f64, button: i32, mods: u3
     writeEncoded(encodeMouse, &buf);
 }
 
-export fn penguin_mouse(action: i32, x: f64, y: f64, button: i32, mods: u32) void {
+export fn pinwin_mouse(action: i32, x: f64, y: f64, button: i32, mods: u32) void {
     if (term == null) return;
     const mouse_action: c.GhosttyMouseAction = switch (action) {
-        c.PENGUIN_MOUSE_RELEASE => c.GHOSTTY_MOUSE_ACTION_RELEASE,
-        c.PENGUIN_MOUSE_MOTION => c.GHOSTTY_MOUSE_ACTION_MOTION,
+        c.PINWIN_MOUSE_RELEASE => c.GHOSTTY_MOUSE_ACTION_RELEASE,
+        c.PINWIN_MOUSE_MOTION => c.GHOSTTY_MOUSE_ACTION_MOTION,
         else => c.GHOSTTY_MOUSE_ACTION_PRESS,
     };
     if (debug_enabled)
         std.debug.print("mouse action={} x={d:.1} y={d:.1} button={} mods=0x{x}\n", .{ action, x, y, button, mods });
-    if (mouse_action == c.GHOSTTY_MOUSE_ACTION_PRESS and button != c.PENGUIN_MOUSE_UNKNOWN)
+    if (mouse_action == c.GHOSTTY_MOUSE_ACTION_PRESS and button != c.PINWIN_MOUSE_UNKNOWN)
         any_button_pressed = true;
     if (mouse_action == c.GHOSTTY_MOUSE_ACTION_RELEASE)
         any_button_pressed = false;
@@ -900,37 +900,37 @@ export fn penguin_mouse(action: i32, x: f64, y: f64, button: i32, mods: u32) voi
 /// A wheel device reports one notch as one unit; touchpads and free-spinning
 /// or high-resolution wheels report surface units, which count a tenth of a
 /// notch each so a single swipe cannot flood the program with wheel events.
-export fn penguin_scroll(x: f64, y: f64, dx: f64, dy: f64, unit: i32, mods: u32) void {
+export fn pinwin_scroll(x: f64, y: f64, dx: f64, dy: f64, unit: i32, mods: u32) void {
     if (term == null) return;
 
     if (debug_enabled)
         std.debug.print("scroll x={d:.1} y={d:.1} dx={d:.3} dy={d:.3} unit={} mods=0x{x}\n", .{ x, y, dx, dy, unit, mods });
 
-    const scale: f64 = if (unit == c.PENGUIN_SCROLL_UNIT_SURFACE) 0.1 else 1.0;
+    const scale: f64 = if (unit == c.PINWIN_SCROLL_UNIT_SURFACE) 0.1 else 1.0;
     scroll_acc[0] += dx * scale;
     scroll_acc[1] += dy * scale;
 
     while (scroll_acc[1] >= 1.0) {
         scroll_acc[1] -= 1.0;
-        sendMouse(c.GHOSTTY_MOUSE_ACTION_PRESS, x, y, c.PENGUIN_MOUSE_FIVE, mods);
+        sendMouse(c.GHOSTTY_MOUSE_ACTION_PRESS, x, y, c.PINWIN_MOUSE_FIVE, mods);
     }
     while (scroll_acc[1] <= -1.0) {
         scroll_acc[1] += 1.0;
-        sendMouse(c.GHOSTTY_MOUSE_ACTION_PRESS, x, y, c.PENGUIN_MOUSE_FOUR, mods);
+        sendMouse(c.GHOSTTY_MOUSE_ACTION_PRESS, x, y, c.PINWIN_MOUSE_FOUR, mods);
     }
     while (scroll_acc[0] >= 1.0) {
         scroll_acc[0] -= 1.0;
-        sendMouse(c.GHOSTTY_MOUSE_ACTION_PRESS, x, y, c.PENGUIN_MOUSE_SEVEN, mods);
+        sendMouse(c.GHOSTTY_MOUSE_ACTION_PRESS, x, y, c.PINWIN_MOUSE_SEVEN, mods);
     }
     while (scroll_acc[0] <= -1.0) {
         scroll_acc[0] += 1.0;
-        sendMouse(c.GHOSTTY_MOUSE_ACTION_PRESS, x, y, c.PENGUIN_MOUSE_SIX, mods);
+        sendMouse(c.GHOSTTY_MOUSE_ACTION_PRESS, x, y, c.PINWIN_MOUSE_SIX, mods);
     }
 }
 
 /// Focus reports are sent only when the program enabled mode 1004; the
 /// encoder has no terminal to ask, so the mode is checked here (task 4.3).
-export fn penguin_focus(gained: i32) void {
+export fn pinwin_focus(gained: i32) void {
     if (term == null) return;
 
     const now_focused = gained != 0;
