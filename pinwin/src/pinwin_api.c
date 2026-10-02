@@ -91,12 +91,14 @@ static gboolean stop_on_gtk_thread(gpointer data) {
  * PINWIN_ERR_INTERNAL. */
 #define APPLY_WAIT_TIMEOUT_US (G_GINT64_CONSTANT(5) * 1000000)
 
-/* One in-flight apply: the caller puts the layout here, the GTK main context
- * runs apply_on_gtk_thread and reports through the cond. Refcounted (caller +
- * pending callback) because a caller that times out must not free the request
- * while the GTK thread may still run the callback. */
+/* One in-flight apply: the caller copies the layout in here, the GTK main
+ * context runs apply_on_gtk_thread and reports through the cond. The request
+ * owns its layout copy, so a queued callback can never dereference caller
+ * memory. Refcounted (caller + pending callback) because a caller that times
+ * out must not free the request while the GTK thread may still run the
+ * callback. */
 typedef struct {
-    const PinwinLayout* layout;
+    PinwinLayout layout;
     GMutex lock;
     GCond cond;
     gboolean done;
@@ -134,7 +136,7 @@ static int apply_layout_structurally_valid(const PinwinLayout* layout) {
  * is validate-then-apply). Returns the result to the waiting caller. */
 static gboolean apply_on_gtk_thread(gpointer data) {
     ApplyRequest* req = data;
-    int geom = glue_publish_layout(req->layout);
+    int geom = glue_publish_layout(&req->layout);
 
     g_mutex_lock(&req->lock);
     req->result = geom == PINWIN_GEOM_OK ? PINWIN_OK : PINWIN_ERR_INVALID;
@@ -194,7 +196,7 @@ int pinwin_apply_layout(const PinwinLayout* layout) {
     g_mutex_unlock(&g_api_lock);
 
     req = g_new0(ApplyRequest, 1);
-    req->layout = layout;
+    req->layout = *layout; /* the request owns the copy (see ApplyRequest) */
     req->refs = 2; /* caller + the pending GTK callback */
     g_mutex_init(&req->lock);
     g_cond_init(&req->cond);
