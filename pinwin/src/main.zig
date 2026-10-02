@@ -82,7 +82,6 @@ pub var grid_rows: u16 = 24;
 pub var cell_w: u32 = 1;
 pub var cell_h: u32 = 1;
 
-/// Routes libghostty-vt's own log through stderr when the host sets it.
 pub var debug_enabled = false;
 
 // The frame and input halves are driven from C through pinwin.h; importing
