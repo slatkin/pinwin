@@ -177,16 +177,27 @@ fn decodePng(
     return true;
 }
 
-/// Called by the glue when the grid changes.
-export fn pinwin_size(cols: i32, rows: i32, cw: i32, ch: i32) void {
+/// Called by the glue when the grid changes. Returns 0 on success; nonzero
+/// means the terminal could not be allocated, in which case the previous grid
+/// stays in effect and the caller degrades (design D3: the library never exits).
+export fn pinwin_size(cols: i32, rows: i32, cw: i32, ch: i32) c_int {
+    const prev_cols = grid_cols;
+    const prev_rows = grid_rows;
+    const prev_cw = cell_w;
+    const prev_ch = cell_h;
+
     grid_cols = @intCast(@max(cols, 1));
     grid_rows = @intCast(@max(rows, 1));
     cell_w = @intCast(@max(cw, 1));
     cell_h = @intCast(@max(ch, 1));
 
     ensureTerminal() catch |err| {
+        grid_cols = prev_cols;
+        grid_rows = prev_rows;
+        cell_w = prev_cw;
+        cell_h = prev_ch;
         std.debug.print("pinwin: {s}\n", .{@errorName(err)});
-        std.process.exit(1);
+        return 1;
     };
     _ = c.ghostty_terminal_resize(term, grid_cols, grid_rows, cell_w, cell_h);
 
@@ -197,6 +208,7 @@ export fn pinwin_size(cols: i32, rows: i32, cw: i32, ch: i32) void {
     size.cell_width = cell_w;
     size.cell_height = cell_h;
     c.ghostty_mouse_encoder_setopt(mouse_encoder, c.GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size);
+    return 0;
 }
 
 /// Called by the glue with bytes read from the PTY.

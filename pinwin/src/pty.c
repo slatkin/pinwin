@@ -22,7 +22,7 @@
 
 static void attach_pty(void);
 
-void apply_size(void) {
+int apply_size(void) {
     int height = gtk_widget_get_height(g_area);
     if (g_cell_h > 0 && height > 0) {
         int32_t rows = height / g_cell_h;
@@ -31,13 +31,16 @@ void apply_size(void) {
          * never re-derived from the allocated width (design D4). A width-only
          * Apply changes g_cols and must resize the grid and PTY too. */
         if (rows != g_rows || g_cols != g_grid_cols) {
+            /* Push the grid first: a terminal that cannot be allocated leaves
+             * the previous grid and PTY winsize in place (design D3). */
+            if (pinwin_size(g_cols, rows, g_cell_w, g_cell_h) != 0) return 1;
             g_rows = rows;
             g_grid_cols = g_cols;
-            pinwin_size(g_cols, g_rows, g_cell_w, g_cell_h);
             glue_pty_resize(g_cols, g_rows, g_cols * g_cell_w, g_rows * g_cell_h);
         }
     }
     if (!g_attached) attach_pty();
+    return 0;
 }
 
 void on_area_resize(GtkWidget* widget, gint width, gint height,

@@ -78,7 +78,11 @@ void draw_images(cairo_t* cr);
 
 /* ---- pty.c: attach, read, write and resize ------------------------------- */
 
-void apply_size(void);
+/* Recompute the grid from the allocated height and push it through
+ * pinwin_size. Returns 0 when the grid is current (including nothing to do);
+ * nonzero when the terminal could not be allocated, in which case the previous
+ * grid and PTY winsize are left untouched (design D3). */
+int apply_size(void);
 void on_area_resize(GtkWidget* widget, gint width, gint height,
                     gpointer user_data);
 
@@ -99,9 +103,13 @@ void glue_close_surfaces(void);
  * metrics, then publish it to both surfaces, resize the terminal grid through
  * the normal resize path and force a redraw. Runs on the GTK thread, driven by
  * pinwin_apply_layout (design D4/D5). Returns PINWIN_GEOM_OK, a PINWIN_GEOM_ERR_*
- * verdict without touching live state, or GLUE_NOT_LIVE when the panel has no
- * metrics yet (not activated, or already torn down). */
+ * verdict without touching live state, GLUE_NOT_LIVE when the panel has no
+ * metrics yet (not activated, or already torn down), or GLUE_ERR_TERMINAL when
+ * the terminal grid could not be allocated (previous grid kept). */
 #define GLUE_NOT_LIVE (-1)
+/* The layout published but its terminal grid could not be allocated; the
+ * previous grid stays (design D3). Maps to PINWIN_ERR_INTERNAL. */
+#define GLUE_ERR_TERMINAL (-2)
 int glue_publish_layout(const PinwinLayout* layout);
 
 /* ---- pinwin_api.c: start-up handshake (called from glue.c) --------------- */

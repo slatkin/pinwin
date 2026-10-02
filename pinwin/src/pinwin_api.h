@@ -11,8 +11,8 @@
  * GtkApplication main loop): pinwin_apply_layout would deadlock on its own wait,
  * and pinwin_stop would join the calling thread.
  *
- * The library never calls exit(): every failure is one of the PINWIN_ERR_*
- * results below, and it writes no diagnostics.
+ * The library never terminates the host process: every failure is one of the
+ * PINWIN_ERR_* results below, and it writes no diagnostics.
  */
 #ifndef PINWIN_API_H
 #define PINWIN_API_H
@@ -67,11 +67,13 @@ int pinwin_start(const PinwinStartup* startup);
  * cell metrics on the GTK thread; a synchronous result is returned.
  *
  * Returns PINWIN_OK, PINWIN_ERR_INVALID for a layout the panel refuses (the
- * applied layout is then unchanged), or PINWIN_ERR_NOT_RUNNING when no panel is
- * running. PINWIN_ERR_INVALID means only that the layout itself was refused; it
- * is never used for a panel that is not yet live (pinwin_start only returns
- * once the panel is live, and a panel without live metrics reports
- * PINWIN_ERR_NOT_RUNNING). MUST NOT be called from the GTK thread. */
+ * applied layout is then unchanged), PINWIN_ERR_NOT_RUNNING when no panel is
+ * running, or PINWIN_ERR_INTERNAL when the terminal grid could not be allocated
+ * (the previous grid stays; the host keeps running). PINWIN_ERR_INVALID means
+ * only that the layout itself was refused; it is never used for a panel that is
+ * not yet live (pinwin_start only returns once the panel is live, and a panel
+ * without live metrics reports PINWIN_ERR_NOT_RUNNING). MUST NOT be called from
+ * the GTK thread. */
 int pinwin_apply_layout(const PinwinLayout* layout);
 
 /* Stop the panel: close the visible and reservation surfaces, quit the GTK main

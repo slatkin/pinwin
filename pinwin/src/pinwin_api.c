@@ -147,7 +147,8 @@ static int apply_layout_structurally_valid(const PinwinLayout* layout) {
  * metrics and publish it, exactly like the Apply path did (glue_publish_layout
  * is validate-then-apply). Returns the result to the waiting caller. A panel
  * without live metrics is NOT_RUNNING, never INVALID (design D5): INVALID
- * means the layout itself was refused. */
+ * means the layout itself was refused. A terminal that could not be allocated
+ * keeps the previous grid and is INTERNAL (design D3), not a layout verdict. */
 static gboolean apply_on_gtk_thread(gpointer data) {
     ApplyRequest* req = data;
     int geom = glue_publish_layout(&req->layout);
@@ -155,6 +156,8 @@ static gboolean apply_on_gtk_thread(gpointer data) {
 
     if (geom == GLUE_NOT_LIVE)
         result = PINWIN_ERR_NOT_RUNNING;
+    else if (geom == GLUE_ERR_TERMINAL)
+        result = PINWIN_ERR_INTERNAL;
     else
         result = geom == PINWIN_GEOM_OK ? PINWIN_OK : PINWIN_ERR_INVALID;
 
