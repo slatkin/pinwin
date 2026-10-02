@@ -131,7 +131,9 @@ int glue_publish_layout(const PinwinLayout* layout) {
     g_cols = layout->cols;
     apply_panel_width();
     apply_layout_surfaces();
-    apply_size();
+    /* A terminal allocation failure keeps the previous grid and is an internal
+     * failure of this apply (design D3), not a layout verdict. */
+    if (apply_size() != 0) return GLUE_ERR_TERMINAL;
     return PINWIN_GEOM_OK;
 }
 

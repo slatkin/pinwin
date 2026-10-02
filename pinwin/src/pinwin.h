@@ -138,8 +138,10 @@ int glue_decode_png(const uint8_t* data, size_t len, uint8_t** out_pixels,
 
 /* ---- implemented in main.zig, called from C ---------------------------- */
 
-/* Grid size changed: keep the terminal, the ioctl and the encoders in sync. */
-void pinwin_size(int32_t cols, int32_t rows, int32_t cell_w, int32_t cell_h);
+/* Grid size changed: keep the terminal, the ioctl and the encoders in sync.
+ * Returns 0 on success; nonzero means the terminal could not be allocated, so
+ * the previous grid stays in effect (the library never exits — design D3). */
+int pinwin_size(int32_t cols, int32_t rows, int32_t cell_w, int32_t cell_h);
 /* Bytes read from the PTY. */
 void pinwin_pty_data(const uint8_t* data, size_t len);
 void pinwin_key(int32_t action, int32_t keyval, int32_t keycode, uint32_t mods,
