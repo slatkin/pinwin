@@ -90,4 +90,25 @@ pub fn build(b: *std.Build) void {
     });
     const check_tests = b.addTest(.{ .root_module = check_mod });
     check_step.dependOn(&b.addRunArtifact(check_tests).step);
+
+    // ABI contract test (design D8): drives pinwin_apply_layout through the
+    // real library but never pinwin_start, so no GTK thread is started and no
+    // display is needed. The link shape is the demo's (design OQ-a).
+    const api_check_mod = b.createModule(.{
+        .root_source_file = b.path("src/pinwin_api_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    api_check_mod.addIncludePath(b.path("src"));
+    api_check_mod.linkLibrary(lib);
+    api_check_mod.linkSystemLibrary("gtk4", .{});
+    api_check_mod.linkSystemLibrary("gtk4-layer-shell-0", .{});
+    api_check_mod.linkSystemLibrary("pangocairo", .{});
+    if (ghostty) |dep| {
+        api_check_mod.linkLibrary(dep.artifact("ghostty-vt-static"));
+        api_check_mod.addIncludePath(dep.path("include"));
+    }
+    const api_check_tests = b.addTest(.{ .root_module = api_check_mod });
+    check_step.dependOn(&b.addRunArtifact(api_check_tests).step);
 }
