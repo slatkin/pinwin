@@ -43,4 +43,34 @@ pub fn build(b: *std.Build) void {
         .root_module = lib_mod,
     });
     b.installArtifact(lib);
+
+    // Dev-only demo (design OQ-a): drives the C ABI over a pty pair it creates
+    // itself, built by `zig build demo` only and never installed, so the
+    // default `zig build` still produces only the library.
+    const demo_step = b.step("demo", "Build the dev-only pinwin demo executable");
+    const demo_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+    });
+    demo_mod.addIncludePath(b.path("src"));
+    demo_mod.addCSourceFiles(.{
+        .files = &.{"demo/main.c"},
+        .flags = &.{ "-std=gnu11", "-Wall" },
+    });
+    // A program may link the panel and may fork: forkpty(3) lives in libutil,
+    // and this dev-only step is the only place that links it.
+    demo_mod.linkLibrary(lib);
+    demo_mod.linkSystemLibrary("gtk4", .{});
+    demo_mod.linkSystemLibrary("gtk4-layer-shell-0", .{});
+    demo_mod.linkSystemLibrary("pangocairo", .{});
+    demo_mod.linkSystemLibrary("util", .{});
+    if (ghostty) |dep| {
+        demo_mod.linkLibrary(dep.artifact("ghostty-vt-static"));
+        demo_mod.addIncludePath(dep.path("include"));
+    }
+    const demo = b.addExecutable(.{
+        .name = "pinwin-demo",
+        .root_module = demo_mod,
+    });
+    demo_step.dependOn(&b.addInstallArtifact(demo, .{}).step);
 }

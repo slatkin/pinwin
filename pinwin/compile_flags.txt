@@ -1,4 +1,5 @@
 -std=gnu11
+-Isrc
 -I/usr/include/gtk4-layer-shell
 -I/usr/include/gtk-4.0
 -I/usr/include/gdk-pixbuf-2.0
