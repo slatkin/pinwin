@@ -38,8 +38,8 @@ window it called, and the no-exit audit (§4) is the final sweep over the finish
 
 ## 6. Tests (design D8)
 
-- [ ] 6.1 Add the layout-core Zig unit tests under a `check` step in `pinwin/build.zig`: strict cols parsing (1..=65535; 0/65536/`12x`/empty rejected), strict gutter parsing (optional `-`, digits only, int32 bounds), checked side geometry (overflow → 0), and every `PINWIN_GEOM_*` validation code reachable. Verify from `pinwin/`: `zig build check` passes.
-- [ ] 6.2 Contract test (in `zig build check`): `pinwin_apply_layout` with an invalid layout returns `PINWIN_ERR_INVALID` — distinct from `PINWIN_ERR_NOT_RUNNING` — with the GTK thread never started. Verify: `zig build check` passes, and the test fails if Phase 1 (design D5) is bypassed.
+- [x] 6.1 Add the layout-core Zig unit tests under a `check` step in `pinwin/build.zig`: strict cols parsing (1..=65535; 0/65536/`12x`/empty rejected), strict gutter parsing (optional `-`, digits only, int32 bounds), checked side geometry (overflow → 0), and every `PINWIN_GEOM_*` validation code reachable. Verify from `pinwin/`: `zig build check` passes.
+- [x] 6.2 Contract test (in `zig build check`): `pinwin_apply_layout` with an invalid layout returns `PINWIN_ERR_INVALID` — distinct from `PINWIN_ERR_NOT_RUNNING` — with the GTK thread never started. Verify: `zig build check` passes, and the test fails if Phase 1 (design D5) is bypassed.
 
 ## 7. Specs, docs, release
 
