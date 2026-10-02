@@ -101,7 +101,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     const gutter = envSetting(init.environ, "GUTTER", DEFAULT_GUTTER, false);
     const keyboard = keyboardMode(init.environ);
 
-    const argv = commandArgv(init.args) catch |err| {
+    const command = commandArgv(init.environ, init.args) catch |err| {
         std.debug.print("pinwin: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
@@ -112,8 +112,8 @@ pub fn main(init: std.process.Init.Minimal) void {
     _ = c.ghostty_sys_set(c.GHOSTTY_SYS_OPT_DECODE_PNG, @ptrCast(&decodePng));
     if (debug_enabled) _ = c.ghostty_sys_set(c.GHOSTTY_SYS_OPT_LOG, @ptrCast(&c.ghostty_sys_log_stderr));
 
-    if (c.glue_init(@intCast(cols), @intCast(gutter), keyboard) == 0) std.process.exit(1);
-    c.glue_start(@ptrCast(argv.ptr));
+    if (c.glue_init(@intCast(cols), @intCast(gutter), keyboard, @intFromBool(command.no_tray)) == 0) std.process.exit(1);
+    c.glue_start(@ptrCast(command.argv.ptr));
 }
 
 /// `COLS` and `GUTTER`, per design D9: an error names the variable and exits 2
@@ -143,16 +143,45 @@ fn keyboardMode(environ: std.process.Environ) i32 {
     std.process.exit(2);
 }
 
-/// The command to run in the panel, NUL-terminated for execvp: pinwin's own
-/// arguments, or `mbv` when it has none.
-fn commandArgv(args: std.process.Args) ![:null]?[*:0]const u8 {
+/// The command to run in the panel, NUL-terminated for execvp, plus whether
+/// the user passed `--no-tray` (design D2): pinwin's own options precede the
+/// command and `--` ends them; an unknown leading `--...` argument is an
+/// error naming it. With no command, `$SHELL` runs (or `/bin/sh` when `SHELL`
+/// is unset or empty).
+const Command = struct { argv: [:null]?[*:0]const u8, no_tray: bool };
+
+fn commandArgv(environ: std.process.Environ, args: std.process.Args) !Command {
     var list: std.ArrayList(?[*:0]const u8) = .empty;
     var iterator = std.process.Args.iterate(args);
     _ = iterator.skip(); // argv[0], pinwin itself
-    while (iterator.next()) |arg| try list.append(allocator, arg.ptr);
-    if (list.items.len == 0) try list.append(allocator, "mbv");
+    var no_tray = false;
+    var options_done = false;
+    while (iterator.next()) |arg| {
+        if (!options_done) {
+            if (std.mem.eql(u8, arg, "--no-tray")) {
+                no_tray = true;
+                continue;
+            }
+            if (std.mem.eql(u8, arg, "--")) {
+                options_done = true;
+                continue;
+            }
+            if (std.mem.startsWith(u8, arg, "--")) {
+                std.debug.print("pinwin: unknown option '{s}'\n", .{arg});
+                std.process.exit(2);
+            }
+            // The first non-option argument starts the command; everything
+            // after it, option-looking or not, belongs to the command.
+            options_done = true;
+        }
+        try list.append(allocator, arg.ptr);
+    }
+    if (list.items.len == 0) {
+        const shell = std.process.Environ.getPosix(environ, "SHELL") orelse "/bin/sh";
+        try list.append(allocator, if (shell.len > 0) shell.ptr else "/bin/sh");
+    }
     try list.append(allocator, null);
-    return list.items[0 .. list.items.len - 1 :null];
+    return .{ .argv = list.items[0 .. list.items.len - 1 :null], .no_tray = no_tray };
 }
 
 // ---- terminal -------------------------------------------------------------

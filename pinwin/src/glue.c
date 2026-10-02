@@ -61,6 +61,7 @@ PinwinLayout g_layout;
 GtkWindow* g_reserve;
 GdkMonitor* g_monitor; /* the visible panel's original monitor */
 int g_layout_latch; /* first-draw monitor resolution pending */
+int g_no_tray;
 
 /* ---- layout surfaces (add-pinwin-tray-options) -------------------------- */
 
@@ -253,10 +254,10 @@ static void on_activate(GtkApplication* app, gpointer user_data) {
 
     gtk_window_present(g_win);
     apply_size();
-    tray_init();
+    if (!g_no_tray) tray_init();
 }
 
-int glue_init(int32_t cols, int32_t gutter, int32_t keyboard_mode) {
+int glue_init(int32_t cols, int32_t gutter, int32_t keyboard_mode, int no_tray) {
     char theme_name[128];
 
     theme_colours(theme_name, sizeof(theme_name), g_theme_bg, g_theme_fg);
@@ -267,6 +268,7 @@ int glue_init(int32_t cols, int32_t gutter, int32_t keyboard_mode) {
     g_cols = cols;
     g_gutter = gutter;
     g_keyboard_mode = keyboard_mode;
+    g_no_tray = no_tray;
 
     if (!gtk_init_check()) {
         fprintf(stderr, "pinwin: no display\n");
