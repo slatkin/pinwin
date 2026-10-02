@@ -17,7 +17,6 @@ pub fn build(b: *std.Build) void {
     lib_mod.linkSystemLibrary("gtk4", .{});
     lib_mod.linkSystemLibrary("gtk4-layer-shell-0", .{});
     lib_mod.linkSystemLibrary("pangocairo", .{});
-    lib_mod.linkSystemLibrary("util", .{}); // forkpty; also pulls in libc
 
     // Zig static-library artifacts do not merge linked static archives, so
     // libpinwin.a does NOT bundle libghostty-vt (design D7): the pinned

@@ -1,27 +1,26 @@
 /*
- * pty.c - the PTY side of pinwin: spawning the command on a forkpty, the
+ * pty.c - the PTY side of pinwin: attaching the host-supplied master fd, the
  * read/write paths libghostty-vt drives, the winsize resize path, and the
  * grid-size application that follows the drawing area's allocation
- * (design D4).
+ * (design D4, D6).
  *
  * Shared state lives in glue_internal.h; bytes flow through the pinwin_*
- * frame/callback functions in pinwin.h.
+ * frame/callback functions in pinwin.h. The host owns the child side of the
+ * pty, so there is no fork, no child wait and no child environment here.
  */
 
 #include "glue_internal.h"
 
 #include <glib-unix.h>
-#include <pty.h>
 
 #include <errno.h>
 #include <fcntl.h>
-#include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
-static void spawn_pty(void);
+static void attach_pty(void);
 
 void apply_size(void) {
     int height = gtk_widget_get_height(g_area);
@@ -38,7 +37,7 @@ void apply_size(void) {
             glue_pty_resize(g_cols, g_rows, g_cols * g_cell_w, g_rows * g_cell_h);
         }
     }
-    if (!g_spawned) spawn_pty();
+    if (!g_attached) attach_pty();
 }
 
 void on_area_resize(GtkWidget* widget, gint width, gint height,
@@ -52,7 +51,6 @@ void on_area_resize(GtkWidget* widget, gint width, gint height,
 
 static gboolean on_pty_readable(gint fd, GIOCondition condition, gpointer user_data) {
     uint8_t buf[65536];
-    (void)condition;
     (void)user_data;
 
     for (;;) {
@@ -62,9 +60,17 @@ static gboolean on_pty_readable(gint fd, GIOCondition condition, gpointer user_d
             continue;
         }
         if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return G_SOURCE_CONTINUE;
-        return G_SOURCE_CONTINUE;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (condition & (G_IO_HUP | G_IO_ERR)) break;
+            return G_SOURCE_CONTINUE;
+        }
+        /* EOF or a read error: the child side is gone. Drop the read source
+         * and leave the host's process lifetime alone (design D6). */
+        break;
     }
+    g_pty_source = 0;
+    g_pty_fd = -1;
+    return G_SOURCE_REMOVE;
 }
 
 void glue_pty_write(const uint8_t* data, size_t len) {
@@ -97,43 +103,33 @@ void glue_pty_resize(int32_t cols, int32_t rows, int32_t xpixel, int32_t ypixel)
     ioctl(g_pty_fd, TIOCSWINSZ, &ws);
 }
 
-static void spawn_pty(void) {
+/* Take the host-supplied master fd: non-blocking, the initial winsize (grid
+ * plus pixel size, as glue_pty_resize builds it) and the read source. The host
+ * owns the child side, so there is nothing else to set up (design D6). A fd
+ * that cannot be used only degrades to no terminal; it never exits (design D3). */
+static void attach_pty(void) {
     struct winsize ws;
-    int fd = -1;
-    pid_t pid;
-    const char* term;
+    int fd = g_pty_fd;
+    int flags;
 
-    if (g_spawned) return;
-    if (!g_argv || !g_argv[0]) return;
-    g_spawned = 1;
+    if (g_attached) return;
+    if (fd < 0) return;
+    g_attached = 1;
+
+    flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return;
 
     memset(&ws, 0, sizeof(ws));
     ws.ws_col = (unsigned short)(g_rows > 0 ? g_cols : g_pty_cols);
     ws.ws_row = (unsigned short)(g_rows > 0 ? g_rows : g_pty_rows);
     ws.ws_xpixel = (unsigned short)(g_cols * g_cell_w);
     ws.ws_ypixel = (unsigned short)(ws.ws_row * g_cell_h);
-
-    term = terminfo_exists("xterm-ghostty") ? "xterm-ghostty" : "xterm-256color";
-
-    pid = forkpty(&fd, NULL, NULL, &ws);
-    if (pid < 0) {
-        fprintf(stderr, "pinwin: forkpty: %s\n", strerror(errno));
-        exit(1);
-    }
-    if (pid == 0) {
-        setenv("TERM", term, 1);
-        setenv("COLORTERM", "truecolor", 1);
-        execvp(g_argv[0], g_argv);
-        fprintf(stderr, "pinwin: %s: %s\n", g_argv[0], strerror(errno));
-        _exit(127);
-    }
-
-    g_pty_fd = fd;
     g_pty_cols = ws.ws_col;
     g_pty_rows = ws.ws_row;
     g_pty_xpixel = ws.ws_xpixel;
     g_pty_ypixel = ws.ws_ypixel;
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    ioctl(fd, TIOCSWINSZ, &ws);
+
     g_pty_source = g_unix_fd_add(fd, G_IO_IN | G_IO_HUP | G_IO_ERR,
                                  on_pty_readable, NULL);
 }

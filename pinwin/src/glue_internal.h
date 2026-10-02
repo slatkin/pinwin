@@ -20,8 +20,6 @@
 extern int32_t g_cols;
 extern int32_t g_keyboard_mode;
 
-extern char* const* g_argv;
-
 extern GtkApplication* g_app;
 extern GtkWindow* g_win;
 extern GtkWidget* g_area;
@@ -53,7 +51,7 @@ extern int32_t g_pty_cols;
 extern int32_t g_pty_rows;
 extern int32_t g_pty_xpixel;
 extern int32_t g_pty_ypixel;
-extern int g_spawned;
+extern int g_attached;
 
 /* Layout settings. The applied layout is the startup layout supplied to
  * glue_init and is replaced by a later publish. */
@@ -62,9 +60,8 @@ extern GtkWindow* g_reserve;
 extern GdkMonitor* g_monitor; /* the visible panel's original monitor */
 extern int g_layout_latch; /* first-draw monitor resolution pending */
 
-/* ---- fontconfig.c: Ghostty config, theme colours, terminfo check -------- */
+/* ---- fontconfig.c: Ghostty config and theme colours --------------------- */
 
-int terminfo_exists(const char* name);
 void theme_colours(char* theme_name, size_t theme_name_len, uint8_t* bg,
                    uint8_t* fg);
 void font_config_load(char** family, double* size);
@@ -79,7 +76,7 @@ void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
 
 void draw_images(cairo_t* cr);
 
-/* ---- pty.c: spawn, read, write and resize -------------------------------- */
+/* ---- pty.c: attach, read, write and resize ------------------------------- */
 
 void apply_size(void);
 void on_area_resize(GtkWidget* widget, gint width, gint height,
