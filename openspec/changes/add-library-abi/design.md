@@ -37,8 +37,8 @@ Verified against the sources (all paths under `pinwin/`):
 **Goals:** a linkable `libpinwin.a` with a three-call C ABI; no program-only surface left; no
 exit path left; layout fully supplied by the host; geometry contracts covered by `zig build check`.
 
-**Non-Goals:** no tray/ctrl/options-window replacements; no host-side wiring (mbv's
-`crates/mbv-pinwin`, settings, start-up live in the mbv plan); no X11 or non-layer-shell
+**Non-Goals:** no tray/ctrl/options-window replacements; no host-side wiring (consumer
+settings and start-up are out of scope); no X11 or non-layer-shell
 fallback (unchanged); no rendering/terminal/font/layout-behaviour changes beyond the moves and
 rewires listed here.
 
@@ -92,7 +92,7 @@ rewires listed here.
   function itself is deleted); `exit(1)` on `forkpty` failure (no fork remains).
 - Audit rule: after the work, `rg -n "\<exit\(|_exit\(|std\.process\.exit" pinwin/src`
   finds nothing. `WEXITSTATUS`/`WTERMSIG` must not appear either (no child to wait on).
-- Rationale: any of these kills the host process (mbv). This is a hard contract and a
+- Rationale: any of these kills the host process. This is a hard contract and a
   spec requirement, not style.
 
 **D4. Layout intake restructure.**
@@ -149,7 +149,7 @@ rewires listed here.
   libghostty-vt. `build.zig` additionally installs the ghostty static archive next to it
   (`zig-out/lib/libghostty-vt.a`, via the existing `ghostty` lazy dependency's
   `ghostty-vt-static` artifact), so the consumer links **both** archives plus
-  GTK4/gtk4-layer-shell/pango-cairo. The mbv `build.rs` contract in the proposal depends
+  GTK4/gtk4-layer-shell/pango-cairo. The consumer `build.rs` contract in the proposal depends
   on both files existing in `zig-out/lib/`.
 - The `check` step compiles the Zig unit tests (D8), not C: `tools/check_options.c` is
   deleted and its gtk4/gio/dbusmenu link lines go with it.
@@ -164,7 +164,7 @@ rewires listed here.
   `PINWIN_ERR_INVALID`, distinct from `PINWIN_ERR_NOT_RUNNING`, before any GTK surface
   exists — i.e. exercising Phase 1 (D5) with the GTK thread never started.
 - Manual checks that previously ran `zig-out/bin/pinwin` move to the demo executable
-  (OQ-a, adjudicated) or the mbv consumer: automated tests deliberately do not open surfaces.
+  (OQ-a, adjudicated): automated tests deliberately do not open surfaces.
 
 ## Risks / Trade-offs
 
@@ -187,11 +187,11 @@ rewires listed here.
 
 - **OQ-a. Dev-only demo executable — ADOPTED.** `zig build demo` yields
   `zig-out/bin/pinwin-demo`: a dev-only root driving the C ABI with a canned layout over a
-  pty pair it creates itself, never installed, so the panel's manual checks do not depend on
-  the mbv consumer. The default `zig build` still produces only the library.
+  pty pair it creates itself, never installed, so the panel's manual checks are self-contained.
+  The default `zig build` still produces only the library.
 - **OQ-b. `pinwin.sh` and the `Makefile` — `pinwin.sh` untouched; the `install` target is
   deleted.** The executable it installed no longer exists; the `install-from-checkout` spec
   requirement goes with it.
 - **OQ-c. Release/pinning — README plus a tag.** The README documents the pinned ghostty
   commit and the Zig 0.16 minimum, and the library-form revision is tagged `library-abi` so
-  consumers (mbv's import task) pin a name, not a bare revision.
+  consumers pin a name, not a bare revision.

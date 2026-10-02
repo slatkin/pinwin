@@ -4,10 +4,11 @@ Issue: #1
 
 ## Why
 
-mbv wants to run inside pinwin with a single tray icon (mbv's), and offer pinwin's options from
-that tray (slatkin/mbv#864). Today the only way to reach the options window is pinwin's own tray
-entry, so a host app cannot drive the panel. pinwin's code is also about to move into the mbv repo,
-which caps source files at 800 lines and does not allow bespoke scripts.
+Today the only way to reach pinwin's options window is pinwin's own tray entry, so a host app
+cannot drive a running panel and pinwin always registers a tray entry. pinwin needs a control
+API that opens the options window on request, plus a way to run without pinwin's own tray entry.
+The code also splits along responsibility seams to keep every source file under 800 lines and to
+drop its bespoke table script.
 
 ## What Changes
 
@@ -24,7 +25,7 @@ which caps source files at 800 lines and does not allow bespoke scripts.
   `$HOME/pinwin.svg`.
 - **Wayland-only** is written down as a requirement. The code already exits with a diagnostic when
   layer-shell is unavailable.
-- **Ready for import into mbv**: split `glue.c` (1637 lines) and `main.zig` (952 lines) along
+- **Source split and checks**: split `glue.c` (1637 lines) and `main.zig` (952 lines) along
   responsibility seams to stay under 800 lines each; add a `zig build check` step that builds and
   runs the check program; delete `tools/gen_nerd_tables.py` and keep its generated header.
 

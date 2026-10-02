@@ -28,12 +28,11 @@ Folded into `pinwin-panel`'s "Apply layout without restarting the terminal" requ
 ### Requirement: Validate before saving or applying
 Validation rules move to `pinwin-panel`'s "Validate before applying" requirement. The save
 half is deleted with the config file: there is nothing to save to, and persistence is the
-host's job (mbv's `config.toml`).
+host's job.
 
 ### Requirement: Persist and restore layout settings
 Deleted with the GKeyFile config (design D1). The host supplies the full layout at every
-start; no saved layout overrides anything. mbv-side persistence lives in the mbv plan, not
-here.
+start; no saved layout overrides anything.
 
 ### Requirement: Running without a tray
 Meaningless with no tray at all. Deleted.
