@@ -91,6 +91,10 @@ void attach_controllers(GtkWidget* area);
 int glue_init(const PinwinLayout* layout, int32_t keyboard_mode);
 void resolve_layout_monitor(void);
 
+/* Close both layer-shell surfaces (GTK thread). Called by pinwin_stop's
+ * teardown and by gtk_thread_main after a failed start quits the loop. */
+void glue_close_surfaces(void);
+
 /* Validate `layout` against the panel's original monitor and live cell
  * metrics, then publish it to both surfaces, resize the terminal grid through
  * the normal resize path and force a redraw. Runs on the GTK thread, driven by

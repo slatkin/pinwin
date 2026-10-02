@@ -168,15 +168,42 @@ static void on_win_map(GtkWidget* widget, gpointer user_data) {
  * is also the point where the live metrics exist, so it completes
  * pinwin_start's handshake (design D2/D5): a valid layout applied right after
  * pinwin_start then validates against these metrics instead of reporting a
- * not-live panel as an invalid layout. */
+ * not-live panel as an invalid layout.
+ *
+ * Success requires a resolved monitor: with no output the panel has no metrics
+ * to validate or publish against, so the handshake fails (PINWIN_ERR_NO_DISPLAY)
+ * instead of reporting a live panel that can never apply a layout. The surfaces
+ * are left alone here (this runs inside a draw); gtk_thread_main closes them
+ * after the loop returns. */
 void resolve_layout_monitor(void) {
-    g_layout_latch = 0;
-    g_monitor = gdk_display_get_monitor_at_surface(
+    GdkMonitor* monitor = gdk_display_get_monitor_at_surface(
         gdk_display_get_default(),
         gtk_native_get_surface(GTK_NATIVE(g_win)));
+
+    g_layout_latch = 0;
+    if (!monitor) {
+        pinwin_api_start_result(0);
+        if (g_app) g_application_quit(G_APPLICATION(g_app));
+        return;
+    }
+    g_monitor = monitor;
     apply_layout_surfaces();
     apply_size();
     pinwin_api_start_result(1);
+}
+
+/* Close both layer-shell surfaces (GTK thread). Shared by pinwin_stop's
+ * teardown and the failed start after a NULL monitor resolution. */
+void glue_close_surfaces(void) {
+    if (g_reserve) {
+        gtk_window_destroy(g_reserve);
+        g_reserve = NULL;
+    }
+    if (g_win) {
+        gtk_window_destroy(g_win);
+        g_win = NULL;
+    }
+    g_area = NULL;
 }
 
 /* ---- activation / lifecycle --------------------------------------------- */

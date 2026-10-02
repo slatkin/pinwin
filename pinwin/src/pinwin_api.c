@@ -78,9 +78,11 @@ static gpointer gtk_thread_main(gpointer data) {
 
     g_application_run(G_APPLICATION(g_app), 0, NULL);
 
-    /* The loop returned: a stop, or an activation that never happened. If the
-     * handshake is still pending, fail it rather than leave pinwin_start
-     * waiting forever. A completed handshake is unaffected. */
+    /* The loop returned: a stop, or a failed start (a NULL monitor resolution
+     * quits it). Close anything stop_on_gtk_thread did not, then fail a
+     * still-pending handshake rather than leave pinwin_start waiting forever.
+     * A completed handshake is unaffected. */
+    glue_close_surfaces();
     pinwin_api_start_result(0);
     return NULL;
 }
@@ -91,15 +93,7 @@ static gpointer gtk_thread_main(gpointer data) {
 static gboolean stop_on_gtk_thread(gpointer data) {
     (void)data;
 
-    if (g_reserve) {
-        gtk_window_destroy(g_reserve);
-        g_reserve = NULL;
-    }
-    if (g_win) {
-        gtk_window_destroy(g_win);
-        g_win = NULL;
-    }
-    g_area = NULL;
+    glue_close_surfaces();
     if (g_app) g_application_quit(G_APPLICATION(g_app));
     return G_SOURCE_REMOVE;
 }
