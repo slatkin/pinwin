@@ -2,27 +2,19 @@
  * glue_anim.c - the animated width transition (add-animated-width design D2,
  * D4-D6): one frame-clock tick callback eases the visible panel's width and the
  * reservation's exclusive zone together, and a watchdog snaps to the final
- * layout if frames stop. The tween's math (capped per-frame advance, easing,
- * finish detection) lives in pinwin_anim_step (options.c) so the unit tests
- * can drive it; this file is the GTK plumbing. Everything runs on the GTK
- * thread; the state is one static struct, so the tick allocates nothing.
+ * layout if frames stop. Everything runs on the GTK thread; the state is one
+ * static struct, so the tick allocates nothing.
  */
 
 #include "glue_internal.h"
 
-/* No tick for this long means frames stopped arriving; measured from the last
- * tick, checked every 100 ms. The old fixed begin+duration deadline also fired
- * while frames merely arrived late (a starved clock mid-repaint), snapping the
- * tween before it finished. */
-#define ANIM_STALL_US(dur_us) ((dur_us) + 100000)
+#include <math.h>
 
 typedef struct {
     int active;
     int32_t from_px, to_px, cur_px;
-    gint64 t_us; /* virtual tween time: advanced per frame, capped */
+    gint64 t0_us; /* 0 until the first tick stamps it */
     gint64 dur_us;
-    gint64 last_us; /* frame time of the last tick; 0 until the first tick */
-    gint64 last_wall_us; /* monotonic stamp of the last tick, for the watchdog */
     GtkWidget* widget; /* the widget the tick callback is registered on */
     guint tick_id;
     guint watchdog_id;
@@ -33,6 +25,12 @@ static Anim a;
 int32_t panel_px(void) { return a.active ? a.cur_px : g_cols * g_cell_w; }
 
 int glue_anim_active(void) { return a.active; }
+
+/* Ease-out cubic: close to niri's critically damped window-resize spring. */
+static double ease(double t) {
+    double u = 1.0 - t;
+    return 1.0 - u * u * u;
+}
 
 int glue_anim_allowed(void) {
     gboolean enabled = TRUE;
@@ -64,30 +62,26 @@ static void anim_finish(int in_tick, int in_watchdog) {
 
 static gboolean anim_tick(GtkWidget* widget, GdkFrameClock* clock, gpointer data) {
     gint64 now = gdk_frame_clock_get_frame_time(clock);
+    double t;
     (void)widget;
     (void)data;
 
-    a.last_wall_us = g_get_monotonic_time();
-    if (pinwin_anim_step(now, a.dur_us, a.from_px, a.to_px, &a.t_us, &a.last_us,
-                         &a.cur_px)) {
+    if (a.t0_us == 0) a.t0_us = now;
+    t = (double)(now - a.t0_us) / (double)a.dur_us;
+    if (t >= 1.0) {
         anim_finish(1, 0);
         return G_SOURCE_REMOVE;
     }
+    if (t < 0.0) t = 0.0;
+    a.cur_px = a.from_px + (int32_t)lround((double)(a.to_px - a.from_px) * ease(t));
     glue_apply_geometry();
     return G_SOURCE_CONTINUE;
 }
 
 static gboolean anim_watchdog(gpointer data) {
     (void)data;
-    /* Each tick re-arms this check by stamping last_wall_us: finish only when
-     * frames have stopped arriving, not when wall clock outruns the tween's
-     * virtual time. */
-    if (a.last_us != 0 &&
-        g_get_monotonic_time() - a.last_wall_us > ANIM_STALL_US(a.dur_us)) {
-        anim_finish(0, 1);
-        return G_SOURCE_REMOVE;
-    }
-    return G_SOURCE_CONTINUE;
+    anim_finish(0, 1);
+    return G_SOURCE_REMOVE;
 }
 
 /* Start, or retarget from `from_px`, a tween to `to_px` over duration_ms. */
@@ -98,13 +92,11 @@ void glue_anim_begin(int32_t from_px, int32_t to_px, uint32_t duration_ms) {
     a.from_px = from_px;
     a.to_px = to_px;
     a.cur_px = from_px;
-    a.t_us = 0;
+    a.t0_us = 0;
     a.dur_us = (gint64)duration_ms * 1000;
-    a.last_us = 0;
-    a.last_wall_us = 0;
     a.widget = GTK_WIDGET(g_win);
     a.tick_id = gtk_widget_add_tick_callback(a.widget, anim_tick, NULL, NULL);
-    a.watchdog_id = g_timeout_add(100, anim_watchdog, NULL);
+    a.watchdog_id = g_timeout_add(duration_ms + 100, anim_watchdog, NULL);
 }
 
 /* Horizontal shift that keeps the grid against the docked edge while the
