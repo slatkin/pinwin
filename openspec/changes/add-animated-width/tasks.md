@@ -30,7 +30,7 @@ tweened as designed.
 ## 5. Release bookkeeping (design D7)
 
 - [x] 5.1 Bump `.version` to `0.2.0` in `build.zig.zon`. Verify: `rg -n "\.version" build.zig.zon` shows `0.2.0` and `zig build` succeeds.
-- [ ] 5.2 Add the pinwin-panel delta to the main spec at archive time and record the tag decision (design OQ-1). Verify: `openspec validate add-animated-width --strict` passes.
+- [ ] 5.2 Add the pinwin-panel delta to the main spec at archive time (no tag, design OQ-1). Verify: `openspec validate add-animated-width --strict` passes.
 
 ## 6. Manual verification under niri (AGENTS.md)
 
