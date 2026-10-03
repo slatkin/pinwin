@@ -11,25 +11,25 @@ tweened as designed.
 
 ## 2. Tween core (design D2, D4, D5, D6)
 
-- [ ] 2.1 Add `src/glue_anim.c` with the static state struct, ease-out cubic, tick callback, watchdog, retarget, cancel and finish; declare its entry points in `src/glue_internal.h`; add the file to the `.files` list in `build.zig`. Verify: `zig build` succeeds and `rg -n "g_malloc|g_new|malloc" src/glue_anim.c` finds nothing.
-- [ ] 2.2 Add `panel_px()` and use it in `apply_panel_width` and `apply_layout_surfaces` in `src/glue.c` in place of `g_cols * g_cell_w`. Verify: `zig build` succeeds and `rg -n "g_cols \* g_cell_w" src/glue.c` shows only `panel_px()` and `glue_init`.
-- [ ] 2.3 Add the `gtk-enable-animations` check (design D6) and the animate-eligibility test (side and left/right gutters unchanged, cols differ, duration > 0) in `src/glue_anim.c`. Verify: `zig build` succeeds.
-- [ ] 2.4 Call `glue_anim_cancel()` from `glue_close_surfaces` in `src/glue.c`. Verify: `rg -n "glue_anim_cancel" src` shows the definition and this call site.
+- [x] 2.1 Add `src/glue_anim.c` with the static state struct, ease-out cubic, tick callback, watchdog, retarget, cancel and finish; declare its entry points in `src/glue_internal.h`; add the file to the `.files` list in `build.zig`. Verify: `zig build` succeeds and `rg -n "g_malloc|g_new|malloc" src/glue_anim.c` finds nothing.
+- [x] 2.2 Add `panel_px()` and use it in `apply_panel_width` and `apply_layout_surfaces` in `src/glue.c` in place of `g_cols * g_cell_w`. Verify: `zig build` succeeds and `rg -n "g_cols \* g_cell_w" src/glue.c` shows only `panel_px()`, `glue_init` and the startup default size in `on_activate`.
+- [x] 2.3 Add the `gtk-enable-animations` check (design D6) and the animate-eligibility test (side and left/right gutters unchanged, cols differ, duration > 0) in `src/glue_anim.c`. Verify: `zig build` succeeds.
+- [x] 2.4 Call `glue_anim_cancel()` from `glue_close_surfaces` in `src/glue.c`. Verify: `rg -n "glue_anim_cancel" src` shows the definition and this call site.
 
 ## 3. ABI (design D1)
 
-- [ ] 3.1 Add `uint32_t duration_ms` to `ApplyRequest` and a duration parameter to `glue_publish_layout` (`src/glue_internal.h`, `src/glue.c`, `src/pinwin_api.c`); `pinwin_apply_layout` passes 0. Verify: `zig build` succeeds and `rg -n "pinwin_apply_layout\(" src/pinwin_api.c` shows the unchanged structural-check path.
-- [ ] 3.2 Add `pinwin_apply_layout_animated(const PinwinLayout*, uint32_t duration_ms)` and `#define PINWIN_ANIM_DEFAULT_MS 200` to `src/pinwin_api.h` and `src/pinwin_api.c`, clamping the duration to 1000 and sharing Phase 1 with `pinwin_apply_layout`. Verify: `cc -fsyntax-only -Isrc` on a one-line C file including `pinwin_api.h` succeeds, and `git diff -U0 src/options.h src/pinwin_api.h` shows no change to `PinwinLayout` or `PinwinStartup`.
-- [ ] 3.3 Extend `src/pinwin_api_test.zig` for the new symbol: null and invalid layouts return `PINWIN_ERR_INVALID`, a valid layout without a running panel returns `PINWIN_ERR_NOT_RUNNING`, and `duration_ms == 0` is accepted like the snap call. Verify: `zig build check` passes.
+- [x] 3.1 Add `uint32_t duration_ms` to `ApplyRequest` and a duration parameter to `glue_publish_layout` (`src/glue_internal.h`, `src/glue.c`, `src/pinwin_api.c`); `pinwin_apply_layout` passes 0. Verify: `zig build` succeeds and `rg -n "pinwin_apply_layout\(" src/pinwin_api.c` shows the unchanged structural-check path.
+- [x] 3.2 Add `pinwin_apply_layout_animated(const PinwinLayout*, uint32_t duration_ms)` and `#define PINWIN_ANIM_DEFAULT_MS 200` to `src/pinwin_api.h` and `src/pinwin_api.c`, clamping the duration to 1000 and sharing Phase 1 with `pinwin_apply_layout`. Verify: `cc -fsyntax-only -Isrc` on a one-line C file including `pinwin_api.h` succeeds, and `git diff -U0 src/options.h src/pinwin_api.h` shows no change to `PinwinLayout` or `PinwinStartup`.
+- [x] 3.3 Extend `src/pinwin_api_test.zig` for the new symbol: null and invalid layouts return `PINWIN_ERR_INVALID`, a valid layout without a running panel returns `PINWIN_ERR_NOT_RUNNING`, and `duration_ms == 0` is accepted like the snap call. Verify: `zig build check` passes.
 
 ## 4. Terminal content behavior (design D3)
 
-- [ ] 4.1 In `src/render.c` `on_draw`, translate cell drawing by `width − g_cols * g_cell_w` for a right dock (left dock unchanged), keeping the background fill over the full width. Verify: `zig build` succeeds; the visual check is in 6.1.
-- [ ] 4.2 In `src/input.c`, apply the same offset to mouse coordinates (resolving design OQ-5). Verify: `zig build` succeeds; the click check is in 6.1.
+- [x] 4.1 In `src/render.c` `on_draw`, translate cell drawing by `width − g_cols * g_cell_w` for a right dock (left dock unchanged), keeping the background fill over the full width. Verify: `zig build` succeeds; the visual check is in 6.1.
+- [x] 4.2 In `src/input.c`, apply the same offset to mouse coordinates (resolving design OQ-5). Verify: `zig build` succeeds; the click check is in 6.1.
 
 ## 5. Release bookkeeping (design D7)
 
-- [ ] 5.1 Bump `.version` to `0.2.0` in `build.zig.zon`. Verify: `rg -n "\.version" build.zig.zon` shows `0.2.0` and `zig build` succeeds.
+- [x] 5.1 Bump `.version` to `0.2.0` in `build.zig.zon`. Verify: `rg -n "\.version" build.zig.zon` shows `0.2.0` and `zig build` succeeds.
 - [ ] 5.2 Add the pinwin-panel delta to the main spec at archive time and record the tag decision (design OQ-1). Verify: `openspec validate add-animated-width --strict` passes.
 
 ## 6. Manual verification under niri (AGENTS.md)
