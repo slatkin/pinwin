@@ -59,6 +59,11 @@ int pinwin_accent_validate(const PinwinAccent* accent) {
     return accent->width >= 1 && accent->width <= 65535;
 }
 
+int pinwin_pty_yield(int64_t started_us, int64_t now_us, int64_t budget_us) {
+    if (budget_us <= 0) return 0;
+    return now_us - started_us >= budget_us;
+}
+
 /* Ease-out cubic, shared with nothing: close to niri's critically damped
  * window-resize spring. Kept here so pinwin_anim_step is the one place the
  * tween's math lives. */

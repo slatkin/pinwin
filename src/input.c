@@ -7,6 +7,7 @@
  */
 
 #include "glue_internal.h"
+#include "pinwin.h"
 
 static uint32_t mods_from_gdk(GdkModifierType state) {
     uint32_t mods = 0;

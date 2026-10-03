@@ -9,6 +9,7 @@
  */
 
 #include "glue_internal.h"
+#include "pinwin.h"
 #include "nerd_font_tables.h"
 
 #include <pango/pangocairo.h>

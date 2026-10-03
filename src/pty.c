@@ -10,6 +10,7 @@
  */
 
 #include "glue_internal.h"
+#include "pinwin.h"
 
 #include <glib-unix.h>
 
@@ -22,6 +23,16 @@
 #include <unistd.h>
 
 static void attach_pty(void);
+
+/* While a tween runs, bound how long one main-loop dispatch may spend draining
+ * the pty (reading and parsing) before yielding back to the frame clock: an
+ * image re-transmit burst otherwise blocks every frame until fully parsed,
+ * which showed as the panel freezing mid-tween and then snapping. No tween, no
+ * budget: the old drain-until-EAGAIN behavior. */
+#define PTY_BUDGET_US 4000
+
+static size_t s_pty_bytes; /* read since the last tick took the stats */
+static gint64 s_pty_parse_us; /* time spent reading+parsing, same window */
 
 int apply_size(void) {
     int height = gtk_widget_get_height(g_area);
@@ -38,6 +49,8 @@ int apply_size(void) {
             g_rows = rows;
             g_grid_cols = g_cols;
             glue_pty_resize(g_cols, g_rows);
+            anim_log("grid cols=%d rows=%d cell=%dx%d\n", g_cols, g_rows,
+                     g_cell_w, g_cell_h);
         }
     }
     if (!g_attached) attach_pty();
@@ -55,12 +68,24 @@ void on_area_resize(GtkWidget* widget, gint width, gint height,
 
 static gboolean on_pty_readable(gint fd, GIOCondition condition, gpointer user_data) {
     uint8_t buf[65536];
+    gint64 started = g_get_monotonic_time();
+    gint64 budget = glue_anim_active() ? PTY_BUDGET_US : 0;
     (void)user_data;
 
     for (;;) {
-        ssize_t n = read(fd, buf, sizeof(buf));
+        /* While yielding to the frame clock, read in reduced chunks so the
+         * budget check lands between parses instead of once per 64 KB. */
+        size_t chunk = budget ? sizeof(buf) / 4 : sizeof(buf);
+        gint64 t0 = anim_logging() ? g_get_monotonic_time() : 0;
+        ssize_t n = read(fd, buf, chunk);
         if (n > 0) {
             pinwin_pty_data(buf, (size_t)n);
+            if (anim_logging()) {
+                s_pty_bytes += (size_t)n;
+                s_pty_parse_us += g_get_monotonic_time() - t0;
+            }
+            if (pinwin_pty_yield(started, g_get_monotonic_time(), budget))
+                return G_SOURCE_CONTINUE;
             continue;
         }
         if (n < 0 && errno == EINTR) continue;
@@ -75,6 +100,13 @@ static gboolean on_pty_readable(gint fd, GIOCondition condition, gpointer user_d
     g_pty_source = 0;
     g_pty_fd = -1;
     return G_SOURCE_REMOVE;
+}
+
+void pty_take_stats(size_t* bytes, gint64* parse_us) {
+    *bytes = s_pty_bytes;
+    *parse_us = s_pty_parse_us;
+    s_pty_bytes = 0;
+    s_pty_parse_us = 0;
 }
 
 void glue_pty_write(const uint8_t* data, size_t len) {
