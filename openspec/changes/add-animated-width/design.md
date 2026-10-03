@@ -120,6 +120,13 @@ then bumps its pin and adds the call (separate change).
 - **OQ-2.** Does `gtk_layer_set_exclusive_zone` on `g_reserve`, an unrendered opacity-0
   window, commit every frame without that window redrawing? Needs gtk4-layer-shell source or
   an experiment (task 1.1). Biggest risk.
+  Spike attempt (one run, throwaway edit reverted): a 16 ms `g_timeout` raising `g_reserve`'s
+  exclusive zone by 4 px per step under `zig build demo`, sampled with
+  `niri msg -j windows` (first tiled window `tile_size` width). Observed 714 → 677 → 669 → 661
+  → 654 → 646 → 638 → 634 → 633 over successive ~120 ms samples, i.e. intermediate widths
+  rather than a single jump, which suggests per-step reservation commits and incremental
+  reflow. Not conclusive (coarse sampling, no pixel capture, single run): task 1.1 stays
+  unchecked pending the user's visual confirmation.
 - **OQ-3 (resolved).** niri does not animate layer-surface resizes. Per the niri wiki
   (Configuration: Animations,
   https://github.com/niri-wm/niri/wiki/Configuration:-Animations), the window-resize animation
