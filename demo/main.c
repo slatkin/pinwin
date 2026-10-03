@@ -9,6 +9,8 @@
  *
  * Commands on the demo's own stdin (one per line):
  *   <enter>  toggle side/width and apply live (resize/re-dock)
+ *   e        animated width toggle 40 <-> 120 cols, same side (200 ms)
+ *   p        the same toggle through the plain snap apply
  *   b        apply an invalid layout: expect PINWIN_ERR_INVALID, host lives
  *   q        stop the panel and exit
  * Run `exit` inside the panel to watch a pty hangup leave the host alone.
@@ -112,6 +114,18 @@ int main(int argc, char** argv) {
             rc = pinwin_apply_layout(&bad);
             printf("pinwin_apply_layout(invalid) = %d (want %d)\n", rc,
                    PINWIN_ERR_INVALID);
+            fflush(stdout);
+            continue;
+        }
+        if (line[0] == 'e' || line[0] == 'p') {
+            PinwinLayout l;
+            demo_cols = demo_cols == DEMO_COLS ? 120 : DEMO_COLS;
+            l = canned_layout(side, demo_cols);
+            rc = line[0] == 'e'
+                     ? pinwin_apply_layout_animated(&l, PINWIN_ANIM_DEFAULT_MS)
+                     : pinwin_apply_layout(&l);
+            printf("%s(cols=%d) = %d\n", line[0] == 'e' ? "animated" : "plain",
+                   (int)demo_cols, rc);
             fflush(stdout);
             continue;
         }
