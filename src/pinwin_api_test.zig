@@ -68,6 +68,24 @@ test "invalid and not-running results are distinct codes" {
     try testing.expect(invalid != not_running);
 }
 
+test "apply_layout_animated shares the invalid and not-running contract" {
+    try testing.expectEqual(@as(c_int, c.PINWIN_ERR_INVALID), c.pinwin_apply_layout_animated(null, 200));
+
+    var zero_cols = layout(c.PINWIN_SIDE_LEFT, 0);
+    try testing.expectEqual(@as(c_int, c.PINWIN_ERR_INVALID), c.pinwin_apply_layout_animated(&zero_cols, 200));
+
+    var bad_side = layout(c.PINWIN_SIDE_LEFT, 60);
+    bad_side.side = 2;
+    try testing.expectEqual(@as(c_int, c.PINWIN_ERR_INVALID), c.pinwin_apply_layout_animated(&bad_side, 200));
+
+    // No panel was started: a valid layout is not-running for any duration,
+    // including zero (snap) and one beyond the clamp.
+    const valid = layout(c.PINWIN_SIDE_LEFT, 60);
+    try testing.expectEqual(@as(c_int, c.PINWIN_ERR_NOT_RUNNING), c.pinwin_apply_layout_animated(&valid, 0));
+    try testing.expectEqual(@as(c_int, c.PINWIN_ERR_NOT_RUNNING), c.pinwin_apply_layout_animated(&valid, c.PINWIN_ANIM_DEFAULT_MS));
+    try testing.expectEqual(@as(c_int, c.PINWIN_ERR_NOT_RUNNING), c.pinwin_apply_layout_animated(&valid, 60000));
+}
+
 // The ABI drives a real terminal here (the only test that creates one), so it
 // stays last in this file: `term` is process-global and every other test in
 // this file requires that it was never created.
