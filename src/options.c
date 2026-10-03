@@ -11,8 +11,6 @@
 
 #include "options.h"
 
-#include <math.h>
-
 int pinwin_side_geometry(const PinwinLayout* layout, long long panel_width,
                           int32_t* edge_margin, int32_t* reservation) {
     long long sum;
@@ -57,36 +55,4 @@ int pinwin_accent_validate(const PinwinAccent* accent) {
     if (accent->enabled != 0 && accent->enabled != 1) return 0;
     if (!accent->enabled) return 1;
     return accent->width >= 1 && accent->width <= 65535;
-}
-
-/* Ease-out cubic, shared with nothing: close to niri's critically damped
- * window-resize spring. Kept here so pinwin_anim_step is the one place the
- * tween's math lives. */
-static double anim_ease(double t) {
-    double u = 1.0 - t;
-    return 1.0 - u * u * u;
-}
-
-int pinwin_anim_step(int64_t now_us, int64_t dur_us, int32_t from_px,
-                      int32_t to_px, int64_t* t_us, int64_t* last_us,
-                      int32_t* cur_px) {
-    int64_t step;
-
-    if (*last_us == 0) {
-        *last_us = now_us;
-        *cur_px = from_px;
-        return 0;
-    }
-    step = now_us - *last_us;
-    if (step > PINWIN_ANIM_FRAME_US) step = PINWIN_ANIM_FRAME_US;
-    if (step < 0) step = 0;
-    *last_us = now_us;
-    *t_us += step;
-    if (*t_us >= dur_us) {
-        *cur_px = to_px;
-        return 1;
-    }
-    *cur_px = from_px + (int32_t)lround(
-        (double)(to_px - from_px) * anim_ease((double)*t_us / (double)dur_us));
-    return 0;
 }
