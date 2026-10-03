@@ -65,4 +65,20 @@ int pinwin_layout_validate(const PinwinLayout* layout, int32_t panel_cols,
  * ignored when off. Returns 1 on success, 0 on rejection. */
 int pinwin_accent_validate(const PinwinAccent* accent);
 
+/* One 60 Hz frame, the cap on how much tween time a single frame may
+ * advance. */
+#define PINWIN_ANIM_FRAME_US 16667
+
+/* One frame-clock tick of the animated width tween, as pure arithmetic so the
+ * Zig unit tests can drive it. Advances *t_us by the interval since *last_us
+ * capped at PINWIN_ANIM_FRAME_US (a stalled clock delays motion instead of
+ * skipping it), stamps *last_us with now_us, and maps the ease-out-cubic
+ * progress onto the width: *cur_px between from_px and to_px. A *last_us of 0
+ * means no tick has run yet: it is stamped and nothing moves. Returns 1 when
+ * the tween finished (*t_us reached dur_us; *cur_px is exactly to_px), 0
+ * otherwise. */
+int pinwin_anim_step(int64_t now_us, int64_t dur_us, int32_t from_px,
+                      int32_t to_px, int64_t* t_us, int64_t* last_us,
+                      int32_t* cur_px);
+
 #endif /* PINWIN_OPTIONS_H */
