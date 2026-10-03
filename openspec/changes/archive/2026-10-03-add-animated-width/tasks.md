@@ -30,11 +30,11 @@ tweened as designed.
 ## 5. Release bookkeeping (design D7)
 
 - [x] 5.1 Bump `.version` to `0.2.0` in `build.zig.zon`. Verify: `rg -n "\.version" build.zig.zon` shows `0.2.0` and `zig build` succeeds.
-- [ ] 5.2 Add the pinwin-panel delta to the main spec at archive time (no tag, design OQ-1). Verify: `openspec validate add-animated-width --strict` passes.
+- [x] 5.2 Add the pinwin-panel delta to the main spec at archive time (no tag, design OQ-1). Verify: `openspec validate add-animated-width --strict` passes.
 
 ## 6. Manual verification under niri (AGENTS.md)
 
 - [ ] 6.1 Using `zig build demo`, apply a collapse and an expand through `pinwin_apply_layout_animated` on both left and right docks: motion is continuous, tiled windows reflow alongside, the final width is exactly `cols * cell_w`, the drawn grid is anchored to the docked edge, and clicks land on the intended cells. Verify: observed; note results in the PR description. Mechanically seen: expand samples 634 → 618 → 597 → 581 → 569 → 560 → 552 → 548 → 546 (ease-out, ~150 ms), collapse 617 → 642 → 670 → 701 → 706 → 714, and the animated end widths equal the plain-apply widths (546 and 714). Not verified: the left dock (the demo docks right after startup), the visual anchoring of the grid and clicks landing on the intended cells; the user must eyeball those.
 - [x] 6.2 Interrupt mid-animation with a second animated apply, a collapse immediately followed by an expand, a plain `pinwin_apply_layout`, and `pinwin_stop`: each ends at the last requested layout (or torn down) with no residual offset. Verify: observed; note results in the PR description. Evidence (`pinwin-demo` commands `e`/`p`, `niri msg -j windows` tile width sampled): second `e` 80 ms after the first retargets smoothly (603 → 713, no jump); `p` 100 ms after `e` ends at the plain target (714) with no residual; `q` 100 ms after `e` exits rc 0, no `pinwin` layer, tiles back to 801; collapse after expand returns to the starting 714.
 - [x] 6.3 Set `gtk-enable-animations` to false (`gsettings set org.gnome.desktop.interface enable-animations false` or equivalent) and confirm the animated call snaps. Verify: observed. Evidence: with `gsettings ... enable-animations false` (restored to `true`) both `e` toggles went 714 → 546 → 714 with no intermediate samples.
-- [ ] 6.4 Record the later benchmarks listed in design (on_draw frame time, client reflow cost, dropped frames). Verify: a short note exists, or the item is explicitly deferred in the PR description.
+- [x] 6.4 Record the later benchmarks listed in design (on_draw frame time, client reflow cost, dropped frames). Verify: a short note exists, or the item is explicitly deferred in the PR description. (deferred; benchmarks to run later are listed in design.md)
