@@ -50,6 +50,7 @@ extern int g_key_layout;
 extern int32_t g_pty_cols;
 extern int32_t g_pty_rows;
 extern int g_attached;
+extern int g_focused; /* the panel holds keyboard focus */
 
 /* Layout settings. The applied layout is the startup layout supplied to
  * glue_init and is replaced by a later publish. */
@@ -57,6 +58,7 @@ extern PinwinLayout g_layout;
 extern GtkWindow* g_reserve;
 extern GdkMonitor* g_monitor; /* the visible panel's original monitor */
 extern int g_layout_latch; /* first-draw monitor resolution pending */
+extern PinwinAccent g_accent; /* focus accent from the startup */
 
 /* ---- fontconfig.c: Ghostty config and theme colours --------------------- */
 
@@ -89,7 +91,8 @@ void attach_controllers(GtkWidget* area);
 
 /* ---- glue.c: layer-shell surfaces and layout application ----------------- */
 
-int glue_init(const PinwinLayout* layout, int32_t keyboard_mode);
+int glue_init(const PinwinLayout* layout, int32_t keyboard_mode,
+              PinwinAccent accent);
 /* Push the current panel width (panel_px) onto both surfaces and queue a draw. */
 void glue_apply_geometry(void);
 void resolve_layout_monitor(void);

@@ -52,11 +52,13 @@ int g_key_layout;
 int32_t g_pty_cols = 40;
 int32_t g_pty_rows = 24;
 int g_attached;
+int g_focused;
 
 PinwinLayout g_layout;
 GtkWindow* g_reserve;
 GdkMonitor* g_monitor; /* the visible panel's original monitor */
 int g_layout_latch; /* first-draw monitor resolution pending */
+PinwinAccent g_accent;
 
 /* Width follows the applied column count. GTK4 has no gtk_window_resize and
  * gtk_window_set_default_size does not move a mapped window, so the drawing
@@ -266,11 +268,13 @@ static void on_activate(GtkApplication* app, gpointer user_data) {
     apply_size();
 }
 
-int glue_init(const PinwinLayout* layout, int32_t keyboard_mode) {
+int glue_init(const PinwinLayout* layout, int32_t keyboard_mode,
+              PinwinAccent accent) {
     theme_colours(g_theme_bg, g_theme_fg);
     g_layout = *layout;
     g_cols = layout->cols;
     g_keyboard_mode = keyboard_mode;
+    g_accent = accent;
 
     if (!gtk_init_check()) return 0;
     if (!gtk_layer_is_supported()) return 0;

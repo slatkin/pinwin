@@ -114,6 +114,16 @@ typedef struct {
     const uint8_t* pixels;
 } PinwinImage;
 
+/* Focus accent: a strip drawn on the workspace-facing edge while the panel
+ * holds keyboard focus (layer surfaces get no compositor focus ring, so the
+ * panel marks focus itself). enabled must be 0 or 1; width is the strip
+ * width in px (1..=65535 when enabled, ignored when off). */
+typedef struct {
+    int32_t enabled;
+    uint8_t r, g, b;
+    int32_t width;
+} PinwinAccent;
+
 /* ---- implemented in glue.c, called from Zig ---------------------------- */
 
 /* Window metrics, valid once glue_init returned 1. */

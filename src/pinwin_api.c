@@ -57,6 +57,9 @@ static int startup_valid(const PinwinStartup* startup) {
         startup->keyboard_mode != PINWIN_KEYBOARD_EXCLUSIVE &&
         startup->keyboard_mode != PINWIN_KEYBOARD_ON_DEMAND)
         return 0;
+    if (startup->accent.enabled < 0 || startup->accent.enabled > 1) return 0;
+    if (startup->accent.width < 0 || startup->accent.width > 65535) return 0;
+    if (startup->accent.enabled && startup->accent.width == 0) return 0;
     return 1;
 }
 
@@ -71,7 +74,8 @@ static gpointer gtk_thread_main(gpointer data) {
      * master fd arrives over the ABI and pty.c takes it non-blocking. */
     g_pty_fd = g_api_startup.master_fd;
 
-    if (!glue_init(&g_api_startup.layout, g_api_startup.keyboard_mode)) {
+    if (!glue_init(&g_api_startup.layout, g_api_startup.keyboard_mode,
+                   g_api_startup.accent)) {
         pinwin_api_start_result(0);
         return NULL;
     }

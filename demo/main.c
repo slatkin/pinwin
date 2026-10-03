@@ -90,6 +90,11 @@ int main(int argc, char** argv) {
     startup.master_fd = master;
     startup.layout = canned_layout(side, demo_cols);
     startup.keyboard_mode = PINWIN_KEYBOARD_ON_DEMAND;
+    startup.accent.enabled = 1;
+    startup.accent.r = 0xda;
+    startup.accent.g = 0xbc;
+    startup.accent.b = 0x7f;
+    startup.accent.width = 1;
     rc = pinwin_start(&startup);
     printf("pinwin_start = %d\n", rc);
     if (rc != PINWIN_OK) {
