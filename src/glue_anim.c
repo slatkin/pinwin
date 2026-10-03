@@ -1,9 +1,13 @@
 /*
  * glue_anim.c - the animated width transition (add-animated-width design D2,
- * D4-D6): one frame-clock tick callback eases the visible panel's width and the
+ * D4-D6, amended by hold-terminal-cols-through-tween design D1-D3): one
+ * frame-clock tick callback eases the visible panel's width and the
  * reservation's exclusive zone together, and a watchdog snaps to the final
- * layout if frames stop. Everything runs on the GTK thread; the state is one
- * static struct, so the tick allocates nothing.
+ * layout if frames stop. The tween carries the pending target layout; the
+ * child's terminal (grid and PTY winsize) stays at the applied column count
+ * for the whole tween and is resized once, to the target, when the tween ends
+ * through the same tail as a non-animated apply. Everything runs on the GTK
+ * thread; the state is one static struct, so the tick allocates nothing.
  */
 
 #include "glue_internal.h"
@@ -15,6 +19,7 @@ typedef struct {
     int32_t from_px, to_px, cur_px;
     gint64 t0_us; /* 0 until the first tick stamps it */
     gint64 dur_us;
+    PinwinLayout pending; /* the layout this tween lands on */
     GtkWidget* widget; /* the widget the tick callback is registered on */
     guint tick_id;
     guint watchdog_id;
@@ -25,6 +30,11 @@ static Anim a;
 int32_t panel_px(void) { return a.active ? a.cur_px : g_cols * g_cell_w; }
 
 int glue_anim_active(void) { return a.active; }
+
+/* The column count the running tween lands on, else the applied count. */
+int32_t glue_anim_target_cols(void) {
+    return a.active ? a.pending.cols : g_layout.cols;
+}
 
 /* Ease-out cubic: close to niri's critically damped window-resize spring. */
 static double ease(double t) {
@@ -53,11 +63,27 @@ static void anim_stop(int in_tick, int in_watchdog) {
 
 void glue_anim_cancel(void) { anim_stop(0, 0); }
 
-/* End the tween at the exact target through the same geometry path as a
- * non-animated apply. */
+/* Land the tween on its pending target through the same tail as a non-animated
+ * publish: the tween held the child's terminal at the applied column count, so
+ * this commit is the one grid and PTY winsize resize the child observes. */
+static void anim_commit(void) {
+    g_layout = a.pending;
+    g_cols = a.pending.cols;
+    glue_apply_geometry();
+    apply_size();
+}
+
+/* End the running tween at its pending target; no-op without a tween. Used by
+ * teardown, where the caller does not apply a new target afterwards. */
+void glue_anim_end(void) {
+    if (!a.active) return;
+    anim_stop(0, 0);
+    anim_commit();
+}
+
 static void anim_finish(int in_tick, int in_watchdog) {
     anim_stop(in_tick, in_watchdog);
-    glue_apply_geometry();
+    anim_commit();
 }
 
 static gboolean anim_tick(GtkWidget* widget, GdkFrameClock* clock, gpointer data) {
@@ -84,19 +110,30 @@ static gboolean anim_watchdog(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
-/* Start, or retarget from `from_px`, a tween to `to_px` over duration_ms. */
-void glue_anim_begin(int32_t from_px, int32_t to_px, uint32_t duration_ms) {
+/* Start, or retarget from `from_px`, a tween that lands on `target`. The
+ * child's terminal stays at the applied column count until the tween ends. */
+void glue_anim_begin(const PinwinLayout* target, int32_t from_px,
+                     uint32_t duration_ms) {
     if (!g_win) return;
     anim_stop(0, 0);
     a.active = 1;
+    a.pending = *target;
     a.from_px = from_px;
-    a.to_px = to_px;
+    a.to_px = target->cols * g_cell_w;
     a.cur_px = from_px;
     a.t0_us = 0;
     a.dur_us = (gint64)duration_ms * 1000;
     a.widget = GTK_WIDGET(g_win);
     a.tick_id = gtk_widget_add_tick_callback(a.widget, anim_tick, NULL, NULL);
     a.watchdog_id = g_timeout_add(duration_ms + 100, anim_watchdog, NULL);
+}
+
+/* Point the running tween at `target` without restarting its timing: the same
+ * columns with changed gutters keeps the tween going. No-op without a tween. */
+void glue_anim_retarget(const PinwinLayout* target) {
+    if (!a.active) return;
+    a.pending = *target;
+    a.to_px = target->cols * g_cell_w;
 }
 
 /* Horizontal shift that keeps the grid against the docked edge while the
