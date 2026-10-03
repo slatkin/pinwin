@@ -12,7 +12,6 @@
  */
 
 #include "glue_internal.h"
-#include "pinwin.h"
 
 #include <gtk4-layer-shell.h>
 #include <gio/gio.h>
