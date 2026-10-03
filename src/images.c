@@ -8,7 +8,6 @@
  */
 
 #include "glue_internal.h"
-#include "pinwin.h"
 
 #include <stdlib.h>
 
