@@ -90,6 +90,8 @@ void attach_controllers(GtkWidget* area);
 /* ---- glue.c: layer-shell surfaces and layout application ----------------- */
 
 int glue_init(const PinwinLayout* layout, int32_t keyboard_mode);
+/* Push the current panel width (panel_px) onto both surfaces and queue a draw. */
+void glue_apply_geometry(void);
 void resolve_layout_monitor(void);
 
 /* Close both layer-shell surfaces (GTK thread). Called by pinwin_stop's
@@ -107,7 +109,20 @@ void glue_close_surfaces(void);
 /* The layout published but its terminal grid could not be allocated; the
  * previous grid stays (design D3). Maps to PINWIN_ERR_INTERNAL. */
 #define GLUE_ERR_TERMINAL (-2)
-int glue_publish_layout(const PinwinLayout* layout);
+int glue_publish_layout(const PinwinLayout* layout, uint32_t duration_ms);
+
+/* ---- glue_anim.c: animated width transition ------------------------------ */
+
+/* The panel's current pixel width: the animated width while a tween runs, else
+ * g_cols * g_cell_w. */
+int32_t panel_px(void);
+int glue_anim_active(void);
+/* False when gtk-enable-animations is off. */
+int glue_anim_allowed(void);
+void glue_anim_begin(int32_t from_px, int32_t to_px, uint32_t duration_ms);
+void glue_anim_cancel(void);
+/* Grid shift for a right-docked panel while animating, else 0. */
+int32_t glue_anim_draw_offset(void);
 
 /* ---- pinwin_api.c: start-up handshake (called from glue.c) --------------- */
 

@@ -64,8 +64,8 @@ int g_layout_latch; /* first-draw monitor resolution pending */
  * too: GtkWindow treats it as a size floor, so leaving the launch value there
  * would pin the panel at its launch width once it shrinks (design D3). */
 static void apply_panel_width(void) {
-    if (g_area) gtk_widget_set_size_request(g_area, g_cols * g_cell_w, -1);
-    if (g_win) gtk_window_set_default_size(g_win, g_cols * g_cell_w, -1);
+    if (g_area) gtk_widget_set_size_request(g_area, panel_px(), -1);
+    if (g_win) gtk_window_set_default_size(g_win, panel_px(), -1);
 }
 
 /* Push the applied layout onto both surfaces in one main-loop turn (design
@@ -76,7 +76,7 @@ static void apply_panel_width(void) {
 static void apply_layout_surfaces(void) {
     int32_t margin, reservation;
 
-    if (!pinwin_side_geometry(&g_layout, g_cols * g_cell_w, &margin, &reservation))
+    if (!pinwin_side_geometry(&g_layout, panel_px(), &margin, &reservation))
         return; /* callers validate first; this is belt and braces */
 
     gtk_layer_set_anchor(g_win, GTK_LAYER_SHELL_EDGE_LEFT,
@@ -109,10 +109,15 @@ static void apply_layout_surfaces(void) {
     if (g_area) gtk_widget_queue_draw(g_area);
 }
 
+void glue_apply_geometry(void) {
+    apply_panel_width();
+    apply_layout_surfaces();
+}
+
 /* Validate the layout against the live metrics and publish it (the ABI path,
  * design D4/D5); GLUE_NOT_LIVE means the panel has no metrics yet, which is a
  * lifecycle state rather than a layout verdict. */
-int glue_publish_layout(const PinwinLayout* layout) {
+int glue_publish_layout(const PinwinLayout* layout, uint32_t duration_ms) {
     if (!g_monitor || !g_win) return GLUE_NOT_LIVE;
     {
         GdkRectangle geom;
@@ -123,13 +128,33 @@ int glue_publish_layout(const PinwinLayout* layout) {
                                     geom.width, geom.height) != PINWIN_GEOM_OK)
             return PINWIN_GEOM_ERR_METRICS;
     }
-    g_layout = *layout;
-    g_cols = layout->cols;
-    apply_panel_width();
-    apply_layout_surfaces();
+    {
+        /* Only a column change animates (design D4): the side and the left and
+         * right gutters must match, since they move the reservation. A tween
+         * already heading for these columns just keeps going. */
+        int animate = duration_ms > 0 && glue_anim_allowed() &&
+                      layout->side == g_layout.side &&
+                      layout->left == g_layout.left &&
+                      layout->right == g_layout.right;
+        int32_t from_px = panel_px();
+        int cols_changed = layout->cols != g_cols;
+
+        g_layout = *layout;
+        g_cols = layout->cols;
+        if (!animate)
+            glue_anim_cancel();
+        else if (cols_changed)
+            glue_anim_begin(from_px, g_cols * g_cell_w, duration_ms);
+    }
+    glue_apply_geometry();
     /* A terminal allocation failure keeps the previous grid and is an internal
-     * failure of this apply (design D3), not a layout verdict. */
-    if (apply_size() != 0) return GLUE_ERR_TERMINAL;
+     * failure of this apply (design D3), not a layout verdict; the panel snaps
+     * to the requested layout rather than stay mid-animation (design D4). */
+    if (apply_size() != 0) {
+        glue_anim_cancel();
+        glue_apply_geometry();
+        return GLUE_ERR_TERMINAL;
+    }
     return PINWIN_GEOM_OK;
 }
 
@@ -193,6 +218,7 @@ void resolve_layout_monitor(void) {
 /* Close both layer-shell surfaces (GTK thread). Shared by pinwin_stop's
  * teardown and the failed start after a NULL monitor resolution. */
 void glue_close_surfaces(void) {
+    glue_anim_cancel();
     if (g_reserve) {
         gtk_window_destroy(g_reserve);
         g_reserve = NULL;

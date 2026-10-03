@@ -111,6 +111,7 @@ static gboolean stop_on_gtk_thread(gpointer data) {
  * callback. */
 typedef struct {
     PinwinLayout layout;
+    uint32_t duration_ms; /* 0 snaps; see pinwin_apply_layout_animated */
     GMutex lock;
     GCond cond;
     gboolean done;
@@ -151,7 +152,7 @@ static int apply_layout_structurally_valid(const PinwinLayout* layout) {
  * keeps the previous grid and is INTERNAL (design D3), not a layout verdict. */
 static gboolean apply_on_gtk_thread(gpointer data) {
     ApplyRequest* req = data;
-    int geom = glue_publish_layout(&req->layout);
+    int geom = glue_publish_layout(&req->layout, req->duration_ms);
     int result;
 
     if (geom == GLUE_NOT_LIVE)
@@ -204,7 +205,7 @@ int pinwin_start(const PinwinStartup* startup) {
     return PINWIN_OK;
 }
 
-int pinwin_apply_layout(const PinwinLayout* layout) {
+static int apply_layout_common(const PinwinLayout* layout, uint32_t duration_ms) {
     ApplyRequest* req;
     int result;
 
@@ -220,6 +221,7 @@ int pinwin_apply_layout(const PinwinLayout* layout) {
 
     req = g_new0(ApplyRequest, 1);
     req->layout = *layout; /* the request owns the copy (see ApplyRequest) */
+    req->duration_ms = duration_ms;
     req->refs = 2; /* caller + the pending GTK callback */
     g_mutex_init(&req->lock);
     g_cond_init(&req->cond);
@@ -242,6 +244,15 @@ int pinwin_apply_layout(const PinwinLayout* layout) {
     g_mutex_unlock(&req->lock);
     apply_request_unref(req);
     return result;
+}
+
+int pinwin_apply_layout(const PinwinLayout* layout) {
+    return apply_layout_common(layout, 0);
+}
+
+int pinwin_apply_layout_animated(const PinwinLayout* layout, uint32_t duration_ms) {
+    if (duration_ms > PINWIN_ANIM_MAX_MS) duration_ms = PINWIN_ANIM_MAX_MS;
+    return apply_layout_common(layout, duration_ms);
 }
 
 void pinwin_stop(void) {
