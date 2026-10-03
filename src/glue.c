@@ -133,55 +133,28 @@ int glue_publish_layout(const PinwinLayout* layout, uint32_t duration_ms) {
     {
         /* Only a column change animates (design D4): the side and the left and
          * right gutters must match, since they move the reservation. A tween
-         * keeps the applied layout in g_layout, so this comparison is against
-         * the applied side and gutters either way. */
+         * already heading for these columns just keeps going. */
         int animate = duration_ms > 0 && glue_anim_allowed() &&
                       layout->side == g_layout.side &&
                       layout->left == g_layout.left &&
                       layout->right == g_layout.right;
         int32_t from_px = panel_px();
+        int cols_changed = layout->cols != g_cols;
 
-        if (!animate) {
-            /* Snap: the publish tail below resizes the child to the requested
-             * columns exactly once, so the tween only drops its sources. */
+        g_layout = *layout;
+        g_cols = layout->cols;
+        if (!animate)
             glue_anim_cancel();
-            g_layout = *layout;
-            g_cols = layout->cols;
-        } else if (glue_anim_active()) {
-            /* Mid-tween: last-write-wins. The child is resized once, at the
-             * end, to the newest target (hold design D3). */
-            if (layout->cols == glue_anim_target_cols())
-                glue_anim_retarget(layout); /* same columns: keep the timing */
-            else
-                glue_anim_begin(layout, from_px, duration_ms);
-        } else if (layout->cols != g_cols) {
-            /* Hold the child's terminal at the applied column count for the
-             * whole tween (hold design D1): no winsize change or SIGWINCH
-             * until the end, then one resize to the target. The pending target
-             * travels in the tween; g_layout and g_cols stay applied. */
-            glue_anim_begin(layout, from_px, duration_ms);
-        } else {
-            /* No column change: snap the gutters as today. */
-            g_layout = *layout;
-            g_cols = layout->cols;
-        }
+        else if (cols_changed)
+            glue_anim_begin(from_px, g_cols * g_cell_w, duration_ms);
     }
     glue_apply_geometry();
     /* A terminal allocation failure keeps the previous grid and is an internal
-     * failure of this apply (design D3), not a layout verdict. A held tween
-     * must not keep a half-applied state: it snaps to the requested layout
-     * with one resize attempt at those columns (hold design D2). */
+     * failure of this apply (design D3), not a layout verdict; the panel snaps
+     * to the requested layout rather than stay mid-animation (design D4). */
     if (apply_size() != 0) {
-        if (glue_anim_active()) {
-            glue_anim_cancel();
-            g_layout = *layout;
-            g_cols = layout->cols;
-            glue_apply_geometry();
-            apply_size();
-        } else {
-            glue_anim_cancel();
-            glue_apply_geometry();
-        }
+        glue_anim_cancel();
+        glue_apply_geometry();
         return GLUE_ERR_TERMINAL;
     }
     return PINWIN_GEOM_OK;
@@ -245,11 +218,9 @@ void resolve_layout_monitor(void) {
 }
 
 /* Close both layer-shell surfaces (GTK thread). Shared by pinwin_stop's
- * teardown and the failed start after a NULL monitor resolution. A running
- * tween is ended first, so its commit resizes the child to the tween's target
- * columns exactly once while the surfaces still exist. */
+ * teardown and the failed start after a NULL monitor resolution. */
 void glue_close_surfaces(void) {
-    glue_anim_end();
+    glue_anim_cancel();
     if (g_reserve) {
         gtk_window_destroy(g_reserve);
         g_reserve = NULL;

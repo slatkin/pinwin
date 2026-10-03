@@ -102,12 +102,9 @@ void resolve_layout_monitor(void);
 void glue_close_surfaces(void);
 
 /* Validate `layout` against the panel's original monitor and live cell
- * metrics, then publish it to both surfaces and run the terminal resize path.
- * An animated publish hands the target to the running-or-starting tween
- * instead: the child's terminal keeps the applied column count until the tween
- * ends and is resized once then (hold-terminal-cols-through-tween design
- * D1/D2). Runs on the GTK thread, driven by pinwin_apply_layout and
- * pinwin_apply_layout_animated. Returns PINWIN_GEOM_OK, a PINWIN_GEOM_ERR_*
+ * metrics, then publish it to both surfaces, resize the terminal grid through
+ * the normal resize path and force a redraw. Runs on the GTK thread, driven by
+ * pinwin_apply_layout (design D4/D5). Returns PINWIN_GEOM_OK, a PINWIN_GEOM_ERR_*
  * verdict without touching live state, GLUE_NOT_LIVE when the panel has no
  * metrics yet (not activated, or already torn down), or GLUE_ERR_TERMINAL when
  * the terminal grid could not be allocated (previous grid kept). */
@@ -125,22 +122,8 @@ int32_t panel_px(void);
 int glue_anim_active(void);
 /* False when gtk-enable-animations is off. */
 int glue_anim_allowed(void);
-/* Start, or retarget (restart from `from_px` with a fresh duration), a tween
- * that lands on `target`. The child's terminal stays at the applied column
- * count until the tween ends (hold-terminal-cols-through-tween design D1). */
-void glue_anim_begin(const PinwinLayout* target, int32_t from_px,
-                     uint32_t duration_ms);
-/* Point a running tween at `target` without restarting its timing (same
- * columns, changed gutters). No-op without a tween. */
-void glue_anim_retarget(const PinwinLayout* target);
-/* The column count the running tween lands on, else the applied count. */
-int32_t glue_anim_target_cols(void);
-/* Drop the tween's sources without committing; the caller applies a new target
- * immediately. */
+void glue_anim_begin(int32_t from_px, int32_t to_px, uint32_t duration_ms);
 void glue_anim_cancel(void);
-/* End the running tween at its pending target through the same geometry path
- * as a non-animated apply: one final terminal resize. No-op without a tween. */
-void glue_anim_end(void);
 /* Grid shift for a right-docked panel while animating, else 0. */
 int32_t glue_anim_draw_offset(void);
 
