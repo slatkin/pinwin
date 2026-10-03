@@ -76,6 +76,24 @@ int pinwin_start(const PinwinStartup* startup);
  * the GTK thread. */
 int pinwin_apply_layout(const PinwinLayout* layout);
 
+/* Documented default animation duration for hosts to pass; the library itself
+ * has no default (duration_ms is always the caller's). Longer durations are
+ * clamped to PINWIN_ANIM_MAX_MS. */
+#define PINWIN_ANIM_DEFAULT_MS 200
+#define PINWIN_ANIM_MAX_MS 1000
+
+/* pinwin_apply_layout with an animated width change. Validation, result codes
+ * and threading are exactly pinwin_apply_layout's; PINWIN_OK means the layout
+ * was validated and accepted, not that the animation finished. When only the
+ * column count differs from the applied layout (same side, left and right
+ * gutters), duration_ms > 0 and GTK animations are enabled, the panel width and
+ * the reservation ease from the current width to the target over duration_ms
+ * (ease-out cubic), ending at exactly cols * cell width. Anything else applies
+ * in one step. The terminal grid and pty winsize resize once, to the target
+ * columns, when the animation starts. A call during an animation retargets from
+ * the current width; MUST NOT be called from the GTK thread. */
+int pinwin_apply_layout_animated(const PinwinLayout* layout, uint32_t duration_ms);
+
 /* Stop the panel: close the visible and reservation surfaces, quit the GTK main
  * loop and join the GTK thread. A no-op when not running. MUST NOT be called
  * from the GTK thread. */
