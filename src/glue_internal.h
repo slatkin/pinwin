@@ -9,7 +9,6 @@
 #ifndef PINWIN_GLUE_INTERNAL_H
 #define PINWIN_GLUE_INTERNAL_H
 
-#include "pinwin.h"
 #include "options.h"
 
 #include <pango/pangocairo.h>
@@ -84,6 +83,9 @@ void draw_images(cairo_t* cr);
 int apply_size(void);
 void on_area_resize(GtkWidget* widget, gint width, gint height,
                     gpointer user_data);
+/* Bytes read and time spent reading+parsing them since the previous call,
+ * which resets both. Valid only when anim_logging() is true. */
+void pty_take_stats(size_t* bytes, gint64* parse_us);
 
 /* ---- input.c: GDK controllers for key, mouse, scroll and focus ----------- */
 
@@ -126,6 +128,14 @@ void glue_anim_begin(int32_t from_px, int32_t to_px, uint32_t duration_ms);
 void glue_anim_cancel(void);
 /* Grid shift for a right-docked panel while animating, else 0. */
 int32_t glue_anim_draw_offset(void);
+
+/* ---- glue_anim.c: timing instrumentation (PINWIN_ANIM_LOG=<path>) -------- */
+
+/* True when PINWIN_ANIM_LOG named a path; gates the tick-side accumulation
+ * too, so an unset variable costs nothing beyond the check. */
+int anim_logging(void);
+/* Append one line to the log; a no-op when instrumentation is off. */
+void anim_log(const char* fmt, ...);
 
 /* ---- pinwin_api.c: start-up handshake (called from glue.c) --------------- */
 

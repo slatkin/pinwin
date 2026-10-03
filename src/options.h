@@ -65,6 +65,12 @@ int pinwin_layout_validate(const PinwinLayout* layout, int32_t panel_cols,
  * ignored when off. Returns 1 on success, 0 on rejection. */
 int pinwin_accent_validate(const PinwinAccent* accent);
 
+/* The pty read loop's yield decision for one main-loop dispatch. budget_us == 0
+ * means unbounded (no tween running): never yield. Otherwise yield once the
+ * dispatch has consumed budget_us of wall time since started_us, so an image
+ * burst cannot starve the frame clock mid-tween. Returns 1 to yield. */
+int pinwin_pty_yield(int64_t started_us, int64_t now_us, int64_t budget_us);
+
 /* One 60 Hz frame, the cap on how much tween time a single frame may
  * advance. */
 #define PINWIN_ANIM_FRAME_US 16667
