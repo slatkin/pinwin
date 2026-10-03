@@ -349,9 +349,16 @@ static uint32_t first_codepoint(const char* text, int32_t len) {
 
 /* ---- sprites (design D5) ------------------------------------------------ */
 
+/* Unantialiased, like the cell backgrounds: at a fractional output scale the
+ * edges of adjacent same-colour blocks fall between device pixels, and two
+ * antialiased partial-coverage edges composite to a faint seam instead of a
+ * solid fill. Without antialiasing they snap to device pixels and tile exactly. */
 static void fill_rect(cairo_t* cr, double x, double y, double w, double h) {
+    cairo_antialias_t saved = cairo_get_antialias(cr);
+    cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
     cairo_rectangle(cr, x, y, w, h);
     cairo_fill(cr);
+    cairo_set_antialias(cr, saved);
 }
 
 /* Block elements, braille patterns and the powerline separators are drawn
