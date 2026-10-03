@@ -127,6 +127,9 @@ then bumps its pin and adds the call (separate change).
   rather than a single jump, which suggests per-step reservation commits and incremental
   reflow. Not conclusive (coarse sampling, no pixel capture, single run): task 1.1 stays
   unchecked pending the user's visual confirmation.
+  **Resolved** by running the real tween: tile widths step through ~8 intermediate values
+  per 200 ms animation (634 → 548 on expand), so the reservation commits and niri reflows on
+  each step without the reservation window redrawing.
 - **OQ-3 (resolved).** niri does not animate layer-surface resizes. Per the niri wiki
   (Configuration: Animations,
   https://github.com/niri-wm/niri/wiki/Configuration:-Animations), the window-resize animation

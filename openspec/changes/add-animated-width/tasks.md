@@ -7,7 +7,7 @@ tweened as designed.
 
 ## 1. Spike the open risk (design OQ-2)
 
-- [ ] 1.1 With a throwaway local edit (not committed), call `gtk_layer_set_exclusive_zone` on `g_reserve` from a `g_timeout` at ~16 ms and observe via `zig build demo` under niri whether tiled windows reflow each step. Record the result in design OQ-2 and revert the edit. Verify: `git diff --stat` is empty after the revert and design.md OQ-2 is updated with the finding.
+- [x] 1.1 With a throwaway local edit (not committed), call `gtk_layer_set_exclusive_zone` on `g_reserve` from a `g_timeout` at ~16 ms and observe via `zig build demo` under niri whether tiled windows reflow each step. Record the result in design OQ-2 and revert the edit. Verify: `git diff --stat` is empty after the revert and design.md OQ-2 is updated with the finding. Result: per-step reservation commits reflow tiles each step (design OQ-2).
 
 ## 2. Tween core (design D2, D4, D5, D6)
 
@@ -34,7 +34,7 @@ tweened as designed.
 
 ## 6. Manual verification under niri (AGENTS.md)
 
-- [ ] 6.1 Using `zig build demo`, apply a collapse and an expand through `pinwin_apply_layout_animated` on both left and right docks: motion is continuous, tiled windows reflow alongside, the final width is exactly `cols * cell_w`, the drawn grid is anchored to the docked edge, and clicks land on the intended cells. Verify: observed; note results in the PR description.
-- [ ] 6.2 Interrupt mid-animation with a second animated apply, a collapse immediately followed by an expand, a plain `pinwin_apply_layout`, and `pinwin_stop`: each ends at the last requested layout (or torn down) with no residual offset. Verify: observed; note results in the PR description.
-- [ ] 6.3 Set `gtk-enable-animations` to false (`gsettings set org.gnome.desktop.interface enable-animations false` or equivalent) and confirm the animated call snaps. Verify: observed.
+- [ ] 6.1 Using `zig build demo`, apply a collapse and an expand through `pinwin_apply_layout_animated` on both left and right docks: motion is continuous, tiled windows reflow alongside, the final width is exactly `cols * cell_w`, the drawn grid is anchored to the docked edge, and clicks land on the intended cells. Verify: observed; note results in the PR description. Mechanically seen: expand samples 634 → 618 → 597 → 581 → 569 → 560 → 552 → 548 → 546 (ease-out, ~150 ms), collapse 617 → 642 → 670 → 701 → 706 → 714, and the animated end widths equal the plain-apply widths (546 and 714). Not verified: the left dock (the demo docks right after startup), the visual anchoring of the grid and clicks landing on the intended cells; the user must eyeball those.
+- [x] 6.2 Interrupt mid-animation with a second animated apply, a collapse immediately followed by an expand, a plain `pinwin_apply_layout`, and `pinwin_stop`: each ends at the last requested layout (or torn down) with no residual offset. Verify: observed; note results in the PR description. Evidence (`pinwin-demo` commands `e`/`p`, `niri msg -j windows` tile width sampled): second `e` 80 ms after the first retargets smoothly (603 → 713, no jump); `p` 100 ms after `e` ends at the plain target (714) with no residual; `q` 100 ms after `e` exits rc 0, no `pinwin` layer, tiles back to 801; collapse after expand returns to the starting 714.
+- [x] 6.3 Set `gtk-enable-animations` to false (`gsettings set org.gnome.desktop.interface enable-animations false` or equivalent) and confirm the animated call snaps. Verify: observed. Evidence: with `gsettings ... enable-animations false` (restored to `true`) both `e` toggles went 714 → 546 → 714 with no intermediate samples.
 - [ ] 6.4 Record the later benchmarks listed in design (on_draw frame time, client reflow cost, dropped frames). Verify: a short note exists, or the item is explicitly deferred in the PR description.
