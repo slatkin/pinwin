@@ -100,7 +100,7 @@ Read once per apply with `g_object_get` on `GtkSettings`; FALSE forces `duration
 env var or flag.
 
 **D7. Versioning and rollout.**
-Bump `.version` to 0.2.0 and add a new tag (name decided in OQ-1). pinwin lands first; mbv
+Bump `.version` to 0.2.0 and no new tag (OQ-1). pinwin lands first; mbv
 then bumps its pin and adds the call (separate change).
 
 ## Risks / Trade-offs
@@ -115,8 +115,7 @@ then bumps its pin and adds the call (separate change).
 
 ## Open Questions
 
-- **OQ-1.** Tag name for the new revision (suggest `library-abi-2`) and whether it should
-  point at the commit mbv pins.
+- **OQ-1 (resolved).** No new tag: mbv pins a commit hash, not `library-abi`.
 - **OQ-2.** Does `gtk_layer_set_exclusive_zone` on `g_reserve`, an unrendered opacity-0
   window, commit every frame without that window redrawing? Needs gtk4-layer-shell source or
   an experiment (task 1.1). Biggest risk.
