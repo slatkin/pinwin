@@ -128,3 +128,39 @@ test "validate reaches GEOM_ERR_NO_ROW" {
         c.pinwin_layout_validate(&layout, 1, 1, 16, 1920, 1080),
     );
 }
+
+test "accent validate accepts widths 1 through 65535 when enabled" {
+    var accent = std.mem.zeroes(c.PinwinAccent);
+    accent.enabled = 1;
+    accent.width = 1;
+    try testing.expectEqual(@as(c_int, 1), c.pinwin_accent_validate(&accent));
+    accent.width = 65535;
+    try testing.expectEqual(@as(c_int, 1), c.pinwin_accent_validate(&accent));
+}
+
+test "accent validate rejects enabled widths outside 1..65535" {
+    var accent = std.mem.zeroes(c.PinwinAccent);
+    accent.enabled = 1;
+
+    accent.width = 0;
+    try testing.expectEqual(@as(c_int, 0), c.pinwin_accent_validate(&accent));
+    accent.width = 65536;
+    try testing.expectEqual(@as(c_int, 0), c.pinwin_accent_validate(&accent));
+    accent.width = -1;
+    try testing.expectEqual(@as(c_int, 0), c.pinwin_accent_validate(&accent));
+}
+
+test "accent validate ignores width when off and rejects other enabled values" {
+    var accent = std.mem.zeroes(c.PinwinAccent);
+
+    accent.enabled = 0;
+    accent.width = 0;
+    try testing.expectEqual(@as(c_int, 1), c.pinwin_accent_validate(&accent));
+    accent.width = -5;
+    try testing.expectEqual(@as(c_int, 1), c.pinwin_accent_validate(&accent));
+
+    accent.enabled = 2;
+    try testing.expectEqual(@as(c_int, 0), c.pinwin_accent_validate(&accent));
+    accent.enabled = -1;
+    try testing.expectEqual(@as(c_int, 0), c.pinwin_accent_validate(&accent));
+}

@@ -14,6 +14,16 @@
 #define PINWIN_SIDE_LEFT 0
 #define PINWIN_SIDE_RIGHT 1
 
+/* Focus accent: a strip drawn on the workspace-facing edge while the panel
+ * holds keyboard focus (layer surfaces get no compositor focus ring, so the
+ * panel marks focus itself). enabled must be 0 or 1; width is the strip
+ * width in px (1..=65535 when enabled, ignored when off). */
+typedef struct {
+    int32_t enabled;
+    uint8_t r, g, b;
+    int32_t width;
+} PinwinAccent;
+
 /* Validation results from pinwin_layout_validate. */
 #define PINWIN_GEOM_OK 0
 #define PINWIN_GEOM_ERR_SIDE 1      /* side is not PINWIN_SIDE_* */
@@ -49,5 +59,10 @@ int pinwin_side_geometry(const PinwinLayout* layout, long long panel_width,
 int pinwin_layout_validate(const PinwinLayout* layout, int32_t panel_cols,
                             int32_t cell_w, int32_t cell_h, int32_t output_w,
                             int32_t output_h);
+
+/* Validate the focus accent: enabled must be 0 or 1, and when enabled the
+ * width must be 1..=65535. The colour bytes are always valid and the width is
+ * ignored when off. Returns 1 on success, 0 on rejection. */
+int pinwin_accent_validate(const PinwinAccent* accent);
 
 #endif /* PINWIN_OPTIONS_H */

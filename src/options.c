@@ -50,3 +50,9 @@ int pinwin_layout_validate(const PinwinLayout* layout, int32_t panel_cols,
     }
     return PINWIN_GEOM_OK;
 }
+
+int pinwin_accent_validate(const PinwinAccent* accent) {
+    if (accent->enabled != 0 && accent->enabled != 1) return 0;
+    if (!accent->enabled) return 1;
+    return accent->width >= 1 && accent->width <= 65535;
+}

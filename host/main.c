@@ -116,14 +116,15 @@ int main(int argc, char** argv) {
     startup.layout.top = startup.layout.bottom = startup.layout.left = 0;
     startup.layout.right = (int32_t)env_number("GUTTER", 0, 0, 65535);
     startup.keyboard_mode = keyboard_mode();
-    accent_color(accent_rgb);
     startup.accent.enabled = accent_enabled();
-    startup.accent.r = accent_rgb[0];
-    startup.accent.g = accent_rgb[1];
-    startup.accent.b = accent_rgb[2];
-    startup.accent.width = startup.accent.enabled
-                               ? (int32_t)env_number("PINWIN_ACCENT_WIDTH", 1, 1, 65535)
-                               : 1;
+    if (startup.accent.enabled) {
+        accent_color(accent_rgb);
+        startup.accent.r = accent_rgb[0];
+        startup.accent.g = accent_rgb[1];
+        startup.accent.b = accent_rgb[2];
+        startup.accent.width =
+            (int32_t)env_number("PINWIN_ACCENT_WIDTH", 1, 1, 65535);
+    }
 
     /* The library sets no child environment: say we are a colour terminal. */
     setenv("TERM", "xterm-256color", 1);

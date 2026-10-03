@@ -57,9 +57,7 @@ static int startup_valid(const PinwinStartup* startup) {
         startup->keyboard_mode != PINWIN_KEYBOARD_EXCLUSIVE &&
         startup->keyboard_mode != PINWIN_KEYBOARD_ON_DEMAND)
         return 0;
-    if (startup->accent.enabled < 0 || startup->accent.enabled > 1) return 0;
-    if (startup->accent.width < 0 || startup->accent.width > 65535) return 0;
-    if (startup->accent.enabled && startup->accent.width == 0) return 0;
+    if (!pinwin_accent_validate(&startup->accent)) return 0;
     return 1;
 }
 
