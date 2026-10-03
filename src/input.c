@@ -113,6 +113,7 @@ static void on_click_pressed(GtkGestureClick* gesture, int n_press, double x,
     guint button;
     (void)n_press;
     (void)user_data;
+    x -= glue_anim_draw_offset();
     g_last_x = x;
     g_last_y = y;
     button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
@@ -125,6 +126,7 @@ static void on_click_released(GtkGestureClick* gesture, int n_press, double x,
     guint button;
     (void)n_press;
     (void)user_data;
+    x -= glue_anim_draw_offset();
     button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
     pinwin_mouse(PINWIN_MOUSE_RELEASE, x, y, pinwin_button_from_gdk(button),
                   motion_mods(GTK_EVENT_CONTROLLER(gesture)));
@@ -133,6 +135,7 @@ static void on_click_released(GtkGestureClick* gesture, int n_press, double x,
 static void on_motion(GtkEventControllerMotion* controller, double x, double y,
                       gpointer user_data) {
     (void)user_data;
+    x -= glue_anim_draw_offset();
     g_last_x = x;
     g_last_y = y;
     pinwin_mouse(PINWIN_MOUSE_MOTION, x, y, PINWIN_MOUSE_UNKNOWN,
