@@ -156,12 +156,16 @@ static gboolean on_scroll(GtkEventControllerScroll* controller, double dx, doubl
 static void on_focus_enter(GtkEventControllerFocus* controller, gpointer user_data) {
     (void)controller;
     (void)user_data;
+    g_focused = 1;
+    gtk_widget_queue_draw(GTK_WIDGET(g_area));
     pinwin_focus(1);
 }
 
 static void on_focus_leave(GtkEventControllerFocus* controller, gpointer user_data) {
     (void)controller;
     (void)user_data;
+    g_focused = 0;
+    gtk_widget_queue_draw(GTK_WIDGET(g_area));
     pinwin_focus(0);
 }
 

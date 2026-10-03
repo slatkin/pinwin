@@ -39,11 +39,13 @@
 
 /* Everything pinwin_start needs: the host-owned pty master and the full initial
  * panel layout. master_fd is stored for the terminal attachment; the host keeps
- * ownership of the child side of the pty. */
+ * ownership of the child side of the pty. Adding fields is a struct-size ABI
+ * break: consumers must recompile against this header. */
 typedef struct {
     int32_t master_fd;
     PinwinLayout layout;
     int32_t keyboard_mode; /* one of PINWIN_KEYBOARD_* */
+    PinwinAccent accent;
 } PinwinStartup;
 
 /* Start the panel. Validates the arguments purely (no GTK), stores the startup,

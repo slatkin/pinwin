@@ -644,5 +644,19 @@ void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
                     have_cursor_text ? cursor_text_len : 0);
 
     draw_images(cr);
+
+    /* Focus accent. Layer surfaces get no compositor focus ring (niri draws
+     * one only around layout windows), so the focused panel marks itself: a
+     * strip on the workspace-facing edge in the configured accent colour, so
+     * it reads as the same kind of highlight. Drawn in raw surface
+     * coordinates, so undo the grid shift first. */
+    if (g_focused && g_accent.enabled) {
+        cairo_translate(cr, -glue_anim_draw_offset(), 0);
+        set_rgb(cr, g_accent.r, g_accent.g, g_accent.b);
+        fill_rect(cr, g_layout.side == PINWIN_SIDE_LEFT ? width - g_accent.width
+                                                        : 0.0,
+                  0.0, g_accent.width, height);
+    }
+
     pinwin_frame_end();
 }
