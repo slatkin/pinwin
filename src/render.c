@@ -574,6 +574,9 @@ void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
 
     if (!pinwin_frame_begin()) return;
 
+    /* While a width tween runs, keep the grid against the docked edge. */
+    cairo_translate(cr, glue_anim_draw_offset(), 0);
+
     PangoLayout* layout = pango_cairo_create_layout(cr);
 
     /* Fractional output scales put cell edges between device pixels; antialiased
