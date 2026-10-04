@@ -4,6 +4,7 @@
 //! the real `ghostty_sys` declarations (D2) and the remaining ported modules
 //! arrive in tasks 3 and 4; everything below is scaffolding.
 
+pub mod fontconfig;
 pub mod layout;
 pub mod nerd_font;
 
