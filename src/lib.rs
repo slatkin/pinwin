@@ -1,8 +1,10 @@
 //! pinwin library (port-to-rust).
 //!
 //! This is the crate skeleton from task 2.1/2.2. The `Panel` API (D4, D6),
-//! the real `ghostty_sys` declarations (D2) and the ported modules arrive in
-//! tasks 3 and 4; everything below is scaffolding.
+//! the real `ghostty_sys` declarations (D2) and the remaining ported modules
+//! arrive in tasks 3 and 4; everything below is scaffolding.
+
+pub mod layout;
 
 use std::os::raw::{c_int, c_void};
 
