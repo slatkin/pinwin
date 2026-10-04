@@ -17,6 +17,12 @@
 //!   q        stop the panel and exit
 //! Run `exit` inside the panel to watch a pty hangup leave the host alone.
 //!
+//! `DEMO_KEYBOARD=<mode>` selects the panel's keyboard mode, fixed at start:
+//! `on-demand` (the default — click-to-focus, so other windows keep the
+//! keyboard and the terminal that launched the demo keeps its stdin
+//! commands), `exclusive` (the C demo's `PINWIN_KEYBOARD_EXCLUSIVE` path,
+//! where the panel owns the keyboard outright) or `none`.
+//!
 //! `DEMO_DENSE=1` replaces the shell child with a dense stand-in: a full
 //! 120+ column text grid, kitty images on screen and light periodic traffic,
 //! retransmitting the images after every `SIGWINCH` like a real TUI host
@@ -67,6 +73,17 @@ fn canned_layout(side: Side, cols: u16) -> Layout {
 /// type's range, D6). Anything else is ignored, like the C's `strtol` guard.
 fn parse_cols(arg: &str) -> Option<u16> {
     arg.parse::<u16>().ok().filter(|cols| *cols >= 1)
+}
+
+/// The optional `DEMO_KEYBOARD` argument: the `Keyboard` mode named by one of
+/// the accepted spellings, or `None` for an unknown value.
+fn parse_keyboard(arg: &str) -> Option<Keyboard> {
+    match arg {
+        "on-demand" => Some(Keyboard::OnDemand),
+        "exclusive" => Some(Keyboard::Exclusive),
+        "none" => Some(Keyboard::None),
+        _ => None,
+    }
 }
 
 /// Base64 as the C demo rolled it: standard alphabet, `=` padding, for the
@@ -352,6 +369,24 @@ fn main() {
         return;
     }
     let dense_mode = std::env::var_os("DEMO_DENSE").is_some();
+    // Default to click-to-focus so the launching terminal keeps the keyboard
+    // and its stdin commands; `DEMO_KEYBOARD` opts into the other modes.
+    let keyboard = match std::env::var_os("DEMO_KEYBOARD") {
+        None => Keyboard::OnDemand,
+        Some(value) => {
+            let value = value.to_string_lossy();
+            match parse_keyboard(&value) {
+                Some(keyboard) => keyboard,
+                None => {
+                    eprintln!(
+                        "pinwin-demo: unknown DEMO_KEYBOARD={value} \
+                         (want on-demand, exclusive or none)"
+                    );
+                    std::process::exit(2);
+                }
+            }
+        }
+    };
     let mut cols = DEMO_COLS;
     if let Some(arg) = args.next()
         && let Some(parsed) = parse_cols(&arg)
@@ -377,7 +412,7 @@ fn main() {
     let startup = Startup {
         fd: master,
         layout: canned_layout(side, cols),
-        keyboard: Keyboard::Exclusive,
+        keyboard,
         accent: Some(Accent::new(
             [0xda, 0xbc, 0x7f],
             NonZeroU16::new(1).expect("accent width 1"),
@@ -493,5 +528,16 @@ mod tests {
         assert_eq!(parse_cols("65536"), None);
         assert_eq!(parse_cols("junk"), None);
         assert_eq!(parse_cols(""), None);
+    }
+
+    #[test]
+    fn parse_keyboard_accepts_the_three_modes_and_nothing_else() {
+        assert_eq!(parse_keyboard("on-demand"), Some(Keyboard::OnDemand));
+        assert_eq!(parse_keyboard("exclusive"), Some(Keyboard::Exclusive));
+        assert_eq!(parse_keyboard("none"), Some(Keyboard::None));
+        assert_eq!(parse_keyboard(""), None);
+        assert_eq!(parse_keyboard("Exclusive"), None);
+        assert_eq!(parse_keyboard("ondemand"), None);
+        assert_eq!(parse_keyboard("junk"), None);
     }
 }
