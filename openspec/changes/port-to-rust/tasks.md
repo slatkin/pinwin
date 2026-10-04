@@ -36,7 +36,7 @@
 
 ## 7. Remove old code (only after 3–6 are done)
 
-- [ ] 7.1 `git rm` `src/*.c`, `src/*.h`, `src/*.zig`, `host/`, `demo/`, `build.zig`, `build.zig.zon`, `compile_flags.txt`. Keep `pinwin.sh` (D11). Remove the `zig-pkg/`, `zig-out/`, `.zig-cache/` lines from `.gitignore`.
+- [x] 7.1 `git rm` `src/*.c`, `src/*.h`, `src/*.zig`, `host/`, `demo/`, `build.zig`, `build.zig.zon`, `compile_flags.txt`. Keep `pinwin.sh` (D11). Remove the `zig-pkg/`, `zig-out/`, `.zig-cache/` lines from `.gitignore`.
 
 ## 8. Docs
 
