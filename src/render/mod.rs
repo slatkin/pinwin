@@ -24,6 +24,7 @@ pub use images::PixbufDecoder;
 mod images;
 mod metrics;
 mod node_cursor;
+mod node_images;
 mod node_sprites;
 mod nodes;
 #[cfg(test)]
@@ -414,7 +415,7 @@ impl DrawState {
         let _ = cache_cr.paint();
         self.render_grid(&cache_cr, terminal, height);
         drop(cache_cr);
-        let texture = texture::grid_cache_texture(&mut surface);
+        let texture = texture::surface_texture(&mut surface);
         self.grid_cache = Some(surface);
         self.grid_cache_cols = cols;
         self.grid_cache_height = height;
