@@ -441,14 +441,7 @@ fn draw_hook(
 ) -> Rc<DrawFn> {
     Rc::new(move |cr: &cairo::Context, width: i32, height: i32| {
         let outcome = guard(&poisoned, || {
-            // The first draw is the first point where the surface has entered
-            // its output, so the monitor reported here is the panel's real
-            // one (glue.c's resolve_layout_monitor via g_layout_latch).
-            link.with(|surfaces| {
-                if surfaces.latch.get() {
-                    surfaces.resolve_monitor();
-                }
-            });
+            resolve_first_draw_monitor(&link);
             let (offset, animating) = link
                 .with(|surfaces| (surfaces.draw_offset() as i32, surfaces.anim.active()))
                 .unwrap_or((0, false));
@@ -469,6 +462,24 @@ fn draw_hook(
     })
 }
 
+/// The first paint's monitor resolution (`g_layout_latch`), shared by the
+/// cairo draw hook and the GSK snapshot hook (gsk-render-nodes C5): a
+/// snapshot frame bypasses the draw func entirely, so the snapshot hook must
+/// consume the same one-shot before emitting — otherwise the start handshake
+/// never completes, `Panel::start` blocks in `wait_for_start` forever and
+/// the reservation is never anchored to the resolved monitor. The surface
+/// has entered its output by the first paint, so the monitor reported here
+/// is the panel's real one (glue.c's resolve_layout_monitor); the failure
+/// path (no monitor) reports through the start-result hook and quits, the
+/// same from either caller.
+fn resolve_first_draw_monitor(link: &SurfacesLink) {
+    link.with(|surfaces| {
+        if surfaces.latch.get() {
+            surfaces.resolve_monitor();
+        }
+    });
+}
+
 /// The grid frame's GSK snapshot emission (poc-gsk-texture-grid task 2.1,
 /// gsk-render-nodes row 4.1): read the tween state off the surfaces handle,
 /// then present the frame — the retained grid node translated while a tween
@@ -476,8 +487,10 @@ fn draw_hook(
 /// as GSK nodes; `false` falls back to the cairo draw path. The terminal is
 /// passed in for the node builds, and the focus flag is copied into the draw
 /// state here just as [`draw_hook`] does, since a snapshot frame bypasses
-/// the draw func. A panic here latches the shared flag (D5) and falls back
-/// the same way.
+/// the draw func. The first frame after map also resolves the layout
+/// monitor through the same shared one-shot as [`draw_hook`] (gsk-render-nodes
+/// C5), before the emission, or the start handshake never completes. A panic
+/// here latches the shared flag (D5) and falls back the same way.
 fn grid_snapshot_hook(
     link: SurfacesLink,
     draw: Rc<RefCell<DrawState>>,
@@ -487,6 +500,7 @@ fn grid_snapshot_hook(
 ) -> Rc<GridSnapshotFn> {
     Rc::new(move |snapshot: &gtk4::Snapshot, width: i32, height: i32| {
         guard(&poisoned, || {
+            resolve_first_draw_monitor(&link);
             let (offset, animating) = link
                 .with(|surfaces| (surfaces.draw_offset() as i32, surfaces.anim.active()))
                 .unwrap_or((0, false));
