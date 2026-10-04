@@ -2,8 +2,8 @@
 
 ## 1. Texture cache
 
-- [ ] 1.1 Wrap the tween cache as a `gdk::MemoryTexture` built in `grid_cache_ensure` and dropped in `drop_grid_cache`; verify with a unit test that cache dimensions and texture size match the device-scaled surface at scale 1 and 1.5
-- [ ] 1.2 Expose the cached texture and its logical size from the renderer; verify `cargo build` succeeds
+- [x] 1.1 Wrap the tween cache as a `gdk::MemoryTexture` built in `grid_cache_ensure` and dropped in `drop_grid_cache`; verify with a unit test that cache dimensions and texture size match the device-scaled surface at scale 1 and 1.5
+- [x] 1.2 Expose the cached texture and its logical size from the renderer; verify `cargo build` succeeds
 
 ## 2. Snapshot widget
 
