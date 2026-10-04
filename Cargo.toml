@@ -1,0 +1,33 @@
+[package]
+name = "pinwin"
+version = "0.2.0"
+edition = "2024"
+# The pinned libghostty-vt archive is built by build.rs from the commit in
+# build.rs (port-to-rust D2); it is deliberately not a Cargo dependency.
+build = "build.rs"
+
+[lib]
+name = "pinwin"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pinwin"
+path = "src/main.rs"
+
+[dependencies]
+gtk4 = "0.11"
+gtk4-layer-shell = "0.8"
+pango = "0.22"
+pangocairo = "0.22"
+cairo-rs = "0.22"
+gdk-pixbuf = "0.22"
+
+# port-to-rust D5: panics must never cross the public API, so the unwind
+# runtime is required for the catch_unwind guards at every boundary. Setting
+# `panic = "abort"` is forbidden: it would abort the host instead.
+# `test` inherits `dev`, so this also covers the test profile.
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
