@@ -13,7 +13,7 @@
 //! helper, and a poisoned or panicking frame falls back to the parent
 //! snapshot, whose draw func no-ops under the same latch.
 
-use std::cell::RefCell;
+use std::cell::OnceCell;
 use std::rc::Rc;
 
 use gtk4::glib;
@@ -32,8 +32,7 @@ glib::wrapper! {
 /// before any snapshot can run.
 #[derive(Default)]
 pub struct GridAreaImp {
-    tween_snapshot: RefCell<Option<Rc<TweenSnapshotFn>>>,
-    poisoned: RefCell<Poisoned>,
+    state: OnceCell<(Rc<TweenSnapshotFn>, Poisoned)>,
 }
 
 #[glib::object_subclass]
@@ -51,11 +50,10 @@ impl WidgetImpl for GridAreaImp {
     /// snapshot, which runs the set draw func — the ordinary cairo draw path.
     fn snapshot(&self, snapshot: &gtk4::Snapshot) {
         let obj = self.obj();
-        let hook = self.tween_snapshot.borrow().clone();
-        let poisoned = self.poisoned.borrow().clone();
-        let emitted = guard_default(&poisoned, false, || match hook.as_ref() {
-            Some(hook) => hook(snapshot, obj.width(), obj.height()),
-            None => false,
+        let emitted = self.state.get().is_some_and(|(hook, poisoned)| {
+            guard_default(poisoned, false, || {
+                hook(snapshot, obj.width(), obj.height())
+            })
         });
         if !emitted {
             self.parent_snapshot(snapshot);
@@ -71,9 +69,7 @@ impl GridArea {
     /// place of `DrawingArea::new()`).
     pub fn new(poisoned: Poisoned, tween_snapshot: Rc<TweenSnapshotFn>) -> Self {
         let area: Self = glib::Object::new();
-        let imp = area.imp();
-        *imp.tween_snapshot.borrow_mut() = Some(tween_snapshot);
-        *imp.poisoned.borrow_mut() = poisoned;
+        let _ = area.imp().state.set((tween_snapshot, poisoned));
         area
     }
 }

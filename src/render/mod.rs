@@ -53,9 +53,6 @@ pub struct DrawState {
     grid_cache_cols: i32,
     grid_cache_height: i32,
     grid_cache_texture: Option<gdk::MemoryTexture>,
-    /// The cache's logical size: its device pixels divided by the device scale
-    /// it was built at, so fractional scales size the texture node correctly.
-    grid_cache_logical: (f64, f64),
     images: images::ImageCache,
 }
 
@@ -89,7 +86,6 @@ impl DrawState {
             grid_cache_cols: 0,
             grid_cache_height: 0,
             grid_cache_texture: None,
-            grid_cache_logical: (0.0, 0.0),
             images: images::ImageCache::default(),
         }
     }
@@ -127,7 +123,6 @@ impl DrawState {
         self.grid_cache_cols = 0;
         self.grid_cache_height = 0;
         self.grid_cache_texture = None;
-        self.grid_cache_logical = (0.0, 0.0);
     }
 
     /// The cached tween grid as a [`gdk::MemoryTexture`] (poc-gsk-texture-grid
@@ -139,10 +134,14 @@ impl DrawState {
     }
 
     /// The cached grid's logical size in surface coordinates — device pixels
-    /// divided by the build-time device scale (poc-gsk-texture-grid task 1.2).
+    /// divided by the surface's device scale (poc-gsk-texture-grid task 1.2).
     pub fn grid_cache_logical_size(&self) -> Option<(f64, f64)> {
-        let (w, h) = self.grid_cache_logical;
-        (self.grid_cache_texture.is_some()).then_some((w, h))
+        let surface = self.grid_cache.as_ref()?;
+        let (sx, sy) = surface.device_scale();
+        Some((
+            f64::from(surface.width()) / sx,
+            f64::from(surface.height()) / sy,
+        ))
     }
 
     /// Render a frame into `cr` (`on_draw`): the theme background, the grid
@@ -436,12 +435,10 @@ impl DrawState {
         self.render_grid(&cache_cr, terminal, height);
         drop(cache_cr);
         let texture = texture::grid_cache_texture(&mut surface);
-        let logical = (f64::from(cache_w) / sx, f64::from(cache_h) / sy);
         self.grid_cache = Some(surface);
         self.grid_cache_cols = cols;
         self.grid_cache_height = height;
         self.grid_cache_texture = texture;
-        self.grid_cache_logical = logical;
         self.grid_cache.clone()
     }
 

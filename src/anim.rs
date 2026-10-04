@@ -54,6 +54,7 @@ pub enum Advance {
 /// The env-gated frame-clock log for one tween: records the tick's frame
 /// times and prints one gap summary at the tween's stop. Off unless
 /// `PINWIN_FRAMELOG=1`, so the per-frame cost when off is one `Option` check.
+#[derive(Default)]
 struct FrameLog {
     /// The ticks' frame-clock timestamps, in microseconds.
     times: Vec<i64>,
@@ -63,10 +64,6 @@ impl FrameLog {
     /// Whether the frame log is on for this run.
     fn enabled() -> bool {
         std::env::var("PINWIN_FRAMELOG").is_ok_and(|v| v == "1")
-    }
-
-    fn new() -> Self {
-        FrameLog { times: Vec::new() }
     }
 
     fn record(&mut self, now_us: i64) {
@@ -291,16 +288,14 @@ impl Anim {
         self.begin_state(from_px, to_px, duration_ms);
         // The env var is read once per tween, not per frame, so the off path
         // costs one `Option` check per tick.
-        *self.inner.frame_log.borrow_mut() = FrameLog::enabled().then(FrameLog::new);
+        *self.inner.frame_log.borrow_mut() = FrameLog::enabled().then(FrameLog::default);
 
         let inner = self.inner.clone();
         let tick = widget.add_tick_callback(move |_widget, clock| {
             let now = clock.frame_time();
-            let _ = guard(&inner.poisoned, || {
-                if let Some(log) = inner.frame_log.borrow_mut().as_mut() {
-                    log.record(now);
-                }
-            });
+            if let Some(log) = inner.frame_log.borrow_mut().as_mut() {
+                log.record(now);
+            }
             let action = guard(&inner.poisoned, || inner.tween.borrow_mut().advance(now));
             match action {
                 Ok(Advance::Frame(px)) => {
@@ -584,7 +579,7 @@ mod tests {
     /// the gaps between successive frame times, in ms.
     #[test]
     fn frame_log_summary_reports_mean_p95_and_max_gaps() {
-        let mut log = FrameLog::new();
+        let mut log = FrameLog::default();
         // Gaps of 4, 8, 16, 32, 40 ms.
         for t in [0, 4_000, 12_000, 28_000, 60_000, 100_000] {
             log.record(t);
@@ -600,7 +595,7 @@ mod tests {
     /// backwards clock still yields a non-negative gap.
     #[test]
     fn frame_log_needs_two_frames_and_clamps_backwards_gaps() {
-        let mut log = FrameLog::new();
+        let mut log = FrameLog::default();
         log.record(2_000);
         assert!(log.summary().is_none());
         log.record(1_000);

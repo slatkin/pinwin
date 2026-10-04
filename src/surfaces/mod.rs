@@ -39,6 +39,8 @@ use crate::layout::{Accent, Keyboard, Layout, Side};
 
 mod area;
 
+pub use area::GridArea;
+
 /// A drawing-area draw function body (`render.c`'s `on_draw`).
 pub type DrawFn = dyn Fn(&cairo::Context, i32, i32);
 
@@ -53,7 +55,6 @@ pub type TweenSnapshotFn = dyn Fn(&gtk4::Snapshot, i32, i32) -> bool;
 
 /// A cell measurement against a widget (`render.c`'s
 /// `cell_metrics_update`), reporting the cell size in pixels.
-pub use area::GridArea;
 pub type MeasureFn = dyn Fn(&gtk4::Widget) -> (i32, i32);
 
 /// The hooks rows 3.6 and 4.1 fill in. Every hook is an `Rc` closure so the
