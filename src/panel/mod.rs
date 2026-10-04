@@ -406,6 +406,44 @@ mod tests {
         );
     }
 
+    /// A panic in a guarded closure at the panel boundary yields
+    /// `Err(Internal)`, not an unwind (D5/D10), and latches the panel's one
+    /// shared flag — the same latch every glue closure of the panel runs
+    /// under. Later calls through the inner-handle entry keep reporting
+    /// `Internal`: the poisoned check comes first, so the still-live handle
+    /// never leaks `NotRunning` past a caught panic.
+    #[test]
+    fn a_panic_in_a_guarded_closure_is_internal_and_stays_internal() {
+        let inner = Inner {
+            id: 0,
+            poisoned: Poisoned::new(),
+            live: AtomicBool::new(true),
+        };
+
+        // The boundary's own expression: `guard` catches the panic, latches
+        // the shared flag and returns the flag, which the public entry points
+        // map onto `Internal`.
+        let caught = guard(&inner.poisoned, || panic!("a deliberate glue panic"));
+        assert!(caught.is_err(), "the panic is caught, not unwound");
+        assert!(inner.poisoned.is_poisoned(), "the shared latch is set");
+        assert_eq!(
+            caught.map_err(|_| PinwinError::Internal),
+            Err(PinwinError::Internal)
+        );
+
+        // Later applies through the inner-handle entry short-circuit on the
+        // latch (`Internal`) before the not-running check could run, even
+        // though `live` is still true here.
+        assert_eq!(
+            apply_via_inner(&inner, layout(), 0),
+            Err(PinwinError::Internal)
+        );
+        assert_eq!(
+            apply_via_inner(&inner, layout(), 0),
+            Err(PinwinError::Internal)
+        );
+    }
+
     /// An apply on a live handle whose glue is gone (the invoked command
     /// finds no live panel) maps the not-live outcome onto `NotRunning` —
     /// the mapping the GTK side's reply reaches through.
