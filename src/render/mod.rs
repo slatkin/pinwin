@@ -14,11 +14,18 @@
 //! Panics must never cross back into GTK (D5): [`DrawState::draw`] runs its
 //! body through the shared [`crate::guard`] helper and latches `poisoned`,
 //! after which it draws nothing.
+//!
+//! The node emitter (`nodes`) walks the same cell iteration into a
+//! `gtk4::Snapshot` (gsk-render-nodes); `render_grid` stays the cairo
+//! fallback and the parity oracle. `parity` is the test-only diff harness.
 
 pub use images::PixbufDecoder;
 
 mod images;
 mod metrics;
+mod nodes;
+#[cfg(test)]
+mod parity;
 mod snapshot;
 mod sprites;
 mod text;
@@ -225,29 +232,7 @@ impl DrawState {
         let layout = pangocairo::functions::create_layout(cr);
         let cell_metrics = self.cell_metrics;
 
-        // Fractional output scales put cell edges between device pixels;
-        // antialiased edges would blend with the fill underneath and show as
-        // a grid. Unantialiased rectangles snap to device pixels and tile
-        // exactly.
-        cr.set_antialias(cairo::Antialias::None);
-        while let Some(cell) = terminal.cell_next() {
-            if cell.has_bg {
-                set_rgb(cr, &cell.bg);
-                let row_height = if cell.y == height / cell_metrics.cell_h - 1 {
-                    height - cell.y * cell_metrics.cell_h
-                } else {
-                    cell_metrics.cell_h
-                };
-                cr.rectangle(
-                    f64::from(cell.x) * f64::from(cell_metrics.cell_w),
-                    f64::from(cell.y) * f64::from(cell_metrics.cell_h),
-                    f64::from(cell_metrics.cell_w),
-                    f64::from(row_height),
-                );
-                let _ = cr.fill();
-            }
-        }
-        cr.set_antialias(cairo::Antialias::Default);
+        paint_backgrounds(cr, terminal, cell_metrics, height);
         terminal.frame_rewind();
 
         let mut cursor_text = [0u8; 32];
@@ -472,6 +457,31 @@ impl DrawState {
     }
 }
 
+/// Paint the frame's cell backgrounds into `cr` (`render_grid`'s background
+/// pass). The frame must be open (`frame_begin`); the caller rewinds the
+/// frame afterwards. The geometry is [`nodes::cell_background_rect`], shared
+/// with the node emitter so the two painters cannot drift.
+fn paint_backgrounds(
+    cr: &cairo::Context,
+    terminal: &mut Terminal,
+    cell_metrics: CellMetrics,
+    height: i32,
+) {
+    // Fractional output scales put cell edges between device pixels;
+    // antialiased edges would blend with the fill underneath and show as
+    // a grid. Unantialiased rectangles snap to device pixels and tile
+    // exactly.
+    cr.set_antialias(cairo::Antialias::None);
+    while let Some(cell) = terminal.cell_next() {
+        if let Some((x, y, w, h)) = nodes::cell_background_rect(&cell, cell_metrics, height) {
+            set_rgb(cr, &cell.bg);
+            cr.rectangle(x, y, w, h);
+            let _ = cr.fill();
+        }
+    }
+    cr.set_antialias(cairo::Antialias::Default);
+}
+
 fn set_rgb(cr: &cairo::Context, color: &Rgb) {
     cr.set_source_rgb(
         f64::from(color.r) / 255.0,
@@ -507,26 +517,26 @@ mod tests {
     }
 
     /// A sink with nowhere to write (the tests never write to a pty).
-    struct NullSink;
+    pub(super) struct NullSink;
     impl crate::term::PtySink for NullSink {
         fn write_pty(&mut self, _data: &[u8]) {}
     }
 
     /// Decodes nothing; the image tests build their own placements.
-    struct NoDecoder;
+    pub(super) struct NoDecoder;
     impl crate::term::PngDecoder for NoDecoder {
         fn decode_png(&mut self, _data: &[u8]) -> Option<crate::term::DecodedPng> {
             None
         }
     }
 
-    fn terminal() -> Terminal {
+    pub(super) fn terminal() -> Terminal {
         let mut terminal = Terminal::new(crate::guard::Poisoned::new(), NullSink, NoDecoder, || {});
         assert!(terminal.push_size(8, 4, 8, 16));
         terminal
     }
 
-    fn state() -> DrawState {
+    pub(super) fn state() -> DrawState {
         use pango::prelude::FontMapExt as _;
         let mut state = DrawState::new(Poisoned::new(), None, ThemeColours::default());
         // The default font map, like the GTK widget's context in production.

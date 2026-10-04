@@ -11,11 +11,11 @@
 //! this body is caught there by the shared D5 guard and the frame falls back
 //! to the cairo draw path.
 
-use gtk4::gdk;
 use gtk4::graphene;
 use gtk4::prelude::SnapshotExt as _;
 
 use super::DrawState;
+use super::nodes::rgba;
 
 impl DrawState {
     /// The tween frame as GSK nodes (poc-gsk-texture-grid task 2.1): the
@@ -50,16 +50,7 @@ impl DrawState {
         let bounds = graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
 
         // The background fills the whole widget, as draw_inner's fill does.
-        let bg = &self.theme_background;
-        snapshot.append_color(
-            &gdk::RGBA::new(
-                f32::from(bg.r) / 255.0,
-                f32::from(bg.g) / 255.0,
-                f32::from(bg.b) / 255.0,
-                1.0,
-            ),
-            &bounds,
-        );
+        snapshot.append_color(&rgba(&self.theme_background), &bounds);
 
         // The cached grid at the docked edge: translate, texture, pop.
         snapshot.save();
