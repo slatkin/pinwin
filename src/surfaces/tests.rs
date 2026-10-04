@@ -126,33 +126,39 @@ fn keyboard_modes_map_one_to_one() {
     );
 }
 
-/// The deferred grid resize waits out a still-running tween, then applies
-/// exactly once and returns `Break` — an idle that kept looping after the
-/// tween ended (a latched tween flag, or a `Continue` past the end) would
-/// spin hot and keep the pty drain throttled.
+/// The tween stop applies the deferred grid resize synchronously: when an
+/// animated apply left the resize pending, the stop's gate opens exactly
+/// once, and a closed panel never applies — there is no idle and no
+/// waiting-for-the-tween step any more, so the resized grid is on screen
+/// with the tween's final frame instead of a frame later
+/// (gsk-render-nodes C52).
 #[test]
-fn the_deferred_grid_idle_waits_out_the_tween_then_applies_once() {
-    let applies = Cell::new(0);
-    let apply = || {
-        applies.set(applies.get() + 1);
-        true
-    };
-    // A tween still running: keep waiting, no grid resize.
-    assert_eq!(
-        deferred_grid_step(false, true, apply),
-        glib::ControlFlow::Continue
-    );
-    assert_eq!(applies.get(), 0);
-    // The tween ended: one apply, then the idle is gone.
-    assert_eq!(
-        deferred_grid_step(false, false, apply),
-        glib::ControlFlow::Break
-    );
-    assert_eq!(applies.get(), 1);
+fn the_deferred_grid_applies_at_the_stop_itself() {
+    // A pending resize on a live panel: apply.
+    assert!(deferred_grid_at_stop(true, false));
+    // Nothing pending (a snap apply, or a tween that was retargeted away):
+    // the stop does not resize.
+    assert!(!deferred_grid_at_stop(false, false));
     // A closed panel never applies.
-    assert_eq!(
-        deferred_grid_step(true, false, apply),
-        glib::ControlFlow::Break
-    );
-    assert_eq!(applies.get(), 1);
+    assert!(!deferred_grid_at_stop(true, true));
+}
+
+/// The draw shift keys against the grid that is actually on screen: while a
+/// widening resize's stale content is still there (no host output yet), that
+/// is the narrower pre-resize grid — the shift then keeps it glued to the
+/// docked edge instead of parking it at the widget's left edge opposite the
+/// docked side; once the terminal has produced output for the new width, the
+/// live grid takes over (gsk-render-nodes C52).
+#[test]
+fn the_draw_shift_keys_against_the_stale_grid_until_terminal_output() {
+    // Live grid 120 cols (1080px at a 9px cell), stale pre-resize content
+    // (40 cols, 360px) still on screen: the shift keys against the stale
+    // grid.
+    assert_eq!(drawn_grid_px(1080, 360), 360);
+    // No staleness: the live grid.
+    assert_eq!(drawn_grid_px(1080, 0), 1080);
+    // A zero live grid (no surfaces) never masks a stale width.
+    assert_eq!(drawn_grid_px(0, 360), 360);
+    // Neither: zero.
+    assert_eq!(drawn_grid_px(0, 0), 0);
 }

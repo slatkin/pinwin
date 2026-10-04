@@ -52,9 +52,11 @@ impl DrawState {
     /// — asks the widget to chain to the parent snapshot, which runs the
     /// ordinary cairo draw path.
     ///
-    /// `draw_offset` is the tween's docked-edge offset in pixels
-    /// (`glue_anim_draw_offset`); zero when not animating
-    /// (`Anim::draw_offset`), so the non-tween arm needs no translate.
+    /// `draw_offset` is the docked-edge offset in pixels
+    /// (`glue_anim_draw_offset`): nonzero whenever the terminal's live grid
+    /// does not fill the widget on a right-docked panel — during a tween and
+    /// in the frames around its stop before the deferred resize lands
+    /// (gsk-render-nodes C52) — and both arms translate by it.
     pub fn snapshot_grid(
         &mut self,
         snapshot: &gtk4::Snapshot,
@@ -80,8 +82,25 @@ impl DrawState {
             snapshot.translate(&graphene::Point::new(draw_offset as f32, 0.0));
             snapshot.append_node(&node);
             snapshot.restore();
-        } else if !self.emit_grid(snapshot, terminal, width, height) {
-            return false;
+        } else {
+            // The theme background covers the whole widget wherever the grid
+            // sits; the grid contents are emitted translated to the docked
+            // edge whenever the live grid does not fill the widget — the
+            // frames around a tween's stop or a snap apply before the
+            // terminal's resize lands (gsk-render-nodes C52). At offset zero
+            // the translate is skipped so the common frame stays flat.
+            snapshot.append_color(&rgba(&self.theme_background), &bounds);
+            if draw_offset != 0 {
+                snapshot.save();
+                snapshot.translate(&graphene::Point::new(draw_offset as f32, 0.0));
+            }
+            let emitted = self.emit_grid_contents(snapshot, terminal, height);
+            if draw_offset != 0 {
+                snapshot.restore();
+            }
+            if !emitted {
+                return false;
+            }
         }
 
         // The focus accent keeps its cairo routine, appended after the grid —
@@ -139,11 +158,10 @@ impl DrawState {
         snapshot.to_node()
     }
 
-    /// Emit the frame's whole grid into `snapshot` — the theme background and
-    /// cell backgrounds, the cells and cursor
-    /// ([`Self::emit_backgrounds`] + [`Self::emit_cells`]) and the kitty
-    /// images ([`Self::emit_images`]) — the node form of `draw_inner`'s cairo
-    /// pass minus the accent. `false` — no fonts or metrics yet, or no live
+    /// Emit the frame's whole grid into `snapshot` — the theme background
+    /// over the whole widget, then the grid contents (cell backgrounds, cells
+    /// and cursor, kitty images) — the node form of `draw_inner`'s cairo pass
+    /// minus the accent. `false` — no fonts or metrics yet, or no live
     /// frame — asks the caller to fall back to the cairo draw path.
     fn emit_grid(
         &mut self,
@@ -152,7 +170,24 @@ impl DrawState {
         width: i32,
         height: i32,
     ) -> bool {
-        if !self.emit_backgrounds(snapshot, terminal, width, height) {
+        self.emit_theme_background(snapshot, width, height);
+        self.emit_grid_contents(snapshot, terminal, height)
+    }
+
+    /// Emit the grid's contents — cell backgrounds (including the last row's
+    /// fill), cells and cursor, kitty images — without the theme background.
+    /// The caller owns the background and the translate: the non-tween frame
+    /// emits these shifted to the docked edge whenever the live grid does not
+    /// fill the widget (gsk-render-nodes C52), the retained tween node builds
+    /// them at the build-time width. `false` — no fonts or metrics yet, or no
+    /// live frame — asks the caller to fall back to the cairo draw path.
+    fn emit_grid_contents(
+        &mut self,
+        snapshot: &gtk4::Snapshot,
+        terminal: &mut Terminal,
+        height: i32,
+    ) -> bool {
+        if !self.emit_cell_backgrounds(snapshot, terminal, height) {
             return false;
         }
         if !self.emit_cells(snapshot, terminal) {
@@ -264,6 +299,60 @@ mod tests {
         assert!(
             parity::diff(&mut first, &mut second).differing > 0,
             "the second non-tween draw rebuilt the grid"
+        );
+    }
+
+    /// A non-tween frame whose live grid does not fill the widget emits the
+    /// grid translated to the docked edge (gsk-render-nodes C52): the frames
+    /// around a tween's stop, where the deferred resize has not landed yet,
+    /// must not draw the old grid at the widget's left edge against a wider
+    /// right-docked panel. The exposed region left of the shifted grid is
+    /// theme background, and the grid content lands at the shifted position.
+    #[test]
+    fn a_non_tween_frame_translates_the_grid_to_the_docked_edge() {
+        let _font = font_lock::guard();
+        let mut draw_state = state();
+        let mut terminal = terminal();
+        terminal.push_pty_data(b"hello");
+
+        // The same terminal, the same widget size, two offsets: zero draws
+        // the grid at the widget's left edge; the docked-edge shift (the
+        // surface is wider than the live grid) moves it right.
+        let mut at_zero = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 0, false);
+        let mut shifted = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 136, false);
+        assert!(
+            parity::diff(&mut at_zero, &mut shifted).differing > 0,
+            "the non-tween frame translated the grid by the offset"
+        );
+
+        // The exposed region left of the shifted grid is the theme
+        // background (black here), never grid content or backdrop.
+        {
+            let stride = shifted.stride();
+            let data = shifted.data().expect("surface data");
+            for y in 0..64i32 {
+                for x in 0..136i32 {
+                    let px = &data[(y * stride + x * 4) as usize..][..3];
+                    assert_eq!(
+                        (px[0], px[1], px[2]),
+                        (0, 0, 0),
+                        "pixel ({x}, {y}) is not the theme background"
+                    );
+                }
+            }
+        }
+
+        // And the grid content did land at the shifted position: the frame
+        // is not just the background fill.
+        let mut bg_only = parity::backed_surface(200, 64, 1.0, parity::BACKDROP);
+        {
+            let cr = cairo::Context::new(&bg_only).expect("context");
+            cr.set_source_rgb(0.0, 0.0, 0.0);
+            let _ = cr.paint();
+        }
+        assert!(
+            parity::diff(&mut shifted, &mut bg_only).differing > 0,
+            "the shifted non-tween frame drew the grid at the docked edge"
         );
     }
 

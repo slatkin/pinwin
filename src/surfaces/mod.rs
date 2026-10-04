@@ -23,11 +23,10 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use crate::guard::{Poisoned, guard, guard_default};
+use crate::guard::{Poisoned, guard};
 
 use gtk4::cairo;
 use gtk4::gdk;
-use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4_layer_shell as layer_shell;
 use gtk4_layer_shell::LayerShell as _;
@@ -219,12 +218,20 @@ pub struct Surfaces {
     /// Set when an animated apply left the terminal grid resize to the tween's
     /// end (`deferred_grid`).
     deferred_grid: Cell<bool>,
+    /// The pixel width of the terminal grid whose content is still on screen
+    /// after a column-widening resize, before the host's first output for the
+    /// new width (gsk-render-nodes C52). libghostty-vt's resize does not
+    /// rewrap the active screen, so right after the resize the terminal's own
+    /// content sits in the leftmost columns of the new, wider grid — drawing
+    /// it unshifted would park it at the widget's left edge, opposite the
+    /// docked edge, with an empty band on the docked side until the host
+    /// repaints. While this is non-zero the draw shift keys against it, so
+    /// the stale content stays glued to the docked edge exactly as the
+    /// tween's old grid was; the first terminal output clears it.
+    stale_grid_px: Cell<i32>,
     /// Set by [`Surfaces::close`]; the stand-in for the C's `g_win`/`g_area`
     /// NULL checks after teardown.
     closed: Cell<bool>,
-    /// A weak self reference for closures the struct installs later (the
-    /// deferred-grid idle).
-    weak: Weak<Surfaces>,
     /// The width tween.
     pub anim: Anim,
     /// The hooks rows 3.6 and 4.1 fill in.
@@ -233,24 +240,28 @@ pub struct Surfaces {
     poisoned: Poisoned,
 }
 
-/// One idle step behind [`Surfaces::fire_deferred_grid_resize`]: wait while a
-/// tween is still running, apply the grid once the tween is over — the step
-/// fires exactly once and returns `Break`, so the idle cannot spin — and stop
-/// untouched when the panel is gone. Split out of the idle closure so the
-/// sequencing is unit testable without a display.
-fn deferred_grid_step(
-    closed: bool,
-    anim_active: bool,
-    apply_size: impl FnOnce() -> bool,
-) -> glib::ControlFlow {
-    if closed {
-        return glib::ControlFlow::Break;
+/// The tween stop's deferred-grid gate ([`Surfaces::fire_deferred_grid_resize`]):
+/// apply when an animated apply left the resize pending and the panel is
+/// still open. Split out so the gate is unit testable without a display.
+/// There is no waiting-for-the-tween case any more: the gate runs at the
+/// stop itself, synchronously, so the resized grid is on screen with the
+/// tween's final frame (gsk-render-nodes C52).
+fn deferred_grid_at_stop(pending: bool, closed: bool) -> bool {
+    pending && !closed
+}
+
+/// The width of the grid the next draw shows: the stale pre-resize grid
+/// while its content is still on screen after a widening resize, else the
+/// terminal's live grid. The draw shift keys against this so the stale
+/// content stays glued to the docked edge instead of parking at the widget's
+/// left edge opposite the docked side (gsk-render-nodes C52). Split out so
+/// the selection is unit testable without a display.
+fn drawn_grid_px(live_grid_px: i32, stale_grid_px: i32) -> i32 {
+    if stale_grid_px > 0 {
+        stale_grid_px
+    } else {
+        live_grid_px
     }
-    if anim_active {
-        return glib::ControlFlow::Continue;
-    }
-    apply_size();
-    glib::ControlFlow::Break
 }
 
 impl Surfaces {
@@ -316,8 +327,8 @@ impl Surfaces {
                 cell_h: Cell::new(cell_h),
                 latch: Cell::new(false),
                 deferred_grid: Cell::new(false),
+                stale_grid_px: Cell::new(0),
                 closed: Cell::new(false),
-                weak: weak.clone(),
                 anim,
                 hooks,
                 poisoned,
@@ -400,21 +411,60 @@ impl Surfaces {
     }
 
     /// The drawing shift input x coordinates subtract (`glue_anim_draw_offset`).
-    /// Computed against the terminal's live grid
-    /// ([`SurfaceHooks::live_grid_px`]) — the grid a tween draws is the
-    /// terminal's current one, whose resize the tween defers — not against the
-    /// applied cols.
+    /// Computed against the width of the grid that is actually on screen
+    /// ([`Self::drawn_grid_px`]): the terminal's live grid, or — while a
+    /// resize's stale content is still there — the pre-resize grid the
+    /// terminal still shows in its leftmost columns. The shift keeps that
+    /// grid glued to the docked edge whenever it does not fill the widget,
+    /// tween or not (gsk-render-nodes C52).
     pub fn draw_offset(&self) -> f64 {
         let width = if self.closed.get() {
             None
         } else {
             Some(self.area.width())
         };
-        f64::from(self.anim.draw_offset(
-            self.layout.get().side(),
-            width,
-            (self.hooks.live_grid_px)(),
-        ))
+        f64::from(
+            self.anim
+                .draw_offset(self.layout.get().side(), width, self.drawn_grid_px()),
+        )
+    }
+
+    /// The width of the grid the next draw will show: the terminal's live
+    /// grid, or — while the stale pre-resize content from a widening resize
+    /// is still on screen ([`Self::note_grid_widened`], cleared by
+    /// [`Self::note_terminal_output`]) — that narrower grid, whose content
+    /// the terminal still holds in its leftmost columns.
+    fn drawn_grid_px(&self) -> i32 {
+        drawn_grid_px((self.hooks.live_grid_px)(), self.stale_grid_px.get())
+    }
+
+    /// Record that a resize widened the terminal grid from `previous_cols_px`:
+    /// the content the host drew for the old width is still on screen (the
+    /// vt does not rewrap), so draws keep it glued to the docked edge until
+    /// the host produces output for the new width (gsk-render-nodes C52).
+    /// The content occupies the narrowest grid since the last host output —
+    /// a widening after a widening without any output in between keeps the
+    /// narrower of the two stale widths.
+    pub(crate) fn note_grid_widened(&self, previous_cols_px: i32) {
+        if previous_cols_px <= 0 {
+            return;
+        }
+        let current = self.stale_grid_px.get();
+        self.stale_grid_px.set(if current > 0 {
+            current.min(previous_cols_px)
+        } else {
+            previous_cols_px
+        });
+    }
+
+    /// The terminal produced output — the host's post-resize repaint, or any
+    /// other bytes: the drawn grid is the terminal's live one again. A
+    /// retained tween node built from the stale grid must not outlive it.
+    pub(crate) fn note_terminal_output(&self) {
+        if self.stale_grid_px.replace(0) != 0 {
+            (self.hooks.tween_cache_drop)();
+        }
+        self.queue_draw();
     }
 
     /// Queue a redraw of the drawing area (`glue_queue_draw`).
@@ -493,34 +543,37 @@ impl Surfaces {
     }
 
     /// The tween stopped for any reason: drop the tween's retained grid
-    /// node, clear the pty's tween flag and fire the deferred grid resize, if
-    /// an animated apply left one pending (`anim_stop`'s glue half).
+    /// node, clear the pty's tween flag and apply the deferred grid resize,
+    /// if an animated apply left one pending (`anim_stop`'s glue half).
+    ///
+    /// The resize runs here, synchronously, not behind an idle: every draw
+    /// after this stop — including the frame that presents the tween's final
+    /// width, whose paint follows this stop in the same frame cycle — must
+    /// see the resized grid, or a right-docked panel paints its old, narrower
+    /// grid at offset 0 against the wider widget and the gap on the docked
+    /// side stays on screen until the next damage-driven frame
+    /// (gsk-render-nodes C52). The vt reflow cost lands inside the tween's
+    /// last frame instead of after it; the tween is over, so nothing animates
+    /// behind the block.
     fn on_tween_stopped(&self) {
         (self.hooks.tween_cache_drop)();
         (self.hooks.set_tween_active)(false);
         self.fire_deferred_grid_resize();
     }
 
-    /// Fire the deferred terminal grid resize behind the frame that presents
-    /// the tween's final width (`glue_grid_resize_deferred_fire` +
-    /// `deferred_grid_resize`). A tween that retargeted meanwhile keeps
-    /// waiting; the grid lands when the last tween ends.
+    /// Apply the deferred terminal grid resize at the tween's stop
+    /// (`glue_grid_resize_deferred_fire` + `deferred_grid_resize`). Publish
+    /// resets the flag before a retarget, so a tween superseded by another
+    /// one leaves nothing pending here; only a stop of the tween that deferred
+    /// the resize applies it, exactly once.
     fn fire_deferred_grid_resize(&self) {
-        if !self.deferred_grid.get() {
+        if !deferred_grid_at_stop(self.deferred_grid.get(), self.closed.get()) {
             return;
         }
         self.deferred_grid.set(false);
-        let weak = self.weak.clone();
-        glib::idle_add_local(move || {
-            let Some(surfaces) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            guard_default(&surfaces.poisoned, glib::ControlFlow::Break, || {
-                deferred_grid_step(surfaces.closed.get(), surfaces.anim.active(), || {
-                    (surfaces.hooks.apply_size)()
-                })
-            })
-        });
+        // The hook guards its own body (D5); a latched panel skips the push
+        // exactly as the old idle's guarded step did.
+        (self.hooks.apply_size)();
     }
 
     /// Validate the layout against the live metrics and publish it

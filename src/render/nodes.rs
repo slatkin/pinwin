@@ -76,6 +76,52 @@ pub(super) fn cell_background_rect(
 }
 
 impl DrawState {
+    /// Emit the theme background as one colour node covering the whole
+    /// widget (gsk-render-nodes task 1.2; `draw_inner`'s fill). `width` and
+    /// `height` are the widget's logical size, the same coordinates
+    /// [`DrawState::draw`] paints. Split from [`Self::emit_backgrounds`] so
+    /// a frame can paint the background unshifted and still emit the grid
+    /// itself translated to the docked edge (gsk-render-nodes C52).
+    pub fn emit_theme_background(&self, snapshot: &gtk4::Snapshot, width: i32, height: i32) {
+        snapshot.append_color(
+            &rgba(&self.theme_background),
+            &graphene::Rect::new(0.0, 0.0, width as f32, height as f32),
+        );
+    }
+
+    /// Emit the cell backgrounds — including the last row's fill — as colour
+    /// nodes into `snapshot` (gsk-render-nodes task 1.2). `height` is the
+    /// grid-relative height the last row fills to.
+    ///
+    /// Reports whether nodes were emitted. `false` — no live frame — asks
+    /// the caller to fall back to the cairo draw path, which paints the same
+    /// thing; a draw before the first `cell_metrics_update` has no grid pass
+    /// (render P2 in `draw_inner`), so it reports `true` with no cells.
+    pub fn emit_cell_backgrounds(
+        &self,
+        snapshot: &gtk4::Snapshot,
+        terminal: &mut Terminal,
+        height: i32,
+    ) -> bool {
+        if self.cell_metrics.cell_h <= 0 {
+            return true;
+        }
+        if !terminal.frame_begin() {
+            return false;
+        }
+        let metrics = self.cell_metrics;
+        while let Some(cell) = terminal.cell_next() {
+            if let Some((x, y, w, h)) = cell_background_rect(&cell, metrics, height) {
+                snapshot.append_color(
+                    &rgba(&cell.bg),
+                    &graphene::Rect::new(x as f32, y as f32, w as f32, h as f32),
+                );
+            }
+        }
+        terminal.frame_end();
+        true
+    }
+
     /// Emit the theme background and the cell backgrounds — including the
     /// last row's fill — as colour nodes into `snapshot` (gsk-render-nodes
     /// task 1.2). `width`/`height` are the widget's logical size, the same
@@ -95,28 +141,8 @@ impl DrawState {
         width: i32,
         height: i32,
     ) -> bool {
-        snapshot.append_color(
-            &rgba(&self.theme_background),
-            &graphene::Rect::new(0.0, 0.0, width as f32, height as f32),
-        );
-
-        if self.cell_metrics.cell_h <= 0 {
-            return true;
-        }
-        if !terminal.frame_begin() {
-            return false;
-        }
-        let metrics = self.cell_metrics;
-        while let Some(cell) = terminal.cell_next() {
-            if let Some((x, y, w, h)) = cell_background_rect(&cell, metrics, height) {
-                snapshot.append_color(
-                    &rgba(&cell.bg),
-                    &graphene::Rect::new(x as f32, y as f32, w as f32, h as f32),
-                );
-            }
-        }
-        terminal.frame_end();
-        true
+        self.emit_theme_background(snapshot, width, height);
+        self.emit_cell_backgrounds(snapshot, terminal, height)
     }
 
     /// Emit the frame's cells as nodes (gsk-render-nodes tasks 2.1–2.3),

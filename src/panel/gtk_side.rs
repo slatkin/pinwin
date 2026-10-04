@@ -339,7 +339,11 @@ fn build_glue(
         {
             let link = link.clone();
             move || {
-                link.with(|surfaces| surfaces.queue_draw());
+                // The terminal produced output (the host's post-resize
+                // repaint, or any other bytes): the stale pre-resize grid is
+                // done drawing (gsk-render-nodes C52), and the frame asks
+                // for a redraw as before.
+                link.with(|surfaces| surfaces.note_terminal_output());
             }
         },
     )));
@@ -591,6 +595,7 @@ fn apply_size_to(
             // Push the grid first: a terminal that cannot be allocated leaves
             // the previous grid and pty winsize in place (the library never
             // exits, port-to-rust D3).
+            let previous_cols = terminal.borrow().cols();
             let ok = terminal
                 .borrow_mut()
                 .push_size(cols, rows, surfaces.cell_w(), cell_h);
@@ -599,6 +604,14 @@ fn apply_size_to(
             }
             pushed.set((rows, cols));
             pty.borrow().resize(cols, rows);
+            // A wider grid leaves the host's old content in the terminal's
+            // leftmost columns until the host repaints (the vt does not
+            // rewrap): keep that content glued to the docked edge until the
+            // terminal produces output for the new width (gsk-render-nodes
+            // C52).
+            if cols > i32::from(previous_cols) {
+                surfaces.note_grid_widened(i32::from(previous_cols) * surfaces.cell_w());
+            }
         }
     }
     if !pty.borrow().attached() {
