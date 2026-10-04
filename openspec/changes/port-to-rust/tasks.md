@@ -26,7 +26,7 @@
 ## 5. Binary and example
 
 - [ ] 5.1 `src/main.rs`: port `host/main.c` (forkpty, env contract, `--` handling, SIGINT/SIGTERM to SIGHUP, exit statuses) (D8).
-- [ ] 5.2 `examples/demo.rs`: port `demo/main.c`, including `DEMO_DENSE=1` (D9).
+- [x] 5.2 `examples/demo.rs`: port `demo/main.c`, including `DEMO_DENSE=1` (D9).
 
 ## 6. Tests
 
@@ -40,7 +40,7 @@
 
 ## 8. Docs
 
-- [ ] 8.1 Rewrite `AGENTS.md` (structure, Cargo commands, Rust style, tests) and `README.md` (install, Cargo dependency use, the `Panel` API, build needs Zig for ghostty).
+- [x] 8.1 Rewrite `AGENTS.md` (structure, Cargo commands, Rust style, tests) and `README.md` (install, Cargo dependency use, the `Panel` API, build needs Zig for ghostty).
 
 ## 9. Acceptance and close-out
 
