@@ -36,7 +36,7 @@ use crate::input::InputLinks;
 use crate::layout::Layout;
 use crate::pty::Pty;
 use crate::render::DrawState;
-use crate::surfaces::{DrawFn, MeasureFn, PublishOutcome, SurfaceHooks, Surfaces, TweenSnapshotFn};
+use crate::surfaces::{DrawFn, GridSnapshotFn, MeasureFn, PublishOutcome, SurfaceHooks, Surfaces};
 use crate::term::Terminal;
 
 use gtk4::cairo;
@@ -371,9 +371,10 @@ fn build_glue(
                 let _ = guard_always(&poisoned, || draw.borrow_mut().drop_grid_cache());
             })
         },
-        tween_snapshot: tween_snapshot_hook(
+        grid_snapshot: grid_snapshot_hook(
             link.clone(),
             draw.clone(),
+            terminal.clone(),
             focused.clone(),
             poisoned.clone(),
         ),
@@ -468,27 +469,36 @@ fn draw_hook(
     })
 }
 
-/// The tween frame's GSK snapshot emission (poc-gsk-texture-grid task 2.1):
-/// read the tween state off the surfaces handle and the cache off the
-/// renderer, then emit the background, translated texture and focus accent
-/// into the snapshot; `false` falls back to the cairo draw path. The focus
-/// flag is copied into the draw state here just as [`draw_hook`] does, since
-/// a tween frame bypasses the draw func. A panic here latches the shared
-/// flag (D5) and falls back the same way.
-fn tween_snapshot_hook(
+/// The grid frame's GSK snapshot emission (poc-gsk-texture-grid task 2.1,
+/// gsk-render-nodes row 4.1): read the tween state off the surfaces handle,
+/// then present the frame — the retained grid node translated while a tween
+/// runs, a fresh node build on every non-tween draw — and the focus accent
+/// as GSK nodes; `false` falls back to the cairo draw path. The terminal is
+/// passed in for the node builds, and the focus flag is copied into the draw
+/// state here just as [`draw_hook`] does, since a snapshot frame bypasses
+/// the draw func. A panic here latches the shared flag (D5) and falls back
+/// the same way.
+fn grid_snapshot_hook(
     link: SurfacesLink,
     draw: Rc<RefCell<DrawState>>,
+    terminal: Rc<RefCell<Terminal>>,
     focused: Rc<Cell<bool>>,
     poisoned: Poisoned,
-) -> Rc<TweenSnapshotFn> {
+) -> Rc<GridSnapshotFn> {
     Rc::new(move |snapshot: &gtk4::Snapshot, width: i32, height: i32| {
         guard(&poisoned, || {
             let (offset, animating) = link
                 .with(|surfaces| (surfaces.draw_offset() as i32, surfaces.anim.active()))
                 .unwrap_or((0, false));
             draw.borrow_mut().set_focused(focused.get());
-            draw.borrow()
-                .snapshot_tween(snapshot, width, height, offset, animating)
+            draw.borrow_mut().snapshot_grid(
+                snapshot,
+                &mut terminal.borrow_mut(),
+                width,
+                height,
+                offset,
+                animating,
+            )
         })
         .unwrap_or(false)
     })

@@ -9,13 +9,12 @@
 //! plain GObject though, so the tests build it with `glib::Object::new` —
 //! the same type the production emitter writes into.
 
-use gtk4::glib;
 use gtk4::gsk;
 use gtk4::prelude::SnapshotExt as _;
 
 /// A `gtk4::Snapshot` for a display-free test (see the module docs).
 pub(super) fn snapshot() -> gtk4::Snapshot {
-    glib::Object::new()
+    super::snapshot::new_snapshot()
 }
 
 /// The opaque backing both parity surfaces get, so a fractional edge blends

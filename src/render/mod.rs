@@ -17,7 +17,11 @@
 //!
 //! The node emitter (`nodes`) walks the same cell iteration into a
 //! `gtk4::Snapshot` (gsk-render-nodes); `render_grid` stays the cairo
-//! fallback and the parity oracle. `parity` is the test-only diff harness.
+//! fallback and the parity oracle. `snapshot` presents every frame as GSK
+//! nodes: the whole grid built once into a retained `gsk::RenderNode` on a
+//! tween's first frame and appended translated for the rest of the tween,
+//! rebuilt into the widget's snapshot on every non-tween draw.
+//! `parity` is the test-only diff harness.
 
 pub use images::PixbufDecoder;
 
@@ -43,6 +47,7 @@ use metrics::CellMetrics;
 use text::FontsRef;
 
 use gtk4::gdk;
+use gtk4::gsk;
 
 /// One frame's draw state (`g_font*`, `g_cell_*`, `g_nerd_*`, `g_theme_*`,
 /// `g_accent`, `g_focused`, the tween frame cache and the image cache in the
@@ -69,6 +74,20 @@ pub struct DrawState {
     grid_cache_cols: i32,
     grid_cache_height: i32,
     grid_cache_texture: Option<gdk::MemoryTexture>,
+    /// The retained grid node (gsk-render-nodes row 4.1): the whole grid —
+    /// theme background, cell backgrounds, cells, cursor and images — built
+    /// once into a `gsk::RenderNode` on the tween's first frame and appended
+    /// translated for the rest of the tween; the glyphs stay in GSK's GPU
+    /// atlas, so the per-frame CPU work is a transform. Keyed like the cairo
+    /// texture cache beside it (`grid_node_cols`/`grid_node_height`): the
+    /// terminal grid is resized only when the tween ends, so the node starts
+    /// correct. Rebuilt fresh on every non-tween draw, and dropped when a
+    /// tween stops (the `tween_cache_drop` hook) or the cell metrics change.
+    /// The texture cache above stays the cairo fallback's per-tween blit
+    /// (gsk-render-nodes row 4.2 removes both caches).
+    grid_node: Option<gsk::RenderNode>,
+    grid_node_cols: i32,
+    grid_node_height: i32,
     images: images::ImageCache,
 }
 
@@ -103,6 +122,9 @@ impl DrawState {
             grid_cache_cols: 0,
             grid_cache_height: 0,
             grid_cache_texture: None,
+            grid_node: None,
+            grid_node_cols: 0,
+            grid_node_height: 0,
             images: images::ImageCache::default(),
         }
     }
@@ -133,14 +155,19 @@ impl DrawState {
         self.cell_metrics = metrics::measure(context, &fonts.regular);
     }
 
-    /// Drop the tween frame cache (`render_grid_cache_drop`): the per-tween
-    /// blitted grid surface and its [`gdk::MemoryTexture`] wrapper. Called when
-    /// a tween stops and when the cell metrics change.
+    /// Drop the tween frame caches (`render_grid_cache_drop`): the per-tween
+    /// blitted grid surface, its [`gdk::MemoryTexture`] wrapper and the
+    /// retained grid node (gsk-render-nodes row 4.1). Called when a tween
+    /// stops — the node and the texture are both keyed to one tween — and
+    /// when the cell metrics change.
     pub fn drop_grid_cache(&mut self) {
         self.grid_cache = None;
         self.grid_cache_cols = 0;
         self.grid_cache_height = 0;
         self.grid_cache_texture = None;
+        self.grid_node = None;
+        self.grid_node_cols = 0;
+        self.grid_node_height = 0;
     }
 
     /// The cached tween grid as a [`gdk::MemoryTexture`] (poc-gsk-texture-grid
