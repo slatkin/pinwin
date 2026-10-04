@@ -536,6 +536,7 @@ dependencies = [
  "gdk-pixbuf",
  "gtk4",
  "gtk4-layer-shell",
+ "libc",
  "pango",
  "pangocairo",
 ]

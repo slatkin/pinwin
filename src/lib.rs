@@ -9,4 +9,5 @@ pub mod fontconfig;
 pub mod ghostty_sys;
 pub mod layout;
 pub mod nerd_font;
+pub mod pty;
 pub mod term;
