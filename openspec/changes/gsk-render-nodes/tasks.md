@@ -2,8 +2,8 @@
 
 ## 1. Node emitter foundations
 
-- [ ] 1.1 Spike: verify `gsk::RenderNode::draw` renders a snapshot node to an `ImageSurface` with no display, and add a parity helper that diffs it against the Cairo painter; verify with a unit test on a flat colour node
-- [ ] 1.2 Emit cell backgrounds (incl. the last-row fill) and the theme background as colour nodes; verify parity against `render_grid` backgrounds: exact at scale 1, stated tolerance at 1.5
+- [x] 1.1 Spike: verify `gsk::RenderNode::draw` renders a snapshot node to an `ImageSurface` with no display, and add a parity helper that diffs it against the Cairo painter; verify with a unit test on a flat colour node
+- [x] 1.2 Emit cell backgrounds (incl. the last-row fill) and the theme background as colour nodes; verify parity against `render_grid` backgrounds: exact at scale 1, stated tolerance at 1.5
 
 ## 2. Text, sprites, decorations, cursor
 
