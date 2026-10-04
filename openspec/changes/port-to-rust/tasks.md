@@ -5,8 +5,8 @@
 
 ## 2. Crate skeleton
 
-- [ ] 2.1 Add `Cargo.toml` (package `pinwin`, lib + bin, `panic = "unwind"` in all profiles with a comment, gtk4, gtk4-layer-shell, pango, pangocairo, cairo-rs, gdk-pixbuf, the D2 ghostty route) and `.gitignore` `target/` (D1, D2, D5, D11).
-- [ ] 2.2 Add `build.rs` or crate config so ghostty builds from the pinned commit; document the Zig-at-build-time requirement (D2).
+- [x] 2.1 Add `Cargo.toml` (package `pinwin`, lib + bin, `panic = "unwind"` in all profiles with a comment, gtk4, gtk4-layer-shell, pango, pangocairo, cairo-rs, gdk-pixbuf, the D2 ghostty route) and `.gitignore` `target/` (D1, D2, D5, D11).
+- [x] 2.2 Add `build.rs` or crate config so ghostty builds from the pinned commit; document the Zig-at-build-time requirement (D2).
 
 ## 3. Port modules (crate compiles after each)
 
