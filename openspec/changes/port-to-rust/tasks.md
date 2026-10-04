@@ -16,7 +16,7 @@
 - [x] 3.4 `pty`: fd attach, non-blocking read source, `TIOCSWINSZ`, `raise(SIGWINCH)`, hangup handling (D3, D7).
 - [x] 3.5 `fontconfig`: Ghostty font and theme from the config, `monospace 11` fallback (D3).
 - [x] 3.6 `render`, `images`: drawing, tween frame cache, focus accent, kitty image surfaces (D3).
-- [ ] 3.7 `input`, `surfaces`, `anim`: GTK controllers, layer-shell surfaces and reservation, width tween with its easing from `glue_anim.c` (D3).
+- [x] 3.7 `input`, `surfaces`, `anim`: GTK controllers, layer-shell surfaces and reservation, width tween with its easing from `glue_anim.c` (D3).
 
 ## 4. Library API
 
