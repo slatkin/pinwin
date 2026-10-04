@@ -218,6 +218,26 @@ pub struct Surfaces {
     poisoned: Arc<AtomicBool>,
 }
 
+/// One idle step behind [`Surfaces::fire_deferred_grid_resize`]: wait while a
+/// tween is still running, apply the grid once the tween is over — the step
+/// fires exactly once and returns `Break`, so the idle cannot spin — and stop
+/// untouched when the panel is gone. Split out of the idle closure so the
+/// sequencing is unit testable without a display.
+fn deferred_grid_step(
+    closed: bool,
+    anim_active: bool,
+    apply_size: impl FnOnce() -> bool,
+) -> glib::ControlFlow {
+    if closed {
+        return glib::ControlFlow::Break;
+    }
+    if anim_active {
+        return glib::ControlFlow::Continue;
+    }
+    apply_size();
+    glib::ControlFlow::Break
+}
+
 impl Surfaces {
     /// Build the surfaces for one panel (`on_activate`): create the window and
     /// drawing area, initialise layer-shell, measure the cells, apply the
@@ -458,17 +478,12 @@ impl Surfaces {
             let Some(surfaces) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            let outcome = guarded(&surfaces.poisoned, || {
-                if surfaces.closed.get() {
-                    return glib::ControlFlow::Break;
-                }
-                if surfaces.anim.active() {
-                    return glib::ControlFlow::Continue;
-                }
-                (surfaces.hooks.apply_size)();
-                glib::ControlFlow::Break
-            });
-            outcome.unwrap_or(glib::ControlFlow::Break)
+            guarded(&surfaces.poisoned, || {
+                deferred_grid_step(surfaces.closed.get(), surfaces.anim.active(), || {
+                    (surfaces.hooks.apply_size)()
+                })
+            })
+            .unwrap_or(glib::ControlFlow::Break)
         });
     }
 
@@ -730,5 +745,36 @@ mod tests {
             keyboard_mode(Keyboard::Exclusive),
             LayerKeyboardMode::Exclusive
         );
+    }
+
+    /// The deferred grid resize waits out a still-running tween, then applies
+    /// exactly once and returns `Break` — an idle that kept looping after the
+    /// tween ended (a latched tween flag, or a `Continue` past the end) would
+    /// spin hot and keep the pty drain throttled.
+    #[test]
+    fn the_deferred_grid_idle_waits_out_the_tween_then_applies_once() {
+        let applies = Cell::new(0);
+        let apply = || {
+            applies.set(applies.get() + 1);
+            true
+        };
+        // A tween still running: keep waiting, no grid resize.
+        assert_eq!(
+            deferred_grid_step(false, true, apply),
+            glib::ControlFlow::Continue
+        );
+        assert_eq!(applies.get(), 0);
+        // The tween ended: one apply, then the idle is gone.
+        assert_eq!(
+            deferred_grid_step(false, false, apply),
+            glib::ControlFlow::Break
+        );
+        assert_eq!(applies.get(), 1);
+        // A closed panel never applies.
+        assert_eq!(
+            deferred_grid_step(true, false, apply),
+            glib::ControlFlow::Break
+        );
+        assert_eq!(applies.get(), 1);
     }
 }

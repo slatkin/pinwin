@@ -116,22 +116,32 @@ pub struct AnimHooks {
 }
 
 /// The tween state and hooks, shared between [`Anim`] and the GTK closures
-/// that outlive any borrow of it.
+/// that outlive any borrow of it. The mirror flags live here too, so the stop
+/// paths the closures drive can update them without a second handle.
 struct AnimInner {
     tween: RefCell<Tween>,
     hooks: RefCell<AnimHooks>,
     tick: std::cell::Cell<Option<gtk4::TickCallbackId>>,
     watchdog: std::cell::Cell<Option<glib::SourceId>>,
+    /// Mirrors `tween.is_active()` so the pty read drain can bound itself
+    /// without touching the GTK state (D4). Written only through
+    /// [`set_tween_flag`], next to the tween-state writes it mirrors.
+    tween_flag: Arc<AtomicBool>,
+    /// Latched when a tick, watchdog or hook body panicked (D5).
+    poisoned: Arc<AtomicBool>,
+}
+
+/// The one place [`AnimInner::tween_flag`] changes, called exactly where the
+/// tween state it mirrors is written, so the mirror cannot diverge: `begin`
+/// sets it with the new tween, `stop_inner` and `stop_inner_quiet` clear it
+/// with the reset.
+fn set_tween_flag(inner: &AnimInner, active: bool) {
+    inner.tween_flag.store(active, Ordering::Relaxed);
 }
 
 /// The animated width transition for one panel. Lives on the GTK thread (D4).
 pub struct Anim {
     inner: Rc<AnimInner>,
-    /// Mirrors `tween != None` so the pty read drain can bound itself without
-    /// touching the GTK state (D4).
-    tween_flag: Arc<AtomicBool>,
-    /// Latched when a tick or watchdog body panicked (D5).
-    poisoned: Arc<AtomicBool>,
 }
 
 impl Anim {
@@ -143,27 +153,27 @@ impl Anim {
                 hooks: RefCell::new(hooks),
                 tick: std::cell::Cell::new(None),
                 watchdog: std::cell::Cell::new(None),
+                tween_flag: Arc::new(AtomicBool::new(false)),
+                poisoned: Arc::new(AtomicBool::new(false)),
             }),
-            tween_flag: Arc::new(AtomicBool::new(false)),
-            poisoned: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Whether a tween is running (`glue_anim_active`).
     pub fn active(&self) -> bool {
-        self.tween_flag.load(Ordering::Relaxed)
+        self.inner.tween_flag.load(Ordering::Relaxed)
     }
 
     /// The tween flag to relay into `Pty::set_tween_active`. The glue relays
     /// every state change through its `set_tween_active` hook; this shared
     /// flag is the value that relay carries.
     pub fn tween_flag(&self) -> Arc<AtomicBool> {
-        self.tween_flag.clone()
+        self.inner.tween_flag.clone()
     }
 
     /// Whether a tick or watchdog body panicked (D5).
     pub fn poisoned(&self) -> bool {
-        self.poisoned.load(Ordering::Relaxed)
+        self.inner.poisoned.load(Ordering::Relaxed)
     }
 
     /// The panel's current pixel width: the animated width while a tween runs,
@@ -204,22 +214,20 @@ impl Anim {
         duration_ms: u32,
     ) {
         self.stop(false, false);
-        *self.inner.tween.borrow_mut() = Tween::begin(from_px, to_px, duration_ms);
-        self.tween_flag.store(true, Ordering::Relaxed);
+        self.begin_state(from_px, to_px, duration_ms);
 
         let inner = self.inner.clone();
-        let poisoned = self.poisoned.clone();
         let tick = widget.add_tick_callback(move |_widget, clock| {
             let now = clock.frame_time();
-            let action = guarded(&poisoned, || inner.tween.borrow_mut().advance(now));
+            let action = guarded(&inner.poisoned, || inner.tween.borrow_mut().advance(now));
             match action {
                 Some(Advance::Frame(px)) => {
-                    guarded(&poisoned, || (inner.hooks.borrow_mut().on_frame)(px));
+                    guarded(&inner.poisoned, || (inner.hooks.borrow_mut().on_frame)(px));
                     glib::ControlFlow::Continue
                 }
                 Some(Advance::Finished) => {
                     Anim::stop_inner(&inner, true, false);
-                    guarded(&poisoned, || (inner.hooks.borrow_mut().on_finish)());
+                    guarded(&inner.poisoned, || (inner.hooks.borrow_mut().on_finish)());
                     glib::ControlFlow::Break
                 }
                 // A panic latched the poison flag: drop the tween quietly so no
@@ -235,16 +243,23 @@ impl Anim {
         // The watchdog snaps to the final layout if frames stop; the C allows
         // 100 ms of slack past the duration.
         let inner = self.inner.clone();
-        let poisoned = self.poisoned.clone();
         let watchdog = glib::timeout_add_local(
             std::time::Duration::from_millis(u64::from(duration_ms) + 100),
             move || {
                 Anim::stop_inner(&inner, false, true);
-                guarded(&poisoned, || (inner.hooks.borrow_mut().on_finish)());
+                guarded(&inner.poisoned, || (inner.hooks.borrow_mut().on_finish)());
                 glib::ControlFlow::Break
             },
         );
         self.inner.watchdog.set(Some(watchdog));
+    }
+
+    /// The GTK-free state half of [`Anim::begin`]: stage the tween and raise
+    /// its mirror flag. `begin` runs this before registering the GTK sources;
+    /// tests drive it directly to exercise the flag without a display.
+    fn begin_state(&self, from_px: i32, to_px: i32, duration_ms: u32) {
+        *self.inner.tween.borrow_mut() = Tween::begin(from_px, to_px, duration_ms);
+        set_tween_flag(&self.inner, true);
     }
 
     /// Drop the tick and watchdog and stop the tween (`glue_anim_cancel`).
@@ -278,7 +293,14 @@ impl Anim {
             inner.watchdog.set(None);
         }
         inner.tween.borrow_mut().stop();
-        (inner.hooks.borrow_mut().on_stop)();
+        // The flag mirrors the tween state, so the reset clears it here — not
+        // only in `begin` — or `active()` latches true and the deferred grid
+        // resize idles forever.
+        set_tween_flag(inner, false);
+        // The hook runs under the D5 guard like `on_finish`; the temporary
+        // hook borrow ends with the guarded statement, matching the frame and
+        // finish paths' borrow shape.
+        guarded(&inner.poisoned, || (inner.hooks.borrow_mut().on_stop)());
     }
 
     /// The panic half of [`Anim::stop_inner`]: tear the sources down without
@@ -291,6 +313,7 @@ impl Anim {
             watchdog.remove();
         }
         inner.tween.borrow_mut().stop();
+        set_tween_flag(inner, false);
     }
 }
 
@@ -405,13 +428,12 @@ mod tests {
     }
 
     /// A started tween drives the eased width and the draw offset, without
-    /// touching GTK: the test seeds the tween directly.
+    /// touching GTK: the test seeds the tween through `begin`'s state half.
     #[test]
     fn active_anim_reports_the_eased_width_and_offset() {
         let recording = Recording::new();
         let anim = Anim::new(Recording::hooks(&recording));
-        *anim.inner.tween.borrow_mut() = Tween::begin(320, 480, 1000);
-        anim.tween_flag.store(true, Ordering::Relaxed);
+        anim.begin_state(320, 480, 1000);
 
         assert!(anim.active());
         assert_eq!(anim.current_px(320), 320);
@@ -439,5 +461,55 @@ mod tests {
         assert_eq!(recording.stops, 1);
         assert_eq!(recording.finishes, 0);
         assert!(recording.frames.is_empty());
+    }
+
+    /// The mirror flag follows the tween state through every stop path: a
+    /// latched flag would keep the pty drain throttled and the deferred grid
+    /// resize idling forever after the tween ended.
+    #[test]
+    fn the_tween_flag_clears_on_every_stop_path() {
+        let recording = Recording::new();
+        let anim = Anim::new(Recording::hooks(&recording));
+
+        // begin's state half raises the flag...
+        anim.begin_state(320, 480, 1000);
+        assert!(anim.active());
+        // ...the tick's finish path (stop from inside the tick) clears it.
+        Anim::stop_inner(&anim.inner, true, false);
+        assert!(!anim.active());
+
+        anim.begin_state(320, 480, 1000);
+        assert!(anim.active());
+        // The watchdog path (stop from inside the watchdog).
+        Anim::stop_inner(&anim.inner, false, true);
+        assert!(!anim.active());
+
+        anim.begin_state(320, 480, 1000);
+        assert!(anim.active());
+        // An external cancel.
+        anim.cancel();
+        assert!(!anim.active());
+
+        anim.begin_state(320, 480, 1000);
+        assert!(anim.active());
+        // The quiet panic path runs no hooks and still clears the flag.
+        Anim::stop_inner_quiet(&anim.inner);
+        assert!(!anim.active());
+        assert_eq!(recording.borrow().stops, 3);
+    }
+
+    /// A panicking stop hook cannot cross back into GTK (D5): the guarded
+    /// `on_stop` call latches the poison flag instead.
+    #[test]
+    fn a_panicking_stop_hook_latches_the_poison_flag() {
+        let anim = Anim::new(AnimHooks {
+            on_frame: Box::new(|_| {}),
+            on_stop: Box::new(|| panic!("hook blew up")),
+            on_finish: Box::new(|| {}),
+        });
+        anim.begin_state(320, 480, 1000);
+        anim.cancel();
+        assert!(!anim.active());
+        assert!(anim.poisoned());
     }
 }

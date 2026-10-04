@@ -295,10 +295,7 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
     scroll.connect_scroll(move |controller, dx, dy| {
         guarded(&scroll_links.poisoned, || {
             let (x, y) = scroll_position.get();
-            let unit = match controller.unit() {
-                gdk::ScrollUnit::Wheel => ScrollUnit::Wheel,
-                _ => ScrollUnit::Surface,
-            };
+            let unit = scroll_unit_from_gdk(controller.unit());
             let mods = mods_from_gdk(controller.current_event_state());
             scroll_links
                 .terminal
@@ -330,6 +327,20 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
     area.add_controller(focus);
 }
 
+/// Map the GDK scroll unit onto the terminal encoder's (`input.c` passes the
+/// raw `GdkScrollUnit` through and the Zig port scaled only
+/// `PINWIN_SCROLL_UNIT_SURFACE`, `src/input.zig`): only a surface delta counts
+/// a tenth of a notch, so a wheel click — and any other unit this gdk build
+/// reports, such as a discrete one — is a whole notch. Mapping the catch-all
+/// to `Wheel` keeps an unrecognised unit from silently shrinking to surface
+/// scale.
+fn scroll_unit_from_gdk(unit: gdk::ScrollUnit) -> ScrollUnit {
+    match unit {
+        gdk::ScrollUnit::Surface => ScrollUnit::Surface,
+        _ => ScrollUnit::Wheel,
+    }
+}
+
 /// The local D5 guard, matching `term::callbacks` and `pty` until row 4.2
 /// lifts the shared helper: run `body`, latching `poisoned` and returning
 /// `None` when it panics.
@@ -346,6 +357,7 @@ fn guarded<T>(poisoned: &AtomicBool, body: impl FnOnce() -> T) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gtk4::glib::translate::FromGlib;
 
     #[test]
     fn mods_translate_the_five_gdk_masks() {
@@ -431,5 +443,27 @@ mod tests {
         assert_eq!(keyval_unicode(0x41), u32::from('A'));
         assert_eq!(keyval_unicode(0xff1b), 0x1b);
         assert_eq!(keyval_unicode(0x0), 0);
+    }
+
+    /// Only a surface delta shrinks to a tenth of a notch; a wheel click — and
+    /// anything this gdk build reports that is not a surface delta, such as a
+    /// discrete unit — is a whole notch, like the C's surface-only 0.1 scale.
+    #[test]
+    fn scroll_units_map_surface_only() {
+        assert_eq!(
+            scroll_unit_from_gdk(gdk::ScrollUnit::Wheel),
+            ScrollUnit::Wheel
+        );
+        assert_eq!(
+            scroll_unit_from_gdk(gdk::ScrollUnit::Surface),
+            ScrollUnit::Surface
+        );
+        // The bindings map an unrecognised raw unit onto `__Unknown`; the C
+        // passed such a value through unscaled, so it stays a whole notch.
+        // SAFETY: 2 is not a valid `GdkScrollUnit` in this gdk build, which is
+        // exactly the case under test — the `from_glib` fallback arm.
+        let discrete = unsafe { gdk::ScrollUnit::from_glib(2) };
+        assert_eq!(discrete, gdk::ScrollUnit::__Unknown(2));
+        assert_eq!(scroll_unit_from_gdk(discrete), ScrollUnit::Wheel);
     }
 }
