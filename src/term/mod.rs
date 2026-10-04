@@ -47,6 +47,8 @@ use crate::ghostty_sys::terminal::{
 use crate::ghostty_sys::{GHOSTTY_REJECTED, GHOSTTY_SUCCESS, GhosttyResult};
 
 mod callbacks;
+pub mod input;
+pub mod keys;
 
 /// Ghostty's own default for `image-storage-limit`, and headroom for
 /// image-heavy hosts (`src/main.zig`).
@@ -233,6 +235,8 @@ pub struct Terminal {
     /// PTY bytes that arrived before the terminal existed, replayed once it
     /// does (`src/main.zig`).
     early_pty_data: Vec<u8>,
+    /// Scroll/focus/button state for the input encoders (D3).
+    input_state: input::InputState,
 }
 
 impl Terminal {
@@ -272,6 +276,7 @@ impl Terminal {
             init: Some(init),
             init_failed: false,
             early_pty_data: Vec::new(),
+            input_state: input::InputState::default(),
         }
     }
 
