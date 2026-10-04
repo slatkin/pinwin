@@ -259,7 +259,8 @@ a full layout (side, columns 1..=65535, four gutters) and a keyboard mode, and a
 accent, and returns `Result<Panel, PinwinError>` once the panel is on screen or has failed.
 Applying a layout, plain or animated with a duration in milliseconds, is a method on the
 handle returning `Result<(), PinwinError>`. Dropping the handle closes the panel, cancels any
-running animation and joins the library's GTK thread; it SHALL NOT panic. At most one panel
+running animation; the library's GTK thread is process-lifetime and is not joined, so it stays
+parked for a later start. It SHALL NOT panic. At most one panel
 exists per process: a start while another handle is alive SHALL fail with
 `PinwinError::AlreadyRunning` and leave the running panel unchanged. Applying through a handle
 whose panel is no longer live (its GTK side ended on its own) SHALL return

@@ -12,7 +12,8 @@ See proposal.md for motivation. Current shape, which the port must preserve:
   and the host waits on a cond for a start result, so start is synchronous. Every apply is
   posted to the GTK main context with `g_main_context_invoke`; the caller waits up to 5 s
   for the reply (refcounted request so a late callback never touches freed memory). Stop
-  posts a teardown to the loop and joins the thread. A static mutex holds the running flag.
+  posts a teardown to the loop and joins the thread (the port keeps the teardown and the reply
+  wait but never joins; see D4). A static mutex holds the running flag.
 - The host owns the pty fd and never has it closed by the library; `raise(SIGWINCH)` follows
   every successful `TIOCSWINSZ`.
 - `host/main.c` forks the child with `forkpty`, parses env vars, and starts the panel.
@@ -143,9 +144,10 @@ may, per the main spec's "No pinwin-owned configuration".
 ### D4. Thread and main-loop model: keep the existing one
 
 `Panel::start` lazily spawns the one process-lifetime `pinwin-gtk` thread (`std::thread`).
-That thread calls `gtk::init`
-and layer-shell setup, creates the application and runs its main loop; all GTK objects,
-terminal state and the pty source live in a `thread_local` on it, so none need to be `Send`
+That thread calls `gtk::init` and layer-shell setup once; each `start` then creates and runs
+its own `GtkApplication` (with its own distinct application id) and main loop on that shared
+thread, and the thread is parked between panels. All GTK objects, terminal state and the pty
+source live in a `thread_local` on it, so none need to be `Send`
 (ghostty's terminal types are `!Send`/`!Sync`, D2 item 8). The host thread waits on an
 `mpsc` channel for the start result.
 
@@ -167,8 +169,8 @@ first initialising thread and *panics* (`Attempted to initialize GTK from two di
 threads`, `gtk4-0.11.5/src/rt.rs:138`) when a second thread calls it, so a thread per `start`
 that is joined on `Drop` cannot restart the panel: the spike's first panel (its own thread)
 ran and quit, the second (a new thread) panicked inside `gtk::init`. Decision: one
-process-lifetime GTK thread, created lazily on the first `start` and parked on a
-`glib::MainLoop` between panels; `start` and `Drop` post work to it with
+process-lifetime GTK thread, created lazily on the first `start` and parked between panels;
+`start` and `Drop` post work to it with
 `MainContext::invoke` exactly as above, and `Drop` never joins it. The spike verified two
 consecutive panel lifecycles (`GtkApplication::run` → `quit`, distinct application ids) on the
 same parked thread with a single `gtk::init`, both succeeding.
@@ -191,7 +193,8 @@ On a caught panic the GTK side logs to stderr, sets a shared `poisoned` flag, st
 drawing and quits the loop. Later calls on the handle return `Err(Internal)`: the `poisoned`
 check comes before the "GTK side ended" check, so a panic reports `Internal`, never
 `NotRunning`. `Drop`
-(which does not use `unwrap`) still closes and joins. A panic while the host is blocked in
+(which does not use `unwrap`) still closes — it posts teardown and waits for the reply — and
+never joins the GTK thread. A panic while the host is blocked in
 apply is released by the reply channel closing, which reports `Internal`.
 
 Alternatives: `panic = "abort"` (rejected: kills the host, violating the spec); catching only
@@ -267,9 +270,11 @@ compiler).
 ## Risks / Trade-offs
 
 - Crate covers only part of libghostty-vt (kitty graphics feature, callbacks, PNG hook) →
-  D2 rule falls back to own FFI for everything; spike runs first so the cost is known before
-  any module is written.
-- gtk-rs may refuse GTK init on a second thread after restart → spike task 1.2; fallback in D4.
+  resolved: the task 1.1 spike rejected the crate and the port uses own FFI for everything
+  (D2), so the cost was known before any module was written.
+- gtk-rs refuses GTK init on a second thread after restart → resolved: one process-lifetime
+  GTK thread parked between panels (task 1.2 spike); the spike verified two consecutive panel
+  lifecycles on the same parked thread.
 - Behaviour drift in rendering (Pango/cairo glyph metrics, Nerd Font constraints, tween
   frame cache) is not caught by unit tests → one manual acceptance task at the end (no
   per-phase live testing, per the review decision); render code is ported line by line to keep
@@ -277,8 +282,9 @@ compiler).
 - Panic inside a C callback unwinds through C frames → D5 guard on every trampoline.
 - Build now needs Zig at build time for ghostty (and network for the ghostty fetch unless
   vendored) → documented in README and AGENTS.md; pinwin has no Zig source.
-- Pinned ghostty commit moves under the crate (if D2 picks the crate) → pin the crate version
-  exactly in `Cargo.toml` and record the commit in the D2 result.
+- Pinned ghostty commit moves → own FFI (D2) targets the single pinned commit
+  `3a3047f6b62a791fd8b12d9f07a85b3d2160370b`; bumping it is a deliberate, reviewable change to
+  `ghostty_sys`.
 - A large single change is hard to review → tasks are ordered so the crate compiles after
   every group, and the C/Zig sources are deleted only after the Rust code replaces them.
 
