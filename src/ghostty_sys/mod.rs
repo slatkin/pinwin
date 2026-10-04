@@ -227,25 +227,303 @@ mod tests {
         std::hint::black_box(LINKED_SYMBOLS);
     }
 
-    /// The two data paths the rejected `libghostty-vt` crate could not reach
-    /// against the pin (D2): the row's viewport Y position and the combined
-    /// render-state colours.
-    #[test]
-    fn d2_gap_constants_match_the_pin() {
-        assert_eq!(render::GHOSTTY_RENDER_STATE_ROW_DATA_VIEWPORT_Y, 6);
-        assert_eq!(render::GHOSTTY_RENDER_STATE_DATA_COLORS, 19);
+    /// Every numeric id constant this module declares, paired with its name
+    /// for the C probe. The probe reads the same identifier from the pinned
+    /// headers, so a pin bump that renumbers an ABI id fails
+    /// `id_constants_match_the_pin` instead of silently changing behaviour.
+    ///
+    /// `stringify!` keeps each entry's name and value in sync and the
+    /// generated C lines are derived from this list, so every constant here
+    /// is checked against the header.
+    macro_rules! id_constants {
+        ($($constant:path),* $(,)?) => {
+            &[$( (stringify!($constant), $constant as i64) ),*]
+        };
     }
 
-    /// Spot-check key ids against the pin's `key/event.h` ordering.
+    const ID_CONSTANTS: &[(&str, i64)] = id_constants![
+        GHOSTTY_SUCCESS,
+        GHOSTTY_OUT_OF_MEMORY,
+        GHOSTTY_INVALID_VALUE,
+        GHOSTTY_OUT_OF_SPACE,
+        GHOSTTY_NO_VALUE,
+        GHOSTTY_IO_ERROR,
+        GHOSTTY_LIMIT_EXCEEDED,
+        GHOSTTY_REJECTED,
+        style::GHOSTTY_STYLE_COLOR_NONE,
+        style::GHOSTTY_STYLE_COLOR_PALETTE,
+        style::GHOSTTY_STYLE_COLOR_RGB,
+        terminal::GHOSTTY_TERMINAL_OPT_USERDATA,
+        terminal::GHOSTTY_TERMINAL_OPT_WRITE_PTY,
+        terminal::GHOSTTY_TERMINAL_OPT_SIZE,
+        terminal::GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,
+        terminal::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+        terminal::GHOSTTY_TERMINAL_OPT_MODE,
+        terminal::GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS,
+        terminal::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+        terminal::GHOSTTY_TERMINAL_DATA_MODE,
+        render::GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
+        render::GHOSTTY_RENDER_STATE_DATA_CURSOR,
+        render::GHOSTTY_RENDER_STATE_DATA_COLORS,
+        render::GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
+        render::GHOSTTY_RENDER_STATE_ROW_DATA_VIEWPORT_Y,
+        render::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW,
+        render::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
+        render::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN,
+        render::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
+        render::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
+        render::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR,
+        render::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR,
+        render::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK,
+        render::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE,
+        render::GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW,
+        kitty::GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
+        kitty::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
+        kitty::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL,
+        kitty::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z,
+        kitty::GHOSTTY_KITTY_IMAGE_DATA_WIDTH,
+        kitty::GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
+        kitty::GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
+        kitty::GHOSTTY_KITTY_IMAGE_DATA_GENERATION,
+        input::GHOSTTY_MODS_SHIFT,
+        input::GHOSTTY_MODS_CTRL,
+        input::GHOSTTY_MODS_ALT,
+        input::GHOSTTY_MODS_SUPER,
+        input::GHOSTTY_MODS_CAPS_LOCK,
+        input::GHOSTTY_MODS_NUM_LOCK,
+        input::GHOSTTY_MODS_SHIFT_SIDE,
+        input::GHOSTTY_MODS_CTRL_SIDE,
+        input::GHOSTTY_MODS_ALT_SIDE,
+        input::GHOSTTY_MODS_SUPER_SIDE,
+        input::GHOSTTY_KITTY_KEY_DISABLED,
+        input::GHOSTTY_KITTY_KEY_DISAMBIGUATE,
+        input::GHOSTTY_KITTY_KEY_REPORT_EVENTS,
+        input::GHOSTTY_KITTY_KEY_REPORT_ALTERNATES,
+        input::GHOSTTY_KITTY_KEY_REPORT_ALL,
+        input::GHOSTTY_KITTY_KEY_REPORT_ASSOCIATED,
+        input::GHOSTTY_KEY_ACTION_RELEASE,
+        input::GHOSTTY_KEY_ACTION_PRESS,
+        input::GHOSTTY_KEY_ACTION_REPEAT,
+        input::GHOSTTY_KEY_UNIDENTIFIED,
+        input::GHOSTTY_KEY_BACKQUOTE,
+        input::GHOSTTY_KEY_BACKSLASH,
+        input::GHOSTTY_KEY_BRACKET_LEFT,
+        input::GHOSTTY_KEY_BRACKET_RIGHT,
+        input::GHOSTTY_KEY_COMMA,
+        input::GHOSTTY_KEY_DIGIT_0,
+        input::GHOSTTY_KEY_DIGIT_1,
+        input::GHOSTTY_KEY_DIGIT_2,
+        input::GHOSTTY_KEY_DIGIT_3,
+        input::GHOSTTY_KEY_DIGIT_4,
+        input::GHOSTTY_KEY_DIGIT_5,
+        input::GHOSTTY_KEY_DIGIT_6,
+        input::GHOSTTY_KEY_DIGIT_7,
+        input::GHOSTTY_KEY_DIGIT_8,
+        input::GHOSTTY_KEY_DIGIT_9,
+        input::GHOSTTY_KEY_EQUAL,
+        input::GHOSTTY_KEY_INTL_BACKSLASH,
+        input::GHOSTTY_KEY_INTL_RO,
+        input::GHOSTTY_KEY_INTL_YEN,
+        input::GHOSTTY_KEY_A,
+        input::GHOSTTY_KEY_B,
+        input::GHOSTTY_KEY_C,
+        input::GHOSTTY_KEY_D,
+        input::GHOSTTY_KEY_E,
+        input::GHOSTTY_KEY_F,
+        input::GHOSTTY_KEY_G,
+        input::GHOSTTY_KEY_H,
+        input::GHOSTTY_KEY_I,
+        input::GHOSTTY_KEY_J,
+        input::GHOSTTY_KEY_K,
+        input::GHOSTTY_KEY_L,
+        input::GHOSTTY_KEY_M,
+        input::GHOSTTY_KEY_N,
+        input::GHOSTTY_KEY_O,
+        input::GHOSTTY_KEY_P,
+        input::GHOSTTY_KEY_Q,
+        input::GHOSTTY_KEY_R,
+        input::GHOSTTY_KEY_S,
+        input::GHOSTTY_KEY_T,
+        input::GHOSTTY_KEY_U,
+        input::GHOSTTY_KEY_V,
+        input::GHOSTTY_KEY_W,
+        input::GHOSTTY_KEY_X,
+        input::GHOSTTY_KEY_Y,
+        input::GHOSTTY_KEY_Z,
+        input::GHOSTTY_KEY_MINUS,
+        input::GHOSTTY_KEY_PERIOD,
+        input::GHOSTTY_KEY_QUOTE,
+        input::GHOSTTY_KEY_SEMICOLON,
+        input::GHOSTTY_KEY_SLASH,
+        input::GHOSTTY_KEY_ALT_LEFT,
+        input::GHOSTTY_KEY_ALT_RIGHT,
+        input::GHOSTTY_KEY_BACKSPACE,
+        input::GHOSTTY_KEY_CAPS_LOCK,
+        input::GHOSTTY_KEY_CONTEXT_MENU,
+        input::GHOSTTY_KEY_CONTROL_LEFT,
+        input::GHOSTTY_KEY_CONTROL_RIGHT,
+        input::GHOSTTY_KEY_ENTER,
+        input::GHOSTTY_KEY_META_LEFT,
+        input::GHOSTTY_KEY_META_RIGHT,
+        input::GHOSTTY_KEY_SHIFT_LEFT,
+        input::GHOSTTY_KEY_SHIFT_RIGHT,
+        input::GHOSTTY_KEY_SPACE,
+        input::GHOSTTY_KEY_TAB,
+        input::GHOSTTY_KEY_CONVERT,
+        input::GHOSTTY_KEY_KANA_MODE,
+        input::GHOSTTY_KEY_NON_CONVERT,
+        input::GHOSTTY_KEY_DELETE,
+        input::GHOSTTY_KEY_END,
+        input::GHOSTTY_KEY_HELP,
+        input::GHOSTTY_KEY_HOME,
+        input::GHOSTTY_KEY_INSERT,
+        input::GHOSTTY_KEY_PAGE_DOWN,
+        input::GHOSTTY_KEY_PAGE_UP,
+        input::GHOSTTY_KEY_ARROW_DOWN,
+        input::GHOSTTY_KEY_ARROW_LEFT,
+        input::GHOSTTY_KEY_ARROW_RIGHT,
+        input::GHOSTTY_KEY_ARROW_UP,
+        input::GHOSTTY_KEY_NUM_LOCK,
+        input::GHOSTTY_KEY_NUMPAD_0,
+        input::GHOSTTY_KEY_NUMPAD_1,
+        input::GHOSTTY_KEY_NUMPAD_2,
+        input::GHOSTTY_KEY_NUMPAD_3,
+        input::GHOSTTY_KEY_NUMPAD_4,
+        input::GHOSTTY_KEY_NUMPAD_5,
+        input::GHOSTTY_KEY_NUMPAD_6,
+        input::GHOSTTY_KEY_NUMPAD_7,
+        input::GHOSTTY_KEY_NUMPAD_8,
+        input::GHOSTTY_KEY_NUMPAD_9,
+        input::GHOSTTY_KEY_NUMPAD_ADD,
+        input::GHOSTTY_KEY_NUMPAD_BACKSPACE,
+        input::GHOSTTY_KEY_NUMPAD_CLEAR,
+        input::GHOSTTY_KEY_NUMPAD_CLEAR_ENTRY,
+        input::GHOSTTY_KEY_NUMPAD_COMMA,
+        input::GHOSTTY_KEY_NUMPAD_DECIMAL,
+        input::GHOSTTY_KEY_NUMPAD_DIVIDE,
+        input::GHOSTTY_KEY_NUMPAD_ENTER,
+        input::GHOSTTY_KEY_NUMPAD_EQUAL,
+        input::GHOSTTY_KEY_NUMPAD_MEMORY_ADD,
+        input::GHOSTTY_KEY_NUMPAD_MEMORY_CLEAR,
+        input::GHOSTTY_KEY_NUMPAD_MEMORY_RECALL,
+        input::GHOSTTY_KEY_NUMPAD_MEMORY_STORE,
+        input::GHOSTTY_KEY_NUMPAD_MEMORY_SUBTRACT,
+        input::GHOSTTY_KEY_NUMPAD_MULTIPLY,
+        input::GHOSTTY_KEY_NUMPAD_PAREN_LEFT,
+        input::GHOSTTY_KEY_NUMPAD_PAREN_RIGHT,
+        input::GHOSTTY_KEY_NUMPAD_SUBTRACT,
+        input::GHOSTTY_KEY_NUMPAD_SEPARATOR,
+        input::GHOSTTY_KEY_NUMPAD_UP,
+        input::GHOSTTY_KEY_NUMPAD_DOWN,
+        input::GHOSTTY_KEY_NUMPAD_RIGHT,
+        input::GHOSTTY_KEY_NUMPAD_LEFT,
+        input::GHOSTTY_KEY_NUMPAD_BEGIN,
+        input::GHOSTTY_KEY_NUMPAD_HOME,
+        input::GHOSTTY_KEY_NUMPAD_END,
+        input::GHOSTTY_KEY_NUMPAD_INSERT,
+        input::GHOSTTY_KEY_NUMPAD_DELETE,
+        input::GHOSTTY_KEY_NUMPAD_PAGE_UP,
+        input::GHOSTTY_KEY_NUMPAD_PAGE_DOWN,
+        input::GHOSTTY_KEY_ESCAPE,
+        input::GHOSTTY_KEY_F1,
+        input::GHOSTTY_KEY_F2,
+        input::GHOSTTY_KEY_F3,
+        input::GHOSTTY_KEY_F4,
+        input::GHOSTTY_KEY_F5,
+        input::GHOSTTY_KEY_F6,
+        input::GHOSTTY_KEY_F7,
+        input::GHOSTTY_KEY_F8,
+        input::GHOSTTY_KEY_F9,
+        input::GHOSTTY_KEY_F10,
+        input::GHOSTTY_KEY_F11,
+        input::GHOSTTY_KEY_F12,
+        input::GHOSTTY_KEY_F13,
+        input::GHOSTTY_KEY_F14,
+        input::GHOSTTY_KEY_F15,
+        input::GHOSTTY_KEY_F16,
+        input::GHOSTTY_KEY_F17,
+        input::GHOSTTY_KEY_F18,
+        input::GHOSTTY_KEY_F19,
+        input::GHOSTTY_KEY_F20,
+        input::GHOSTTY_KEY_F21,
+        input::GHOSTTY_KEY_F22,
+        input::GHOSTTY_KEY_F23,
+        input::GHOSTTY_KEY_F24,
+        input::GHOSTTY_KEY_F25,
+        input::GHOSTTY_KEY_FN,
+        input::GHOSTTY_KEY_FN_LOCK,
+        input::GHOSTTY_KEY_PRINT_SCREEN,
+        input::GHOSTTY_KEY_SCROLL_LOCK,
+        input::GHOSTTY_KEY_PAUSE,
+        input::GHOSTTY_KEY_BROWSER_BACK,
+        input::GHOSTTY_KEY_BROWSER_FAVORITES,
+        input::GHOSTTY_KEY_BROWSER_FORWARD,
+        input::GHOSTTY_KEY_BROWSER_HOME,
+        input::GHOSTTY_KEY_BROWSER_REFRESH,
+        input::GHOSTTY_KEY_BROWSER_SEARCH,
+        input::GHOSTTY_KEY_BROWSER_STOP,
+        input::GHOSTTY_KEY_EJECT,
+        input::GHOSTTY_KEY_LAUNCH_APP_1,
+        input::GHOSTTY_KEY_LAUNCH_APP_2,
+        input::GHOSTTY_KEY_LAUNCH_MAIL,
+        input::GHOSTTY_KEY_MEDIA_PLAY_PAUSE,
+        input::GHOSTTY_KEY_MEDIA_SELECT,
+        input::GHOSTTY_KEY_MEDIA_STOP,
+        input::GHOSTTY_KEY_MEDIA_TRACK_NEXT,
+        input::GHOSTTY_KEY_MEDIA_TRACK_PREVIOUS,
+        input::GHOSTTY_KEY_POWER,
+        input::GHOSTTY_KEY_SLEEP,
+        input::GHOSTTY_KEY_AUDIO_VOLUME_DOWN,
+        input::GHOSTTY_KEY_AUDIO_VOLUME_MUTE,
+        input::GHOSTTY_KEY_AUDIO_VOLUME_UP,
+        input::GHOSTTY_KEY_WAKE_UP,
+        input::GHOSTTY_KEY_COPY,
+        input::GHOSTTY_KEY_CUT,
+        input::GHOSTTY_KEY_PASTE,
+        input::GHOSTTY_MOUSE_ACTION_PRESS,
+        input::GHOSTTY_MOUSE_ACTION_RELEASE,
+        input::GHOSTTY_MOUSE_ACTION_MOTION,
+        input::GHOSTTY_MOUSE_BUTTON_UNKNOWN,
+        input::GHOSTTY_MOUSE_BUTTON_LEFT,
+        input::GHOSTTY_MOUSE_BUTTON_RIGHT,
+        input::GHOSTTY_MOUSE_BUTTON_MIDDLE,
+        input::GHOSTTY_MOUSE_BUTTON_FOUR,
+        input::GHOSTTY_MOUSE_BUTTON_FIVE,
+        input::GHOSTTY_MOUSE_BUTTON_SIX,
+        input::GHOSTTY_MOUSE_BUTTON_SEVEN,
+        input::GHOSTTY_MOUSE_BUTTON_EIGHT,
+        input::GHOSTTY_MOUSE_BUTTON_NINE,
+        input::GHOSTTY_MOUSE_BUTTON_TEN,
+        input::GHOSTTY_MOUSE_BUTTON_ELEVEN,
+        input::GHOSTTY_MOUSE_ENCODER_OPT_SIZE,
+        input::GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
+        input::GHOSTTY_FOCUS_GAINED,
+        input::GHOSTTY_FOCUS_LOST,
+        input::GHOSTTY_MODE_FOCUS_EVENT,
+        sys::GHOSTTY_SYS_OPT_DECODE_PNG,
+        screen::GHOSTTY_CELL_WIDE_NARROW,
+        screen::GHOSTTY_CELL_WIDE_WIDE,
+        screen::GHOSTTY_CELL_WIDE_SPACER_TAIL,
+        screen::GHOSTTY_CELL_WIDE_SPACER_HEAD,
+        screen::GHOSTTY_CELL_DATA_WIDE,
+        build_info::GHOSTTY_BUILD_INFO_SIMD,
+    ];
+
+    /// Compare every declared id constant against the value the pinned
+    /// headers assign to it: the two D2 data-path constants (row viewport Y,
+    /// render-state colours) and the key/mouse ids that literal comparisons
+    /// used to pin by hand.
     #[test]
-    fn key_ids_match_the_pin() {
-        assert_eq!(input::GHOSTTY_KEY_UNIDENTIFIED, 0);
-        assert_eq!(input::GHOSTTY_KEY_A, 20);
-        assert_eq!(input::GHOSTTY_KEY_ESCAPE, 120);
-        assert_eq!(input::GHOSTTY_KEY_F25, 145);
-        assert_eq!(input::GHOSTTY_KEY_COPY, 173);
-        assert_eq!(input::GHOSTTY_KEY_CUT, 174);
-        assert_eq!(input::GHOSTTY_KEY_PASTE, 175);
+    fn id_constants_match_the_pin() {
+        let probe = probe_output();
+        for (path, expected) in ID_CONSTANTS {
+            let name = path.rsplit("::").next().expect("a name").trim();
+            let actual = probe
+                .get(&format!("VAL:{name}"))
+                .copied()
+                .unwrap_or_else(|| panic!("probe did not report {name}"));
+            assert_eq!(actual, *expected, "{name} id");
+        }
     }
 
     /// Compile a C probe against the pinned headers at test time, run it, and
@@ -317,7 +595,7 @@ mod tests {
         ];
         for (name, expected) in sizes {
             let actual = probe[&format!("SIZE:{name}")];
-            assert_eq!(actual, expected, "{name} size");
+            assert_eq!(actual, expected as i64, "{name} size");
         }
 
         let offsets: [(&str, usize); 85] = [
@@ -646,17 +924,30 @@ mod tests {
         ];
         for (name, expected) in offsets {
             let actual = probe[&format!("OFF:{name}")];
-            assert_eq!(actual, expected, "{name} offset");
+            assert_eq!(actual, expected as i64, "{name} offset");
         }
     }
 
-    /// Compile and run the generated C probe against the pinned headers and
-    /// return its `SIZE:`/`OFF:` lines as a map.
-    fn probe_output() -> HashMap<String, usize> {
+    /// Compile and run the generated C probe against the pinned headers once
+    /// and return its `SIZE:`/`OFF:`/`VAL:` lines as a map. The result is
+    /// cached so the tests can share one compilation and never race on the
+    /// probe binary.
+    fn probe_output() -> &'static HashMap<String, i64> {
+        static PROBE: std::sync::OnceLock<HashMap<String, i64>> = std::sync::OnceLock::new();
+        PROBE.get_or_init(build_probe_output)
+    }
+
+    fn build_probe_output() -> HashMap<String, i64> {
         let out_dir = PathBuf::from(env!("OUT_DIR")).join("ghostty-layout-probe");
         std::fs::create_dir_all(&out_dir).expect("create probe dir");
         let source = out_dir.join("layout_probe.c");
-        std::fs::write(&source, LAYOUT_PROBE_C).expect("write probe source");
+        let mut id_lines = String::new();
+        for (path, _) in ID_CONSTANTS {
+            let name = path.rsplit("::").next().expect("a name").trim();
+            id_lines.push_str(&format!("  V({name});\n"));
+        }
+        let probe_c = LAYOUT_PROBE_C.replace("  //ID_CONSTANTS\n", &id_lines);
+        std::fs::write(&source, probe_c).expect("write probe source");
         let binary = out_dir.join("layout_probe");
 
         let include = PathBuf::from(env!("OUT_DIR")).join("ghostty/include");
@@ -682,7 +973,7 @@ mod tests {
                 let (key, value) = line.split_once(' ').expect("probe line has a value");
                 (
                     key.to_owned(),
-                    value.parse::<usize>().expect("probe value is a number"),
+                    value.parse::<i64>().expect("probe value is a number"),
                 )
             })
             .collect()
@@ -695,6 +986,7 @@ mod tests {
 #include <stdio.h>
 #define S(t) printf(\"SIZE:%s %zu\\n\", #t, sizeof(t))
 #define F(t, f) printf(\"OFF:%s.%s %zu\\n\", #t, #f, offsetof(t, f))
+#define V(x) printf(\"VAL:%s %ld\\n\", #x, (long)(x))
 #include <ghostty/vt.h>
 int main(void) {
   S(GhosttyColorRgb);
@@ -776,6 +1068,7 @@ int main(void) {
   F(GhosttyKittyGraphicsPlacementRenderInfo, source_height);
   S(GhosttyTerminalModeConfig);
   F(GhosttyTerminalModeConfig, mode); F(GhosttyTerminalModeConfig, value);
+  //ID_CONSTANTS
   return 0;
 }
 ";
