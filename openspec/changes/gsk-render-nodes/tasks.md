@@ -17,7 +17,7 @@
 
 ## 4. Retained node cache
 
-- [ ] 4.1 Build the grid (including images) into one `RenderNode` on the tween's first frame and draw it, translated, for the rest of the tween; rebuild it on every non-tween draw, in `GridArea::snapshot`; verify the display-free suite passes
+- [x] 4.1 Build the grid (including images) into one `RenderNode` on the tween's first frame and draw it, translated, for the rest of the tween; rebuild it on every non-tween draw, in `GridArea::snapshot`; verify the display-free suite passes
 - [ ] 4.2 Remove the `grid_cache` surface and the `MemoryTexture` bridge once 4.1 is accepted; verify `cargo build` and no dead code
 
 ## 5. Verification
