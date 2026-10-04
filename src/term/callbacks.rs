@@ -285,7 +285,18 @@ unsafe extern "C" fn decode_png(
         let Some(image) = ctx.decoder.decode_png(bytes) else {
             return false;
         };
-        let len = image.rgba.len();
+        // Derive the RGBA length from the reported dimensions, as
+        // `src/main.zig` did, and reject a decoder whose buffer disagrees so
+        // `out.data_len` always matches the dimensions handed to libghostty.
+        let Some(len) = (image.width as usize)
+            .checked_mul(image.height as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+        else {
+            return false;
+        };
+        if image.rgba.len() != len {
+            return false;
+        }
         // SAFETY: `allocator` is the allocator libghostty handed us and `len`
         // is the buffer size.
         let buffer = unsafe { ghostty_alloc(allocator, len) };
@@ -385,5 +396,85 @@ mod tests {
         assert_eq!((out.width, out.height), (1, 1));
         assert_eq!(older_calls.load(Ordering::Relaxed), 1);
         assert_eq!(newer_calls.load(Ordering::Relaxed), 0);
+    }
+
+    /// A decoder that yields a scripted sequence of images.
+    struct ScriptedDecoder {
+        calls: Arc<AtomicUsize>,
+        images: Vec<Option<DecodedPng>>,
+    }
+
+    impl PngDecoder for ScriptedDecoder {
+        fn decode_png(&mut self, _data: &[u8]) -> Option<DecodedPng> {
+            let index = self.calls.fetch_add(1, Ordering::Relaxed);
+            self.images.get_mut(index).and_then(Option::take)
+        }
+    }
+
+    /// The decoded buffer must match the reported dimensions; a padded buffer
+    /// is rejected and an exact one is accepted.
+    #[test]
+    fn decode_png_rejects_a_buffer_that_disagrees_with_the_dimensions() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut terminal = Terminal::new(
+            NullSink,
+            ScriptedDecoder {
+                calls: calls.clone(),
+                images: vec![
+                    // 2x2 needs 16 bytes; this buffer is padded to 17.
+                    Some(DecodedPng {
+                        width: 2,
+                        height: 2,
+                        rgba: vec![0; 17],
+                    }),
+                    // The exact size is accepted.
+                    Some(DecodedPng {
+                        width: 2,
+                        height: 2,
+                        rgba: vec![0; 16],
+                    }),
+                ],
+            },
+            || {},
+        );
+        assert!(terminal.push_size(40, 24, 8, 16));
+
+        let mut rejected = GhosttySysImage {
+            width: 0,
+            height: 0,
+            data: ptr::null_mut(),
+            data_len: 0,
+        };
+        let ok = unsafe {
+            decode_png(
+                ptr::null_mut(),
+                ptr::null(),
+                b"png".as_ptr(),
+                3,
+                &mut rejected,
+            )
+        };
+        assert!(!ok, "a padded buffer is rejected");
+
+        let mut accepted = GhosttySysImage {
+            width: 0,
+            height: 0,
+            data: ptr::null_mut(),
+            data_len: 0,
+        };
+        let ok = unsafe {
+            decode_png(
+                ptr::null_mut(),
+                ptr::null(),
+                b"png".as_ptr(),
+                3,
+                &mut accepted,
+            )
+        };
+        assert!(ok, "an exact buffer is accepted");
+        assert_eq!(
+            (accepted.width, accepted.height, accepted.data_len),
+            (2, 2, 16)
+        );
     }
 }
