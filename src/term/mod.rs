@@ -47,6 +47,9 @@ use crate::ghostty_sys::terminal::{
 use crate::ghostty_sys::{GHOSTTY_REJECTED, GHOSTTY_SUCCESS, GhosttyResult};
 
 mod callbacks;
+// The explicit path keeps rust-analyzer linking this directory module; the
+// plain `pub mod cells;` form resolves for rustc but is reported unlinked.
+#[path = "cells/mod.rs"]
 pub mod cells;
 pub mod input;
 pub mod keys;
