@@ -12,8 +12,12 @@
 //!   * network access on a cold cache: the `git fetch` above, and ghostty's
 //!     own Zig dependencies, which `zig build` downloads.
 //!
-//! `PINWIN_GHOSTTY_SRC=<dir>` uses an existing ghostty checkout at the pinned
-//! commit instead of fetching, for offline or repeated development builds.
+//! `PINWIN_GHOSTTY_SRC=<dir>` uses an existing git checkout at the pinned
+//! commit instead of fetching, for offline or repeated development builds. Its
+//! `HEAD` is checked against the pin exactly like the fetch path; a wrong
+//! checkout would link against the wrong ABI and only fail at runtime. The
+//! chosen source (path and commit) is recorded beside the archive so that
+//! switching the override rebuilds it.
 
 use std::env;
 use std::fs;
@@ -34,12 +38,30 @@ fn main() {
     let prefix = out_dir.join("ghostty");
     let archive = prefix.join("lib").join("libghostty-vt.a");
 
-    if !archive.is_file() {
-        let source = match env::var_os("PINWIN_GHOSTTY_SRC") {
-            Some(dir) => PathBuf::from(dir),
+    // The archive lives in OUT_DIR and survives a build-script rerun, so
+    // `!archive.is_file()` alone would keep a stale archive after
+    // PINWIN_GHOSTTY_SRC changes. Record the source path and pin beside the
+    // archive and rebuild whenever that identity changes.
+    let override_dir = env::var_os("PINWIN_GHOSTTY_SRC").map(PathBuf::from);
+    let source_dir = override_dir
+        .clone()
+        .unwrap_or_else(|| out_dir.join("ghostty-src"));
+    let stamp = prefix.join("source-stamp");
+    let identity = format!("{}\n{}\n", source_dir.display(), GHOSTTY_COMMIT);
+
+    let stale = !archive.is_file()
+        || fs::read_to_string(&stamp)
+            .map(|recorded| recorded != identity)
+            .unwrap_or(true);
+
+    if stale {
+        let source = match &override_dir {
+            Some(dir) => dir.clone(),
             None => fetch_pinned_source(&out_dir),
         };
+        assert_pinned(&source);
         build_ghostty(&source, &prefix, &out_dir);
+        fs::write(&stamp, &identity).expect("record the ghostty source identity");
     }
 
     assert!(
@@ -76,13 +98,37 @@ fn fetch_pinned_source(out_dir: &Path) -> PathBuf {
         git(&source, &["checkout", "-q", "FETCH_HEAD"]);
     }
 
-    let head = git(&source, &["rev-parse", "HEAD"]);
-    assert_eq!(
-        head.trim(),
-        GHOSTTY_COMMIT,
-        "ghostty checkout is not at the pinned commit (D2)"
-    );
     source
+}
+
+/// Assert `source` is a git checkout at the pinned commit (D2). Both the fetch
+/// path and the `PINWIN_GHOSTTY_SRC` override must be pinned: the FFI
+/// declarations target that commit's ABI, and a mismatch otherwise fails only at
+/// runtime.
+fn assert_pinned(source: &Path) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(source)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to run git rev-parse in {}: {error}",
+                source.display()
+            )
+        });
+    let actual = String::from_utf8_lossy(&output.stdout);
+    let actual = actual.trim();
+    assert!(
+        output.status.success() && actual == GHOSTTY_COMMIT,
+        "{} is not at the pinned ghostty commit (D2): expected {GHOSTTY_COMMIT}, got {}",
+        source.display(),
+        if actual.is_empty() {
+            String::from_utf8_lossy(&output.stderr).trim().to_owned()
+        } else {
+            actual.to_owned()
+        }
+    );
 }
 
 /// Build `libghostty-vt.a` from `source` into `prefix` with ghostty's build.

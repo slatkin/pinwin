@@ -54,8 +54,21 @@ declarations (a `ghostty_sys` module, hand-written or bindgen-generated and chec
 against one pinned ghostty commit for all of it. Never take some features from the crate and
 others from raw FFI, since the two would hold separate views of one `GhosttyTerminal`.
 
+Source provisioning (`build.rs`): the route is a `git fetch --depth 1` of the pinned commit
+SHA into `OUT_DIR`, checked out by that SHA and verified with `rev-parse HEAD` against the pin
+before every build. It is deliberately not a tarball hash: GitHub archive bytes are not stable,
+so the commit SHA is the content address. `PINWIN_GHOSTTY_SRC=<dir>` overrides the fetch with
+an existing git checkout; its `HEAD` passes the same `rev-parse` pin assertion (failing loudly
+with the actual vs expected SHA), because the FFI declarations are ABI-bound to that one
+commit. The chosen source path and pin are recorded beside the archive so that changing the
+override rebuilds instead of silently keeping the old archive. A cold cache therefore needs
+`zig` 0.16.0, `git` and network access (ghostty's own Zig dependencies are downloaded by `zig
+build`). `build.zig.zon`, whose ghostty tarball dependency is what fetched the pin before this
+port, is removed at row 7.1.
+
 Checklist the spike must answer yes/no per item, against the pinned commit
-`3a3047f6b62a791fd8b12d9f07a85b3d2160370b` (the one `build.zig.zon` fetches today):
+`3a3047f6b62a791fd8b12d9f07a85b3d2160370b` (the pin `build.zig.zon` fetched before row 7.1
+removed that file):
 
 1. Terminal new/resize (cols, rows, cell pixel size)/`vt_write`.
 2. Effect callbacks: write-to-pty, size report (`CSI 16 t`), primary device attributes.
