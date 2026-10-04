@@ -19,6 +19,7 @@ pub use images::PixbufDecoder;
 
 mod images;
 mod metrics;
+mod snapshot;
 mod sprites;
 mod text;
 mod texture;
