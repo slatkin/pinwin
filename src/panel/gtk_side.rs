@@ -36,7 +36,7 @@ use crate::input::InputLinks;
 use crate::layout::Layout;
 use crate::pty::Pty;
 use crate::render::DrawState;
-use crate::surfaces::{DrawFn, MeasureFn, PublishOutcome, SurfaceHooks, Surfaces};
+use crate::surfaces::{DrawFn, MeasureFn, PublishOutcome, SurfaceHooks, Surfaces, TweenSnapshotFn};
 use crate::term::Terminal;
 
 use gtk4::cairo;
@@ -371,6 +371,12 @@ fn build_glue(
                 let _ = guard_always(&poisoned, || draw.borrow_mut().drop_grid_cache());
             })
         },
+        tween_snapshot: tween_snapshot_hook(
+            link.clone(),
+            draw.clone(),
+            focused.clone(),
+            poisoned.clone(),
+        ),
         start_result: {
             let handshake = handshake.clone();
             Rc::new(move |ok| {
@@ -459,6 +465,32 @@ fn draw_hook(
             handshake.report(StartOutcome::Internal);
             link.with(|surfaces| surfaces.app.quit());
         }
+    })
+}
+
+/// The tween frame's GSK snapshot emission (poc-gsk-texture-grid task 2.1):
+/// read the tween state off the surfaces handle and the cache off the
+/// renderer, then emit the background, translated texture and focus accent
+/// into the snapshot; `false` falls back to the cairo draw path. The focus
+/// flag is copied into the draw state here just as [`draw_hook`] does, since
+/// a tween frame bypasses the draw func. A panic here latches the shared
+/// flag (D5) and falls back the same way.
+fn tween_snapshot_hook(
+    link: SurfacesLink,
+    draw: Rc<RefCell<DrawState>>,
+    focused: Rc<Cell<bool>>,
+    poisoned: Poisoned,
+) -> Rc<TweenSnapshotFn> {
+    Rc::new(move |snapshot: &gtk4::Snapshot, width: i32, height: i32| {
+        guard(&poisoned, || {
+            let (offset, animating) = link
+                .with(|surfaces| (surfaces.draw_offset() as i32, surfaces.anim.active()))
+                .unwrap_or((0, false));
+            draw.borrow_mut().set_focused(focused.get());
+            draw.borrow()
+                .snapshot_tween(snapshot, width, height, offset, animating)
+        })
+        .unwrap_or(false)
     })
 }
 

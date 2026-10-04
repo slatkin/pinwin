@@ -37,8 +37,21 @@ use crate::anim::{Anim, AnimHooks};
 use crate::input;
 use crate::layout::{Accent, Keyboard, Layout, Side};
 
+mod area;
+
+pub use area::GridArea;
+
 /// A drawing-area draw function body (`render.c`'s `on_draw`).
 pub type DrawFn = dyn Fn(&cairo::Context, i32, i32);
+
+/// The tween frame's GSK snapshot emission (poc-gsk-texture-grid task 2.1):
+/// with a tween running and the grid cache built, emit the background, the
+/// translated cache texture and the focus accent into `snapshot` and report
+/// `true`; `false` falls back to the ordinary cairo draw path. The extents
+/// are the drawing area's width and height. The hook body reads the tween
+/// state off the surfaces handle and the cache off the renderer, and draws
+/// nothing when the panel's D5 latch is set.
+pub type TweenSnapshotFn = dyn Fn(&gtk4::Snapshot, i32, i32) -> bool;
 
 /// A cell measurement against a widget (`render.c`'s
 /// `cell_metrics_update`), reporting the cell size in pixels.
@@ -62,6 +75,10 @@ pub struct SurfaceHooks {
     /// `render.c`'s `render_grid_cache_drop` (row 3.6): drop the per-tween
     /// blitted grid surface so the next draw takes the ordinary path.
     pub tween_cache_drop: Rc<dyn Fn()>,
+    /// The tween frame's GSK snapshot emission (poc-gsk-texture-grid task
+    /// 2.1), called by the drawing area subclass's `snapshot` override before
+    /// it chains to the cairo draw path.
+    pub tween_snapshot: Rc<TweenSnapshotFn>,
     /// `pinwin_api.c`'s start handshake (row 4.1): `true` once the panel is on
     /// screen with live metrics, `false` when the GTK side failed. Only the
     /// first result counts.
@@ -167,8 +184,9 @@ pub struct Surfaces {
     pub app: gtk4::Application,
     /// The visible panel surface.
     pub win: gtk4::ApplicationWindow,
-    /// The terminal drawing area.
-    pub area: gtk4::DrawingArea,
+    /// The terminal drawing area, a subclass whose `snapshot` presents a
+    /// tween frame's cached grid as GSK nodes (poc-gsk-texture-grid 2.1).
+    pub area: GridArea,
     /// The transparent reservation, created and presented only after the
     /// visible panel maps (`g_reserve`).
     reserve: RefCell<Option<gtk4::ApplicationWindow>>,
@@ -245,7 +263,7 @@ impl Surfaces {
         win.set_layer(Layer::Overlay);
         win.set_keyboard_mode(keyboard_mode(keyboard));
 
-        let area = gtk4::DrawingArea::new();
+        let area = GridArea::new(poisoned.clone(), hooks.tween_snapshot.clone());
         {
             let draw = hooks.draw.clone();
             let draw_poisoned = poisoned.clone();
@@ -339,7 +357,7 @@ impl Surfaces {
     /// Attach the input controllers (`attach_controllers`). Call once after
     /// [`Surfaces::build`], with the links the panel composed.
     pub fn attach_input(&self, links: input::InputLinks) {
-        input::attach(&self.area, links);
+        input::attach(self.area.upcast_ref(), links);
     }
 
     /// The applied column count (`g_cols`).

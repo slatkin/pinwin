@@ -17,8 +17,13 @@
 //! Panics must never cross back into GTK/glib (D5): the tick and watchdog
 //! closures run their bodies through the shared [`crate::guard`] helper,
 //! latching a poisoned flag.
+//!
+//! `PINWIN_FRAMELOG=1` turns on a frame-clock log for the width tween: the
+//! tick callback records each frame time and the tween's stop prints one
+//! summary line (frame count, mean/p95/max gap in ms) to stderr.
 
 use std::cell::RefCell;
+use std::io::Write;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,6 +49,59 @@ pub enum Advance {
     Frame(i32),
     /// The duration is spent: the tween stops at its target.
     Finished,
+}
+
+/// The env-gated frame-clock log for one tween: records the tick's frame
+/// times and prints one gap summary at the tween's stop. Off unless
+/// `PINWIN_FRAMELOG=1`, so the per-frame cost when off is one `Option` check.
+#[derive(Default)]
+struct FrameLog {
+    /// The ticks' frame-clock timestamps, in microseconds.
+    times: Vec<i64>,
+}
+
+impl FrameLog {
+    /// Whether the frame log is on for this run.
+    fn enabled() -> bool {
+        std::env::var("PINWIN_FRAMELOG").is_ok_and(|v| v == "1")
+    }
+
+    fn record(&mut self, now_us: i64) {
+        self.times.push(now_us);
+    }
+
+    /// `(frame count, mean, p95, max)` gap in ms over the recorded ticks;
+    /// `None` with fewer than two ticks, where no gap exists. The p95 is the
+    /// nearest-rank order statistic over the sorted gaps.
+    fn summary(&self) -> Option<(usize, f64, f64, f64)> {
+        if self.times.len() < 2 {
+            return None;
+        }
+        let mut gaps: Vec<f64> = self
+            .times
+            .windows(2)
+            .map(|w| (w[1] - w[0]).max(0) as f64 / 1000.0)
+            .collect();
+        gaps.sort_by(|a, b| a.total_cmp(b));
+        let mean = gaps.iter().sum::<f64>() / gaps.len() as f64;
+        let rank = (gaps.len() as f64 * 0.95).ceil().max(1.0) as usize - 1;
+        Some((self.times.len(), mean, gaps[rank], gaps[gaps.len() - 1]))
+    }
+
+    /// The one summary line per tween, on stderr; a failed write is dropped,
+    /// never a panic back into GTK (D5).
+    fn print(&self) {
+        if let Some((frames, mean, p95, max)) = self.summary() {
+            let _ = writeln!(
+                std::io::stderr(),
+                "pinwin: tween frame log: frames={} mean={:.2}ms p95={:.2}ms max={:.2}ms",
+                frames,
+                mean,
+                p95,
+                max
+            );
+        }
+    }
 }
 
 /// The tween's pure state and step, GTK-free so tests can drive it (`glue_anim.c`
@@ -122,6 +180,8 @@ pub struct AnimHooks {
 struct AnimInner {
     tween: RefCell<Tween>,
     hooks: RefCell<AnimHooks>,
+    /// The tween's frame-clock log, `Some` only under `PINWIN_FRAMELOG=1`.
+    frame_log: RefCell<Option<FrameLog>>,
     tick: std::cell::Cell<Option<gtk4::TickCallbackId>>,
     watchdog: std::cell::Cell<Option<glib::SourceId>>,
     /// Mirrors `tween.is_active()` so the pty read drain can bound itself
@@ -158,6 +218,7 @@ impl Anim {
             inner: Rc::new(AnimInner {
                 tween: RefCell::new(Tween::default()),
                 hooks: RefCell::new(hooks),
+                frame_log: RefCell::new(None),
                 tick: std::cell::Cell::new(None),
                 watchdog: std::cell::Cell::new(None),
                 tween_flag: Arc::new(AtomicBool::new(false)),
@@ -225,10 +286,16 @@ impl Anim {
     ) {
         self.stop(false, false);
         self.begin_state(from_px, to_px, duration_ms);
+        // The env var is read once per tween, not per frame, so the off path
+        // costs one `Option` check per tick.
+        *self.inner.frame_log.borrow_mut() = FrameLog::enabled().then(FrameLog::default);
 
         let inner = self.inner.clone();
         let tick = widget.add_tick_callback(move |_widget, clock| {
             let now = clock.frame_time();
+            if let Some(log) = inner.frame_log.borrow_mut().as_mut() {
+                log.record(now);
+            }
             let action = guard(&inner.poisoned, || inner.tween.borrow_mut().advance(now));
             match action {
                 Ok(Advance::Frame(px)) => {
@@ -307,6 +374,11 @@ impl Anim {
         // only in `begin` — or `active()` latches true and the deferred grid
         // resize idles forever.
         set_tween_flag(inner, false);
+        // The tween ended: print the frame log's one summary line. `take`
+        // keeps a retarget from re-printing the old samples.
+        if let Some(log) = inner.frame_log.borrow_mut().take() {
+            log.print();
+        }
         // The stop relay runs even on a latched flag: the hook resets state
         // owned by other modules (the render tween frame cache, the pty's
         // tween flag, the deferred grid resize), and skipping it because a
@@ -329,6 +401,9 @@ impl Anim {
         }
         inner.tween.borrow_mut().stop();
         set_tween_flag(inner, false);
+        if let Some(log) = inner.frame_log.borrow_mut().take() {
+            log.print();
+        }
     }
 }
 
@@ -498,6 +573,37 @@ mod tests {
         Anim::stop_inner_quiet(&anim.inner);
         assert!(!anim.active());
         assert_eq!(recording.borrow().stops, 3);
+    }
+
+    /// The frame log's summary math: mean, p95 (nearest rank) and max over
+    /// the gaps between successive frame times, in ms.
+    #[test]
+    fn frame_log_summary_reports_mean_p95_and_max_gaps() {
+        let mut log = FrameLog::default();
+        // Gaps of 4, 8, 16, 32, 40 ms.
+        for t in [0, 4_000, 12_000, 28_000, 60_000, 100_000] {
+            log.record(t);
+        }
+        let (frames, mean, p95, max) = log.summary().expect("six ticks make five gaps");
+        assert_eq!(frames, 6);
+        assert_eq!(mean, 20.0);
+        assert_eq!(p95, 40.0);
+        assert_eq!(max, 40.0);
+    }
+
+    /// A summary needs two ticks: one tick alone has no gap to measure, and a
+    /// backwards clock still yields a non-negative gap.
+    #[test]
+    fn frame_log_needs_two_frames_and_clamps_backwards_gaps() {
+        let mut log = FrameLog::default();
+        log.record(2_000);
+        assert!(log.summary().is_none());
+        log.record(1_000);
+        let (frames, mean, p95, max) = log.summary().expect("two ticks make one gap");
+        assert_eq!(frames, 2);
+        assert_eq!(mean, 0.0);
+        assert_eq!(p95, 0.0);
+        assert_eq!(max, 0.0);
     }
 
     /// A panicking stop hook cannot cross back into GTK (D5): the guarded
