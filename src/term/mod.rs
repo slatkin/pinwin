@@ -47,6 +47,7 @@ use crate::ghostty_sys::terminal::{
 use crate::ghostty_sys::{GHOSTTY_REJECTED, GHOSTTY_SUCCESS, GhosttyResult};
 
 mod callbacks;
+pub mod cells;
 pub mod input;
 pub mod keys;
 
@@ -237,6 +238,11 @@ pub struct Terminal {
     early_pty_data: Vec<u8>,
     /// Scroll/focus/button state for the input encoders (D3).
     input_state: input::InputState,
+    /// Per-frame state for the cell/glyph protocol (port-to-rust D3).
+    frame: cells::FrameState,
+    /// When true, the frame code prints its debug trace to stderr, mirroring
+    /// the `main.zig` `debug_enabled` global (which was never set true).
+    debug_enabled: bool,
 }
 
 impl Terminal {
@@ -277,7 +283,20 @@ impl Terminal {
             init_failed: false,
             early_pty_data: Vec::new(),
             input_state: input::InputState::default(),
+            frame: cells::FrameState::default(),
+            debug_enabled: false,
         }
+    }
+
+    /// Whether the frame code should print its debug trace (`main.zig`
+    /// `debug_enabled`).
+    pub fn debug_enabled(&self) -> bool {
+        self.debug_enabled
+    }
+
+    /// Enable or disable the frame code's debug trace.
+    pub fn set_debug_enabled(&mut self, enabled: bool) {
+        self.debug_enabled = enabled;
     }
 
     /// Whether a callback panicked and latched the terminal poisoned (D5).
