@@ -1,7 +1,7 @@
 ## 1. Spike (blocks everything after it)
 
-- [ ] 1.1 Answer the D2 checklist (items 1–8) against the pinned ghostty commit for the `libghostty-vt` crate; record the route, crate version or commit, the per-item yes/no table and the rationale in design.md D2 "Result". If any item is "no", the route is own FFI for all of it.
-- [ ] 1.2 Check D4's restart caveat: start a gtk-rs panel thread, drop it, start a second one. Record the result in design.md D4; if it fails, adopt the parked-GTK-thread fallback.
+- [x] 1.1 Answer the D2 checklist (items 1–8) against the pinned ghostty commit for the `libghostty-vt` crate; record the route, crate version or commit, the per-item yes/no table and the rationale in design.md D2 "Result". If any item is "no", the route is own FFI for all of it.
+- [x] 1.2 Check D4's restart caveat: start a gtk-rs panel thread, drop it, start a second one. Record the result in design.md D4; if it fails, adopt the parked-GTK-thread fallback.
 
 ## 2. Crate skeleton
 
