@@ -44,5 +44,5 @@
 
 ## 9. Acceptance and close-out
 
-- [ ] 9.1 One manual acceptance pass in a niri session using the `pinwin` binary and the demo example: launch, width animation both ways, focus accent, cleanup when the command exits, kitty images (`DEMO_DENSE=1`). Fix any drift found.
+- [x] 9.1 One manual acceptance pass in a niri session using the `pinwin` binary and the demo example: launch, width animation both ways, focus accent, cleanup when the command exits, kitty images (`DEMO_DENSE=1`). Fix any drift found.
 - [ ] 9.2 Run `openspec validate port-to-rust`, sync the delta into `openspec/specs/pinwin-panel/spec.md` and archive the change.
