@@ -26,6 +26,10 @@ use std::process::Command;
 
 /// The one ghostty commit pinwin's FFI targets (D2).
 const GHOSTTY_COMMIT: &str = "3a3047f6b62a791fd8b12d9f07a85b3d2160370b";
+
+/// Zig optimise mode for libghostty-vt. ghostty's build defaults to Debug, which makes kitty
+/// graphics (image decode and storage) slow; ReleaseSafe matches the pre-Rust build.
+const GHOSTTY_OPTIMIZE: &str = "ReleaseSafe";
 const GHOSTTY_REPO: &str = "https://github.com/ghostty-org/ghostty.git";
 
 fn main() {
@@ -47,7 +51,12 @@ fn main() {
         .clone()
         .unwrap_or_else(|| out_dir.join("ghostty-src"));
     let stamp = prefix.join("source-stamp");
-    let identity = format!("{}\n{}\n", source_dir.display(), GHOSTTY_COMMIT);
+    let identity = format!(
+        "{}\n{}\n{}\n",
+        source_dir.display(),
+        GHOSTTY_COMMIT,
+        GHOSTTY_OPTIMIZE
+    );
 
     let stale = !archive.is_file()
         || fs::read_to_string(&stamp)
@@ -140,7 +149,9 @@ fn build_ghostty(source: &Path, prefix: &Path, out_dir: &Path) {
     );
 
     let status = Command::new("zig")
-        .args(["build", "-Demit-lib-vt", "--prefix"])
+        .args(["build", "-Demit-lib-vt"])
+        .arg(format!("-Doptimize={GHOSTTY_OPTIMIZE}"))
+        .arg("--prefix")
         .arg(prefix)
         .arg("--cache-dir")
         .arg(out_dir.join("zig-cache"))
