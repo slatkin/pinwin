@@ -245,7 +245,7 @@ int main(int argc, char** argv) {
 
     startup.master_fd = master;
     startup.layout = canned_layout(side, demo_cols);
-    startup.keyboard_mode = PINWIN_KEYBOARD_ON_DEMAND;
+    startup.keyboard_mode = PINWIN_KEYBOARD_EXCLUSIVE;
     startup.accent.enabled = 1;
     startup.accent.r = 0xda;
     startup.accent.g = 0xbc;

@@ -14,10 +14,10 @@
 #define PINWIN_SIDE_LEFT 0
 #define PINWIN_SIDE_RIGHT 1
 
-/* Focus accent: a strip drawn on the workspace-facing edge while the panel
- * holds keyboard focus (layer surfaces get no compositor focus ring, so the
- * panel marks focus itself). enabled must be 0 or 1; width is the strip
- * width in px (1..=65535 when enabled, ignored when off). */
+/* Focus accent: a stroke around the whole window while the panel holds
+ * keyboard focus (layer surfaces get no compositor focus ring, so the panel
+ * marks focus itself). enabled must be 0 or 1; width is the stroke width in
+ * px (1..=65535 when enabled, ignored when off). */
 typedef struct {
     int32_t enabled;
     uint8_t r, g, b;

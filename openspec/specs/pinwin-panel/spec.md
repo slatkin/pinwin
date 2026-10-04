@@ -12,8 +12,9 @@ requests it: it receives keyboard input only after the user clicks inside it, an
 keyboard input when the user clicks a compositor window. It SHALL NOT take keyboard focus when
 it opens. The keyboard mode is fixed at `pinwin_start` time; there is no runtime override.
 
-While the panel holds keyboard focus, it SHALL mark itself with a focus accent: a strip on its
-workspace-facing edge, in the colour and pixel width the startup supplies (`PinwinAccent`).
+While the panel holds keyboard focus, it SHALL mark itself with a focus accent: a stroke
+around its whole window, in the colour and pixel width the startup supplies
+(`PinwinAccent`).
 The compositor draws no focus ring on layer surfaces, so the panel draws its own. When the
 accent is disabled, the panel SHALL draw nothing extra, focused or not.
 
@@ -40,12 +41,12 @@ accent is disabled, the panel SHALL draw nothing extra, focused or not.
 
 #### Scenario: Accent appears while focused
 - **WHEN** the panel gains keyboard focus with the accent enabled
-- **THEN** a strip of the configured colour and width appears on the workspace-facing edge,
-  and disappears when focus moves back to a compositor window
+- **THEN** the whole window gains an outline of the configured colour and width,
+  and it disappears when focus moves back to a compositor window
 
 #### Scenario: Accent disabled
 - **WHEN** the host starts the panel with an accent whose `enabled` is 0
-- **THEN** the panel draws no accent strip, focused or not
+- **THEN** the panel draws no accent, focused or not
 
 #### Scenario: Invalid accent
 - **WHEN** the host calls `pinwin_start` with an accent whose `enabled` is not 0 or 1, or

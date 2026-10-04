@@ -692,6 +692,20 @@ static cairo_surface_t* grid_cache_ensure(cairo_t* target, int height) {
     return s_grid_cache;
 }
 
+/* Focus accent. Layer surfaces get no compositor focus ring (niri draws one
+ * only around layout windows), so the focused panel marks itself: a stroke
+ * around the whole window in the configured accent colour and width. Drawn in
+ * raw surface coordinates, inset by half the stroke so it stays inside. */
+static void draw_focus_accent(cairo_t* cr, double width, double height) {
+    double w = g_accent.width;
+
+    if (!g_focused || !g_accent.enabled) return;
+    set_rgb(cr, g_accent.r, g_accent.g, g_accent.b);
+    cairo_set_line_width(cr, w);
+    cairo_rectangle(cr, w / 2.0, w / 2.0, width - w, height - w);
+    cairo_stroke(cr);
+}
+
 void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
              gpointer user_data) {
     uint8_t bg[3], fg[3];
@@ -714,17 +728,7 @@ void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
             cairo_set_source_surface(cr, cache, 0, 0);
             cairo_paint(cr);
             cairo_translate(cr, -off, 0);
-            /* Focus accent. Layer surfaces get no compositor focus ring (niri
-             * draws one only around layout windows), so the focused panel
-             * marks itself: a strip on the workspace-facing edge in the
-             * configured accent colour, so it reads as the same kind of
-             * highlight. Drawn in raw surface coordinates. */
-            if (g_focused && g_accent.enabled) {
-                set_rgb(cr, g_accent.r, g_accent.g, g_accent.b);
-                fill_rect(cr, g_layout.side == PINWIN_SIDE_LEFT
-                                  ? width - g_accent.width : 0.0,
-                          0.0, g_accent.width, height);
-            }
+            draw_focus_accent(cr, width, height);
             return;
         }
     }
@@ -732,17 +736,6 @@ void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
     /* While a width tween runs, keep the grid against the docked edge. */
     cairo_translate(cr, glue_anim_draw_offset(), 0);
     render_grid(cr, height);
-
-    /* Focus accent. Layer surfaces get no compositor focus ring (niri draws
-     * one only around layout windows), so the focused panel marks itself: a
-     * strip on the workspace-facing edge in the configured accent colour, so
-     * it reads as the same kind of highlight. Drawn in raw surface
-     * coordinates, so undo the grid shift first. */
-    if (g_focused && g_accent.enabled) {
-        cairo_translate(cr, -glue_anim_draw_offset(), 0);
-        set_rgb(cr, g_accent.r, g_accent.g, g_accent.b);
-        fill_rect(cr, g_layout.side == PINWIN_SIDE_LEFT ? width - g_accent.width
-                                                        : 0.0,
-                  0.0, g_accent.width, height);
-    }
+    cairo_translate(cr, -glue_anim_draw_offset(), 0);
+    draw_focus_accent(cr, width, height);
 }
