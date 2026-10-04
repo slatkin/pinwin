@@ -1,3 +1,4 @@
 target/
 .claude/
+.zvec-grep/
 CLAUDE.md
