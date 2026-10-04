@@ -8,8 +8,8 @@
 ## 2. Text, sprites, decorations, cursor
 
 - [x] 2.1 Emit cell text as Pango layout nodes with the baseline pin and the nerd-font constraint transform from `text::draw_text`; verify parity (with tolerance) on ASCII, wide, bold/italic and constrained glyphs
-- [ ] 2.2 Emit block, quadrant, shade-free and braille sprites as colour nodes and powerline triangles as cairo nodes; verify the existing sprite tests pass for both painters
-- [ ] 2.3 Emit underline, strikethrough and all four cursor styles (incl. block cursor text); verify parity per style
+- [x] 2.2 Emit block, quadrant, shade-free and braille sprites as colour nodes and powerline triangles as cairo nodes; verify the existing sprite tests pass for both painters
+- [x] 2.3 Emit underline, strikethrough and all four cursor styles (incl. block cursor text); verify parity per style
 
 ## 3. Kitty images
 
