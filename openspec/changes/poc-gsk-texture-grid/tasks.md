@@ -7,8 +7,8 @@
 
 ## 2. Snapshot widget
 
-- [ ] 2.1 Add a `DrawingArea` subclass overriding `snapshot`: tween with cache emits bg + translated texture node + focus accent, otherwise chains to the parent; guard it with the poisoned latch; verify the panel still opens and draws normally via `cargo run --example demo`
-- [ ] 2.2 Construct the subclass in `Surfaces::new` in place of `DrawingArea::new()`; verify input (click, scroll, typing) and resize still work in the demo
+- [x] 2.1 Add a `DrawingArea` subclass overriding `snapshot`: tween with cache emits bg + translated texture node + focus accent, otherwise chains to the parent; guard it with the poisoned latch; verify the panel still opens and draws normally via `cargo run --example demo`
+- [x] 2.2 Construct the subclass in `Surfaces::new` in place of `DrawingArea::new()`; verify input (click, scroll, typing) and resize still work in the demo
 
 ## 3. Verification on hardware
 
