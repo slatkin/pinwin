@@ -11,7 +11,7 @@
 ## 3. Port modules (crate compiles after each)
 
 - [x] 3.1 `layout`: types from D6, checked-arithmetic geometry, pty yield decision, from `options.c` (D3, D6).
-- [ ] 3.2 `nerd_font`: unless the D2 spike shows the crate exposes the constraints, convert the table from ghostty's `src/font/nerd_font_tables.zig` at the pinned commit (D2, D3).
+- [x] 3.2 `nerd_font`: unless the D2 spike shows the crate exposes the constraints, convert the table from ghostty's `src/font/nerd_font_tables.zig` at the pinned commit (D2, D3).
 - [ ] 3.3 `term`: terminal wrapper, encoders, cell and glyph logic, from `main.zig`, `cells.zig`, `keys.zig`, `input.zig` (D3).
 - [ ] 3.4 `pty`: fd attach, non-blocking read source, `TIOCSWINSZ`, `raise(SIGWINCH)`, hangup handling (D3, D7).
 - [ ] 3.5 `fontconfig`: Ghostty font and theme from the config, `monospace 11` fallback (D3).
