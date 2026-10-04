@@ -534,6 +534,7 @@ version = "0.2.0"
 dependencies = [
  "cairo-rs",
  "gdk-pixbuf",
+ "gdk4",
  "gtk4",
  "gtk4-layer-shell",
  "libc",
