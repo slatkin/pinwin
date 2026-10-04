@@ -10,7 +10,7 @@
 
 ## 3. Port modules (crate compiles after each)
 
-- [ ] 3.1 `layout`: types from D6, checked-arithmetic geometry, pty yield decision, from `options.c` (D3, D6).
+- [x] 3.1 `layout`: types from D6, checked-arithmetic geometry, pty yield decision, from `options.c` (D3, D6).
 - [ ] 3.2 `nerd_font`: unless the D2 spike shows the crate exposes the constraints, convert the table from ghostty's `src/font/nerd_font_tables.zig` at the pinned commit (D2, D3).
 - [ ] 3.3 `term`: terminal wrapper, encoders, cell and glyph logic, from `main.zig`, `cells.zig`, `keys.zig`, `input.zig` (D3).
 - [ ] 3.4 `pty`: fd attach, non-blocking read source, `TIOCSWINSZ`, `raise(SIGWINCH)`, hangup handling (D3, D7).
@@ -30,7 +30,7 @@
 
 ## 6. Tests
 
-- [ ] 6.1 Port the `layout` unit tests from `options_test.zig`: one table-driven test over the reachable `InvalidLayout` causes, side geometry and reservation, yield decision (D10).
+- [x] 6.1 Port the `layout` unit tests from `options_test.zig`: one table-driven test over the reachable `InvalidLayout` causes, side geometry and reservation, yield decision (D10).
 - [ ] 6.2 Port from `pinwin_api_test.zig` only: `NotRunning`/`Internal` on a dead handle, `SIGWINCH` after a successful winsize ioctl, replay of pty data arriving before the terminal exists. Add one panic-containment test (a panic in a guarded closure yields `Err(Internal)`). Build these on the display-free inner handle and fd/terminal parameters described in D10 (D10).
 - [ ] 6.3 `cargo test` passes; `cargo build --examples` succeeds.
 
