@@ -193,7 +193,7 @@ pub(crate) struct FontsRef<'a> {
 }
 
 impl FontsRef<'_> {
-    fn for_flags(&self, bold: bool, italic: bool) -> &FontDescription {
+    pub(super) fn for_flags(&self, bold: bool, italic: bool) -> &FontDescription {
         match (bold, italic) {
             (true, true) => self.bold_italic,
             (true, false) => self.bold,

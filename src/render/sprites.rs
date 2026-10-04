@@ -10,6 +10,19 @@ use crate::term::cells::{Cell, Wide};
 
 use super::metrics::CellMetrics;
 
+/// Whether `draw_sprite` draws `cp` as a sprite (`true`) or leaves it to the
+/// text pass (`false`). The node emitter (gsk-render-nodes) needs the answer
+/// before it can paint, so this is the same decision `draw_sprite` makes;
+/// the equivalence test below pins the two together. Note the shades
+/// (0x2591–0x2593) are deliberately text: the font's glyphs for them do
+/// line up, unlike the blocks around them.
+pub(crate) fn is_sprite(cp: u32) -> bool {
+    (0x25E2..=0x25E5).contains(&cp)
+        || ((0x2580..=0x259F).contains(&cp) && !(0x2591..=0x2593).contains(&cp))
+        || (0x2800..=0x28FF).contains(&cp)
+        || (0xE0B0..=0xE0B3).contains(&cp)
+}
+
 /// Unantialiased, like the cell backgrounds: at a fractional output scale the
 /// edges of adjacent same-colour blocks fall between device pixels, and two
 /// antialiased partial-coverage edges composite to a faint seam instead of a
@@ -374,5 +387,43 @@ mod tests {
         // plus or minus the antialiased edge pixels.
         assert!(filled > 8 * 16 / 4, "filled {filled}");
         assert!(filled < 8 * 8 + 16, "filled {filled}");
+    }
+
+    /// [`is_sprite`] and [`draw_sprite`] agree everywhere the sprite ranges
+    /// and their neighbours live: the node emitter routes each cell on
+    /// `is_sprite`, so the two decisions must not drift (gsk-render-nodes
+    /// task 2.1).
+    #[test]
+    fn is_sprite_matches_draw_sprite_across_the_ranges() {
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
+        let cr = cairo::Context::new(&surface).unwrap();
+        let mut checked = 0usize;
+        let mut sweep = |cps: std::ops::RangeInclusive<u32>| {
+            for cp in cps {
+                assert_eq!(
+                    is_sprite(cp),
+                    draw_sprite(&cr, &cell(0, 0), cp, &metrics()),
+                    "0x{cp:04X}"
+                );
+                checked += 1;
+            }
+        };
+        // Box drawing and neighbours: blocks, shades, quadrants, triangles.
+        sweep(0x2570..=0x2600);
+        // Braille and its neighbours.
+        sweep(0x2800..=0x2900);
+        // Powerline separators and neighbours.
+        sweep(0xE0B0..=0xE0C0);
+        // Text that must stay text: ASCII, a constrained nerd glyph, CJK,
+        // emoji.
+        for cp in [u32::from('A'), 0x2630, 0x6F22, 0x1F600] {
+            assert_eq!(
+                is_sprite(cp),
+                draw_sprite(&cr, &cell(0, 0), cp, &metrics()),
+                "0x{cp:04X}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 420, "sweep covered {checked} codepoints");
     }
 }

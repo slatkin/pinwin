@@ -6,6 +6,15 @@
 //! unlike the cairo path, which snaps with `Antialias::None` on
 //! device-scaled surfaces.
 //!
+//! Cell text is emitted as Pango layout nodes ([`append_layout`](
+//! gtk4::prelude::SnapshotExt::append_layout)): the same [`pango::Layout`]
+//! calls [`text::draw_text`](super::text::draw_text) makes, with the same
+//! baseline pin and the same nerd-font constraint maths, expressed as
+//! `save`/`translate`/`scale`/`append_layout`/`restore` — `pango_cairo_show`
+//! draws a layout with its top-left at the current point, and a layout node
+//! draws it at the snapshot's current transform, so the two agree point for
+//! point. Sprites are skipped here until task 2.2 emits them as nodes.
+//!
 //! The geometry the two painters share lives here ([`cell_background_rect`])
 //! so they cannot drift; the cairo painter calls it from
 //! [`paint_backgrounds`](super::paint_backgrounds).
@@ -21,8 +30,11 @@ use gtk4::prelude::SnapshotExt as _;
 
 use super::DrawState;
 use super::metrics::CellMetrics;
+use super::sprites;
+use super::text::{FontsRef, NerdGlyph, constrain};
+use crate::nerd_font::constraint;
 use crate::term::Terminal;
-use crate::term::cells::{Cell, Rgb};
+use crate::term::cells::{Cell, Rgb, StyleFlags, Wide, first_codepoint};
 
 /// An [`Rgb`] as a GDK colour. GDK stores the channels as `f32`; the cairo
 /// path divides in `f64`. Both quantize to the same 16-bit colour when
@@ -104,12 +116,136 @@ impl DrawState {
         terminal.frame_end();
         true
     }
+
+    /// Emit the frame's cell text as Pango layout nodes (gsk-render-nodes
+    /// task 2.1), mirroring [`render_grid`](super::DrawState::render_grid)'s
+    /// text branch: the same cell skips, the same foreground selection and
+    /// the same sprite decision ([`sprites::is_sprite`]) — sprite cells stay
+    /// untouched until task 2.2 emits them. Needs the fonts and the pango
+    /// context from [`Self::cell_metrics_update`] (gsk-render-nodes task
+    /// 1.2's `emit_backgrounds` carries the same fall-back-to-cairo
+    /// contract); `false` asks the caller to draw the cairo path instead.
+    pub fn emit_text(&self, snapshot: &gtk4::Snapshot, terminal: &mut Terminal) -> bool {
+        let (Some(context), Some(fonts)) = (&self.pango_context, self.fonts.as_ref()) else {
+            return false;
+        };
+        if self.cell_metrics.cell_h <= 0 {
+            return false;
+        }
+        if !terminal.frame_begin() {
+            return false;
+        }
+        let metrics = self.cell_metrics;
+        let fonts = FontsRef {
+            regular: &fonts.regular,
+            bold: &fonts.bold,
+            italic: &fonts.italic,
+            bold_italic: &fonts.bold_italic,
+        };
+        let layout = pango::Layout::new(context);
+        while let Some(cell) = terminal.cell_next() {
+            if cell.wide == Wide::SpacerTail {
+                continue; // do not render
+            }
+            if cell.len == 0 || cell.flags.contains(StyleFlags::INVISIBLE) {
+                continue;
+            }
+            if sprites::is_sprite(first_codepoint(cell.text_bytes())) {
+                continue; // task 2.2 emits sprites
+            }
+            let fg = if cell.has_fg {
+                &cell.fg
+            } else {
+                &self.theme_foreground
+            };
+            emit_cell_text(snapshot, &layout, &cell, &fonts, &metrics, fg);
+        }
+        terminal.frame_end();
+        true
+    }
+}
+
+/// Emit one cell's text as a Pango layout node, the node form of
+/// [`text::draw_text`](super::text::draw_text): same font selection, same
+/// baseline pin, same nerd-font constraint transform, same fallback when
+/// the ink is empty. The layout's top-left lands where `pango_cairo_show`
+/// would put it — a layout node draws at the snapshot's current transform,
+/// so each `move_to` becomes a `translate`.
+fn emit_cell_text(
+    snapshot: &gtk4::Snapshot,
+    layout: &pango::Layout,
+    cell: &Cell,
+    fonts: &FontsRef<'_>,
+    cell_metrics: &CellMetrics,
+    fg: &Rgb,
+) {
+    let desc = fonts.for_flags(
+        cell.flags.contains(StyleFlags::BOLD),
+        cell.flags.contains(StyleFlags::ITALIC),
+    );
+    layout.set_font_description(Some(desc));
+    layout.set_text(cell.text_str());
+
+    // The same baseline pin draw_text does: the layout's own ascent shifts
+    // when Pango falls back to another font for a glyph, and the cell's
+    // baseline is where the row's text belongs.
+    let baseline = (layout.baseline() + pango::SCALE / 2) / pango::SCALE;
+
+    if cell.len > 0
+        && let Some(c) = constraint(first_codepoint(cell.text_bytes()))
+        && c.does_anything()
+    {
+        let (ink, _) = layout.pixel_extents();
+        if ink.width() > 0 && ink.height() > 0 {
+            let m = cell_metrics.nerd;
+            // The glyph's box relative to the cell's bottom-left corner.
+            let glyph = NerdGlyph {
+                width: f64::from(ink.width()),
+                height: f64::from(ink.height()),
+                x: f64::from(ink.x()),
+                y: f64::from(cell_metrics.baseline)
+                    - (f64::from(ink.y() + ink.height()) - f64::from(baseline)),
+            };
+
+            let constrained =
+                constrain(&c, &m, glyph, if cell.cw >= 1 { cell.cw as u32 } else { 1 });
+
+            snapshot.save();
+            snapshot.translate(&graphene::Point::new(
+                (f64::from(cell.x) * f64::from(cell_metrics.cell_w) + constrained.x) as f32,
+                ((f64::from(cell.y) + 1.0) * f64::from(cell_metrics.cell_h)
+                    - constrained.y
+                    - constrained.height) as f32,
+            ));
+            snapshot.scale(
+                (constrained.width / f64::from(ink.width())) as f32,
+                (constrained.height / f64::from(ink.height())) as f32,
+            );
+            snapshot.translate(&graphene::Point::new(
+                -f64::from(ink.x()) as f32,
+                -f64::from(ink.y()) as f32,
+            ));
+            snapshot.append_layout(layout, &rgba(fg));
+            snapshot.restore();
+            return;
+        }
+    }
+
+    snapshot.save();
+    snapshot.translate(&graphene::Point::new(
+        (f64::from(cell.x) * f64::from(cell_metrics.cell_w)) as f32,
+        (f64::from(cell.y) * f64::from(cell_metrics.cell_h) + f64::from(cell_metrics.ascent)
+            - f64::from(baseline)) as f32,
+    ));
+    snapshot.append_layout(layout, &rgba(fg));
+    snapshot.restore();
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{set_rgb, tests::state, tests::terminal};
+    use super::super::tests::{state, terminal};
     use super::*;
+    use crate::render::set_rgb;
 
     use crate::render::font_lock;
     use crate::render::parity;
@@ -119,8 +255,17 @@ mod tests {
     /// over an opaque window).
     const BACKDROP: [u8; 3] = [40, 40, 40];
 
-    /// The cairo oracle: `draw_inner`'s theme fill plus `render_grid`'s
-    /// background pass, into a backed surface at `scale`.
+    /// The stated text tolerance (gsk-render-nodes task 2.1): an antialiased
+    /// glyph edge pixel can differ by up to half the channel distance between
+    /// the glyph colour and the backdrop, rounded up — the same blend bound
+    /// the background tests use. Measured on this suite the delta is 0 (both
+    /// painters rasterise through pangocairo on the same surface), so any
+    /// failure at this bound is a real rendering difference, not noise.
+    const TEXT_TOLERANCE: u8 = 128;
+
+    /// The cairo oracle for the background parity tests: `draw_inner`'s theme
+    /// fill plus `render_grid`'s background pass, into a backed surface at
+    /// `scale`.
     fn cairo_backgrounds(
         draw_state: &DrawState,
         terminal: &mut Terminal,
@@ -141,24 +286,64 @@ mod tests {
         surface
     }
 
-    /// The node side: [`DrawState::emit_backgrounds`] into a snapshot, drawn
-    /// to a backed surface at `scale`.
-    fn node_backgrounds(
+    /// The node side: the emitters under test into a snapshot, drawn to a
+    /// backed surface at `scale`.
+    fn node_frame(
         draw_state: &DrawState,
         terminal: &mut Terminal,
         width: i32,
         height: i32,
         scale: f64,
+        text: bool,
     ) -> cairo::ImageSurface {
         let snapshot = parity::snapshot();
         assert!(
             draw_state.emit_backgrounds(&snapshot, terminal, width, height),
-            "nodes were emitted"
+            "backgrounds were emitted"
         );
+        if text {
+            assert!(
+                draw_state.emit_text(&snapshot, terminal),
+                "text was emitted"
+            );
+        }
         let node = snapshot.to_node().expect("snapshot produced a node");
         let surface = parity::backed_surface(width, height, scale, BACKDROP);
         parity::draw_node(&node, &surface);
         surface
+    }
+
+    /// The cairo oracle for the text parity tests: the full [`DrawState::draw`]
+    /// path. With the cursor hidden and no sprites, underline flags or images
+    /// in the test data, that is exactly the theme fill, the background pass
+    /// and the text pass — the cursor, sprites and decorations are tasks 2.2
+    /// and 2.3, not emitted yet.
+    fn cairo_frame(
+        draw_state: &mut DrawState,
+        terminal: &mut Terminal,
+        width: i32,
+        height: i32,
+        scale: f64,
+    ) -> cairo::ImageSurface {
+        let surface = parity::backed_surface(width, height, scale, BACKDROP);
+        {
+            let cr = cairo::Context::new(&surface).expect("context");
+            draw_state.draw(&cr, terminal, width, height, 0, false);
+        }
+        surface
+    }
+
+    /// A terminal with the cursor hidden (`DECTCEM`), so the oracle's frame
+    /// is backgrounds + text only.
+    fn terminal_with(data: &[u8]) -> crate::term::Terminal {
+        let mut terminal = terminal();
+        terminal.push_pty_data(b"\x1b[?25l");
+        terminal.push_pty_data(data);
+        assert!(
+            terminal.cursor().is_none(),
+            "the text parity tests need a hidden cursor"
+        );
+        terminal
     }
 
     /// A terminal whose cells carry three different explicit backgrounds:
@@ -168,6 +353,25 @@ mod tests {
         let mut terminal = terminal();
         terminal.push_pty_data(b"\x1b[41m........\x1b[42m........\x1b[44m................\x1b[0m");
         terminal
+    }
+
+    /// ASCII, bold, italic, bold-italic and an explicit foreground, wrapped
+    /// across two rows.
+    fn terminal_with_styled_text() -> crate::term::Terminal {
+        terminal_with(
+            b"Hi \x1b[1mbo\x1b[0m \x1b[3mit\x1b[0m \x1b[1;3mbi\x1b[0m \x1b[38:5:203mred\x1b[0m",
+        )
+    }
+
+    /// Two wide cells (CJK; the head cell's `cw` is 2).
+    fn terminal_with_wide_text() -> crate::term::Terminal {
+        terminal_with("漢字".as_bytes())
+    }
+
+    /// A nerd-font glyph the constraint table scales and centres (U+2630,
+    /// the trigram the `nerd_font` test names as constrained).
+    fn terminal_with_constrained_text() -> crate::term::Terminal {
+        terminal_with("☰".as_bytes())
     }
 
     /// The theme background differs from every cell background by more than
@@ -180,7 +384,7 @@ mod tests {
         let mut terminal = terminal_with_backgrounds();
         let (width, height) = (65, 71);
         let mut cairo_side = cairo_backgrounds(&draw_state, &mut terminal, width, height, 1.0);
-        let mut node_side = node_backgrounds(&draw_state, &mut terminal, width, height, 1.0);
+        let mut node_side = node_frame(&draw_state, &mut terminal, width, height, 1.0, false);
         parity::assert_exact(&mut cairo_side, &mut node_side, "backgrounds at scale 1");
     }
 
@@ -195,12 +399,116 @@ mod tests {
         let mut terminal = terminal_with_backgrounds();
         let (width, height) = (65, 71);
         let mut cairo_side = cairo_backgrounds(&draw_state, &mut terminal, width, height, 1.5);
-        let mut node_side = node_backgrounds(&draw_state, &mut terminal, width, height, 1.5);
+        let mut node_side = node_frame(&draw_state, &mut terminal, width, height, 1.5, false);
         parity::assert_within(
             &mut cairo_side,
             &mut node_side,
             128,
             "backgrounds at scale 1.5",
+        );
+    }
+
+    #[test]
+    fn styled_ascii_text_matches_the_cairo_painter_exactly_at_scale_1() {
+        let _font = font_lock::guard();
+        let mut draw_state = state();
+        let mut cairo_terminal = terminal_with_styled_text();
+        let mut node_terminal = terminal_with_styled_text();
+        let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.0);
+        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.0, true);
+        parity::assert_exact(&mut cairo_side, &mut node_side, "styled ASCII at scale 1");
+    }
+
+    #[test]
+    fn wide_text_matches_the_cairo_painter_exactly_at_scale_1() {
+        let _font = font_lock::guard();
+        let mut draw_state = state();
+        let mut cairo_terminal = terminal_with_wide_text();
+        let mut node_terminal = terminal_with_wide_text();
+        let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.0);
+        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.0, true);
+        parity::assert_exact(&mut cairo_side, &mut node_side, "wide text at scale 1");
+    }
+
+    /// The nerd-font constraint path scales the layout with `f32` modelview
+    /// factors where the cairo path scales in `f64`, so glyph rasterisation
+    /// could differ by a subpixel step; the stated tolerance is the same
+    /// blend bound as everywhere else ([`TEXT_TOLERANCE`]), and the measured
+    /// delta on this suite is 0.
+    #[test]
+    fn constrained_text_matches_the_cairo_painter_within_tolerance_at_scale_1() {
+        let _font = font_lock::guard();
+        let mut draw_state = state();
+        // The parity only means anything if the constraint branch actually
+        // runs: the trigram is constrained and renders with ink, so the
+        // emitter takes the scaled path, not the fallback.
+        let fonts = draw_state.fonts.as_ref().expect("fonts loaded");
+        let context = draw_state.pango_context.as_ref().expect("pango context");
+        let probe = pango::Layout::new(context);
+        probe.set_font_description(Some(&fonts.regular));
+        probe.set_text("☰");
+        let (ink, _) = probe.pixel_extents();
+        assert!(
+            ink.width() > 0 && ink.height() > 0,
+            "the trigram must render with ink"
+        );
+        assert!(
+            crate::nerd_font::constraint(0x2630).is_some_and(|c| c.does_anything()),
+            "the trigram must be constrained"
+        );
+
+        let mut cairo_terminal = terminal_with_constrained_text();
+        let mut node_terminal = terminal_with_constrained_text();
+        let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.0);
+        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.0, true);
+        parity::assert_within(
+            &mut cairo_side,
+            &mut node_side,
+            TEXT_TOLERANCE,
+            "constrained at scale 1",
+        );
+    }
+
+    /// At scale 1.5 the layout nodes' fractional modelview could blend
+    /// antialiased glyph edges differently from the cairo path's
+    /// device-scaled rasterisation; the tolerance is the same blend bound as
+    /// everywhere else ([`TEXT_TOLERANCE`]), and the measured delta on this
+    /// suite is 0.
+    #[test]
+    fn all_text_matches_the_cairo_painter_within_tolerance_at_scale_1_5() {
+        let _font = font_lock::guard();
+        let mut draw_state = state();
+        let mut cairo_terminal = terminal_with_styled_text();
+        let mut node_terminal = terminal_with_styled_text();
+        let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.5);
+        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.5, true);
+        parity::assert_within(
+            &mut cairo_side,
+            &mut node_side,
+            TEXT_TOLERANCE,
+            "styled text at scale 1.5",
+        );
+
+        let mut cairo_terminal = terminal_with_wide_text();
+        let mut node_terminal = terminal_with_wide_text();
+        let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.5);
+        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.5, true);
+        parity::assert_within(
+            &mut cairo_side,
+            &mut node_side,
+            TEXT_TOLERANCE,
+            "wide text at scale 1.5",
+        );
+
+        let mut cairo_terminal = terminal_with_constrained_text();
+        let mut node_terminal = terminal_with_constrained_text();
+        let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.5);
+        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.5, true);
+        parity::assert_within(
+            &mut cairo_side,
+            &mut node_side,
+            TEXT_TOLERANCE,
+            "constrained at scale 1.5",
         );
     }
 }
