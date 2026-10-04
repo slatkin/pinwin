@@ -12,8 +12,8 @@
 //! budgeted drain — is GTK-free and takes the fd as a parameter, so unit
 //! tests exercise it against a real pipe or pty master (D10). The glib fd
 //! source is the only GTK-thread piece; its callback is a C trampoline, so it
-//! catches unwinds like every other boundary (D5). Row 4.2 grows this local
-//! `guarded` into the shared helper used at the other boundaries.
+//! catches unwinds like every other boundary (D5) through the shared
+//! [`crate::guard`] helper.
 //!
 //! The GTK-widget-dependent piece of `src/pty.c` — applying the drawing
 //! area's allocation to the grid before resizing — is not ported here: it
@@ -24,10 +24,10 @@ use std::io;
 use std::os::fd::RawFd;
 use std::os::raw::c_int;
 use std::os::raw::c_void;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
+use crate::guard::{Poisoned, guard};
 use crate::layout::pty_yield;
 use crate::term::PtySink;
 
@@ -209,7 +209,7 @@ pub struct Pty {
     /// standing in for `glue_anim_active()` in `src/pty.c`.
     tween_active: Arc<AtomicBool>,
     /// Latched when a read-source panic is caught (D5).
-    poisoned: Arc<AtomicBool>,
+    poisoned: Poisoned,
     /// The glib source id, 0 once the source removed itself or teardown
     /// removed it. Shared so the callback can retire it on hangup.
     source: Arc<AtomicU32>,
@@ -226,7 +226,7 @@ impl Pty {
             cell_w,
             cell_h,
             tween_active: Arc::new(AtomicBool::new(false)),
-            poisoned: Arc::new(AtomicBool::new(false)),
+            poisoned: Poisoned::new(),
             source: Arc::new(AtomicU32::new(0)),
             attached: false,
         }
@@ -253,7 +253,7 @@ impl Pty {
 
     /// Whether a callback panic was caught in the read source (D5).
     pub fn poisoned(&self) -> bool {
-        self.poisoned.load(Ordering::Relaxed)
+        self.poisoned.is_poisoned()
     }
 
     /// Whether the fd was attached (sticky, like `g_attached`).
@@ -378,7 +378,7 @@ type Feed = Box<dyn FnMut(&[u8])>;
 struct SourceState {
     fd: Arc<AtomicI32>,
     tween_active: Arc<AtomicBool>,
-    poisoned: Arc<AtomicBool>,
+    poisoned: Poisoned,
     source: Arc<AtomicU32>,
     feed: Feed,
 }
@@ -406,11 +406,11 @@ unsafe extern "C" fn on_pty_readable(
     // SAFETY: the caller guarantees `user_data` points at the live state, and
     // GLib never re-enters the callback for one source concurrently.
     let state = unsafe { &mut *user_data.cast::<SourceState>() };
-    if state.poisoned.load(Ordering::Relaxed) {
+    if state.poisoned.is_poisoned() {
         retire(&state.fd, &state.source);
         return gtk4::glib::ffi::G_SOURCE_REMOVE;
     }
-    let result = guarded(&state.poisoned, || {
+    let result = guard(&state.poisoned, || {
         let budget = if state.tween_active.load(Ordering::Relaxed) {
             PTY_BUDGET_US
         } else {
@@ -429,10 +429,10 @@ unsafe extern "C" fn on_pty_readable(
         )
     });
     match result {
-        Some(Drain::Dispatched) => gtk4::glib::ffi::G_SOURCE_CONTINUE,
+        Ok(Drain::Dispatched) => gtk4::glib::ffi::G_SOURCE_CONTINUE,
         // Hangup, or a panic was caught: stop reading. The host's process
         // lifetime and its descriptor stay untouched.
-        Some(Drain::HungUp) | None => {
+        Ok(Drain::HungUp) | Err(_) => {
             retire(&state.fd, &state.source);
             gtk4::glib::ffi::G_SOURCE_REMOVE
         }
@@ -446,15 +446,16 @@ unsafe extern "C" fn destroy_source_state(user_data: *mut c_void) {
     if user_data.is_null() {
         return;
     }
-    // The notify runs on GLib's teardown path, not behind the callback guard,
-    // so a panicking destructor here has no `poisoned` latch left to set —
-    // but it still must not unwind across the C boundary (D5). Swallow it:
-    // the source is already being destroyed either way.
-    let _ = catch_unwind(AssertUnwindSafe(|| {
+    // The notify runs on GLib's teardown path, not behind a poisoned flag:
+    // there is no latch left to set, but it still must not unwind across the
+    // C boundary (D5). The shared guard swallows the unwind and logs the
+    // payload on a throwaway flag. The source is already being destroyed
+    // either way.
+    let _ = guard(&Poisoned::new(), || {
         // SAFETY: the caller guarantees the pointer came from `Box::into_raw` and
         // the source is being destroyed, so no dispatch is using it.
         drop(unsafe { Box::from_raw(user_data.cast::<SourceState>()) });
-    }));
+    });
 }
 
 // Declared here because glib-sys does not bind `g_unix_fd_add_full` (its gir
@@ -471,19 +472,6 @@ unsafe extern "C" {
         user_data: *mut c_void,
         notify: Option<unsafe extern "C" fn(*mut c_void)>,
     ) -> u32;
-}
-
-/// The local D5 guard, matching `term::callbacks` until row 4.2 lifts the
-/// shared helper: run `body`, latching `poisoned` and returning `None` when
-/// it panics.
-fn guarded<T>(poisoned: &AtomicBool, body: impl FnOnce() -> T) -> Option<T> {
-    match catch_unwind(AssertUnwindSafe(body)) {
-        Ok(value) => Some(value),
-        Err(_) => {
-            poisoned.store(true, Ordering::Relaxed);
-            None
-        }
-    }
 }
 
 #[cfg(test)]
@@ -728,16 +716,6 @@ mod tests {
         set_non_blocking(read_end.as_raw_fd()).expect("non-blocking");
         let outcome = drain(read_end.as_raw_fd(), true, &mut |_| {}, 1000, 0, &|| 1000);
         assert_eq!(outcome, Drain::HungUp);
-    }
-
-    /// A panic inside the guard latches the poison flag and stays contained.
-    #[test]
-    fn guard_contains_a_panic() {
-        let poisoned = AtomicBool::new(false);
-        let value = guarded(&poisoned, || panic!("boom"));
-        assert!(value.is_none());
-        assert!(poisoned.load(Ordering::Relaxed));
-        assert_eq!(guarded(&poisoned, || 5), Some(5));
     }
 
     /// Attach puts the fd into non-blocking mode, applies the initial

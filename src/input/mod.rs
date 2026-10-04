@@ -11,14 +11,13 @@
 //! lookup — are the GTK-free core the task keeps unit tested.
 //!
 //! Panics must never cross back into GTK/glib (D5): every signal closure runs
-//! its body under `catch_unwind`, latching a poisoned flag. Row 4.2 grows this
-//! local guard into the shared helper.
+//! its body through the shared [`crate::guard`] helper, latching a poisoned
+//! flag.
 
 use std::cell::{Cell, RefCell};
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::guard::{Poisoned, guard};
 
 use gtk4::gdk;
 use gtk4::glib::translate::IntoGlib;
@@ -44,7 +43,7 @@ pub struct InputLinks {
     /// Queue a redraw of the drawing area.
     pub queue_draw: Rc<dyn Fn()>,
     /// Latched when a controller body panicked (D5); the panel consults it.
-    pub poisoned: Arc<AtomicBool>,
+    pub poisoned: Poisoned,
 }
 
 /// Translate GDK modifier state into the encoder's modifier bits
@@ -196,7 +195,7 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
     let released = links.clone();
     let released_layout = pressed_layout.clone();
     key.connect_key_pressed(move |controller, keyval, keycode, state| {
-        guarded(&pressed.poisoned, || {
+        let _ = guard(&pressed.poisoned, || {
             on_key(
                 controller,
                 keyval.into_glib(),
@@ -212,7 +211,7 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
         gtk4::glib::Propagation::Stop
     });
     key.connect_key_released(move |controller, keyval, keycode, state| {
-        guarded(&released.poisoned, || {
+        let _ = guard(&released.poisoned, || {
             on_key(
                 controller,
                 keyval.into_glib(),
@@ -238,7 +237,7 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
     let released = links.clone();
     let released_position = position.clone();
     click.connect_pressed(move |gesture, _n_press, x, y| {
-        guarded(&pressed.poisoned, || {
+        let _ = guard(&pressed.poisoned, || {
             on_mouse(
                 gesture,
                 x,
@@ -251,7 +250,7 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
         });
     });
     click.connect_released(move |gesture, _n_press, x, y| {
-        guarded(&released.poisoned, || {
+        let _ = guard(&released.poisoned, || {
             on_mouse(
                 gesture,
                 x,
@@ -269,7 +268,7 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
     let motion_links = links.clone();
     let motion_position = position.clone();
     motion.connect_motion(move |controller, x, y| {
-        guarded(&motion_links.poisoned, || {
+        let _ = guard(&motion_links.poisoned, || {
             let x = x - (motion_links.draw_offset)();
             motion_position.set((x, y));
             let mods = mods_from_gdk(controller.current_event_state());
@@ -293,7 +292,7 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
     let scroll_links = links.clone();
     let scroll_position = position.clone();
     scroll.connect_scroll(move |controller, dx, dy| {
-        guarded(&scroll_links.poisoned, || {
+        let _ = guard(&scroll_links.poisoned, || {
             let (x, y) = scroll_position.get();
             let unit = scroll_unit_from_gdk(controller.unit());
             let mods = mods_from_gdk(controller.current_event_state());
@@ -310,7 +309,7 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
     let focus = gtk4::EventControllerFocus::new();
     let entered = links.clone();
     focus.connect_enter(move |_controller| {
-        guarded(&entered.poisoned, || {
+        let _ = guard(&entered.poisoned, || {
             entered.focused.set(true);
             (entered.queue_draw)();
             entered.terminal.borrow_mut().push_focus(true);
@@ -318,7 +317,7 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
     });
     let left = links.clone();
     focus.connect_leave(move |_controller| {
-        guarded(&left.poisoned, || {
+        let _ = guard(&left.poisoned, || {
             left.focused.set(false);
             (left.queue_draw)();
             left.terminal.borrow_mut().push_focus(false);
@@ -338,19 +337,6 @@ fn scroll_unit_from_gdk(unit: gdk::ScrollUnit) -> ScrollUnit {
     match unit {
         gdk::ScrollUnit::Surface => ScrollUnit::Surface,
         _ => ScrollUnit::Wheel,
-    }
-}
-
-/// The local D5 guard, matching `term::callbacks` and `pty` until row 4.2
-/// lifts the shared helper: run `body`, latching `poisoned` and returning
-/// `None` when it panics.
-fn guarded<T>(poisoned: &AtomicBool, body: impl FnOnce() -> T) -> Option<T> {
-    match catch_unwind(AssertUnwindSafe(body)) {
-        Ok(value) => Some(value),
-        Err(_) => {
-            poisoned.store(true, Ordering::Relaxed);
-            None
-        }
     }
 }
 

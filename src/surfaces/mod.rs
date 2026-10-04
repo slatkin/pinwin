@@ -16,14 +16,13 @@
 //! tween-flag relay (`Pty::set_tween_active`).
 //!
 //! Panics must never cross back into GTK/glib (D5): every closure registered
-//! here runs its body under `catch_unwind`, latching a poisoned flag. Row 4.2
-//! grows this local guard into the shared helper.
+//! here runs its body through the shared [`crate::guard`] helper, latching a
+//! poisoned flag.
 
 use std::cell::{Cell, RefCell};
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::{Rc, Weak};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::guard::{Poisoned, guard, guard_default};
 
 use gtk4::cairo;
 use gtk4::gdk;
@@ -215,7 +214,7 @@ pub struct Surfaces {
     /// The hooks rows 3.6 and 4.1 fill in.
     pub hooks: SurfaceHooks,
     /// Latched when a closure registered here panicked (D5).
-    poisoned: Arc<AtomicBool>,
+    poisoned: Poisoned,
 }
 
 /// One idle step behind [`Surfaces::fire_deferred_grid_resize`]: wait while a
@@ -258,19 +257,19 @@ impl Surfaces {
         win.set_layer(Layer::Overlay);
         win.set_keyboard_mode(keyboard_mode(keyboard));
 
-        let poisoned = Arc::new(AtomicBool::new(false));
+        let poisoned = Poisoned::new();
         let area = gtk4::DrawingArea::new();
         if let Some(draw) = hooks.draw.clone() {
             let draw_poisoned = poisoned.clone();
             area.set_draw_func(move |_area, cr, width, height| {
-                guarded(&draw_poisoned, || draw(cr, width, height));
+                let _ = guard(&draw_poisoned, || draw(cr, width, height));
             });
         }
         // pty.c's on_area_resize: every allocation change runs apply_size.
         let resize_hook = hooks.apply_size.clone();
         let resize_poisoned = poisoned.clone();
         area.connect_resize(move |_area, _width, _height| {
-            guarded(&resize_poisoned, || {
+            let _ = guard(&resize_poisoned, || {
                 (resize_hook)();
             });
         });
@@ -317,7 +316,7 @@ impl Surfaces {
         let map_poisoned = surfaces.poisoned.clone();
         surfaces.win.connect_map(move |_win| {
             if let Some(surfaces) = map_weak.upgrade() {
-                guarded(&map_poisoned, || surfaces.on_map());
+                let _ = guard(&map_poisoned, || surfaces.on_map());
             }
         });
         surfaces.win.present();
@@ -478,12 +477,11 @@ impl Surfaces {
             let Some(surfaces) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            guarded(&surfaces.poisoned, || {
+            guard_default(&surfaces.poisoned, glib::ControlFlow::Break, || {
                 deferred_grid_step(surfaces.closed.get(), surfaces.anim.active(), || {
                     (surfaces.hooks.apply_size)()
                 })
             })
-            .unwrap_or(glib::ControlFlow::Break)
         });
     }
 
@@ -605,19 +603,6 @@ impl Surfaces {
         }
         self.win.destroy();
         self.closed.set(true);
-    }
-}
-
-/// The local D5 guard, matching `term::callbacks` and `pty` until row 4.2
-/// lifts the shared helper: run `body`, latching `poisoned` and returning
-/// `None` when it panics.
-fn guarded<T>(poisoned: &AtomicBool, body: impl FnOnce() -> T) -> Option<T> {
-    match catch_unwind(AssertUnwindSafe(body)) {
-        Ok(value) => Some(value),
-        Err(_) => {
-            poisoned.store(true, Ordering::Relaxed);
-            None
-        }
     }
 }
 

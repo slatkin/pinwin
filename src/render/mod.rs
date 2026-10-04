@@ -11,9 +11,9 @@
 //! only has to call them from its draw callback; cairo image surfaces work
 //! without a display, which is what the tests below render into.
 //!
-//! Panics must never cross back into GTK (D5): [`DrawState::draw`] wraps its
-//! body in `catch_unwind` and latches `poisoned`, after which it draws
-//! nothing.
+//! Panics must never cross back into GTK (D5): [`DrawState::draw`] runs its
+//! body through the shared [`crate::guard`] helper and latches `poisoned`,
+//! after which it draws nothing.
 
 pub use images::PixbufDecoder;
 
@@ -22,8 +22,7 @@ mod metrics;
 mod sprites;
 mod text;
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
-
+use crate::guard::{Poisoned, guard};
 use crate::layout::Accent;
 use crate::term::Terminal;
 use crate::term::cells::{Cursor, CursorStyle, Rgb, StyleFlags, Wide};
@@ -39,7 +38,7 @@ pub struct DrawState {
     theme_foreground: Rgb,
     accent: Option<Accent>,
     focused: bool,
-    poisoned: bool,
+    poisoned: Poisoned,
     fonts: Option<metrics::Fonts>,
     cell_metrics: CellMetrics,
     /// The tween frame cache: the grid rendered once per tween into an image
@@ -67,7 +66,7 @@ impl DrawState {
             },
             accent,
             focused: false,
-            poisoned: false,
+            poisoned: Poisoned::new(),
             fonts: None,
             cell_metrics: CellMetrics::default(),
             grid_cache: None,
@@ -130,15 +129,12 @@ impl DrawState {
         draw_offset: i32,
         animating: bool,
     ) {
-        if self.poisoned {
-            return;
-        }
-        let result = catch_unwind(AssertUnwindSafe(|| {
+        // A poisoned guard short-circuits (the body never runs), so a
+        // poisoned state draws nothing (D5).
+        let poisoned = self.poisoned.clone();
+        let _ = guard(&poisoned, || {
             self.draw_inner(cr, terminal, width, height, draw_offset, animating);
-        }));
-        if result.is_err() {
-            self.poisoned = true;
-        }
+        });
     }
 
     fn draw_inner(
@@ -651,7 +647,7 @@ mod tests {
         let mut terminal = terminal();
         // Drive the poisoned path directly: a poisoned state draws nothing,
         // so the surface stays empty.
-        state.poisoned = true;
+        state.poisoned = Poisoned::latched();
         let drawn = drawn_after(state, &mut terminal, 64, 64, 0, false);
         assert_eq!(opaque_pixels(drawn), 0, "poisoned draw is a no-op");
     }

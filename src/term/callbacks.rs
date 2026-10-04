@@ -7,11 +7,9 @@
 
 use std::cell::RefCell;
 use std::os::raw::c_void;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::slice;
 use std::sync::Once;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{CallbackContext, Handles, KITTY_STORAGE_LIMIT};
 use crate::ghostty_sys::sys::{
@@ -21,6 +19,7 @@ use crate::ghostty_sys::terminal::{
     GhosttyDeviceAttributes, GhosttySizeReportSize, GhosttyTerminal, ghostty_terminal_set,
 };
 use crate::ghostty_sys::{GHOSTTY_SUCCESS, GhosttyAllocator, ghostty_alloc};
+use crate::guard::{guard, guard_default};
 
 thread_local! {
     /// Live terminal contexts on this thread, oldest first. The sys PNG hook
@@ -133,21 +132,6 @@ pub(super) fn init_ghostty(userdata: *mut c_void, cols: u16, rows: u16) -> Resul
     Ok(handles)
 }
 
-/// The minimum D5 guard: run `body`, latching `poisoned` and returning `None`
-/// when it panics. Row 4.2 grows this into the shared helper applied to every
-/// other boundary.
-fn guarded<T>(poisoned: &AtomicBool, body: impl FnOnce() -> T) -> Option<T> {
-    match catch_unwind(AssertUnwindSafe(body)) {
-        Ok(value) => Some(value),
-        Err(_) => {
-            poisoned.store(true, Ordering::Relaxed);
-            None
-        }
-    }
-}
-
-/// `GHOSTTY_TERMINAL_OPT_WRITE_PTY`: hand response bytes to the sink (D5 guard).
-///
 /// # Safety
 /// Called by libghostty with a `userdata` previously set to a live
 /// `CallbackContext` and a `data`/`len` pair that is valid for the call.
@@ -162,11 +146,11 @@ unsafe extern "C" fn write_pty(
     }
     // SAFETY: the caller guarantees `userdata` points at the live context.
     let ctx = unsafe { &mut *(userdata as *mut CallbackContext) };
-    if ctx.poisoned.load(Ordering::Relaxed) {
+    if ctx.poisoned.is_poisoned() {
         return;
     }
     let poisoned = ctx.poisoned.clone();
-    let _ = guarded(&poisoned, || {
+    let _ = guard(&poisoned, || {
         // SAFETY: the caller guarantees `data`/`len` describe a readable
         // region; an empty write never touches the pointer.
         let bytes = if data.is_null() || len == 0 {
@@ -193,11 +177,11 @@ unsafe extern "C" fn size_report(
     }
     // SAFETY: the caller guarantees `userdata` points at the live context.
     let ctx = unsafe { &*(userdata as *const CallbackContext) };
-    if ctx.poisoned.load(Ordering::Relaxed) {
+    if ctx.poisoned.is_poisoned() {
         return false;
     }
     let poisoned = ctx.poisoned.clone();
-    guarded(&poisoned, || {
+    guard_default(&poisoned, false, || {
         // SAFETY: the caller guarantees `out` is writable.
         unsafe {
             (*out).rows = ctx.rows;
@@ -207,7 +191,6 @@ unsafe extern "C" fn size_report(
         }
         true
     })
-    .unwrap_or(false)
 }
 
 /// `GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES`: reply with Ghostty's own DA1/DA2
@@ -225,11 +208,11 @@ unsafe extern "C" fn device_attributes(
     }
     // SAFETY: the caller guarantees `userdata` points at the live context.
     let ctx = unsafe { &*(userdata as *const CallbackContext) };
-    if ctx.poisoned.load(Ordering::Relaxed) {
+    if ctx.poisoned.is_poisoned() {
         return false;
     }
     let poisoned = ctx.poisoned.clone();
-    guarded(&poisoned, || {
+    guard_default(&poisoned, false, || {
         // SAFETY: the caller guarantees `out` is writable.
         unsafe {
             (*out).primary.conformance_level = 62; // level 2, like Ghostty
@@ -243,7 +226,6 @@ unsafe extern "C" fn device_attributes(
         }
         true
     })
-    .unwrap_or(false)
 }
 
 /// `GHOSTTY_SYS_OPT_DECODE_PNG`: decode a kitty-graphics PNG into a
@@ -270,11 +252,11 @@ unsafe extern "C" fn decode_png(
     // SAFETY: the context stays registered on this thread until its `Terminal`
     // frees it, so it is live for the duration of this call.
     let ctx = unsafe { &mut *ctx };
-    if ctx.poisoned.load(Ordering::Relaxed) {
+    if ctx.poisoned.is_poisoned() {
         return false;
     }
     let poisoned = ctx.poisoned.clone();
-    guarded(&poisoned, || {
+    guard_default(&poisoned, false, || {
         // SAFETY: the caller guarantees `data`/`data_len` describe a readable
         // region; an empty decode never touches the pointer.
         let bytes = if data.is_null() || data_len == 0 {
@@ -314,14 +296,13 @@ unsafe extern "C" fn decode_png(
         }
         true
     })
-    .unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::term::{DecodedPng, PngDecoder, PtySink, Terminal};
 

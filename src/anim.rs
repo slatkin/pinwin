@@ -15,14 +15,15 @@
 //! `set_tween_active` hook the panel wires up).
 //!
 //! Panics must never cross back into GTK/glib (D5): the tick and watchdog
-//! closures run their bodies under `catch_unwind`, latching a poisoned flag.
-//! Row 4.2 grows this local guard into the shared helper.
+//! closures run their bodies through the shared [`crate::guard`] helper,
+//! latching a poisoned flag.
 
 use std::cell::RefCell;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::guard::{Poisoned, guard};
 
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -128,7 +129,7 @@ struct AnimInner {
     /// [`set_tween_flag`], next to the tween-state writes it mirrors.
     tween_flag: Arc<AtomicBool>,
     /// Latched when a tick, watchdog or hook body panicked (D5).
-    poisoned: Arc<AtomicBool>,
+    poisoned: Poisoned,
 }
 
 /// The one place [`AnimInner::tween_flag`] changes, called exactly where the
@@ -154,7 +155,7 @@ impl Anim {
                 tick: std::cell::Cell::new(None),
                 watchdog: std::cell::Cell::new(None),
                 tween_flag: Arc::new(AtomicBool::new(false)),
-                poisoned: Arc::new(AtomicBool::new(false)),
+                poisoned: Poisoned::new(),
             }),
         }
     }
@@ -173,7 +174,7 @@ impl Anim {
 
     /// Whether a tick or watchdog body panicked (D5).
     pub fn poisoned(&self) -> bool {
-        self.inner.poisoned.load(Ordering::Relaxed)
+        self.inner.poisoned.is_poisoned()
     }
 
     /// The panel's current pixel width: the animated width while a tween runs,
@@ -219,20 +220,20 @@ impl Anim {
         let inner = self.inner.clone();
         let tick = widget.add_tick_callback(move |_widget, clock| {
             let now = clock.frame_time();
-            let action = guarded(&inner.poisoned, || inner.tween.borrow_mut().advance(now));
+            let action = guard(&inner.poisoned, || inner.tween.borrow_mut().advance(now));
             match action {
-                Some(Advance::Frame(px)) => {
-                    guarded(&inner.poisoned, || (inner.hooks.borrow_mut().on_frame)(px));
+                Ok(Advance::Frame(px)) => {
+                    let _ = guard(&inner.poisoned, || (inner.hooks.borrow_mut().on_frame)(px));
                     glib::ControlFlow::Continue
                 }
-                Some(Advance::Finished) => {
+                Ok(Advance::Finished) => {
                     Anim::stop_inner(&inner, true, false);
-                    guarded(&inner.poisoned, || (inner.hooks.borrow_mut().on_finish)());
+                    let _ = guard(&inner.poisoned, || (inner.hooks.borrow_mut().on_finish)());
                     glib::ControlFlow::Break
                 }
                 // A panic latched the poison flag: drop the tween quietly so no
                 // further glue code runs (D5).
-                None => {
+                Err(_) => {
                     Anim::stop_inner_quiet(&inner);
                     glib::ControlFlow::Break
                 }
@@ -247,7 +248,7 @@ impl Anim {
             std::time::Duration::from_millis(u64::from(duration_ms) + 100),
             move || {
                 Anim::stop_inner(&inner, false, true);
-                guarded(&inner.poisoned, || (inner.hooks.borrow_mut().on_finish)());
+                let _ = guard(&inner.poisoned, || (inner.hooks.borrow_mut().on_finish)());
                 glib::ControlFlow::Break
             },
         );
@@ -300,7 +301,7 @@ impl Anim {
         // The hook runs under the D5 guard like `on_finish`; the temporary
         // hook borrow ends with the guarded statement, matching the frame and
         // finish paths' borrow shape.
-        guarded(&inner.poisoned, || (inner.hooks.borrow_mut().on_stop)());
+        let _ = guard(&inner.poisoned, || (inner.hooks.borrow_mut().on_stop)());
     }
 
     /// The panic half of [`Anim::stop_inner`]: tear the sources down without
@@ -314,19 +315,6 @@ impl Anim {
         }
         inner.tween.borrow_mut().stop();
         set_tween_flag(inner, false);
-    }
-}
-
-/// The local D5 guard, matching `term::callbacks` and `pty` until row 4.2
-/// lifts the shared helper: run `body`, latching `poisoned` and returning
-/// `None` when it panics.
-fn guarded<T>(poisoned: &AtomicBool, body: impl FnOnce() -> T) -> Option<T> {
-    match catch_unwind(AssertUnwindSafe(body)) {
-        Ok(value) => Some(value),
-        Err(_) => {
-            poisoned.store(true, Ordering::Relaxed);
-            None
-        }
     }
 }
 

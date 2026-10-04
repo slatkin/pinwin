@@ -9,18 +9,17 @@
 //! handles through accessors instead of reaching for globals. The type is
 //! `!Send`/`!Sync` (D2 item 8, D4): it lives on the GTK thread only.
 //!
-//! Panics must never cross back into C (D5). Every trampoline below wraps its
-//! body in `catch_unwind`, and a panic latches a shared poisoned flag; later
-//! calls become no-ops. This is the minimum `guard` primitive row 4.2 will
-//! extend into the shared helper for the other boundaries.
+//! Panics must never cross back into C (D5). Every trampoline below runs its
+//! body through the shared [`crate::guard`] helper, and a panic latches a
+//! shared poisoned flag; later calls become no-ops.
 //!
 //! The pty write sink and the PNG decoder are injected behind the [`PtySink`]
 //! and [`PngDecoder`] traits, so nothing here depends on GTK/GDK (D3).
 
 use std::os::raw::c_void;
 use std::ptr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::guard::Poisoned;
 
 use crate::ghostty_sys::input::{
     GHOSTTY_MOUSE_ENCODER_OPT_SIZE, GhosttyKeyEncoder, GhosttyKeyEvent, GhosttyMouseEncoder,
@@ -95,7 +94,7 @@ struct CallbackContext {
     sink: Box<dyn PtySink>,
     decoder: Box<dyn PngDecoder>,
     queue_draw: Box<dyn Fn()>,
-    poisoned: Arc<AtomicBool>,
+    poisoned: Poisoned,
     cols: u16,
     rows: u16,
     cell_w: u32,
@@ -276,7 +275,7 @@ impl Terminal {
                 sink,
                 decoder,
                 queue_draw,
-                poisoned: Arc::new(AtomicBool::new(false)),
+                poisoned: Poisoned::new(),
                 cols: DEFAULT_COLS,
                 rows: DEFAULT_ROWS,
                 cell_w: 1,
@@ -304,7 +303,7 @@ impl Terminal {
 
     /// Whether a callback panicked and latched the terminal poisoned (D5).
     pub fn poisoned(&self) -> bool {
-        self.ctx.poisoned.load(Ordering::Relaxed)
+        self.ctx.poisoned.is_poisoned()
     }
 
     /// Whether the handles exist.
@@ -584,8 +583,9 @@ fn clamp_u32(value: i32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::sync::Mutex;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Records every pty write so a test can assert the response bytes.
     struct RecordingSink {
