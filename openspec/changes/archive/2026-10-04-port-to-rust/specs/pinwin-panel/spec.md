@@ -1,10 +1,4 @@
-# pinwin-panel Specification
-
-## Purpose
-
-`pinwin` docks a terminal running the user's chosen command (their `$SHELL` by default) at the left edge of one monitor, reserving that space so the compositor tiles windows to its right, and releases the space when the command exits.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Keyboard focus by clicking
 The panel SHALL use layer-shell `on-demand` keyboard interactivity when the startup layout
@@ -56,45 +50,6 @@ for them.
 - **WHEN** the host starts the panel with no accent
 - **THEN** the panel draws no accent, focused or not
 
-### Requirement: Font follows the Ghostty config
-The panel SHALL render with the font configured for the user's Ghostty terminal: the first
-`font-family` and the `font-size` from `$XDG_CONFIG_HOME/ghostty/config` (default
-`~/.config/ghostty/config`). When the config has no font settings, the panel SHALL fall back
-to `monospace 11`. Opening the Ghostty config SHALL NOT be required: a missing or unreadable
-config SHALL NOT prevent the panel from opening. There are no font environment overrides.
-
-#### Scenario: Configured font
-- **WHEN** the Ghostty config sets a family and size and the host starts the panel
-- **THEN** the panel draws with that family and size
-
-#### Scenario: No Ghostty config
-- **WHEN** no Ghostty config exists
-- **THEN** the panel still opens and draws with `monospace 11`
-
-#### Scenario: Override
-- **WHEN** `PINWIN_FONT` or `PINWIN_FONT_SIZE` is set in the host's environment
-- **THEN** the panel ignores both (there is no font override) and draws with the Ghostty config values, or the fallback when there is no config
-
-### Requirement: Correct size reports
-The panel's terminal SHALL answer terminal queries on the PTY: primary device attributes
-(`CSI c`) and `CSI 16 t` (cell size in pixels). The PTY window size SHALL carry both the
-column/row count and the pixel width/height, and SHALL be updated whenever the panel's size
-changes. The pixel sizes reported SHALL match the cell size actually drawn.
-
-#### Scenario: Cell size query
-- **WHEN** the host's child writes `CSI 16 t`
-- **THEN** it receives `CSI 6 ; <cell height px> ; <cell width px> t` matching the drawn
-  cell size
-
-#### Scenario: Images are not clipped
-- **WHEN** the host's child shows a poster image in the panel
-- **THEN** the whole image is visible, with no part cut off at the right or bottom edge
-
-#### Scenario: Pixel size in window size
-- **WHEN** the host's child reads the terminal size with `TIOCGWINSZ`
-- **THEN** `ws_col`/`ws_row` are the cell grid and `ws_xpixel`/`ws_ypixel` are the grid size
-  in pixels
-
 ### Requirement: Wayland layer-shell is required
 The library SHALL run only on a Wayland compositor that implements wlr-layer-shell. When
 layer-shell is unavailable (an X11 session, or a Wayland compositor without it such as GNOME),
@@ -104,66 +59,6 @@ back to an ordinary window.
 #### Scenario: No layer-shell
 - **WHEN** the host starts the panel in a session whose compositor lacks wlr-layer-shell
 - **THEN** the start returns `Err(PinwinError::NoDisplay)` and nothing opens
-
-### Requirement: Terminal features for the host's child
-The panel's terminal SHALL support, as seen by the host's child: alternate screen; 24-bit and
-256-color text with bold, italic and inverse; the kitty keyboard protocol including
-"disambiguate escape codes", with key press and release and Shift/Ctrl/Alt/Super modifiers;
-mouse reporting in SGR format with coordinates in cells; focus in/out reports (`CSI I` /
-`CSI O`) when the child enables them; `CSI > 1 s` (XTSHIFTESCAPE); and the kitty graphics
-protocol, including answering the kitty graphics query and drawing transmitted images at their
-placements.
-
-#### Scenario: Host's child selects kitty graphics
-- **WHEN** the host's child supports the kitty graphics protocol and shows a poster
-- **THEN** the child selects the kitty image protocol (not half-blocks) and the whole poster
-  renders as an image
-
-#### Scenario: Key disambiguation
-- **WHEN** the host's child enables kitty keyboard disambiguation and the user presses Escape
-- **THEN** the child receives the kitty-protocol encoding for Escape rather than a bare `ESC` byte
-
-#### Scenario: Mouse click reported in cells
-- **WHEN** the host's child enables SGR mouse reporting and the user clicks the cell at column 3, row 5
-- **THEN** the child receives an SGR press report for column 3, row 5
-
-#### Scenario: Focus reports
-- **WHEN** the host's child enables focus reporting and the user clicks into the panel, then
-  clicks a tiled window
-- **THEN** the child receives `CSI I` and then `CSI O`
-
-### Requirement: Directional gutters and docking geometry
-Folded in from the retired options capability (design D1). Gutters SHALL use
-literal screen directions in the same pixel coordinate system as before, independent of
-docking side. Let panel width be `cols` times the font cell width. On the left, the panel
-SHALL be inset from the left output edge by Left pixels and reserve `Left + panel width +
-Right` pixels at the left edge. On the right, the panel SHALL be inset from the right output
-edge by Right pixels and reserve the same sum at the right edge. Top and Bottom SHALL inset
-the visible panel from the corresponding output edges. Reservation SHALL cover a full-height
-strip even when the panel has vertical insets. Gutters MAY be negative: a negative gutter
-moves the panel's edge beyond its output edge or ends the reservation before the panel's far
-edge, so tiles may overlap the panel; the reservation sum SHALL NOT be negative. Existing
-compositor struts remain additive and SHALL NOT be edited.
-
-#### Scenario: Left docking
-- **WHEN** panel width is 320 pixels, Left is 8, Right is 12 and docking is Left
-- **THEN** the panel starts 8 pixels from the left output edge and reserves 340 pixels at
-  that edge, before any compositor struts
-
-#### Scenario: Right docking
-- **WHEN** the same values are applied with docking Right
-- **THEN** the panel ends 12 pixels before the right output edge and reserves 340 pixels at
-  that edge, releasing its previous left reservation
-
-#### Scenario: Vertical insets
-- **WHEN** Top is 24 and Bottom is 10
-- **THEN** the visible panel begins 24 pixels below the output top and ends 10 pixels above
-  its bottom, while the horizontal reservation remains a full-height strip
-
-#### Scenario: Negative gutter
-- **WHEN** panel width is 320 pixels, Left is -40, Right is 12 and docking is Left
-- **THEN** the panel starts 40 pixels beyond the left output edge and the reservation at that
-  edge is 292 pixels
 
 ### Requirement: Apply layout without restarting the terminal
 A successful layout apply, plain or animated, SHALL update the applied column count, all four
@@ -242,20 +137,6 @@ monitors.
 - **WHEN** the user tries to drag or move the panel with the compositor's window actions
 - **THEN** the panel stays at its docking edge
 
-### Requirement: Reserve space so tiles start beside the panel
-The library SHALL reserve a strip at its docking edge equal to the panel width plus the two
-horizontal gutters, so the compositor places tiled windows beside that strip. The reservation
-SHALL apply only to the panel's monitor. The gap between the panel and the first tile is the
-far gutter plus whatever strut the compositor itself adds.
-
-#### Scenario: Tiles move right
-- **WHEN** the panel opens docked left with panel width 320, Left 0 and Right 12
-- **THEN** tiled windows' left edge moves to at least 332 px from the monitor's left edge
-
-#### Scenario: Other monitors unaffected
-- **WHEN** the panel is open on DP-2
-- **THEN** tiled windows on DP-1 keep their original position
-
 ### Requirement: Host-owned pty
 The library SHALL read and write the pty master fd supplied at start and apply the window
 size to it (`TIOCSWINSZ`); it SHALL NOT fork, wait on a child, close the fd, or set any child
@@ -295,41 +176,6 @@ Terminal allocation failure keeps the previous grid and surfaces as
 - **THEN** the host process keeps running, no panic unwinds into the host's calls, later calls
   on the handle return `Err(PinwinError::Internal)`, and dropping the handle still returns
 
-### Requirement: No pinwin-owned configuration
-The library SHALL NOT read any pinwin-specific environment variable (`COLS`, `GUTTER`,
-`PINWIN_KEYBOARD`, `PINWIN_FONT`, `PINWIN_FONT_SIZE`, `PINWIN_DEBUG` have no effect) and
-SHALL NOT read or write any configuration file of its own: the full layout arrives with
-every start and every apply, and the host owns persistence. Ghostty font/theme following
-(the requirement above) is appearance, never layout, and is unaffected by this requirement.
-A host that previously relied on those variables or the saved `pinwin/config` layout SHALL
-pass their equivalents explicitly instead.
-
-#### Scenario: Full layout at start
-- **WHEN** the host starts the panel with side Right, 52 columns and four gutters
-- **THEN** the panel opens with exactly that layout, regardless of any pinwin-owned
-  configuration or environment present
-
-#### Scenario: Ghostty config affects appearance only
-- **WHEN** the Ghostty config sets a font and theme, and the host starts the panel with a
-  given layout
-- **THEN** the panel draws with that font and theme, and opens with exactly the supplied
-  layout — the Ghostty config never influences layout
-
-### Requirement: Winsize updates signal the host
-The library SHALL raise `SIGWINCH` in the host process after every successful
-`TIOCSWINSZ` on the pty master — the initial attach and every layout apply that updates
-the winsize — so a host that handles SIGWINCH (for example a crossterm event loop) sees
-the resize without polling. A failed winsize ioctl raises nothing; a host that installs
-no SIGWINCH handler is unaffected (the default disposition is ignore).
-
-#### Scenario: Resize delivers SIGWINCH
-- **WHEN** a layout apply updates the pty winsize successfully
-- **THEN** the host process receives SIGWINCH after the update
-
-#### Scenario: No update, no signal
-- **WHEN** the panel has no attached pty
-- **THEN** a resize request raises no SIGWINCH
-
 ### Requirement: Animated width transition
 The animated layout apply, given a layout and a duration in milliseconds, SHALL, when the
 requested layout differs from the applied layout only in its column count (same side, same
@@ -361,35 +207,6 @@ validated and accepted rather than that the animation finished.
 #### Scenario: Duration clamp
 - **WHEN** the host passes a duration of 60000 ms
 - **THEN** the animation lasts at most 1000 ms
-
-### Requirement: Exact final width
-When an animated width transition ends, the panel's pixel width SHALL equal the target
-columns times the cell width and the reservation SHALL equal left plus that width plus right,
-with no residual offset from intermediate frames. The final frame SHALL be produced by the
-same code path as a non-animated apply.
-
-#### Scenario: Animation completes
-- **WHEN** an animated transition to 120 columns finishes
-- **THEN** the panel width is exactly 120 times the cell width and the reservation matches
-
-#### Scenario: Stalled frame clock
-- **WHEN** the frame clock does not deliver frames for the duration plus 100 ms
-- **THEN** the panel is snapped to the exact target width
-
-### Requirement: Terminal grid during a width animation
-At the start of an animated width transition the terminal grid and PTY winsize SHALL be
-resized once to the target column count, and no further grid or winsize change SHALL occur
-until the next apply. While animating, the grid SHALL be drawn anchored to the docked edge
-with the remainder of the surface filled with the theme background, and pointer coordinates
-SHALL map to the drawn cells.
-
-#### Scenario: One resize
-- **WHEN** an animated transition from 40 to 120 columns runs
-- **THEN** the host's child observes a single winsize change to 120 columns and one SIGWINCH
-
-#### Scenario: Content does not slide
-- **WHEN** the panel is docked right and shrinks
-- **THEN** the drawn cells stay against the right edge
 
 ### Requirement: Interrupting an animation
 A layout applied while a width animation is running SHALL take effect with last-write-wins
@@ -423,6 +240,18 @@ the call SHALL return `Err(PinwinError::Internal)`.
 - **WHEN** the terminal grid cannot be allocated at animation start
 - **THEN** the call returns `Err(PinwinError::Internal)` and the panel is at the requested
   final width, not an intermediate one
+
+## REMOVED Requirements
+
+### Requirement: C ABI lifecycle
+**Reason**: The C ABI (`pinwin_api.h`, `pinwin_start`, `pinwin_apply_layout`,
+`pinwin_apply_layout_animated`, `pinwin_stop`, `PinwinStartup`, `PINWIN_ERR_*`) is removed
+with no replacement C surface; the library is a Rust crate.
+**Migration**: Rust hosts depend on the `pinwin` crate and use the `Panel` handle (requirement
+"Library Panel API"). A host that still needs C must wrap the crate itself; pinwin ships no C
+header.
+
+## ADDED Requirements
 
 ### Requirement: Library Panel API
 The crate's library SHALL expose a `Panel` handle. Starting takes a host-owned pty master fd,

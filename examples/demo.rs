@@ -1,0 +1,477 @@
+//! Dev-only driver for the [`pinwin::Panel`](pinwin::panel::Panel) API
+//! (port-to-rust D9): the port of `demo/main.c`. Built only by
+//! `cargo build --examples`, never installed — the example twin of the old
+//! `zig build demo`.
+//!
+//! It makes its own pty pair (`forkpty`), forks a canned child on the slave
+//! side and sets the child's terminal environment, then drives the panel API
+//! from this thread: a canned startup layout, a live apply, a rejected
+//! layout, an animated and a plain width toggle, and a drop to stop. Fork and
+//! exec are fine here because this is a program; only the library must not.
+//!
+//! Commands on the demo's own stdin (one per line):
+//!   <enter>  toggle side/width and apply live (resize/re-dock)
+//!   e        animated width toggle 40 <-> 120 cols, same side (200 ms)
+//!   p        the same toggle through the plain snap apply
+//!   b        apply a rejected layout: expect `InvalidLayout`, host lives
+//!   q        stop the panel and exit
+//! Run `exit` inside the panel to watch a pty hangup leave the host alone.
+//!
+//! `DEMO_KEYBOARD=<mode>` selects the panel's keyboard mode, fixed at start:
+//! `on-demand` (the default — click-to-focus, so other windows keep the
+//! keyboard and the terminal that launched the demo keeps its stdin
+//! commands), `exclusive` (the C demo's `PINWIN_KEYBOARD_EXCLUSIVE` path,
+//! where the panel owns the keyboard outright) or `none`.
+//!
+//! `DEMO_DENSE=1` replaces the shell child with a dense stand-in: a full
+//! 120+ column text grid, kitty images on screen and light periodic traffic,
+//! retransmitting the images after every `SIGWINCH` like a real TUI host
+//! does. Image bytes come from a system icon PNG, as in the C demo.
+
+use std::fmt::Write as _;
+use std::io::{BufRead as _, Write as _};
+use std::num::NonZeroU16;
+use std::os::fd::RawFd;
+use std::os::raw::c_char;
+use std::os::raw::c_void;
+use std::os::unix::process::CommandExt;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use pinwin::layout::{Accent, Keyboard, Layout, Side};
+use pinwin::panel::{Panel, Startup};
+
+const DEMO_COLS: u16 = 40;
+const DEMO_GUTTER: i32 = 12;
+/// The default animated duration, `pinwin.h`'s `PINWIN_ANIM_DEFAULT_MS`.
+const DEMO_ANIM_MS: u32 = 200;
+/// How long the canned layout settles before the live re-dock, as the C's
+/// `SETTLE_US`.
+const SETTLE: Duration = Duration::from_micros(1_500_000);
+/// The second argument the demo re-execs itself with for the dense child.
+const DENSE_CHILD_ARG: &str = "--dense-child";
+/// The dense child's image source (a system icon PNG, as in the C demo).
+const DENSE_IMAGE: &str = "/usr/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png";
+
+/// The dense child's `SIGWINCH` latch, the `volatile sig_atomic_t` of the C.
+static DENSE_RESIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// `demo/main.c`'s `canned_layout`: the demo layout with `DEMO_GUTTER` as the
+/// right gutter and no other reservation.
+fn canned_layout(side: Side, cols: u16) -> Layout {
+    Layout::new(
+        side,
+        NonZeroU16::new(cols).expect("demo columns are non-zero"),
+        0,
+        0,
+        0,
+        DEMO_GUTTER,
+    )
+}
+
+/// The optional numeric argument of the demo: 1..=65535 columns (the layout
+/// type's range, D6). Anything else is ignored, like the C's `strtol` guard.
+fn parse_cols(arg: &str) -> Option<u16> {
+    arg.parse::<u16>().ok().filter(|cols| *cols >= 1)
+}
+
+/// The dense child's `SIGWINCH` handler: set the repaint latch, nothing else
+/// (async-signal-safe). Ports `dense_on_winch`.
+extern "C" fn dense_on_winch(_sig: std::os::raw::c_int) {
+    DENSE_RESIZED.store(true, Ordering::Release);
+}
+
+/// The dense child's kitty image transmission: the PNG base64-encoded into
+/// four placements of distinct image ids, one per quadrant — a ~480 KB kitty
+/// burst per repaint, the same order as the real host's art re-encode.
+/// `q=1` so parse errors come back on stdin, where [`dump_stdin`] shows
+/// them.
+fn dense_send_image() {
+    // The C capped its fixed buffer at 128 KiB; keep the cap so the burst
+    // size stays the one the demo was tuned against.
+    let raw = match std::fs::read(DENSE_IMAGE) {
+        Ok(raw) => raw,
+        Err(_) => return,
+    };
+    let raw = &raw[..raw.len().min(1 << 17)];
+    let b64 = gtk4::glib::base64_encode(raw);
+
+    let mut out = String::new();
+    for id in 1..=4u32 {
+        let slot = id - 1;
+        let _ = write!(
+            out,
+            "\x1b[{};{}H\x1b_Gf=24,a=T,i={id},q=1,c=20,r=20;{}\x1b\\",
+            2 + slot / 2 * 22,
+            2 + slot % 2 * 25,
+            b64
+        );
+    }
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(out.as_bytes());
+    let _ = stdout.flush();
+}
+
+/// The dense child drains its own stdin (the panel side of the pty) so kitty
+/// responses (`q=1` errors) reach the demo log instead of sitting unread:
+/// non-blocking read, dumped to stderr. Ports `dump_stdin`.
+fn dump_stdin() {
+    // SAFETY: `F_GETFL`/`F_SETFL` on our own stdin descriptor, restored after
+    // the drain; `read` on our own descriptor with a writable buffer.
+    unsafe {
+        let flags = libc::fcntl(0, libc::F_GETFL);
+        if flags < 0 || libc::fcntl(0, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+            return;
+        }
+        let mut buf = [0u8; 256];
+        loop {
+            let n = libc::read(0, buf.as_mut_ptr().cast::<c_void>(), buf.len());
+            if n > 0 {
+                eprint!("child got {n} bytes: ");
+                let _ = std::io::stderr().write_all(&buf[..n as usize]);
+                eprintln!();
+            } else {
+                if n < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != std::io::ErrorKind::WouldBlock {
+                        eprintln!("child stdin: {error}");
+                    }
+                }
+                break;
+            }
+        }
+        libc::fcntl(0, libc::F_SETFL, flags);
+    }
+}
+
+/// The dense child's full-grid repaint: header/footer bars with reverse
+/// video, a body of dense varied text (the renderer pays per cell) and
+/// background-colour spans, like a real TUI's cards — then the kitty images.
+/// Ports `dense_draw_screen`.
+fn dense_draw_screen() {
+    let mut ws = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: `ws` is a writable winsize for the ioctl on our stdout (the
+    // slave pty).
+    if unsafe { libc::ioctl(1, libc::TIOCGWINSZ, &mut ws) } != 0 {
+        return;
+    }
+    let (rows, cols) = (i32::from(ws.ws_row), i32::from(ws.ws_col));
+    if rows < 1 || cols < 1 {
+        return;
+    }
+
+    let mut frame = String::with_capacity(rows as usize * cols as usize * 12);
+    frame.push_str("\x1b[?25l\x1b[H\x1b[2J");
+    for r in 0..rows {
+        let _ = write!(frame, "\x1b[{};1H", r + 1);
+        for c in 0..cols {
+            if r == 0 || r == rows - 1 {
+                if c == 0 {
+                    frame.push_str("\x1b[7m");
+                }
+                frame.push(if c % 2 == 0 {
+                    ' '
+                } else if r == 0 {
+                    '-'
+                } else {
+                    '='
+                });
+                if c == cols - 1 {
+                    frame.push_str("\x1b[27m");
+                }
+            } else if (c / 9) % 2 == 0 {
+                let _ = write!(frame, "\x1b[48;5;{}m", (r * 7 + c / 9) % 200 + 16);
+                frame.push((b'a' + ((r * 31 + c * 7) % 26) as u8) as char);
+            } else {
+                frame.push_str("\x1b[49m");
+                frame.push((b'0' + ((r + c) % 10) as u8) as char);
+            }
+        }
+        frame.push_str("\x1b[49m");
+    }
+    {
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(frame.as_bytes());
+        let _ = stdout.flush();
+    }
+    dense_send_image();
+    let mut stdout = std::io::stdout().lock();
+    let _ = write!(stdout, "\x1b[{rows};1H");
+    let _ = stdout.flush();
+}
+
+/// The dense child's clock row: light periodic traffic so the pty is not
+/// idle, saved/restored around the cursor position like the C.
+fn dense_clock_row(now: libc::time_t) {
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `now` is a plain `time_t` value and `tm` is our writable
+    // struct; `strftime` writes only inside our bounded buffer, whose format
+    // string is a NUL-terminated literal.
+    unsafe {
+        libc::localtime_r(&now, &mut tm);
+        let mut buf = [0u8; 64];
+        const FMT: &[u8] = b"\x1b[s%H:%M:%S\x1b[u\0";
+        let n = libc::strftime(
+            buf.as_mut_ptr().cast::<c_char>(),
+            buf.len(),
+            FMT.as_ptr().cast::<c_char>(),
+            &tm,
+        );
+        let clock = &buf[..n as usize];
+        let mut stdout = std::io::stdout().lock();
+        let _ = write!(stdout, "\x1b[1;1H\x1b[7m ");
+        let _ = stdout.write_all(clock);
+        let _ = write!(stdout, " \x1b[27m");
+        let _ = stdout.flush();
+    }
+}
+
+/// The dense child's main loop: repaint on `SIGWINCH`, one clock row per
+/// second otherwise, drain stdin, sleep. Ports `dense_child_main`.
+fn dense_child_main() {
+    // SAFETY: installing our own `SIGWINCH` disposition before any thread
+    // exists; the handler only stores to an atomic.
+    unsafe {
+        libc::signal(
+            libc::SIGWINCH,
+            dense_on_winch as *const () as libc::sighandler_t,
+        );
+    }
+    let mut last: libc::time_t = 0;
+    loop {
+        // SAFETY: `time` takes no argument.
+        let now = unsafe { libc::time(std::ptr::null_mut()) };
+        if DENSE_RESIZED.swap(false, Ordering::AcqRel) {
+            dense_draw_screen();
+        } else if now != last {
+            last = now;
+            dense_clock_row(now);
+        }
+        dump_stdin();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The canned child on the slave side: the tester's shell, told it is a
+/// colour terminal (the library sets no child environment, the spec's
+/// host-owned pty requirement). With `DEMO_DENSE=1` the child is the dense
+/// stand-in instead, re-exec'd from this same binary. Ports `spawn_child`.
+fn spawn_child(dense_mode: bool) -> Result<RawFd, std::io::Error> {
+    // Edition 2024: `set_var` is unsafe, and this runs before the fork.
+    // SAFETY: single-threaded at this point, so no other thread can observe
+    // the environment mid-write.
+    unsafe {
+        std::env::set_var("TERM", "xterm-256color");
+        std::env::set_var("COLORTERM", "truecolor");
+    }
+
+    let mut master: libc::c_int = -1;
+    // SAFETY: `forkpty` writes the master fd through our pointer and leaves
+    // the terminal attributes and winsize untouched (`null`); the child
+    // branch below never returns.
+    let pid = unsafe {
+        libc::forkpty(
+            &mut master,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if pid < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if pid == 0 {
+        // Rust's std sets SIGPIPE to SIG_IGN at startup and the disposition
+        // survives execve; restore the default so the shell and the dense
+        // child die on a closed pipe as demo/main.c's SIG_DFL child did.
+        // SAFETY: a plain disposition change in the forked child, before any
+        // thread exists and before exec.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL as libc::sighandler_t);
+        }
+        if dense_mode {
+            // Re-exec self in dense-child mode: no shell, no session.
+            let _ = std::process::Command::new("/proc/self/exe")
+                .arg(DENSE_CHILD_ARG)
+                .exec();
+        } else {
+            let shell = std::env::var_os("SHELL")
+                .filter(|shell| !shell.is_empty())
+                .unwrap_or_else(|| std::ffi::OsString::from("/bin/sh"));
+            let _ = std::process::Command::new(shell).exec();
+        }
+        // `exec` only returns when it failed.
+        std::process::exit(127);
+    }
+    Ok(master)
+}
+
+/// The live plain apply and its report line, the C's `apply`.
+fn apply(panel: &Panel, side: Side, cols: u16) {
+    let layout = canned_layout(side, cols);
+    let result = panel.apply_layout(layout);
+    println!("apply_layout(side={side:?}, cols={cols}) = {result:?}");
+}
+
+fn main() {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some(DENSE_CHILD_ARG) {
+        dense_child_main();
+        return;
+    }
+    let dense_mode = std::env::var_os("DEMO_DENSE").is_some();
+    // Default to click-to-focus so the launching terminal keeps the keyboard
+    // and its stdin commands; `DEMO_KEYBOARD` opts into the other modes.
+    let keyboard = match std::env::var_os("DEMO_KEYBOARD") {
+        None => Keyboard::OnDemand,
+        Some(value) => {
+            let value = value.to_string_lossy();
+            match Keyboard::parse(&value) {
+                Some(keyboard) => keyboard,
+                None => {
+                    eprintln!(
+                        "pinwin-demo: unknown DEMO_KEYBOARD={value} \
+                         (want on-demand, exclusive or none)"
+                    );
+                    std::process::exit(2);
+                }
+            }
+        }
+    };
+    let mut cols = DEMO_COLS;
+    if let Some(arg) = args.next()
+        && let Some(parsed) = parse_cols(&arg)
+    {
+        cols = parsed;
+    }
+
+    // The child's exit is its own business; reap it silently.
+    // SAFETY: a plain disposition change, no handler state.
+    unsafe {
+        libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+    }
+
+    let master = match spawn_child(dense_mode) {
+        Ok(master) => master,
+        Err(error) => {
+            eprintln!("forkpty: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    let side = Side::Left;
+    let startup = Startup {
+        fd: master,
+        layout: canned_layout(side, cols),
+        keyboard,
+        accent: Some(Accent::new(
+            [0xda, 0xbc, 0x7f],
+            NonZeroU16::new(1).expect("accent width 1"),
+        )),
+    };
+    match Panel::start(startup) {
+        Ok(panel) => {
+            println!("pinwin_start = Ok(())");
+            run_commands(panel, cols)
+        }
+        Err(error) => {
+            eprintln!("pinwin-demo: pinwin_start failed ({error:?})");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// The command loop after a successful start: the C demo's settle, re-dock
+/// and stdin command handling, ending with the stop (drop).
+fn run_commands(panel: Panel, mut cols: u16) {
+    // Let the canned layout dock, then re-dock live so the change is visible.
+    std::thread::sleep(SETTLE);
+    let mut side = Side::Right;
+    apply(&panel, side, cols);
+
+    println!(
+        "commands, typed in THIS terminal (not in the panel):\n          \
+         <enter> toggle side/width, 'b' rejected layout, 'q' quit;\n          \
+         run `exit` in the panel to see a pty hangup survive."
+    );
+
+    for line in std::io::stdin().lock().lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => break,
+        };
+        match line.chars().next() {
+            Some('q') => break,
+            Some('b') => {
+                // The C applied cols 0; zero columns are unrepresentable in
+                // `Layout` now (D6), so the demo's rejected layout is one the
+                // monitor cannot hold instead: the full column range.
+                let bad = canned_layout(side, u16::MAX);
+                let result = panel.apply_layout(bad);
+                println!("apply_layout(invalid) = {result:?} (want Err(InvalidLayout))");
+            }
+            Some(kind @ ('e' | 'p')) => {
+                cols = if cols == DEMO_COLS { 120 } else { DEMO_COLS };
+                let layout = canned_layout(side, cols);
+                let result = match kind {
+                    'e' => panel.apply_layout_animated(layout, DEMO_ANIM_MS),
+                    _ => panel.apply_layout(layout),
+                };
+                println!(
+                    "{}(cols={cols}) = {result:?}",
+                    if kind == 'e' { "animated" } else { "plain" }
+                );
+            }
+            _ => {
+                side = match side {
+                    Side::Left => Side::Right,
+                    Side::Right => Side::Left,
+                };
+                cols = if cols == DEMO_COLS {
+                    DEMO_COLS + 8
+                } else {
+                    DEMO_COLS
+                };
+                apply(&panel, side, cols);
+            }
+        }
+    }
+
+    // `pinwin_stop`: dropping the handle closes the panel.
+    drop(panel);
+    println!("pinwin_stop done");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canned_layout_reserves_only_the_right_gutter() {
+        for side in [Side::Left, Side::Right] {
+            let layout = canned_layout(side, DEMO_COLS);
+            assert_eq!(layout.side(), side);
+            assert_eq!(layout.cols().get(), DEMO_COLS);
+            assert_eq!(layout.top(), 0);
+            assert_eq!(layout.bottom(), 0);
+            assert_eq!(layout.left(), 0);
+            assert_eq!(layout.right(), DEMO_GUTTER);
+        }
+    }
+
+    #[test]
+    fn parse_cols_accepts_only_the_layout_range() {
+        assert_eq!(parse_cols("40"), Some(40));
+        assert_eq!(parse_cols("65535"), Some(65535));
+        assert_eq!(parse_cols("0"), None);
+        assert_eq!(parse_cols("-1"), None);
+        assert_eq!(parse_cols("65536"), None);
+        assert_eq!(parse_cols("junk"), None);
+        assert_eq!(parse_cols(""), None);
+    }
+}

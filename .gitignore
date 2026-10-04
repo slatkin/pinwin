@@ -1,5 +1,3 @@
-zig-pkg/
-zig-out/
-.zig-cache/
+target/
 .claude/
 CLAUDE.md
