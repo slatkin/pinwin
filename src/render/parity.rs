@@ -65,7 +65,7 @@ pub(super) fn cairo_frame(
     let surface = backed_surface(width, height, scale, BACKDROP);
     {
         let cr = cairo::Context::new(&surface).expect("context");
-        draw_state.draw(&cr, terminal, width, height, 0, false);
+        draw_state.draw(&cr, terminal, width, height, 0);
     }
     surface
 }

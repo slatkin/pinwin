@@ -17,8 +17,9 @@
 //! frame), the method reports `false` and the widget chains to the parent
 //! snapshot, which runs the ordinary cairo draw path — still the parity
 //! oracle and the `GSK_RENDERER=cairo` fallback. On the tween arm that path
-//! keeps the stage-1 texture cache (`grid_cache_ensure`) working, so a tween
-//! that cannot emit nodes falls back to the texture per tween. A panic in a
+//! renders the full grid every frame (gsk-render-nodes row 4.2 retired the
+//! stage-1 texture cache, so the cairo fallback has no per-tween cache of
+//! its own; the degraded path is correctness-first, not fast). A panic in a
 //! snapshot body is caught by the hook's D5 guard and the frame falls back
 //! the same way; a poisoned latch draws nothing on either path.
 //!
@@ -93,14 +94,14 @@ impl DrawState {
     }
 
     /// The cached grid node for this tween (`grid_node_ensure`), built on the
-    /// tween's first frame. Keyed by column count and height, exactly like
-    /// the cairo texture cache: the terminal grid is resized only when the
-    /// tween ends (the surfaces' deferred grid resize), so the node starts
-    /// correct, and content that changes while the tween runs shows when the
-    /// tween ends and the non-tween path resumes — a 200 ms stale window is
-    /// invisible next to the cost it avoids. Dropped when a tween stops
-    /// ([`Self::drop_grid_cache`]) and when the cell metrics change. `None`
-    /// — node emission impossible — falls back to the cairo draw path.
+    /// tween's first frame. Keyed by column count and height: the terminal
+    /// grid is resized only when the tween ends (the surfaces' deferred grid
+    /// resize), so the node starts correct, and content that changes while
+    /// the tween runs shows when the tween ends and the non-tween path
+    /// resumes — a 200 ms stale window is invisible next to the cost it
+    /// avoids. Dropped when a tween stops ([`Self::drop_grid_node`]) and when
+    /// the cell metrics change. `None` — node emission impossible — falls
+    /// back to the cairo draw path.
     fn grid_node_ensure(
         &mut self,
         terminal: &mut Terminal,
@@ -123,8 +124,8 @@ impl DrawState {
 
     /// Build the retained grid node (gsk-render-nodes row 4.1): the whole
     /// grid emitted into a fresh snapshot and finished with `to_node` — the
-    /// node-cache twin of `grid_cache_ensure`'s surface render. `None` —
-    /// emission impossible — falls back to the cairo draw path.
+    /// node-cache twin of the cairo path's full render (`render_grid`).
+    /// `None` — emission impossible — falls back to the cairo draw path.
     fn build_grid_node(
         &mut self,
         terminal: &mut Terminal,
@@ -266,8 +267,8 @@ mod tests {
         );
     }
 
-    /// The tween's stop relay drops the retained node with the texture cache
-    /// ([`Self::drop_grid_cache`]): the next tween frame rebuilds from the
+    /// The tween's stop relay drops the retained node
+    /// ([`Self::drop_grid_node`]): the next tween frame rebuilds from the
     /// terminal's current content.
     #[test]
     fn dropping_the_cache_invalidates_the_tween_node() {
@@ -291,9 +292,9 @@ mod tests {
     }
 
     /// The stop relay's name for the drop, spelled out so the test reads as
-    /// the lifecycle it pins (`tween_cache_drop` hook → `drop_grid_cache`).
+    /// the lifecycle it pins (`tween_cache_drop` hook → `drop_grid_node`).
     fn state_drop(state: &mut DrawState) {
-        state.drop_grid_cache();
+        state.drop_grid_node();
     }
 
     /// The cached node is drawn translated to the dock offset, and the

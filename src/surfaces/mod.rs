@@ -13,7 +13,7 @@
 //! The render- and pty-side pieces `glue.c` called into are hook slots
 //! ([`SurfaceHooks`]) documented for rows 3.6 and 4.1 to fill: the drawing
 //! area's draw function, the grid resize behind `apply_size`, the cell
-//! measurement, the tween frame-cache drop, the start handshake and the pty
+//! measurement, the tween node-cache drop, the start handshake and the pty
 //! tween-flag relay (`Pty::set_tween_active`).
 //!
 //! Panics must never cross back into GTK/glib (D5): every closure registered
@@ -73,8 +73,9 @@ pub struct SurfaceHooks {
     /// `render.c`'s `cell_metrics_update` (rows 3.6/4.1): measure the font on
     /// the window and report the cell size in pixels.
     pub measure: Rc<MeasureFn>,
-    /// `render.c`'s `render_grid_cache_drop` (row 3.6): drop the per-tween
-    /// blitted grid surface so the next draw takes the ordinary path.
+    /// `render.c`'s `render_grid_cache_drop` (row 3.6): drop the tween's
+    /// retained grid node (gsk-render-nodes row 4.1) so the next tween
+    /// rebuilds it.
     pub tween_cache_drop: Rc<dyn Fn()>,
     /// The grid frame's GSK snapshot emission (poc-gsk-texture-grid task
     /// 2.1, gsk-render-nodes row 4.1), called by the drawing area subclass's
@@ -477,9 +478,9 @@ impl Surfaces {
         self.apply_layout_surfaces();
     }
 
-    /// The tween stopped for any reason: drop the render tween frame cache,
-    /// clear the pty's tween flag and fire the deferred grid resize, if an
-    /// animated apply left one pending (`anim_stop`'s glue half).
+    /// The tween stopped for any reason: drop the tween's retained grid
+    /// node, clear the pty's tween flag and fire the deferred grid resize, if
+    /// an animated apply left one pending (`anim_stop`'s glue half).
     fn on_tween_stopped(&self) {
         (self.hooks.tween_cache_drop)();
         (self.hooks.set_tween_active)(false);

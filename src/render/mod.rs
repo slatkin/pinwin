@@ -15,12 +15,15 @@
 //! body through the shared [`crate::guard`] helper and latches `poisoned`,
 //! after which it draws nothing.
 //!
-//! The node emitter (`nodes`) walks the same cell iteration into a
-//! `gtk4::Snapshot` (gsk-render-nodes); `render_grid` stays the cairo
+//! `render_grid` stays the cairo
 //! fallback and the parity oracle. `snapshot` presents every frame as GSK
 //! nodes: the whole grid built once into a retained `gsk::RenderNode` on a
 //! tween's first frame and appended translated for the rest of the tween,
-//! rebuilt into the widget's snapshot on every non-tween draw.
+//! rebuilt into the widget's snapshot on every non-tween draw. When node
+//! emission is not possible, the frame chains to the cairo draw path, which
+//! renders the full grid with `render_grid` every frame — the fallback is
+//! correctness-first, with no per-tween cache of its own (gsk-render-nodes
+//! row 4.2 retired the stage-1 texture cache).
 //! `parity` is the test-only diff harness.
 
 pub use images::PixbufDecoder;
@@ -46,7 +49,6 @@ use crate::term::cells::{Cursor, CursorStyle, Rgb, StyleFlags, Wide};
 use metrics::CellMetrics;
 use text::FontsRef;
 
-use gtk4::gdk;
 use gtk4::gsk;
 
 /// One frame's draw state (`g_font*`, `g_cell_*`, `g_nerd_*`, `g_theme_*`,
@@ -66,25 +68,17 @@ pub struct DrawState {
     /// widget's context is the one whose font map and resolution match what
     /// the cairo path ends up rendering through.
     pango_context: Option<pango::Context>,
-    /// The tween frame cache: the grid rendered once per tween into an image
-    /// surface, keyed by column count and height (`s_grid_cache*`), with the
-    /// same pixels wrapped as a [`gdk::MemoryTexture`] (poc-gsk-texture-grid
-    /// task 1.1) so a snapshot can upload once and transform each frame.
-    grid_cache: Option<cairo::ImageSurface>,
-    grid_cache_cols: i32,
-    grid_cache_height: i32,
-    grid_cache_texture: Option<gdk::MemoryTexture>,
     /// The retained grid node (gsk-render-nodes row 4.1): the whole grid —
     /// theme background, cell backgrounds, cells, cursor and images — built
     /// once into a `gsk::RenderNode` on the tween's first frame and appended
     /// translated for the rest of the tween; the glyphs stay in GSK's GPU
-    /// atlas, so the per-frame CPU work is a transform. Keyed like the cairo
-    /// texture cache beside it (`grid_node_cols`/`grid_node_height`): the
-    /// terminal grid is resized only when the tween ends, so the node starts
-    /// correct. Rebuilt fresh on every non-tween draw, and dropped when a
-    /// tween stops (the `tween_cache_drop` hook) or the cell metrics change.
-    /// The texture cache above stays the cairo fallback's per-tween blit
-    /// (gsk-render-nodes row 4.2 removes both caches).
+    /// atlas, so the per-frame CPU work is a transform. Keyed by column count
+    /// and height (`grid_node_cols`/`grid_node_height`): the terminal grid is
+    /// resized only when the tween ends, so the node starts correct. Rebuilt
+    /// fresh on every non-tween draw, and dropped when a tween stops (the
+    /// `tween_cache_drop` hook) or the cell metrics change. The cairo fallback
+    /// has no cache of its own: a tween frame it has to draw renders the full
+    /// grid every frame (gsk-render-nodes row 4.2).
     grid_node: Option<gsk::RenderNode>,
     grid_node_cols: i32,
     grid_node_height: i32,
@@ -118,10 +112,6 @@ impl DrawState {
             fonts: None,
             cell_metrics: CellMetrics::default(),
             pango_context: None,
-            grid_cache: None,
-            grid_cache_cols: 0,
-            grid_cache_height: 0,
-            grid_cache_texture: None,
             grid_node: None,
             grid_node_cols: 0,
             grid_node_height: 0,
@@ -146,56 +136,30 @@ impl DrawState {
     }
 
     /// Measure the font on `context` and refresh the cell metrics
-    /// (`cell_metrics_update`). Also drops the tween frame cache: the cell
-    /// size may change, so any cache is stale.
+    /// (`cell_metrics_update`). Also drops the retained grid node: the cell
+    /// size may change, so the node is stale.
     pub fn cell_metrics_update(&mut self, context: &pango::Context) {
-        self.drop_grid_cache();
+        self.drop_grid_node();
         self.pango_context = Some(context.clone());
         let fonts = self.fonts.get_or_insert_with(metrics::Fonts::load);
         self.cell_metrics = metrics::measure(context, &fonts.regular);
     }
 
-    /// Drop the tween frame caches (`render_grid_cache_drop`): the per-tween
-    /// blitted grid surface, its [`gdk::MemoryTexture`] wrapper and the
-    /// retained grid node (gsk-render-nodes row 4.1). Called when a tween
-    /// stops — the node and the texture are both keyed to one tween — and
-    /// when the cell metrics change.
-    pub fn drop_grid_cache(&mut self) {
-        self.grid_cache = None;
-        self.grid_cache_cols = 0;
-        self.grid_cache_height = 0;
-        self.grid_cache_texture = None;
+    /// Drop the retained grid node (`render_grid_cache_drop`): the node is
+    /// keyed to one tween, so it goes when the tween stops (the
+    /// `tween_cache_drop` hook) and when the cell metrics change.
+    pub fn drop_grid_node(&mut self) {
         self.grid_node = None;
         self.grid_node_cols = 0;
         self.grid_node_height = 0;
     }
 
-    /// The cached tween grid as a [`gdk::MemoryTexture`] (poc-gsk-texture-grid
-    /// task 1.2), or `None` while no cache is built. The pixels are device
-    /// pixels at the build-time device scale; pair with
-    /// [`Self::grid_cache_logical_size`] to size it in surface coordinates.
-    pub fn grid_cache_texture(&self) -> Option<gdk::MemoryTexture> {
-        self.grid_cache_texture.clone()
-    }
-
-    /// The cached grid's logical size in surface coordinates — device pixels
-    /// divided by the surface's device scale (poc-gsk-texture-grid task 1.2).
-    pub fn grid_cache_logical_size(&self) -> Option<(f64, f64)> {
-        let surface = self.grid_cache.as_ref()?;
-        let (sx, sy) = surface.device_scale();
-        Some((
-            f64::from(surface.width()) / sx,
-            f64::from(surface.height()) / sy,
-        ))
-    }
-
-    /// Render a frame into `cr` (`on_draw`): the theme background, the grid
-    /// (via the tween cache while a width tween runs) and the focus accent.
+    /// Render a frame into `cr` (`on_draw`): the theme background, the full
+    /// grid and the focus accent.
     ///
     /// `draw_offset` is the tween's docked-edge offset in pixels
     /// (`glue_anim_draw_offset`); the caller has already resolved the layout
-    /// monitor on the first draw when it needs to (row 3.7). `animating` is
-    /// `glue_anim_active()`.
+    /// monitor on the first draw when it needs to (row 3.7).
     ///
     /// A panic anywhere in the draw path is caught (D5): it latches
     /// `poisoned` and later calls draw nothing.
@@ -206,13 +170,12 @@ impl DrawState {
         width: i32,
         height: i32,
         draw_offset: i32,
-        animating: bool,
     ) {
         // A poisoned guard short-circuits (the body never runs), so a
         // poisoned state draws nothing (D5).
         let poisoned = self.poisoned.clone();
         let _ = guard(&poisoned, || {
-            self.draw_inner(cr, terminal, width, height, draw_offset, animating);
+            self.draw_inner(cr, terminal, width, height, draw_offset);
         });
     }
 
@@ -223,7 +186,6 @@ impl DrawState {
         width: i32,
         height: i32,
         draw_offset: i32,
-        animating: bool,
     ) {
         set_rgb(cr, &self.theme_background);
         cr.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
@@ -240,17 +202,10 @@ impl DrawState {
             return;
         }
 
-        if animating && let Some(cache) = self.grid_cache_ensure(cr, terminal, height) {
-            let offset = f64::from(draw_offset);
-            cr.translate(offset, 0.0);
-            let _ = cr.set_source_surface(&cache, 0.0, 0.0);
-            let _ = cr.paint();
-            cr.translate(-offset, 0.0);
-            self.draw_focus_accent(cr, width, height);
-            return;
-        }
-
         // While a width tween runs, keep the grid against the docked edge.
+        // This is the fallback a tween frame lands on when the GSK snapshot
+        // could not emit nodes: it renders the full grid every frame — slow,
+        // but correct (gsk-render-nodes row 4.2).
         let offset = f64::from(draw_offset);
         cr.translate(offset, 0.0);
         self.render_grid(cr, terminal, height);
@@ -399,57 +354,6 @@ impl DrawState {
         }
     }
 
-    /// The cache for this tween frame, or `None` to fall back to the ordinary
-    /// full render (`grid_cache_ensure`). Drawn in logical (cell-grid)
-    /// coordinates; the source surface's device scale keeps the blit crisp
-    /// under fractional output scales.
-    ///
-    /// While a width tween runs, every frame would redraw the full target
-    /// grid through Pango -- tens of milliseconds on a full grid, which
-    /// starves the frame clock and collapses the tween into one late jump.
-    /// The grid is rendered once per tween into an image surface (the grid is
-    /// resized target-first at t0, design D3 there, so the cache starts
-    /// correct) and blitted at the dock offset per frame instead. Content
-    /// that changes while the tween runs shows when the tween ends and the
-    /// ordinary draw path resumes; a 200 ms stale window is invisible next to
-    /// the cost it avoids.
-    fn grid_cache_ensure(
-        &mut self,
-        cr: &cairo::Context,
-        terminal: &mut Terminal,
-        height: i32,
-    ) -> Option<cairo::ImageSurface> {
-        let cols = i32::from(terminal.cols());
-        if let Some(cache) = &self.grid_cache
-            && self.grid_cache_cols == cols
-            && self.grid_cache_height == height
-        {
-            return Some(cache.clone());
-        }
-        self.drop_grid_cache();
-        let (mut sx, mut sy) = cr.target().device_scale();
-        if sx <= 0.0 || sy <= 0.0 {
-            sx = 1.0;
-            sy = 1.0;
-        }
-        let cache_w = (f64::from(cols) * f64::from(self.cell_metrics.cell_w) * sx).ceil() as i32;
-        let cache_h = (f64::from(height) * sy).ceil() as i32;
-        let mut surface =
-            cairo::ImageSurface::create(cairo::Format::ARgb32, cache_w, cache_h).ok()?;
-        surface.set_device_scale(sx, sy);
-        let cache_cr = cairo::Context::new(&surface).ok()?;
-        set_rgb(&cache_cr, &self.theme_background);
-        let _ = cache_cr.paint();
-        self.render_grid(&cache_cr, terminal, height);
-        drop(cache_cr);
-        let texture = texture::surface_texture(&mut surface);
-        self.grid_cache = Some(surface);
-        self.grid_cache_cols = cols;
-        self.grid_cache_height = height;
-        self.grid_cache_texture = texture;
-        self.grid_cache.clone()
-    }
-
     /// Focus accent. Layer surfaces get no compositor focus ring (niri draws
     /// one only around layout windows), so the focused panel marks itself: a
     /// stroke around the whole window in the configured accent colour and
@@ -592,12 +496,11 @@ mod tests {
         width: i32,
         height: i32,
         draw_offset: i32,
-        animating: bool,
     ) -> cairo::ImageSurface {
         let surface = surface(width, height);
         {
             let cr = cairo::Context::new(&surface).unwrap();
-            state.draw(&cr, terminal, width, height, draw_offset, animating);
+            state.draw(&cr, terminal, width, height, draw_offset);
         }
         surface
     }
@@ -616,7 +519,7 @@ mod tests {
         let context = pangocairo::FontMap::default().create_context();
         state.cell_metrics_update(&context);
         let mut terminal = terminal();
-        let mut drawn = drawn_after(state, &mut terminal, 64, 64, 0, false);
+        let mut drawn = drawn_after(state, &mut terminal, 64, 64, 0);
         drawn.flush();
         let data = drawn.data().unwrap();
         // cairo's ARGB32 byte order is B, G, R, A. Sample away from the
@@ -632,7 +535,7 @@ mod tests {
         let _font = font();
         let mut terminal = terminal();
         terminal.push_pty_data(b"\x1b[41mhi\x1b[0m");
-        let drawn = drawn_after(state(), &mut terminal, 64, 64, 0, false);
+        let drawn = drawn_after(state(), &mut terminal, 64, 64, 0);
         assert!(opaque_pixels(drawn) > 0, "something was drawn");
     }
 
@@ -643,8 +546,8 @@ mod tests {
         terminal.push_pty_data(b"abc");
         // Each draw is a fresh state over the same frame data: the second
         // draw must reproduce the first.
-        let first = opaque_pixels(drawn_after(state(), &mut terminal, 64, 64, 0, false));
-        let second = opaque_pixels(drawn_after(state(), &mut terminal, 64, 64, 0, false));
+        let first = opaque_pixels(drawn_after(state(), &mut terminal, 64, 64, 0));
+        let second = opaque_pixels(drawn_after(state(), &mut terminal, 64, 64, 0));
         assert_eq!(second, first, "the second draw matches");
         assert!(first > 0);
     }
@@ -659,7 +562,7 @@ mod tests {
         let mut terminal = terminal();
 
         // Not focused: nothing but the background.
-        let mut plain = drawn_after(state, &mut terminal, 32, 32, 0, false);
+        let mut plain = drawn_after(state, &mut terminal, 32, 32, 0);
         plain.flush();
         let data = plain.data().unwrap();
         // Sample the border away from the block cursor parked at cell (0,0).
@@ -679,7 +582,7 @@ mod tests {
         let context = pangocairo::FontMap::default().create_context();
         focused_state.cell_metrics_update(&context);
         focused_state.set_focused(true);
-        let mut focused_surface = drawn_after(focused_state, &mut terminal, 32, 32, 0, false);
+        let mut focused_surface = drawn_after(focused_state, &mut terminal, 32, 32, 0);
         focused_surface.flush();
         let data = focused_surface.data().unwrap();
         assert_eq!(
@@ -703,7 +606,7 @@ mod tests {
         // Drive the poisoned path directly: a poisoned state draws nothing,
         // so the surface stays empty.
         state.poisoned = Poisoned::latched();
-        let drawn = drawn_after(state, &mut terminal, 64, 64, 0, false);
+        let drawn = drawn_after(state, &mut terminal, 64, 64, 0);
         assert_eq!(opaque_pixels(drawn), 0, "poisoned draw is a no-op");
     }
 
@@ -714,7 +617,7 @@ mod tests {
         // must run to `height`, not stop at the cell boundary.
         let mut terminal = terminal();
         terminal.push_pty_data(b"\x1b[44mfull\x1b[0m");
-        let mut drawn = drawn_after(state(), &mut terminal, 64, 20, 0, false);
+        let mut drawn = drawn_after(state(), &mut terminal, 64, 20, 0);
         drawn.flush();
         let data = drawn.data().unwrap();
         // The bottom row of pixels is the cell's background, not the theme.
@@ -745,7 +648,7 @@ mod tests {
         // foreground; with the theme's green the cursor area must not be
         // black.
         terminal.push_pty_data(b"\x1b[1;1H");
-        let drawn = drawn_after(state, &mut terminal, 64, 64, 0, false);
+        let drawn = drawn_after(state, &mut terminal, 64, 64, 0);
         assert!(opaque_pixels(drawn) > 0);
     }
 
@@ -754,7 +657,7 @@ mod tests {
     fn draw_without_a_terminal_is_a_background_only() {
         let _font = font();
         let mut terminal = Terminal::new(crate::guard::Poisoned::new(), NullSink, NoDecoder, || {});
-        let mut plain = drawn_after(state(), &mut terminal, 32, 32, 0, false);
+        let mut plain = drawn_after(state(), &mut terminal, 32, 32, 0);
         plain.flush();
         let data = plain.data().unwrap();
         assert_eq!(&data[0..4], &[0, 0, 0, 255], "background only");

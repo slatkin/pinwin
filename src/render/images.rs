@@ -21,8 +21,8 @@ use crate::term::{DecodedPng, PngDecoder, Terminal};
 /// image is retransmitted and dropped as soon as a frame draws no placement
 /// for it, so a long session cannot accumulate entries (`struct image_cache`).
 /// The texture wraps the same pixels as the surface (gsk-render-nodes task
-/// 3.1), for the node emitter; row 4.2 removes the surface's remaining cairo
-/// readers later.
+/// 3.1): the node emitter appends the texture, the cairo painter blits the
+/// surface.
 #[derive(Default)]
 pub(crate) struct ImageCache {
     entries: Vec<ImageEntry>,

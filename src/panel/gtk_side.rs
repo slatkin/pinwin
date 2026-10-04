@@ -366,9 +366,9 @@ fn build_glue(
             Rc::new(move || {
                 // A stop relay, not ordinary glue (D5): `Anim` fires `on_stop`
                 // under `guard_always` precisely so a latched panel still
-                // relays — skipping this would strand the tween frame cache
-                // forever.
-                let _ = guard_always(&poisoned, || draw.borrow_mut().drop_grid_cache());
+                // relays — skipping this would strand the tween's retained
+                // grid node forever.
+                let _ = guard_always(&poisoned, || draw.borrow_mut().drop_grid_node());
             })
         },
         grid_snapshot: grid_snapshot_hook(
@@ -442,18 +442,12 @@ fn draw_hook(
     Rc::new(move |cr: &cairo::Context, width: i32, height: i32| {
         let outcome = guard(&poisoned, || {
             resolve_first_draw_monitor(&link);
-            let (offset, animating) = link
-                .with(|surfaces| (surfaces.draw_offset() as i32, surfaces.anim.active()))
-                .unwrap_or((0, false));
+            let offset = link
+                .with(|surfaces| surfaces.draw_offset() as i32)
+                .unwrap_or(0);
             draw.borrow_mut().set_focused(focused.get());
-            draw.borrow_mut().draw(
-                cr,
-                &mut terminal.borrow_mut(),
-                width,
-                height,
-                offset,
-                animating,
-            );
+            draw.borrow_mut()
+                .draw(cr, &mut terminal.borrow_mut(), width, height, offset);
         });
         if outcome.is_err() {
             handshake.report(StartOutcome::Internal);
