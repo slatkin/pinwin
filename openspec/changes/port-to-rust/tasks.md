@@ -21,7 +21,7 @@
 ## 4. Library API
 
 - [ ] 4.1 `panel` + `lib.rs`: `Panel`, `PinwinError`, GTK thread and start handshake, apply via `MainContext::invoke` with the 5 s bounded reply, `Drop` teardown, single-instance guard (D4, D6, D7).
-- [ ] 4.2 `guard` helper and `catch_unwind` at every boundary listed in D5; poisoned flag.
+- [x] 4.2 `guard` helper and `catch_unwind` at every boundary listed in D5; poisoned flag.
 
 ## 5. Binary and example
 
