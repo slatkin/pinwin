@@ -13,49 +13,92 @@ authorize changes here.
 
 ## Project Structure & Module Organization
 
-libpinwin is the product: a Zig core (`src/main.zig` with `cells.zig`,
-`input.zig`, `keys.zig`, `c.zig`) that owns the pinned libghostty-vt terminal
-and exports the C ABI declared in `src/pinwin.h` (no GTK types there), plus a
-C glue layer split by responsibility — `glue.c` (surfaces and layout),
-`glue_anim.c` (width tween), `render.c` (drawing, tween frame cache, focus
-accent), `images.c` (kitty image surfaces), `pty.c` (pty and grid), `input.c`
-(GDK controllers), `fontconfig.c` (Ghostty config/theme), `options.c`
-(GTK-free layout core) and `pinwin_api.c` (ABI and GTK-thread lifecycle).
-`host/main.c` is the thin `pinwin` program; `demo/main.c` is a dev-only ABI
-driver. `openspec/specs/pinwin-panel/spec.md` is the behaviour spec and
-`openspec/changes/archive/` holds the design decisions that code comments
-reference as D-numbers. `pinwin.sh` is the legacy pre-library script, kept for
-reference. `README.md` documents installation, usage, behaviour, architecture
-and known caveats.
+pinwin is one Rust crate that is both the product library and the `pinwin`
+binary; the build is Cargo only. The pre-port C and Zig sources (`src/*.c`,
+`src/*.h`, `src/*.zig`, `build.zig`, `build.zig.zon`) are removed by row 7.1 of
+`openspec/changes/port-to-rust/`, so this file describes the Rust layout:
+
+- `src/lib.rs` — the crate root: the module tree and the `Panel`/`PinwinError`
+  re-exports.
+- `src/panel/` — the public API and the GTK-thread lifecycle (`mod.rs`,
+  `error.rs`, `gtk_side.rs`, `handshake.rs`): the `Panel` handle, `Startup`,
+  the parked `pinwin-gtk` thread and the start handshake.
+- `src/layout.rs` — the GTK-free layout core: `Layout`/`Side`, `CellSize`,
+  `OutputSize`, `Accent`, `Keyboard`, checked geometry validation and the pty
+  yield decision.
+- `src/term/` — the pinned libghostty-vt terminal wrapper and its parts:
+  `cells/`, `keys.rs`, `input.rs`, `callbacks.rs`.
+- `src/render/` — cairo/pangocairo drawing, the tween frame cache, the focus
+  accent and the kitty image surfaces (`mod.rs`, `text.rs`, `sprites.rs`,
+  `metrics.rs`, `images.rs`).
+- `src/surfaces/` — the layer-shell panel and reservation surfaces and layout
+  application.
+- `src/input/` — the GDK controllers and their translation into terminal
+  encoders.
+- `src/anim.rs` — the animated width transition.
+- `src/pty.rs` — the host-supplied pty fd, winsize and `SIGWINCH`.
+- `src/fontconfig.rs` — the Ghostty font and theme reader.
+- `src/nerd_font.rs` — the generated glyph-constraint table.
+- `src/guard.rs` — the shared panic guard.
+- `src/ghostty_sys/` — the hand-written `extern` declarations for the pinned
+  libghostty-vt (the only module that talks to C).
+- `src/main.rs` — the thin `pinwin` program.
+- `examples/demo.rs` — the dev-only demo example, never installed.
+- `build.rs` — fetches and builds the pinned libghostty-vt.
+
+`openspec/specs/pinwin-panel/spec.md` is the behaviour spec.
+`openspec/changes/archive/` holds the archived design decisions code comments
+reference as D-numbers; the port's own decisions are
+`openspec/changes/port-to-rust/design.md` (D1–D11) and new code cites them as
+`port-to-rust D<n>`. `pinwin.sh` is the legacy pre-library bash script, kept
+for reference only. `README.md` documents installation, library use,
+behaviour, architecture and known caveats.
 
 ## Build, Test, and Development Commands
 
-`zig build` installs `zig-out/bin/pinwin` plus the static archives a consumer
-links; `zig build demo` builds `zig-out/bin/pinwin-demo`; `zig build check`
-runs the layout-core and ABI-contract unit tests. Requires Zig 0.16 and the
-system GTK4, gtk4-layer-shell-0 and pangocairo; the pinned libghostty-vt is
-fetched by the build. Live runs require niri. If touching the legacy
-`pinwin.sh`, check it with `bash -n pinwin.sh`.
+`cargo build` builds the library and the `pinwin` binary; `cargo build
+--examples` builds the dev-only demo; `cargo test` runs the tests; `cargo
+clippy --all-targets -- -D warnings` and `cargo fmt --check` are the lint and
+formatting gates. The build needs Zig 0.16 on PATH: `build.rs` fetches the
+pinned libghostty-vt commit and builds ghostty's own static VT library with
+`zig build`, so a cold cache also needs `git` and network access. Set
+`PINWIN_GHOSTTY_SRC=<dir>` to build against an existing git checkout instead of
+fetching; its `HEAD` must be the pinned commit. The system GTK4,
+gtk4-layer-shell-0 and pangocairo are required. Live runs require niri. If
+touching the legacy `pinwin.sh`, check it with `bash -n pinwin.sh`.
 
 ## Coding Style & Naming Conventions
 
-C glue compiles as gnu11 with `-Wall`: four spaces, lowercase names for
-functions and locals, uppercase for user settings and layout constants such as
-`COLS`, `GUTTER` and the `PINWIN_*` environment names. Zig files are `zig fmt`
-clean. Quote path and command arguments where expansion should remain one
-argument. Keep comments focused on niri, GTK or timing behaviour that is not
-obvious from the code, and keep the D-number references pointing at the
-archived design they came from.
+Rust only, `rustfmt` clean. Keep modules small and split them by
+responsibility: the port maps one Rust module to one former C/Zig file
+(`openspec/changes/port-to-rust/design.md` D3), and a file should stay at or
+under 800 lines. The documented exception is `src/nerd_font.rs`, a generated
+glyph table whose regeneration is described in its module comment. Public
+types keep their fields private and expose constructors and accessors, so the
+invariant lives in the field type rather than a runtime check (`port-to-rust`
+D6). Panics must never cross the library's API: run any body that can panic —
+the public `Panel` entry points, GTK/glib closures and `extern "C"` terminal
+callbacks — through the shared `guard` helper (`src/guard.rs`), which latches a
+poisoned flag (`port-to-rust` D5). Quote path and command arguments where
+expansion should remain one argument. Keep comments focused on niri, GTK or
+timing behaviour that is not obvious from the code, and keep D-number
+references pointing at the design they came from (an archived change, or
+`port-to-rust` for the port's own decisions).
 
 ## Testing Guidelines
 
-Run `zig build check` after any change; it covers geometry validation, the
-tween step and the pty yield decision, plus the ABI contract test. Exercise
-visual or behavioural changes with `zig build demo` in a running niri session
-(`DEMO_DENSE=1` adds a full grid with kitty images and resize traffic). Verify
-launch, width animation both ways, focus accent and cleanup when the launched
-command exits. Keep gutters aligned with the user's niri layout when changing
-defaults.
+Run `cargo test` after any change; it covers layout validation, the pty yield
+decision, the font/theme parser, the tween step, the FFI layouts against the
+pinned headers, and the `Panel` handle's error and panic-containment paths.
+Build the display-free inner handle rather than GTK for handle tests, and take
+the fd and terminal as parameters in `pty`/`term` tests, so the tests run
+without a display (`port-to-rust` D10). Tests that need a real compositor or
+GTK session are `#[ignore]`d and run explicitly. Exercise visual or
+behavioural changes with the demo example in a running niri session (`cargo
+run --example demo`; `DEMO_DENSE=1` adds a full grid with kitty images and
+resize traffic). Verify launch, width animation both ways, focus accent and
+cleanup when the launched command exits. Keep gutters aligned with the user's
+niri layout when changing defaults.
 
 ## Commit & Pull Request Guidelines
 
