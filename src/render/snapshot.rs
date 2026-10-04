@@ -314,6 +314,57 @@ mod tests {
         );
     }
 
+    /// A tween frame paints the whole widget: the theme background colour
+    /// node covers the full current bounds even though the retained node was
+    /// built at the pre-expansion width and is drawn translated to the docked
+    /// edge — the region the growing widget exposes left of the cached grid
+    /// is theme background, never unpainted backdrop.
+    #[test]
+    fn the_tween_frame_paints_the_exposed_region_with_the_background() {
+        let _font = font_lock::guard();
+        let mut draw_state = state();
+        let mut terminal = terminal();
+        terminal.push_pty_data(b"hello");
+
+        // The node is built on the tween's first frame, at the then-current
+        // (narrow) widget width.
+        let _ = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
+
+        // The widget has since grown; the cached node is drawn glued to the
+        // docked edge (`offset = width - grid_px`), so [0, 136) is exposed.
+        let mut frame = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 136, true);
+
+        // Every exposed pixel is the theme background (black here), not the
+        // surfaces' (40, 40, 40) backdrop an unpainted region would show.
+        {
+            let stride = frame.stride();
+            let data = frame.data().expect("surface data");
+            for y in 0..64i32 {
+                for x in 0..136i32 {
+                    let px = &data[(y * stride + x * 4) as usize..][..3];
+                    assert_eq!(
+                        (px[0], px[1], px[2]),
+                        (0, 0, 0),
+                        "pixel ({x}, {y}) is not the theme background"
+                    );
+                }
+            }
+        }
+
+        // And the cached node's content did land inside the grown widget: the
+        // frame is not just the background fill.
+        let mut bg_only = parity::backed_surface(200, 64, 1.0, parity::BACKDROP);
+        {
+            let cr = cairo::Context::new(&bg_only).expect("context");
+            cr.set_source_rgb(0.0, 0.0, 0.0);
+            let _ = cr.paint();
+        }
+        assert!(
+            parity::diff(&mut frame, &mut bg_only).differing > 0,
+            "the cached node was drawn inside the grown widget"
+        );
+    }
+
     /// A frame before the first `cell_metrics_update` has no fonts and a
     /// zero cell pitch: node emission reports `false` — tween and non-tween
     /// alike — and the cairo draw path draws the frame instead (render P2).

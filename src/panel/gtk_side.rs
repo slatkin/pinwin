@@ -398,6 +398,17 @@ fn build_glue(
                 let _ = guard_always(&poisoned, || pty.borrow().set_tween_active(active));
             })
         },
+        live_grid_px: {
+            let terminal = terminal.clone();
+            let link = link.clone();
+            Rc::new(move || {
+                // The terminal's current grid, not the applied cols: a tween
+                // defers the grid resize to its end, so mid-tween the two
+                // differ and the draw shift must follow the terminal.
+                link.with(|surfaces| i32::from(terminal.borrow().cols()) * surfaces.cell_w())
+                    .unwrap_or(0)
+            })
+        },
     };
     let surfaces = Surfaces::build(
         app,

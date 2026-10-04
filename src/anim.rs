@@ -259,7 +259,12 @@ impl Anim {
     /// Horizontal shift that keeps the grid against the docked edge while the
     /// surface is wider or narrower than the grid; zero when not animating
     /// (`glue_anim_draw_offset`). `area_width` is the drawing area's width,
-    /// `None` when the glue has no live area; `grid_px` is `cols * cell_w`.
+    /// `None` when the glue has no live area; `grid_px` is the terminal's
+    /// LIVE grid width — its current cols times the cell width. While a width
+    /// tween runs the applied cols are already the target (the grid resize is
+    /// deferred to the tween's end), so the caller must pass the live grid:
+    /// a shift computed from the target width walks the old grid off the
+    /// docked edge and the tween draws nothing but background.
     pub fn draw_offset(&self, side: Side, area_width: Option<i32>, grid_px: i32) -> i32 {
         match area_width {
             Some(width) if self.inner.tween.borrow().is_active() && side == Side::Right => {
@@ -524,6 +529,31 @@ mod tests {
         let mut tween = Tween::begin(320, 480, 1000);
         let _ = tween.advance(0);
         assert_eq!(tween.advance(500_000), Advance::Frame(460));
+    }
+
+    /// The shift is computed against the grid that is actually drawn — the
+    /// terminal's live grid, which lags the applied cols while a tween defers
+    /// its resize. Expanding a right-docked panel from 40 to 120 cols at a
+    /// 9px cell keeps the 360px live grid glued to the docked edge
+    /// (`width - 360`, positive and shrinking as the surface grows to meet
+    /// it); the 1080px target width would give a negative shift that draws
+    /// the old grid off the widget's left edge, leaving background only.
+    #[test]
+    fn the_tween_offset_follows_the_live_grid_not_the_target() {
+        let anim = Anim::new(Poisoned::new(), Recording::hooks(&Recording::new()));
+        anim.begin_state(360, 1080, 1000);
+        assert!(anim.active());
+
+        // Mid-expansion: the surface is 700px wide, the terminal still has
+        // the old 40 cols (360px), the applied cols are already 120 (1080px).
+        assert_eq!(anim.draw_offset(Side::Right, Some(700), 360), 340);
+        assert_eq!(anim.draw_offset(Side::Right, Some(700), 1080), -380);
+
+        // Collapse is the same contract the other way: the live grid is wider
+        // than the surface, so the shift is negative and clips the grid's
+        // left edge against the docked side.
+        anim.begin_state(1080, 360, 1000);
+        assert_eq!(anim.draw_offset(Side::Right, Some(700), 1080), -380);
     }
 
     /// Cancel stops the tween and fires the stop hook even when nothing ran,
