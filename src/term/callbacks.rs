@@ -5,11 +5,12 @@
 //! trampoline catches unwinds (D5), latching a poisoned flag so later calls
 //! become no-ops instead of unwinding into C.
 
+use std::cell::RefCell;
 use std::os::raw::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::slice;
-use std::sync::Mutex;
+use std::sync::Once;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{CallbackContext, Handles, KITTY_STORAGE_LIMIT};
@@ -21,28 +22,59 @@ use crate::ghostty_sys::terminal::{
 };
 use crate::ghostty_sys::{GHOSTTY_SUCCESS, GhosttyAllocator, ghostty_alloc};
 
-/// Install the process-global libghostty hooks before the terminal exists.
-/// libghostty wants these set once at startup; libghostty's own userdata slot
-/// is process-global, so when several terminals are built in one process the
-/// last one wins (the real application has exactly one).
-fn install_sys_hooks(userdata: *mut c_void) {
-    static SYS_HOOK_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = SYS_HOOK_LOCK
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    // SAFETY: `ghostty_sys_set` takes the option's value directly (sys.zig
-    // casts it to the option's `InType`): the userdata pointer itself and the
-    // decode function pointer.
-    unsafe {
-        let _ = ghostty_sys_set(GHOSTTY_SYS_OPT_USERDATA, userdata);
-        let _ = ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, decode_png as *const c_void);
-    }
+thread_local! {
+    /// Live terminal contexts on this thread, oldest first. The sys PNG hook
+    /// is process-global and receives no terminal argument, so [`decode_png`]
+    /// consults this registry. libghostty calls it synchronously from the
+    /// thread driving the terminal (D4 keeps a terminal on one thread), and
+    /// `Terminal` removes its context before freeing it, so a decode can never
+    /// observe a dangling pointer.
+    static DECODE_CONTEXTS: RefCell<Vec<*mut CallbackContext>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Record a terminal's context as a decode target on this thread.
+pub(super) fn register_decode_context(ctx: *mut CallbackContext) {
+    DECODE_CONTEXTS.with(|contexts| contexts.borrow_mut().push(ctx));
+}
+
+/// Stop routing decodes at a context before its `Terminal` frees it.
+pub(super) fn unregister_decode_context(ctx: *mut CallbackContext) {
+    DECODE_CONTEXTS.with(|contexts| contexts.borrow_mut().retain(|each| *each != ctx));
+}
+
+/// The context most recently registered on this thread, if any.
+fn current_decode_context() -> Option<*mut CallbackContext> {
+    DECODE_CONTEXTS.with(|contexts| contexts.borrow().last().copied())
+}
+
+/// A process-lifetime token installed as the libghostty sys userdata. It is a
+/// `static`, so no `Terminal` drop can leave the process-global slot dangling;
+/// the decode forwarder finds the live context through [`DECODE_CONTEXTS`]
+/// rather than through this pointer.
+static SYS_USERDATA: u8 = 0;
+
+/// Install the process-global libghostty hooks exactly once. libghostty wants
+/// these set once at startup and its userdata slot is process-global; the
+/// token above outlives every terminal, so later terminals never repoint it.
+fn install_sys_hooks() {
+    static INSTALLED: Once = Once::new();
+    INSTALLED.call_once(|| {
+        let userdata = &SYS_USERDATA as *const u8 as *mut c_void;
+        // SAFETY: `ghostty_sys_set` takes the option's value directly (sys.zig
+        // casts it to the option's `InType`): the stable userdata token and
+        // the decode function pointer.
+        unsafe {
+            let _ = ghostty_sys_set(GHOSTTY_SYS_OPT_USERDATA, userdata);
+            let _ = ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, decode_png as *const c_void);
+        }
+    });
 }
 
 /// The real creation path: install the global hooks, create the handles,
 /// attach the effect callbacks and the kitty storage limit.
 pub(super) fn init_ghostty(userdata: *mut c_void, cols: u16, rows: u16) -> Result<Handles, ()> {
-    install_sys_hooks(userdata);
+    install_sys_hooks();
     let handles = Handles::create(cols, rows)?;
     let terminal = handles.terminal.expect("create built a terminal");
 
@@ -218,21 +250,26 @@ unsafe extern "C" fn device_attributes(
 /// ghostty-allocated RGBA buffer (D5 guard).
 ///
 /// # Safety
-/// Called by libghostty with a `userdata` previously set to a live
-/// `CallbackContext`, a valid `allocator`, a readable `data`/`data_len` pair
-/// and a writable `out`.
+/// Called by libghostty with a valid `allocator`, a readable `data`/`data_len`
+/// pair and a writable `out`. The `userdata` argument is ignored: the forwarder
+/// resolves the live terminal through the per-thread registry, so the
+/// process-global sys slot never has to hold a droppable pointer.
 unsafe extern "C" fn decode_png(
-    userdata: *mut c_void,
+    _userdata: *mut c_void,
     allocator: *const GhosttyAllocator,
     data: *const u8,
     data_len: usize,
     out: *mut GhosttySysImage,
 ) -> bool {
-    if userdata.is_null() || out.is_null() {
+    if out.is_null() {
         return false;
     }
-    // SAFETY: the caller guarantees `userdata` points at the live context.
-    let ctx = unsafe { &mut *(userdata as *mut CallbackContext) };
+    let Some(ctx) = current_decode_context() else {
+        return false;
+    };
+    // SAFETY: the context stays registered on this thread until its `Terminal`
+    // frees it, so it is live for the duration of this call.
+    let ctx = unsafe { &mut *ctx };
     if ctx.poisoned.load(Ordering::Relaxed) {
         return false;
     }
@@ -267,4 +304,86 @@ unsafe extern "C" fn decode_png(
         true
     })
     .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+
+    use crate::term::{DecodedPng, PngDecoder, PtySink, Terminal};
+
+    /// A sink with nowhere to write; the decode tests only exercise the PNG
+    /// path.
+    struct NullSink;
+
+    impl PtySink for NullSink {
+        fn write_pty(&mut self, _data: &[u8]) {}
+    }
+
+    /// Counts decodes and yields its image once.
+    struct OneShotDecoder {
+        calls: Arc<AtomicUsize>,
+        image: Option<DecodedPng>,
+    }
+
+    impl PngDecoder for OneShotDecoder {
+        fn decode_png(&mut self, _data: &[u8]) -> Option<DecodedPng> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.image.take()
+        }
+    }
+
+    fn one_pixel() -> DecodedPng {
+        DecodedPng {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 0, 255],
+        }
+    }
+
+    /// The sys userdata is process-global and libghostty's only decode hook.
+    /// Building a second terminal and dropping it must not leave that hook
+    /// pointing at freed memory: the earlier terminal still answers a decode.
+    #[test]
+    fn dropping_a_newer_terminal_leaves_the_older_decode_context_live() {
+        let older_calls = Arc::new(AtomicUsize::new(0));
+        let newer_calls = Arc::new(AtomicUsize::new(0));
+
+        let mut older = Terminal::new(
+            NullSink,
+            OneShotDecoder {
+                calls: older_calls.clone(),
+                image: Some(one_pixel()),
+            },
+            || {},
+        );
+        let mut newer = Terminal::new(
+            NullSink,
+            OneShotDecoder {
+                calls: newer_calls.clone(),
+                image: Some(one_pixel()),
+            },
+            || {},
+        );
+        assert!(older.push_size(40, 24, 8, 16));
+        assert!(newer.push_size(40, 24, 8, 16));
+
+        drop(newer);
+
+        let mut out = GhosttySysImage {
+            width: 0,
+            height: 0,
+            data: ptr::null_mut(),
+            data_len: 0,
+        };
+        // SAFETY: `out` is writable and `data` is readable; the forwarder
+        // resolves the live context itself.
+        let ok = unsafe { decode_png(ptr::null_mut(), ptr::null(), b"png".as_ptr(), 3, &mut out) };
+        assert!(ok, "the surviving terminal answered the decode");
+        assert_eq!((out.width, out.height), (1, 1));
+        assert_eq!(older_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(newer_calls.load(Ordering::Relaxed), 0);
+    }
 }

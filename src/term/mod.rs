@@ -501,6 +501,7 @@ impl Terminal {
             return false;
         };
         let userdata = (&mut *self.ctx) as *mut CallbackContext as *mut c_void;
+        callbacks::register_decode_context(userdata as *mut CallbackContext);
         match init(userdata, self.ctx.cols, self.ctx.rows) {
             Ok(handles) => {
                 self.handles = Some(handles);
@@ -508,6 +509,7 @@ impl Terminal {
                 true
             }
             Err(()) => {
+                callbacks::unregister_decode_context(userdata as *mut CallbackContext);
                 self.init_failed = true;
                 false
             }
@@ -533,6 +535,14 @@ impl Terminal {
             self.early_pty_data.clear();
             (self.ctx.queue_draw)();
         }
+    }
+}
+
+/// Removing the context from the decode registry before the `Box` is freed
+/// keeps the process-global sys hook from ever seeing a dangling pointer.
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        callbacks::unregister_decode_context((&mut *self.ctx) as *mut CallbackContext);
     }
 }
 
