@@ -12,5 +12,5 @@
 
 ## 3. Verification on hardware
 
-- [ ] 3.1 Run a width tween under `GSK_RENDERER=ngl` and `GSK_RENDERER=cairo`; verify it completes with the grid positioned correctly and no visual regression in both
+- [x] 3.1 Run a width tween under `GSK_RENDERER=ngl` and `GSK_RENDERER=cairo`; verify it completes with the grid positioned correctly and no visual regression in both
 - [ ] 3.2 On the laptop, compare tween frame times before and after (frame-clock log from the tick callback); record the result in the change and verify the stutter is gone or note the remaining suspect
