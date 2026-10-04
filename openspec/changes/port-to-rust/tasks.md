@@ -32,7 +32,7 @@
 
 - [x] 6.1 Port the `layout` unit tests from `options_test.zig`: one table-driven test over the reachable `InvalidLayout` causes, side geometry and reservation, yield decision (D10).
 - [x] 6.2 Port from `pinwin_api_test.zig` only: `NotRunning`/`Internal` on a dead handle, `SIGWINCH` after a successful winsize ioctl, replay of pty data arriving before the terminal exists. Add one panic-containment test (a panic in a guarded closure yields `Err(Internal)`). Build these on the display-free inner handle and fd/terminal parameters described in D10 (D10).
-- [ ] 6.3 `cargo test` passes; `cargo build --examples` succeeds.
+- [x] 6.3 `cargo test` passes; `cargo build --examples` succeeds.
 
 ## 7. Remove old code (only after 3–6 are done)
 
