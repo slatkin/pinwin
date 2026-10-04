@@ -11,7 +11,6 @@
 //! Ghostty's real config syntax, and `sscanf` does the tokenizing); the port
 //! reproduces those quirks rather than "fixing" them, and the tests pin them.
 
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -180,16 +179,12 @@ fn load_theme_colours_at(config_dir: &Path) -> ThemeColours {
     colours
 }
 
-/// `$XDG_CONFIG_HOME` when set and non-empty (GLib uses it verbatim, even
-/// when relative), else `$HOME/.config`.
+/// `g_get_user_config_dir`: `$XDG_CONFIG_HOME` when set and non-empty (GLib
+/// uses it verbatim, even when relative), else `$HOME/.config`, falling back
+/// to the passwd entry when `$HOME` is unset. Delegating keeps the fallback
+/// identical to the C code; the parsing functions stay pure.
 fn user_config_dir() -> PathBuf {
-    if let Some(xdg) = env::var_os("XDG_CONFIG_HOME")
-        && !xdg.is_empty()
-    {
-        return PathBuf::from(xdg);
-    }
-    let home = env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join(".config")
+    gtk4::glib::user_config_dir()
 }
 
 /// `g_file_get_contents`, loosely: read the file if it exists and is
@@ -283,7 +278,8 @@ fn scan_config_line(line: &str) -> Option<(&str, &str)> {
     if i == value_start {
         return None;
     }
-    Some((key, &line[value_start..i]))
+    let value_end = floor_char_boundary(line, i);
+    Some((key, &line[value_start..value_end]))
 }
 
 /// The C `sscanf(line, " %31[a-z-] = %31s", ...)`: a key and a
@@ -298,7 +294,8 @@ fn scan_theme_colour_line(line: &str) -> Option<(&str, &str)> {
     if i == value_start {
         return None;
     }
-    Some((key, &line[value_start..i]))
+    let value_end = floor_char_boundary(line, i);
+    Some((key, &line[value_start..value_end]))
 }
 
 /// One `%2x` conversion: an optional sign and one or two hex digits. Like the
@@ -352,17 +349,23 @@ fn unquote(value: &str) -> &str {
     }
 }
 
+/// Clamp `end` down to the nearest `char` boundary of `value`: the byte caps
+/// above reproduce C's `%255[^#]` / `%31s` widths, but slicing a `str` there
+/// must not cut a multi-byte character in half.
+fn floor_char_boundary(value: &str, mut end: usize) -> usize {
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
+}
+
 /// `snprintf(theme_name, 128, "%s", value)`: at most 127 bytes, cut on a
 /// character boundary so the result stays a valid `String`.
 fn truncate_theme_name(value: &str) -> String {
     if value.len() <= 127 {
         return value.to_string();
     }
-    let mut end = 127;
-    while end > 0 && !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value[..end].to_string()
+    value[..floor_char_boundary(value, 127)].to_string()
 }
 
 /// `g_ascii_strstrip`: trim ASCII whitespace only (the C code never trims
@@ -497,6 +500,7 @@ fn parse_hex_float(rest: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     fn temp_config_dir(tag: &str) -> PathBuf {
         let dir = env::temp_dir().join(format!("pinwin-fontconfig-{tag}-{}", std::process::id()));
@@ -720,5 +724,60 @@ mod tests {
         let mut colours = ThemeColours::default();
         let theme = parse_theme_config(&format!("theme = {name}\n"), &mut colours);
         assert_eq!(theme.as_deref(), Some("x".repeat(127).as_str()));
+    }
+
+    #[test]
+    fn config_value_scan_does_not_split_a_multibyte_char_at_the_255_byte_cap() {
+        // The `%255[^#]` width cuts the value at byte 255; a CJK value that
+        // straddles that offset must truncate on a boundary instead of
+        // panicking. Prefix lengths that are not multiples of 3 shift the
+        // straddle past the cap.
+        for prefix in [1usize, 2, 4, 5] {
+            let value = format!("{}{}", "a".repeat(prefix), "漢".repeat(90));
+            let line = format!("theme = {value}");
+            let (key, scanned) = scan_config_line(&line).expect("line should scan");
+            assert_eq!(key, "theme");
+            assert!(scanned.len() <= 255, "prefix {prefix}: {}", scanned.len());
+            assert!(scanned.is_char_boundary(scanned.len()));
+            assert!(value.starts_with(scanned));
+        }
+    }
+
+    #[test]
+    fn cjk_font_family_and_theme_values_over_255_bytes_do_not_panic() {
+        // A `font-family` line with a long CJK value is scanned (and
+        // discarded) on the way to reading `theme`; it must not panic.
+        let family = "漢".repeat(90);
+        let mut colours = ThemeColours::default();
+        let theme = parse_theme_config(&format!("font-family = {family}\n"), &mut colours);
+        assert_eq!(theme, None);
+
+        // A long CJK theme name is cut at 255 bytes, then at 127; both cuts
+        // land on a char boundary.
+        let name = format!("a{}", "漢".repeat(100));
+        let mut colours = ThemeColours::default();
+        let theme =
+            parse_theme_config(&format!("theme = {name}\n"), &mut colours).expect("theme key");
+        assert_eq!(theme, format!("a{}", "漢".repeat(42)));
+    }
+
+    #[test]
+    fn theme_colour_scan_does_not_split_a_multibyte_char_at_the_31_byte_cap() {
+        // The `%31s` width cuts the colour value at byte 31; a CJK value that
+        // straddles that offset must truncate on a boundary, and the line
+        // must simply not produce a colour.
+        for prefix in [0usize, 1, 2, 4, 5] {
+            let value = format!("{}{}", "a".repeat(prefix), "漢".repeat(20));
+            let line = format!("background = {value}");
+            let (key, scanned) = scan_theme_colour_line(&line).expect("line should scan");
+            assert_eq!(key, "background");
+            assert!(scanned.len() <= 31, "prefix {prefix}: {}", scanned.len());
+            assert!(scanned.is_char_boundary(scanned.len()));
+            assert!(value.starts_with(scanned));
+
+            let mut colours = ThemeColours::default();
+            parse_theme_file(&format!("background = {value}\n"), &mut colours);
+            assert_eq!(colours, ThemeColours::default());
+        }
     }
 }
