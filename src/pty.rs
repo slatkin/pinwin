@@ -220,13 +220,15 @@ pub struct Pty {
 
 impl Pty {
     /// Take the host-supplied master fd and the current cell size.
-    pub fn new(fd: RawFd, cell_w: u32, cell_h: u32) -> Self {
+    /// `poisoned` is the panel's shared D5 latch: a read-source panic latches
+    /// it so the rest of the panel's glue code stops too.
+    pub fn new(poisoned: Poisoned, fd: RawFd, cell_w: u32, cell_h: u32) -> Self {
         Pty {
             fd: Arc::new(AtomicI32::new(fd)),
             cell_w,
             cell_h,
             tween_active: Arc::new(AtomicBool::new(false)),
-            poisoned: Poisoned::new(),
+            poisoned,
             source: Arc::new(AtomicU32::new(0)),
             attached: false,
         }
@@ -625,7 +627,7 @@ mod tests {
     /// A writer over a retired fd slot is a no-op, like `g_pty_fd < 0`.
     #[test]
     fn writer_over_a_retired_fd_writes_nothing() {
-        let pty = Pty::new(-1, 8, 16);
+        let pty = Pty::new(Poisoned::new(), -1, 8, 16);
         assert!(pty.hung_up());
         let mut writer = pty.writer();
         writer.write_pty(b"gone");
@@ -725,7 +727,7 @@ mod tests {
     fn attach_installs_the_source_and_initial_winsize() {
         let master = pty_master();
         let raw = master.as_raw_fd();
-        let mut pty = Pty::new(raw, 8, 16);
+        let mut pty = Pty::new(Poisoned::new(), raw, 8, 16);
         let fed = Arc::new(AtomicUsize::new(0));
         let fed_for_feed = fed.clone();
         let seen = sigwinch_during(|| {
@@ -767,7 +769,7 @@ mod tests {
     /// Attaching an already-retired fd is an error, not a panic.
     #[test]
     fn attach_with_a_dead_fd_is_an_error() {
-        let mut pty = Pty::new(-1, 8, 16);
+        let mut pty = Pty::new(Poisoned::new(), -1, 8, 16);
         assert!(pty.attach(80, 24, |_| {}).is_err());
         assert!(!pty.attached());
     }
@@ -775,7 +777,7 @@ mod tests {
     /// Resizing a retired fd is a no-op, like `g_pty_fd < 0`.
     #[test]
     fn resize_over_a_retired_fd_is_a_noop() {
-        let pty = Pty::new(-1, 8, 16);
+        let pty = Pty::new(Poisoned::new(), -1, 8, 16);
         pty.resize(80, 24);
     }
 }

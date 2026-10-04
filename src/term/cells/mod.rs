@@ -565,7 +565,7 @@ mod tests {
     }
 
     fn terminal() -> Terminal {
-        let mut terminal = Terminal::new(NullSink, NoDecoder, || {});
+        let mut terminal = Terminal::new(crate::guard::Poisoned::new(), NullSink, NoDecoder, || {});
         assert!(terminal.push_size(40, 24, 8, 16));
         terminal
     }
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn frame_begin_needs_a_terminal_and_end_cleans_it() {
-        let mut terminal = Terminal::new(NullSink, NoDecoder, || {});
+        let mut terminal = Terminal::new(crate::guard::Poisoned::new(), NullSink, NoDecoder, || {});
         assert!(!terminal.frame_begin(), "no terminal yet");
         assert!(terminal.cell_next().is_none());
         assert!(terminal.image_next().is_none());

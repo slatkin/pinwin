@@ -473,7 +473,12 @@ mod tests {
     /// A terminal sized 40x24 at 8x16 pixels, plus the bytes it wrote.
     fn new_terminal() -> (Terminal, Arc<Mutex<Vec<u8>>>) {
         let writes = Arc::new(Mutex::new(Vec::new()));
-        let mut terminal = Terminal::new(RecordingSink(writes.clone()), NoDecoder, || {});
+        let mut terminal = Terminal::new(
+            crate::guard::Poisoned::new(),
+            RecordingSink(writes.clone()),
+            NoDecoder,
+            || {},
+        );
         assert!(terminal.push_size(40, 24, 8, 16));
         (terminal, writes)
     }
@@ -547,7 +552,12 @@ mod tests {
     #[test]
     fn key_before_init_is_dropped() {
         let writes = Arc::new(Mutex::new(Vec::new()));
-        let mut terminal = Terminal::new(RecordingSink(writes.clone()), NoDecoder, || {});
+        let mut terminal = Terminal::new(
+            crate::guard::Poisoned::new(),
+            RecordingSink(writes.clone()),
+            NoDecoder,
+            || {},
+        );
         terminal.push_key(key(KeyAction::Press));
         assert!(take(&writes).is_empty());
     }

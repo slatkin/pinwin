@@ -1,9 +1,11 @@
 //! pinwin library (port-to-rust).
 //!
-//! the `Panel` API (D4, D6) and the remaining ported modules arrive in tasks
-//! 3 and 4; everything below is scaffolding. `guard` is the shared D5 panic
-//! guard; `ghostty_sys` holds the hand-written FFI against the pinned
-//! libghostty-vt (D2).
+//! The public API is the [`Panel`] handle and its [`PinwinError`] results
+//! (D4, D6): start takes a host-owned pty fd and a full layout, applies run
+//! through the handle, and dropping it closes the panel. The `panel` module
+//! owns the GTK-thread lifecycle; the ported modules below are its parts —
+//! `guard` is the shared D5 panic guard, `ghostty_sys` the hand-written FFI
+//! against the pinned libghostty-vt (D2).
 
 pub mod anim;
 pub mod fontconfig;
@@ -12,7 +14,10 @@ pub mod guard;
 pub mod input;
 pub mod layout;
 pub mod nerd_font;
+pub mod panel;
 pub mod pty;
 pub mod render;
 pub mod surfaces;
 pub mod term;
+
+pub use panel::{Panel, PinwinError};

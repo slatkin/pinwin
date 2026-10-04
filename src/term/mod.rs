@@ -249,13 +249,17 @@ pub struct Terminal {
 
 impl Terminal {
     /// Build a terminal that lazily creates its handles on the first
-    /// [`Terminal::push_size`].
+    /// [`Terminal::push_size`]. `poisoned` is the owner's shared D5 latch: a
+    /// panic in an effect-callback trampoline latches it so the rest of the
+    /// panel's glue code stops too.
     pub fn new(
+        poisoned: Poisoned,
         sink: impl PtySink + 'static,
         decoder: impl PngDecoder + 'static,
         queue_draw: impl Fn() + 'static,
     ) -> Self {
         Self::with_init(
+            poisoned,
             Box::new(sink),
             Box::new(decoder),
             Box::new(queue_draw),
@@ -264,6 +268,7 @@ impl Terminal {
     }
 
     fn with_init(
+        poisoned: Poisoned,
         sink: Box<dyn PtySink>,
         decoder: Box<dyn PngDecoder>,
         queue_draw: Box<dyn Fn()>,
@@ -275,7 +280,7 @@ impl Terminal {
                 sink,
                 decoder,
                 queue_draw,
-                poisoned: Poisoned::new(),
+                poisoned,
                 cols: DEFAULT_COLS,
                 rows: DEFAULT_ROWS,
                 cell_w: 1,
@@ -644,9 +649,10 @@ mod tests {
         let (sink, writes) = RecordingSink::pair();
         let draws = Arc::new(AtomicUsize::new(0));
         let draws_for_push = draws.clone();
-        let mut terminal = Terminal::new(sink, NoDecoder, move || {
-            draws_for_push.fetch_add(1, Ordering::Relaxed);
-        });
+        let mut terminal =
+            Terminal::new(crate::guard::Poisoned::new(), sink, NoDecoder, move || {
+                draws_for_push.fetch_add(1, Ordering::Relaxed);
+            });
 
         terminal.push_pty_data(b"\x1b[c");
         assert!(!terminal.initialized());
@@ -668,6 +674,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_for_init = calls.clone();
         let mut terminal = Terminal::with_init(
+            Poisoned::new(),
             Box::new(RecordingSink::new()),
             Box::new(NoDecoder),
             Box::new(|| {}),
@@ -695,7 +702,12 @@ mod tests {
     /// Sizes are clamped to at least 1 on every dimension.
     #[test]
     fn size_clamps_to_at_least_one() {
-        let mut terminal = Terminal::new(RecordingSink::new(), NoDecoder, || {});
+        let mut terminal = Terminal::new(
+            crate::guard::Poisoned::new(),
+            RecordingSink::new(),
+            NoDecoder,
+            || {},
+        );
         assert!(terminal.push_size(0, -3, 0, -7));
         assert_eq!(
             (
@@ -723,7 +735,7 @@ mod tests {
     #[test]
     fn write_pty_trampoline_delivers_bytes() {
         let (sink, writes) = RecordingSink::pair();
-        let mut terminal = Terminal::new(sink, NoDecoder, || {});
+        let mut terminal = Terminal::new(crate::guard::Poisoned::new(), sink, NoDecoder, || {});
         assert!(terminal.push_size(40, 24, 8, 16));
         terminal.push_pty_data(b"\x1b[c");
         assert_eq!(
@@ -736,7 +748,12 @@ mod tests {
     /// terminal is poisoned and the process keeps running.
     #[test]
     fn panicking_sink_poisons_and_does_not_abort() {
-        let mut terminal = Terminal::new(PanickingSink, NoDecoder, || {});
+        let mut terminal = Terminal::new(
+            crate::guard::Poisoned::new(),
+            PanickingSink,
+            NoDecoder,
+            || {},
+        );
         assert!(terminal.push_size(40, 24, 8, 16));
         assert!(!terminal.poisoned());
         terminal.push_pty_data(b"\x1b[c");

@@ -344,6 +344,7 @@ mod tests {
         let newer_calls = Arc::new(AtomicUsize::new(0));
 
         let mut older = Terminal::new(
+            crate::guard::Poisoned::new(),
             NullSink,
             OneShotDecoder {
                 calls: older_calls.clone(),
@@ -352,6 +353,7 @@ mod tests {
             || {},
         );
         let mut newer = Terminal::new(
+            crate::guard::Poisoned::new(),
             NullSink,
             OneShotDecoder {
                 calls: newer_calls.clone(),
@@ -398,6 +400,7 @@ mod tests {
     fn decode_png_rejects_a_buffer_that_disagrees_with_the_dimensions() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut terminal = Terminal::new(
+            crate::guard::Poisoned::new(),
             NullSink,
             ScriptedDecoder {
                 calls: calls.clone(),

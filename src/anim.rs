@@ -171,9 +171,10 @@ impl Anim {
         self.inner.tween_flag.load(Ordering::Relaxed)
     }
 
-    /// The tween flag to relay into `Pty::set_tween_active`. The glue relays
-    /// every state change through its `set_tween_active` hook; this shared
-    /// flag is the value that relay carries.
+    /// Mirror of the tween state for the pty read drain: `active()` reads
+    /// this instead of the GTK tween state (D4), and the glue relays the same
+    /// values to `Pty::set_tween_active` through its `set_tween_active` hook
+    /// at every state change.
     pub fn tween_flag(&self) -> Arc<AtomicBool> {
         self.inner.tween_flag.clone()
     }

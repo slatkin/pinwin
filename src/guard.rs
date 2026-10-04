@@ -54,8 +54,9 @@ impl Poisoned {
 ///
 /// Returns `Err(poisoned)` when the flag was already latched — the body does
 /// not run — or when `body` panicked; the panic payload is described on
-/// stderr before the latch. The `Err` value is the shared flag itself, so a
-/// caller (row 4.1's `Panel`) can map it onto its own error type.
+/// stderr before the latch. The `Err` value is the shared flag itself, so the
+/// `Panel` in [`crate::panel`] maps it onto `PinwinError::Internal` at every
+/// public entry point (D5: a panic reports Internal, never NotRunning).
 pub fn guard<T>(poisoned: &Poisoned, body: impl FnOnce() -> T) -> Result<T, Poisoned> {
     if poisoned.is_poisoned() {
         return Err(poisoned.clone());

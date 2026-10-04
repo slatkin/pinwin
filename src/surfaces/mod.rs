@@ -1,7 +1,8 @@
 //! The layer-shell surfaces (port-to-rust D3): the visible panel plus its
 //! transparent reservation, the layout application and publishing. Ported from
-//! `src/glue.c`, whose lifecycle half (GTK init, the start handshake) arrives
-//! with the `panel` row (task 4.1) on top of [`init`] and [`Surfaces::build`].
+//! `src/glue.c`; the lifecycle half (the process-lifetime GTK thread, the
+//! start handshake and the `Panel` handle) lives in [`crate::panel`], which
+//! drives [`init`] and [`Surfaces::build`] per start.
 //!
 //! Layout types come from [`crate::layout`]; a monitor with degenerate metrics
 //! maps to the invalid-layout verdict (port-to-rust D6), as `glue.c`
@@ -156,19 +157,18 @@ fn keyboard_mode(keyboard: Keyboard) -> LayerKeyboardMode {
 /// GTK and layer-shell initialisation (`glue_init` minus the state it stored
 /// into globals: the startup layout, keyboard mode and accent go to
 /// [`Surfaces::build`], and the theme colours are render state, row 3.6).
-/// Run once on the GTK thread before any surface exists.
-pub fn init() -> Result<gtk4::Application, InitFailure> {
+/// Run on the GTK thread before any surface exists. `app_id` is the per-start
+/// application id the panel hands out (D4: every start runs its own
+/// `GtkApplication` with a distinct id); `NON_UNIQUE` keeps the id off the
+/// session bus so consecutive panels cannot collide.
+pub fn init(app_id: Option<&str>) -> Result<gtk4::Application, InitFailure> {
     gtk4::init().map_err(|_| InitFailure::GtkInit)?;
     if !layer_shell::is_supported() {
         return Err(InitFailure::LayerShell);
     }
-    // The application id is deliberately absent (NULL in the C): the panel is
-    // a layer surface, not an application the shell shows (D4's per-start
-    // distinct ids are handed out by the panel row). DEFAULT_FLAGS is the
-    // zero flags value.
     Ok(gtk4::Application::new(
-        None::<&str>,
-        gtk4::gio::ApplicationFlags::empty(),
+        app_id,
+        gtk4::gio::ApplicationFlags::NON_UNIQUE,
     ))
 }
 
@@ -250,6 +250,7 @@ impl Surfaces {
         keyboard: Keyboard,
         accent: Option<Accent>,
         hooks: SurfaceHooks,
+        poisoned: Poisoned,
     ) -> Rc<Surfaces> {
         let win = gtk4::ApplicationWindow::new(app);
         win.init_layer_shell();
@@ -257,7 +258,6 @@ impl Surfaces {
         win.set_layer(Layer::Overlay);
         win.set_keyboard_mode(keyboard_mode(keyboard));
 
-        let poisoned = Poisoned::new();
         let area = gtk4::DrawingArea::new();
         if let Some(draw) = hooks.draw.clone() {
             let draw_poisoned = poisoned.clone();
@@ -353,6 +353,23 @@ impl Surfaces {
     /// [`Surfaces::build`], with the links the panel composed.
     pub fn attach_input(&self, links: input::InputLinks) {
         input::attach(&self.area, links);
+    }
+
+    /// The applied column count (`g_cols`).
+    pub fn cols(&self) -> u16 {
+        self.cols.get()
+    }
+
+    /// The horizontal cell pitch in pixels from the last measurement
+    /// (`g_cell_w`).
+    pub fn cell_w(&self) -> i32 {
+        self.cell_w.get()
+    }
+
+    /// The vertical cell pitch in pixels from the last measurement
+    /// (`g_cell_h`).
+    pub fn cell_h(&self) -> i32 {
+        self.cell_h.get()
     }
 
     /// The applied width in pixels (`g_cols * g_cell_w`).

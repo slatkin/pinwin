@@ -51,8 +51,14 @@ pub struct DrawState {
 
 impl DrawState {
     /// A draw state with the theme colours from the Ghostty config and the
-    /// startup accent (`glue_init`'s `g_theme_*` and `g_accent`).
-    pub fn new(accent: Option<Accent>, theme: crate::fontconfig::ThemeColours) -> DrawState {
+    /// startup accent (`glue_init`'s `g_theme_*` and `g_accent`). `poisoned`
+    /// is the panel's shared D5 latch: a draw panic latches it so the rest of
+    /// the panel's glue code stops too.
+    pub fn new(
+        poisoned: Poisoned,
+        accent: Option<Accent>,
+        theme: crate::fontconfig::ThemeColours,
+    ) -> DrawState {
         DrawState {
             theme_background: Rgb {
                 r: theme.background[0],
@@ -66,7 +72,7 @@ impl DrawState {
             },
             accent,
             focused: false,
-            poisoned: Poisoned::new(),
+            poisoned,
             fonts: None,
             cell_metrics: CellMetrics::default(),
             grid_cache: None,
@@ -149,6 +155,17 @@ impl DrawState {
         set_rgb(cr, &self.theme_background);
         cr.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
         let _ = cr.fill();
+
+        // A draw before the first `cell_metrics_update` has no fonts and a
+        // zero cell pitch: the grid pass would divide by zero. In the glue the
+        // metrics update runs from the widget's pango context before the first
+        // draw (glue.c `on_activate`), so this is the never-expected state;
+        // degraded (no metrics yet) draws keep the background and the accent
+        // and stop there instead of panicking or poisoning (render P2).
+        if self.fonts.is_none() || self.cell_metrics.cell_h <= 0 {
+            self.draw_focus_accent(cr, width, height);
+            return;
+        }
 
         if animating && let Some(cache) = self.grid_cache_ensure(cr, terminal, height) {
             let offset = f64::from(draw_offset);
@@ -471,14 +488,14 @@ mod tests {
     }
 
     fn terminal() -> Terminal {
-        let mut terminal = Terminal::new(NullSink, NoDecoder, || {});
+        let mut terminal = Terminal::new(crate::guard::Poisoned::new(), NullSink, NoDecoder, || {});
         assert!(terminal.push_size(8, 4, 8, 16));
         terminal
     }
 
     fn state() -> DrawState {
         use pango::prelude::FontMapExt as _;
-        let mut state = DrawState::new(None, ThemeColours::default());
+        let mut state = DrawState::new(Poisoned::new(), None, ThemeColours::default());
         // The default font map, like the GTK widget's context in production.
         let context = pangocairo::FontMap::default().create_context();
         state.cell_metrics_update(&context);
@@ -524,6 +541,7 @@ mod tests {
     fn draw_fills_the_background_with_the_theme() {
         let _font = font();
         let mut state = DrawState::new(
+            Poisoned::new(),
             None,
             ThemeColours {
                 background: [10, 20, 30],
@@ -570,7 +588,7 @@ mod tests {
     fn focus_accent_draws_only_when_focused_and_enabled() {
         let _font = font();
         let accent = Some(Accent::new([255, 0, 0], NonZeroU16::new(2).unwrap()));
-        let mut state = DrawState::new(accent, ThemeColours::default());
+        let mut state = DrawState::new(Poisoned::new(), accent, ThemeColours::default());
         let context = pangocairo::FontMap::default().create_context();
         state.cell_metrics_update(&context);
         let mut terminal = terminal();
@@ -592,7 +610,7 @@ mod tests {
         );
 
         // Focused: the border is accent red, the centre is background.
-        let mut focused_state = DrawState::new(accent, ThemeColours::default());
+        let mut focused_state = DrawState::new(Poisoned::new(), accent, ThemeColours::default());
         let context = pangocairo::FontMap::default().create_context();
         focused_state.cell_metrics_update(&context);
         focused_state.set_focused(true);
@@ -675,6 +693,7 @@ mod tests {
     fn cells_without_an_explicit_foreground_use_the_theme() {
         let _font = font();
         let mut state = DrawState::new(
+            Poisoned::new(),
             None,
             ThemeColours {
                 background: [0, 0, 0],
@@ -697,7 +716,7 @@ mod tests {
     #[test]
     fn draw_without_a_terminal_is_a_background_only() {
         let _font = font();
-        let mut terminal = Terminal::new(NullSink, NoDecoder, || {});
+        let mut terminal = Terminal::new(crate::guard::Poisoned::new(), NullSink, NoDecoder, || {});
         let mut plain = drawn_after(state(), &mut terminal, 32, 32, 0, false);
         plain.flush();
         let data = plain.data().unwrap();
