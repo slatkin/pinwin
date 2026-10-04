@@ -8,7 +8,6 @@
 //! stroked rectangle, which is geometrically the four 1 px bands the node
 //! emitter fills — same pixels, different primitives, so [`cursor_shape`]
 //! hands the cairo side the stroke rectangle and the node side decomposes it.
-
 use gtk4::prelude::SnapshotExt as _;
 
 use super::DrawState;
@@ -16,28 +15,55 @@ use super::metrics::CellMetrics;
 use super::nodes::{emit_cell_text, rgba};
 use crate::term::cells::{Cell, Cursor, CursorStyle, StyleFlags};
 
-/// The decorations `cell`'s style bits ask for, as the rectangles the node
-/// emitter fills. The cairo painter strokes each rectangle's horizontal
-/// centre line with a 1 px line, which covers exactly the same band, so the
-/// two painters share these numbers.
-pub(crate) fn decoration_rects(
+/// The underline band `cell`'s UNDERLINE flag asks for, as the rectangle
+/// the node emitter fills and the cairo painter strokes along its
+/// horizontal centre line — the stroke covers exactly the band, so the
+/// two painters share these numbers. `None` when the flag is unset; the
+/// split (instead of a shared list) keeps the per-cell pass
+/// allocation-free (gsk-render-nodes U3 review).
+pub(crate) fn underline_rect(
     cell: &Cell,
     cell_metrics: &CellMetrics,
-) -> Vec<(f64, f64, f64, f64)> {
-    let mut rects = Vec::with_capacity(2);
-    let x = f64::from(cell.x) * f64::from(cell_metrics.cell_w);
-    let y = f64::from(cell.y) * f64::from(cell_metrics.cell_h);
-    let w = f64::from(cell_metrics.cell_w);
-    if cell.flags.contains(StyleFlags::UNDERLINE) {
-        // The stroke's centre line sits 1.5 px below the cell's top plus the
-        // ascent, so the band is [y + ascent + 1, y + ascent + 2).
-        rects.push((x, y + f64::from(cell_metrics.ascent) + 1.0, w, 1.0));
+) -> Option<(f64, f64, f64, f64)> {
+    if !cell.flags.contains(StyleFlags::UNDERLINE) {
+        return None;
     }
-    if cell.flags.contains(StyleFlags::STRIKETHROUGH) {
-        // Centred on the cell's mid-line.
-        rects.push((x, y + f64::from(cell_metrics.cell_h) / 2.0 - 0.5, w, 1.0));
+    Some(underline_strikethrough_rect(
+        cell,
+        cell_metrics,
+        f64::from(cell_metrics.ascent) + 1.0,
+    ))
+}
+
+/// The strikethrough band `cell`'s STRIKETHROUGH flag asks for, centred on
+/// the cell's mid-line. `None` when the flag is unset.
+pub(crate) fn strikethrough_rect(
+    cell: &Cell,
+    cell_metrics: &CellMetrics,
+) -> Option<(f64, f64, f64, f64)> {
+    if !cell.flags.contains(StyleFlags::STRIKETHROUGH) {
+        return None;
     }
-    rects
+    Some(underline_strikethrough_rect(
+        cell,
+        cell_metrics,
+        f64::from(cell_metrics.cell_h) / 2.0 - 0.5,
+    ))
+}
+
+/// The 1 px band across `cell` whose top edge sits `top` px below the
+/// cell's top, spanning the cell's width.
+fn underline_strikethrough_rect(
+    cell: &Cell,
+    cell_metrics: &CellMetrics,
+    top: f64,
+) -> (f64, f64, f64, f64) {
+    (
+        f64::from(cell.x) * f64::from(cell_metrics.cell_w),
+        f64::from(cell.y) * f64::from(cell_metrics.cell_h) + top,
+        f64::from(cell_metrics.cell_w),
+        1.0,
+    )
 }
 
 /// The cursor's shape as the cairo painter and the node emitter draw it
@@ -72,7 +98,10 @@ pub(crate) fn emit_decorations(
     colour: &gtk4::gdk::RGBA,
 ) {
     use gtk4::graphene;
-    for (x, y, w, h) in decoration_rects(cell, cell_metrics) {
+    for (x, y, w, h) in underline_rect(cell, cell_metrics)
+        .into_iter()
+        .chain(strikethrough_rect(cell, cell_metrics))
+    {
         snapshot.append_color(
             colour,
             &graphene::Rect::new(x as f32, y as f32, w as f32, h as f32),

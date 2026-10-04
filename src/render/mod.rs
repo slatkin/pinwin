@@ -274,11 +274,14 @@ impl DrawState {
                 || cell.flags.contains(StyleFlags::STRIKETHROUGH)
             {
                 // The same rectangles the node emitter fills
-                // (node_cursor::decoration_rects), stroked as their
-                // centre lines — identical geometry, so the two painters
-                // cannot drift.
+                // (node_cursor::underline_rect/strikethrough_rect), stroked
+                // as their centre lines — identical geometry, so the two
+                // painters cannot drift.
                 cr.set_line_width(1.0);
-                for (x, y, w, h) in node_cursor::decoration_rects(&cell, &cell_metrics) {
+                for (x, y, w, h) in node_cursor::underline_rect(&cell, &cell_metrics)
+                    .into_iter()
+                    .chain(node_cursor::strikethrough_rect(&cell, &cell_metrics))
+                {
                     cr.move_to(x, y + h / 2.0);
                     cr.line_to(x + w, y + h / 2.0);
                     let _ = cr.stroke();
