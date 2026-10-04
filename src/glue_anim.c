@@ -49,6 +49,10 @@ static void anim_stop(int in_tick, int in_watchdog) {
     a.watchdog_id = 0;
     a.widget = NULL;
     a.active = 0;
+    /* The tween frame cache belongs to the tween: drop it so the next draw
+     * takes the ordinary full-render path and the surface is not held. */
+    render_grid_cache_drop();
+    glue_grid_resize_deferred_fire();
 }
 
 void glue_anim_cancel(void) { anim_stop(0, 0); }

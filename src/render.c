@@ -24,6 +24,8 @@ void cell_metrics_update(GtkWidget* widget) {
     PangoFontMetrics* metrics;
     int32_t digit;
 
+    render_grid_cache_drop(); /* cell size may change: any cache is stale */
+
     if (!g_font) {
         char* family;
         double size;
@@ -560,29 +562,18 @@ static void draw_cursor(cairo_t* cr, const PinwinCursor* cursor, const char* tex
 
 /* ---- draw callback ------------------------------------------------------ */
 
-void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
-             gpointer user_data) {
-    uint8_t bg[3], fg[3];
+/* Renders the terminal grid (cells, sprites, text, cursor and images) into
+ * `cr`. The caller has already translated to the docked edge when a tween is
+ * running; `height` is the grid-relative height (the last row's background
+ * fill runs to it). */
+static void render_grid(cairo_t* cr, int height) {
     PinwinCell cell;
     PinwinCursor cursor;
     char cursor_text[32];
     int cursor_text_len = 0;
     int have_cursor_text = 0;
 
-    (void)area;
-    (void)user_data;
-
-    if (g_layout_latch) resolve_layout_monitor();
-
-    pinwin_colors(bg, fg);
-    set_rgb(cr, g_theme_bg[0], g_theme_bg[1], g_theme_bg[2]);
-    cairo_rectangle(cr, 0, 0, width, height);
-    cairo_fill(cr);
-
     if (!pinwin_frame_begin()) return;
-
-    /* While a width tween runs, keep the grid against the docked edge. */
-    cairo_translate(cr, glue_anim_draw_offset(), 0);
 
     PangoLayout* layout = pango_cairo_create_layout(cr);
 
@@ -645,6 +636,103 @@ void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
 
     draw_images(cr);
 
+    pinwin_frame_end();
+}
+
+/* ---- tween frame cache --------------------------------------------------- */
+
+/* While a width tween runs, every frame would redraw the full target grid
+ * through Pango -- tens of milliseconds on a full grid, which starves the
+ * frame clock and collapses the tween into one late jump. Render the grid
+ * once per tween into an image surface (the grid is resized target-first at
+ * t0, design D3, so the cache starts correct) and blit it at the dock offset
+ * per frame instead. Content that changes while the tween runs shows when the
+ * tween ends and the ordinary draw path resumes; a 200 ms stale window is
+ * invisible next to the cost it avoids. */
+static cairo_surface_t* s_grid_cache;
+static int32_t s_grid_cache_cols;
+static int s_grid_cache_height;
+
+void render_grid_cache_drop(void) {
+    cairo_surface_destroy(s_grid_cache);
+    s_grid_cache = NULL;
+    s_grid_cache_cols = 0;
+    s_grid_cache_height = 0;
+}
+
+/* The cache for this tween frame, or NULL to fall back to the ordinary full
+ * render. Drawn in logical (cell-grid) coordinates; the source surface's
+ * device scale keeps the blit crisp under fractional output scales. */
+static cairo_surface_t* grid_cache_ensure(cairo_t* target, int height) {
+    double sx = 1.0, sy = 1.0;
+    cairo_t* cache_cr;
+
+    if (s_grid_cache && s_grid_cache_cols == g_cols &&
+        s_grid_cache_height == height)
+        return s_grid_cache;
+    render_grid_cache_drop();
+    cairo_surface_get_device_scale(cairo_get_target(target), &sx, &sy);
+    if (sx <= 0 || sy <= 0) { sx = 1.0; sy = 1.0; }
+    s_grid_cache = cairo_image_surface_create(
+        CAIRO_FORMAT_ARGB32,
+        (int)ceil((double)g_cols * (double)g_cell_w * sx),
+        (int)ceil((double)height * sy));
+    if (cairo_surface_status(s_grid_cache) != CAIRO_STATUS_SUCCESS) {
+        render_grid_cache_drop();
+        return NULL;
+    }
+    cairo_surface_set_device_scale(s_grid_cache, sx, sy);
+    cache_cr = cairo_create(s_grid_cache);
+    set_rgb(cache_cr, g_theme_bg[0], g_theme_bg[1], g_theme_bg[2]);
+    cairo_paint(cache_cr);
+    render_grid(cache_cr, height);
+    cairo_destroy(cache_cr);
+    s_grid_cache_cols = g_cols;
+    s_grid_cache_height = height;
+    return s_grid_cache;
+}
+
+void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
+             gpointer user_data) {
+    uint8_t bg[3], fg[3];
+
+    (void)area;
+    (void)user_data;
+
+    if (g_layout_latch) resolve_layout_monitor();
+
+    pinwin_colors(bg, fg);
+    set_rgb(cr, g_theme_bg[0], g_theme_bg[1], g_theme_bg[2]);
+    cairo_rectangle(cr, 0, 0, width, height);
+    cairo_fill(cr);
+
+    if (glue_anim_active()) {
+        cairo_surface_t* cache = grid_cache_ensure(cr, height);
+        if (cache) {
+            int off = glue_anim_draw_offset();
+            cairo_translate(cr, off, 0);
+            cairo_set_source_surface(cr, cache, 0, 0);
+            cairo_paint(cr);
+            cairo_translate(cr, -off, 0);
+            /* Focus accent. Layer surfaces get no compositor focus ring (niri
+             * draws one only around layout windows), so the focused panel
+             * marks itself: a strip on the workspace-facing edge in the
+             * configured accent colour, so it reads as the same kind of
+             * highlight. Drawn in raw surface coordinates. */
+            if (g_focused && g_accent.enabled) {
+                set_rgb(cr, g_accent.r, g_accent.g, g_accent.b);
+                fill_rect(cr, g_layout.side == PINWIN_SIDE_LEFT
+                                  ? width - g_accent.width : 0.0,
+                          0.0, g_accent.width, height);
+            }
+            return;
+        }
+    }
+
+    /* While a width tween runs, keep the grid against the docked edge. */
+    cairo_translate(cr, glue_anim_draw_offset(), 0);
+    render_grid(cr, height);
+
     /* Focus accent. Layer surfaces get no compositor focus ring (niri draws
      * one only around layout windows), so the focused panel marks itself: a
      * strip on the workspace-facing edge in the configured accent colour, so
@@ -657,6 +745,4 @@ void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
                                                         : 0.0,
                   0.0, g_accent.width, height);
     }
-
-    pinwin_frame_end();
 }

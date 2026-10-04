@@ -58,6 +58,20 @@ PinwinLayout g_layout;
 GtkWindow* g_reserve;
 GdkMonitor* g_monitor; /* the visible panel's original monitor */
 int g_layout_latch; /* first-draw monitor resolution pending */
+/* Set when an animated apply left the terminal grid resize to the tween's end
+ * (see glue_publish_layout). */
+static int deferred_grid;
+static gboolean deferred_grid_resize(gpointer data);
+
+/* Called by glue_anim.c when a tween stops for any reason (finish, watchdog,
+ * cancel, retarget): if this tween owed the deferred terminal grid resize,
+ * schedule it behind the frame that presents the tween's final width. */
+void glue_grid_resize_deferred_fire(void) {
+    if (deferred_grid) {
+        deferred_grid = 0;
+        g_idle_add(deferred_grid_resize, NULL);
+    }
+}
 PinwinAccent g_accent;
 
 /* Width follows the applied column count. GTK4 has no gtk_window_resize and
@@ -119,6 +133,18 @@ void glue_apply_geometry(void) {
 /* Validate the layout against the live metrics and publish it (the ABI path,
  * design D4/D5); GLUE_NOT_LIVE means the panel has no metrics yet, which is a
  * lifecycle state rather than a layout verdict. */
+/* Run from an idle callback once the frame that presents the tween's final
+ * width has drawn: the deferred terminal grid resize (see the publish path).
+ * A tween that retargeted meanwhile keeps waiting; the grid lands when the
+ * last tween ends. */
+static gboolean deferred_grid_resize(gpointer data) {
+    (void)data;
+    if (!g_win || !g_area) return G_SOURCE_REMOVE;
+    if (glue_anim_active()) return G_SOURCE_CONTINUE;
+    apply_size();
+    return G_SOURCE_REMOVE;
+}
+
 int glue_publish_layout(const PinwinLayout* layout, uint32_t duration_ms) {
     if (!g_monitor || !g_win) return GLUE_NOT_LIVE;
     {
@@ -143,12 +169,21 @@ int glue_publish_layout(const PinwinLayout* layout, uint32_t duration_ms) {
 
         g_layout = *layout;
         g_cols = layout->cols;
+        deferred_grid = 0;
         if (!animate)
             glue_anim_cancel();
-        else if (cols_changed)
+        else if (cols_changed) {
             glue_anim_begin(from_px, g_cols * g_cell_w, duration_ms);
+            /* The terminal grid resize does not run at t0: pinwin_size's vt
+             * reflow costs tens to hundreds of ms on a real grid, which would
+             * block the caller for that long and delay the tween's first
+             * frame. The tween draws the old grid from the cache; the grid
+             * catches up when the tween ends. */
+            deferred_grid = 1;
+        }
     }
     glue_apply_geometry();
+    if (deferred_grid) return PINWIN_GEOM_OK;
     /* A terminal allocation failure keeps the previous grid and is an internal
      * failure of this apply (design D3), not a layout verdict; the panel snaps
      * to the requested layout rather than stay mid-animation (design D4). */

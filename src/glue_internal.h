@@ -70,6 +70,9 @@ void font_config_load(char** family, double* size);
 void cell_metrics_update(GtkWidget* widget);
 void on_draw(GtkDrawingArea* area, cairo_t* cr, int width, int height,
              gpointer user_data);
+/* Drop the tween frame cache (render.c): the per-tween blitted grid surface.
+ * Called when a tween stops and when cell metrics change. */
+void render_grid_cache_drop(void);
 
 /* ---- images.c: kitty image surfaces and cache ---------------------------- */
 
@@ -95,6 +98,9 @@ int glue_init(const PinwinLayout* layout, int32_t keyboard_mode,
               PinwinAccent accent);
 /* Push the current panel width (panel_px) onto both surfaces and queue a draw. */
 void glue_apply_geometry(void);
+/* Fire the deferred terminal grid resize, if an animated apply left one
+ * pending; called when a tween stops. */
+void glue_grid_resize_deferred_fire(void);
 void resolve_layout_monitor(void);
 
 /* Close both layer-shell surfaces (GTK thread). Called by pinwin_stop's

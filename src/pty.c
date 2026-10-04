@@ -23,6 +23,13 @@
 
 static void attach_pty(void);
 
+/* While a tween runs, bound how long one main-loop dispatch may spend draining
+ * the pty (reading and parsing) before yielding back to the frame clock: an
+ * image re-transmit burst otherwise blocks every frame until fully parsed,
+ * which showed as ticks spaced 40-100 ms apart and the tween collapsing into a
+ * snap. No tween, no budget: the old drain-until-EAGAIN behavior. */
+#define PTY_BUDGET_US 4000
+
 int apply_size(void) {
     int height = gtk_widget_get_height(g_area);
     if (g_cell_h > 0 && height > 0) {
@@ -30,8 +37,11 @@ int apply_size(void) {
         if (rows < 1) rows = 1;
         /* Rows follow the allocated height; columns stay the input and are
          * never re-derived from the allocated width (design D4). A width-only
-         * Apply changes g_cols and must resize the grid and PTY too. */
-        if (rows != g_rows || g_cols != g_grid_cols) {
+         * Apply changes g_cols and must resize the grid and PTY too. While a
+         * tween runs the resize is deferred to its end (the tween draws the
+         * old grid from the cache), so the per-frame resize callbacks here
+         * must not push it through early. */
+        if (!glue_anim_active() && (rows != g_rows || g_cols != g_grid_cols)) {
             /* Push the grid first: a terminal that cannot be allocated leaves
              * the previous grid and PTY winsize in place (design D3). */
             if (pinwin_size(g_cols, rows, g_cell_w, g_cell_h) != 0) return 1;
@@ -55,12 +65,19 @@ void on_area_resize(GtkWidget* widget, gint width, gint height,
 
 static gboolean on_pty_readable(gint fd, GIOCondition condition, gpointer user_data) {
     uint8_t buf[65536];
+    gint64 started = g_get_monotonic_time();
+    gint64 budget = glue_anim_active() ? PTY_BUDGET_US : 0;
     (void)user_data;
 
     for (;;) {
-        ssize_t n = read(fd, buf, sizeof(buf));
+        /* While yielding to the frame clock, read in reduced chunks so the
+         * budget check lands between parses instead of once per 64 KB. */
+        size_t chunk = budget ? sizeof(buf) / 4 : sizeof(buf);
+        ssize_t n = read(fd, buf, chunk);
         if (n > 0) {
             pinwin_pty_data(buf, (size_t)n);
+            if (pinwin_pty_yield(started, g_get_monotonic_time(), budget))
+                return G_SOURCE_CONTINUE;
             continue;
         }
         if (n < 0 && errno == EINTR) continue;

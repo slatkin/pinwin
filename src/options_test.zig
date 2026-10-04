@@ -164,3 +164,13 @@ test "accent validate ignores width when off and rejects other enabled values" {
     accent.enabled = -1;
     try testing.expectEqual(@as(c_int, 0), c.pinwin_accent_validate(&accent));
 }
+
+test "pty yield: no budget never yields, whatever the elapsed time" {
+    try testing.expectEqual(@as(c_int, 0), c.pinwin_pty_yield(1000, 1001000, 0));
+}
+
+test "pty yield: yields at and past the budget" {
+    try testing.expectEqual(@as(c_int, 0), c.pinwin_pty_yield(1000, 4999, 4000));
+    try testing.expectEqual(@as(c_int, 1), c.pinwin_pty_yield(1000, 5000, 4000));
+    try testing.expectEqual(@as(c_int, 1), c.pinwin_pty_yield(1000, 999999, 4000));
+}
