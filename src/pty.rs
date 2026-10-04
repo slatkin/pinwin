@@ -316,8 +316,20 @@ impl Pty {
             )
         };
         if id == 0 {
-            // SAFETY: the source was not created, so `state` is still ours.
-            unsafe { drop(Box::from_raw(state)) };
+            // The docs give no failure semantics beyond "the ID (greater than
+            // 0)" (docs.gtk.org/glib-unix/func.fd_add_full.html); the
+            // implementation does: `g_unix_fd_add_full` (glib `glib-unix.c`)
+            // registers the destroy notify with `g_source_set_callback` and
+            // then calls `g_source_attach` + `g_source_unref`, and the final
+            // unref finalizes the source, whose callback teardown invokes the
+            // destroy notify (`gmain.c` `g_source_unref_internal` →
+            // `g_source_callback_unref`). So a 0 from a failed attach has
+            // already freed `state` by the time the 0 is returned — freeing
+            // here would double-free. The other 0 path, the `function != NULL`
+            // guard, fires before the notify is registered, but is
+            // unreachable because we pass a compile-time `Some`. Either way
+            // the notify owns the state exactly once and this arm only
+            // reports the failure.
             return Err(io::Error::last_os_error());
         }
         self.source.store(id, Ordering::Relaxed);
@@ -434,9 +446,15 @@ unsafe extern "C" fn destroy_source_state(user_data: *mut c_void) {
     if user_data.is_null() {
         return;
     }
-    // SAFETY: the caller guarantees the pointer came from `Box::into_raw` and
-    // the source is being destroyed, so no dispatch is using it.
-    drop(unsafe { Box::from_raw(user_data.cast::<SourceState>()) });
+    // The notify runs on GLib's teardown path, not behind the callback guard,
+    // so a panicking destructor here has no `poisoned` latch left to set —
+    // but it still must not unwind across the C boundary (D5). Swallow it:
+    // the source is already being destroyed either way.
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: the caller guarantees the pointer came from `Box::into_raw` and
+        // the source is being destroyed, so no dispatch is using it.
+        drop(unsafe { Box::from_raw(user_data.cast::<SourceState>()) });
+    }));
 }
 
 // Declared here because glib-sys does not bind `g_unix_fd_add_full` (its gir
@@ -751,10 +769,12 @@ mod tests {
         assert_ne!(flags & libc::O_NONBLOCK, 0, "attached fd is non-blocking");
 
         // A second attach is a no-op, and a resize through the still-open fd
-        // applies without another attach.
+        // applies without another attach. The resize raises `SIGWINCH` like
+        // any successful winsize ioctl, so it runs under the same lock as
+        // every other raising test instead of interleaving with them.
         pty.attach(80, 24, |_| {})
             .expect("second attach is a no-op");
-        pty.resize(100, 30);
+        sigwinch_during(|| pty.resize(100, 30));
         let ws = read_winsize(raw);
         assert_eq!((ws.ws_col, ws.ws_row), (100, 30));
 
