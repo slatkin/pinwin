@@ -197,18 +197,32 @@ fn run_one_panel(command: StartCommand) {
     let watchdog_app = glib::WeakRef::<gtk4::Application>::new();
     watchdog_app.set(Some(&app));
     glib::timeout_add_local(Duration::from_millis(200), move || {
-        if watchdog_handshake.resolved() {
-            return ControlFlow::Break;
-        }
-        if watchdog_poisoned.is_poisoned() {
-            watchdog_handshake.report(StartOutcome::Internal);
-            close_glue(id);
-            if let Some(app) = watchdog_app.upgrade() {
-                app.quit();
+        // D5 item 3: a glib timeout is a boundary closure like the rest — the
+        // Handshake's lock expectations must not unwind into glib. `guard`
+        // short-circuits on a latched flag, and a latched or panicked startup
+        // is exactly what the watchdog tears down, so both reach the same
+        // report/close/quit in the `Err` arm.
+        match guard(&watchdog_poisoned, || {
+            if watchdog_handshake.resolved() {
+                ControlFlow::Break
+            } else {
+                ControlFlow::Continue
             }
-            return ControlFlow::Break;
+        }) {
+            // Healthy: keep watching, or stop once the handshake is resolved.
+            Ok(flow) => flow,
+            // Latched (a panic elsewhere in the startup path, or one caught
+            // under this guard): fail the pending start, tear the half-built
+            // panel down and quit the loop.
+            Err(_) => {
+                watchdog_handshake.report(StartOutcome::Internal);
+                close_glue(id);
+                if let Some(app) = watchdog_app.upgrade() {
+                    app.quit();
+                }
+                ControlFlow::Break
+            }
         }
-        ControlFlow::Continue
     });
 
     // Run the panel's own application loop (g_application_run with no
@@ -350,7 +364,11 @@ fn build_glue(
             let draw = draw.clone();
             let poisoned = poisoned.clone();
             Rc::new(move || {
-                let _ = guard(&poisoned, || draw.borrow_mut().drop_grid_cache());
+                // A stop relay, not ordinary glue (D5): `Anim` fires `on_stop`
+                // under `guard_always` precisely so a latched panel still
+                // relays — skipping this would strand the tween frame cache
+                // forever.
+                let _ = guard_always(&poisoned, || draw.borrow_mut().drop_grid_cache());
             })
         },
         start_result: {
@@ -367,7 +385,10 @@ fn build_glue(
             let pty = pty.clone();
             let poisoned = poisoned.clone();
             Rc::new(move |active| {
-                let _ = guard(&poisoned, || pty.borrow().set_tween_active(active));
+                // A stop relay like `tween_cache_drop` above (D5): a latched
+                // panel must still clear the pty's tween flag, or the read
+                // drain stays throttled forever.
+                let _ = guard_always(&poisoned, || pty.borrow().set_tween_active(active));
             })
         },
     };

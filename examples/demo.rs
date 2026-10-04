@@ -313,6 +313,14 @@ fn spawn_child(dense_mode: bool) -> Result<RawFd, std::io::Error> {
         return Err(std::io::Error::last_os_error());
     }
     if pid == 0 {
+        // Rust's std sets SIGPIPE to SIG_IGN at startup and the disposition
+        // survives execve; restore the default so the shell and the dense
+        // child die on a closed pipe as demo/main.c's SIG_DFL child did.
+        // SAFETY: a plain disposition change in the forked child, before any
+        // thread exists and before exec.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL as libc::sighandler_t);
+        }
         if dense_mode {
             // Re-exec self in dense-child mode: no shell, no session.
             let _ = std::process::Command::new("/proc/self/exe")
