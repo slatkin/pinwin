@@ -5,10 +5,13 @@
 //! scaffolding. `ghostty_sys` holds the hand-written FFI against the pinned
 //! libghostty-vt (D2).
 
+pub mod anim;
 pub mod fontconfig;
 pub mod ghostty_sys;
+pub mod input;
 pub mod layout;
 pub mod nerd_font;
 pub mod pty;
 pub mod render;
+pub mod surfaces;
 pub mod term;

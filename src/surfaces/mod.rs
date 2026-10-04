@@ -1,0 +1,780 @@
+//! The layer-shell surfaces (port-to-rust D3): the visible panel plus its
+//! transparent reservation, the layout application and publishing. Ported from
+//! `src/glue.c`, whose lifecycle half (GTK init, the start handshake) arrives
+//! with the `panel` row (task 4.1) on top of [`init`] and [`Surfaces::build`].
+//!
+//! Layout types come from [`crate::layout`]; a monitor with degenerate metrics
+//! maps to the invalid-layout verdict (port-to-rust D6), as `glue.c`
+//! `PINWIN_GEOM_ERR_METRICS` did. The panel state lives on the GTK thread (D4);
+//! mutable fields are `Cell`s so the glue hooks the closures drive never hold
+//! conflicting borrows.
+//!
+//! The render- and pty-side pieces `glue.c` called into are hook slots
+//! ([`SurfaceHooks`]) documented for rows 3.6 and 4.1 to fill: the drawing
+//! area's draw function, the grid resize behind `apply_size`, the cell
+//! measurement, the tween frame-cache drop, the start handshake and the pty
+//! tween-flag relay (`Pty::set_tween_active`).
+//!
+//! Panics must never cross back into GTK/glib (D5): every closure registered
+//! here runs its body under `catch_unwind`, latching a poisoned flag. Row 4.2
+//! grows this local guard into the shared helper.
+
+use std::cell::{Cell, RefCell};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::rc::{Rc, Weak};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use gtk4::cairo;
+use gtk4::gdk;
+use gtk4::glib;
+use gtk4::prelude::*;
+use gtk4_layer_shell as layer_shell;
+use gtk4_layer_shell::LayerShell as _;
+use gtk4_layer_shell::{Edge, KeyboardMode as LayerKeyboardMode, Layer};
+
+use crate::anim::{Anim, AnimHooks};
+use crate::input;
+use crate::layout::{Accent, Keyboard, Layout, Side};
+
+/// A drawing-area draw function body (`render.c`'s `on_draw`).
+pub type DrawFn = dyn Fn(&cairo::Context, i32, i32);
+
+/// A cell measurement against a widget (`render.c`'s
+/// `cell_metrics_update`), reporting the cell size in pixels.
+pub type MeasureFn = dyn Fn(&gtk4::Widget) -> (i32, i32);
+
+/// The hooks rows 3.6 and 4.1 fill in. Every hook is an `Rc` closure so the
+/// surfaces can call it from `&self`; hook bodies must not call back into
+/// [`Surfaces`] methods synchronously, since those share the same glue state.
+pub struct SurfaceHooks {
+    /// `render.c`'s `on_draw` (row 3.6): the drawing area's draw function,
+    /// receiving the cairo context and the pixel extents.
+    pub draw: Option<Rc<DrawFn>>,
+    /// `pty.c`'s `apply_size` (rows 3.6/4.1): recompute the grid from the
+    /// drawing area's allocation and push it through the terminal and the pty.
+    /// `false` reports a terminal that could not be allocated; the previous
+    /// grid stays (`glue_publish_layout`'s `GLUE_ERR_TERMINAL` path).
+    pub apply_size: Rc<dyn Fn() -> bool>,
+    /// `render.c`'s `cell_metrics_update` (rows 3.6/4.1): measure the font on
+    /// the window and report the cell size in pixels.
+    pub measure: Rc<MeasureFn>,
+    /// `render.c`'s `render_grid_cache_drop` (row 3.6): drop the per-tween
+    /// blitted grid surface so the next draw takes the ordinary path.
+    pub tween_cache_drop: Rc<dyn Fn()>,
+    /// `pinwin_api.c`'s start handshake (row 4.1): `true` once the panel is on
+    /// screen with live metrics, `false` when the GTK side failed. Only the
+    /// first result counts.
+    pub start_result: Rc<dyn Fn(bool)>,
+    /// The pty tween-flag relay (row 4.1): `Pty::set_tween_active`, called on
+    /// every tween start and stop so the pty read drain bounds itself.
+    pub set_tween_active: Rc<dyn Fn(bool)>,
+}
+
+impl Default for SurfaceHooks {
+    fn default() -> Self {
+        SurfaceHooks {
+            draw: None,
+            apply_size: Rc::new(|| true),
+            measure: Rc::new(|_| (0, 0)),
+            tween_cache_drop: Rc::new(|| {}),
+            start_result: Rc::new(|_| {}),
+            set_tween_active: Rc::new(|_| {}),
+        }
+    }
+}
+
+/// The outcome of publishing a layout (`glue_publish_layout`'s return codes).
+/// The `panel` row (4.1) maps these onto `PinwinError`: `NotLive` is
+/// `NotRunning`, `InvalidLayout` is `InvalidLayout` and `Terminal` is
+/// `Internal` (`pinwin_api.c`'s `apply_on_gtk_thread`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublishOutcome {
+    /// The layout is applied and the grid follows (`PINWIN_GEOM_OK`).
+    Applied,
+    /// The panel has no live metrics yet, or is already torn down
+    /// (`GLUE_NOT_LIVE`).
+    NotLive,
+    /// The layout the live monitor refuses (`PINWIN_GEOM_ERR_METRICS`).
+    InvalidLayout,
+    /// The layout published but the terminal grid could not be allocated; the
+    /// previous grid stays (`GLUE_ERR_TERMINAL`).
+    Terminal,
+}
+
+/// Why [`init`] failed (`glue_init`'s zero return).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InitFailure {
+    /// GTK could not initialise (no display, or a second thread after a
+    /// restart — the parked-thread model keeps that from happening, D4).
+    GtkInit,
+    /// The session's compositor lacks wlr-layer-shell (an X11 session, or
+    /// GNOME): the spec's "Wayland layer-shell is required" case.
+    LayerShell,
+}
+
+/// Whether a layout apply animates (`glue_publish_layout`'s decision): only a
+/// column change animates — the side and the left and right gutters move the
+/// reservation, so a layout touching them snaps. The duration clamp to 1000 ms
+/// happens upstream (`pinwin_api.c`), as in the C.
+fn should_animate(
+    duration_ms: u32,
+    animations_enabled: bool,
+    applied: &Layout,
+    requested: &Layout,
+) -> bool {
+    duration_ms > 0
+        && animations_enabled
+        && requested.side() == applied.side()
+        && requested.left() == applied.left()
+        && requested.right() == applied.right()
+}
+
+/// Validate a layout against live metrics (`pinwin_layout_validate` plus the
+/// degenerate-metrics guard): non-positive cell or output metrics are the one
+/// former `PINWIN_GEOM_ERR_METRICS` case the layout types cannot absorb (D6),
+/// and any verdict maps to the invalid-layout outcome.
+fn metrics_valid(layout: Layout, cell_w: i32, cell_h: i32, output_w: i32, output_h: i32) -> bool {
+    match (
+        crate::layout::CellSize::new(cell_w, cell_h),
+        crate::layout::OutputSize::new(output_w, output_h),
+    ) {
+        (Some(cell), Some(output)) => layout.validate(cell, output).is_ok(),
+        // Degenerate monitor metrics: never valid (D6).
+        _ => false,
+    }
+}
+
+/// Map the layout's keyboard mode onto layer-shell's.
+fn keyboard_mode(keyboard: Keyboard) -> LayerKeyboardMode {
+    match keyboard {
+        Keyboard::None => LayerKeyboardMode::None,
+        Keyboard::OnDemand => LayerKeyboardMode::OnDemand,
+        Keyboard::Exclusive => LayerKeyboardMode::Exclusive,
+    }
+}
+
+/// GTK and layer-shell initialisation (`glue_init` minus the state it stored
+/// into globals: the startup layout, keyboard mode and accent go to
+/// [`Surfaces::build`], and the theme colours are render state, row 3.6).
+/// Run once on the GTK thread before any surface exists.
+pub fn init() -> Result<gtk4::Application, InitFailure> {
+    gtk4::init().map_err(|_| InitFailure::GtkInit)?;
+    if !layer_shell::is_supported() {
+        return Err(InitFailure::LayerShell);
+    }
+    // The application id is deliberately absent (NULL in the C): the panel is
+    // a layer surface, not an application the shell shows (D4's per-start
+    // distinct ids are handed out by the panel row). DEFAULT_FLAGS is the
+    // zero flags value.
+    Ok(gtk4::Application::new(
+        None::<&str>,
+        gtk4::gio::ApplicationFlags::empty(),
+    ))
+}
+
+/// The layer-shell surfaces and the applied layout state for one panel. Lives
+/// on the GTK thread (D4); every method takes `&self`, mutating through the
+/// `Cell` fields so the hook closures never fight a borrow.
+pub struct Surfaces {
+    /// The per-start application the surfaces belong to.
+    pub app: gtk4::Application,
+    /// The visible panel surface.
+    pub win: gtk4::ApplicationWindow,
+    /// The terminal drawing area.
+    pub area: gtk4::DrawingArea,
+    /// The transparent reservation, created and presented only after the
+    /// visible panel maps (`g_reserve`).
+    reserve: RefCell<Option<gtk4::ApplicationWindow>>,
+    /// The visible panel's original monitor, resolved on the first draw
+    /// (`g_monitor`).
+    monitor: RefCell<Option<gdk::Monitor>>,
+    /// The applied layout (`g_layout`).
+    layout: Cell<Layout>,
+    /// The applied column count (`g_cols`).
+    cols: Cell<u16>,
+    /// The focus accent from the startup (`g_accent`); render consumes it.
+    pub accent: Option<Accent>,
+    /// The cell metrics from the last measurement (`g_cell_w`/`g_cell_h`).
+    cell_w: Cell<i32>,
+    cell_h: Cell<i32>,
+    /// First-draw monitor resolution pending (`g_layout_latch`): render's
+    /// first-draw path calls [`Surfaces::resolve_monitor`] while this is set.
+    pub latch: Cell<bool>,
+    /// Set when an animated apply left the terminal grid resize to the tween's
+    /// end (`deferred_grid`).
+    deferred_grid: Cell<bool>,
+    /// Set by [`Surfaces::close`]; the stand-in for the C's `g_win`/`g_area`
+    /// NULL checks after teardown.
+    closed: Cell<bool>,
+    /// A weak self reference for closures the struct installs later (the
+    /// deferred-grid idle).
+    weak: RefCell<Weak<Surfaces>>,
+    /// The width tween.
+    pub anim: Anim,
+    /// The hooks rows 3.6 and 4.1 fill in.
+    pub hooks: SurfaceHooks,
+    /// Latched when a closure registered here panicked (D5).
+    poisoned: Arc<AtomicBool>,
+}
+
+/// One idle step behind [`Surfaces::fire_deferred_grid_resize`]: wait while a
+/// tween is still running, apply the grid once the tween is over — the step
+/// fires exactly once and returns `Break`, so the idle cannot spin — and stop
+/// untouched when the panel is gone. Split out of the idle closure so the
+/// sequencing is unit testable without a display.
+fn deferred_grid_step(
+    closed: bool,
+    anim_active: bool,
+    apply_size: impl FnOnce() -> bool,
+) -> glib::ControlFlow {
+    if closed {
+        return glib::ControlFlow::Break;
+    }
+    if anim_active {
+        return glib::ControlFlow::Continue;
+    }
+    apply_size();
+    glib::ControlFlow::Break
+}
+
+impl Surfaces {
+    /// Build the surfaces for one panel (`on_activate`): create the window and
+    /// drawing area, initialise layer-shell, measure the cells, apply the
+    /// startup anchors and present the panel. The input controllers attach
+    /// separately through [`Surfaces::attach_input`], once the caller has
+    /// composed their links; the draw function comes from
+    /// [`SurfaceHooks::draw`].
+    pub fn build(
+        app: &gtk4::Application,
+        layout: Layout,
+        keyboard: Keyboard,
+        accent: Option<Accent>,
+        hooks: SurfaceHooks,
+    ) -> Rc<Surfaces> {
+        let win = gtk4::ApplicationWindow::new(app);
+        win.init_layer_shell();
+        win.set_namespace(Some("pinwin"));
+        win.set_layer(Layer::Overlay);
+        win.set_keyboard_mode(keyboard_mode(keyboard));
+
+        let poisoned = Arc::new(AtomicBool::new(false));
+        let area = gtk4::DrawingArea::new();
+        if let Some(draw) = hooks.draw.clone() {
+            let draw_poisoned = poisoned.clone();
+            area.set_draw_func(move |_area, cr, width, height| {
+                guarded(&draw_poisoned, || draw(cr, width, height));
+            });
+        }
+        // pty.c's on_area_resize: every allocation change runs apply_size.
+        let resize_hook = hooks.apply_size.clone();
+        let resize_poisoned = poisoned.clone();
+        area.connect_resize(move |_area, _width, _height| {
+            guarded(&resize_poisoned, || {
+                (resize_hook)();
+            });
+        });
+        area.set_focusable(true);
+        win.set_child(Some(&area));
+
+        // cell_metrics_update(win): the cell metrics the default width needs.
+        let (cell_w, cell_h) = (hooks.measure)(win.upcast_ref());
+
+        // Width is fixed by COLS; the top/bottom anchors give the height.
+        win.set_default_size(i32::from(layout.cols().get()) * cell_w, -1);
+        // Ignore Noctalia's top zone.
+        win.set_exclusive_zone(-1);
+
+        let surfaces = Rc::new_cyclic(|weak: &Weak<Surfaces>| {
+            let anim = Anim::new(Self::anim_hooks(weak));
+            Surfaces {
+                app: app.clone(),
+                win: win.clone(),
+                area,
+                reserve: RefCell::new(None),
+                monitor: RefCell::new(None),
+                layout: Cell::new(layout),
+                cols: Cell::new(layout.cols().get()),
+                accent,
+                cell_w: Cell::new(cell_w),
+                cell_h: Cell::new(cell_h),
+                latch: Cell::new(false),
+                deferred_grid: Cell::new(false),
+                closed: Cell::new(false),
+                weak: RefCell::new(weak.clone()),
+                anim,
+                hooks,
+                poisoned,
+            }
+        });
+        *surfaces.weak.borrow_mut() = Rc::downgrade(&surfaces);
+
+        // Initial anchors/margins from the startup layout; the map callback
+        // resolves the original monitor and presents the reservation once
+        // those are known.
+        surfaces.apply_layout_surfaces();
+        let map_weak = Rc::downgrade(&surfaces);
+        let map_poisoned = surfaces.poisoned.clone();
+        surfaces.win.connect_map(move |_win| {
+            if let Some(surfaces) = map_weak.upgrade() {
+                guarded(&map_poisoned, || surfaces.on_map());
+            }
+        });
+        surfaces.win.present();
+        (surfaces.hooks.apply_size)();
+        surfaces
+    }
+
+    /// The tween hooks, wired from a weak self reference so the surfaces and
+    /// the anim do not keep each other alive.
+    fn anim_hooks(weak: &Weak<Surfaces>) -> AnimHooks {
+        let frame = weak.clone();
+        let stop = weak.clone();
+        let finish = weak.clone();
+        AnimHooks {
+            on_frame: Box::new(move |px| {
+                if let Some(surfaces) = frame.upgrade() {
+                    surfaces.apply_frame(px);
+                }
+            }),
+            on_stop: Box::new(move || {
+                if let Some(surfaces) = stop.upgrade() {
+                    surfaces.on_tween_stopped();
+                }
+            }),
+            on_finish: Box::new(move || {
+                if let Some(surfaces) = finish.upgrade() {
+                    surfaces.apply_geometry();
+                }
+            }),
+        }
+    }
+
+    /// Attach the input controllers (`attach_controllers`). Call once after
+    /// [`Surfaces::build`], with the links the panel composed.
+    pub fn attach_input(&self, links: input::InputLinks) {
+        input::attach(&self.area, links);
+    }
+
+    /// The applied width in pixels (`g_cols * g_cell_w`).
+    fn grid_px(&self) -> i32 {
+        self.cols.get() as i32 * self.cell_w.get()
+    }
+
+    /// The panel's current pixel width: the animated width while a tween runs,
+    /// else the applied width (`panel_px`).
+    pub fn panel_px(&self) -> i32 {
+        self.anim.current_px(self.grid_px())
+    }
+
+    /// The drawing shift input x coordinates subtract (`glue_anim_draw_offset`).
+    pub fn draw_offset(&self) -> f64 {
+        let width = if self.closed.get() {
+            None
+        } else {
+            Some(self.area.width())
+        };
+        f64::from(
+            self.anim
+                .draw_offset(self.layout.get().side(), width, self.grid_px()),
+        )
+    }
+
+    /// Queue a redraw of the drawing area (`glue_queue_draw`).
+    pub fn queue_draw(&self) {
+        if !self.closed.get() {
+            self.area.queue_draw();
+        }
+    }
+
+    /// Apply the panel width to the drawing area and the window default size
+    /// (`apply_panel_width`). GTK4 has no gtk_window_resize and
+    /// gtk_window_set_default_size does not move a mapped window, so the
+    /// drawing area's natural width is the mechanism; the default size is a
+    /// size floor, so leaving the launch value there would pin the panel at
+    /// its launch width once it shrinks.
+    fn apply_panel_width(&self, px: i32) {
+        if self.closed.get() {
+            return;
+        }
+        self.area.set_size_request(px, -1);
+        self.win.set_default_size(px, -1);
+    }
+
+    /// Push the applied layout onto both surfaces in one main-loop turn
+    /// (`apply_layout_surfaces`): the visible panel gets its side anchor and
+    /// directional margins, the transparent reservation keeps zero margins and
+    /// full height on the same side with an explicit exclusive zone of
+    /// `left + panel + right`. Never leaves both horizontal anchors set.
+    fn apply_layout_surfaces(&self) {
+        if self.closed.get() {
+            return;
+        }
+        // Callers validate first; this is belt and braces.
+        let Ok(geometry) = self.layout.get().side_geometry(i64::from(self.panel_px())) else {
+            return;
+        };
+        let left = self.layout.get().side() == Side::Left;
+        let win = &self.win;
+        win.set_anchor(Edge::Left, left);
+        win.set_anchor(Edge::Right, !left);
+        win.set_anchor(Edge::Top, true);
+        win.set_anchor(Edge::Bottom, true);
+        win.set_margin(Edge::Left, if left { geometry.edge_margin() } else { 0 });
+        win.set_margin(Edge::Right, if left { 0 } else { geometry.edge_margin() });
+        win.set_margin(Edge::Top, self.layout.get().top());
+        win.set_margin(Edge::Bottom, self.layout.get().bottom());
+
+        if let Some(reserve) = self.reserve.borrow().as_ref() {
+            reserve.set_anchor(Edge::Left, left);
+            reserve.set_anchor(Edge::Right, !left);
+            reserve.set_anchor(Edge::Top, true);
+            reserve.set_anchor(Edge::Bottom, true);
+            reserve.set_margin(Edge::Left, 0);
+            reserve.set_margin(Edge::Right, 0);
+            reserve.set_margin(Edge::Top, 0);
+            reserve.set_margin(Edge::Bottom, 0);
+            reserve.set_exclusive_zone(geometry.reservation());
+            if let Some(monitor) = self.monitor.borrow().as_ref() {
+                reserve.set_monitor(Some(monitor));
+            }
+        }
+        self.area.queue_draw();
+    }
+
+    /// Push the current panel width onto both surfaces and queue a draw
+    /// (`glue_apply_geometry`).
+    pub fn apply_geometry(&self) {
+        self.apply_panel_width(self.panel_px());
+        self.apply_layout_surfaces();
+    }
+
+    /// One eased tween frame at `px` (`anim_tick`'s `glue_apply_geometry`).
+    fn apply_frame(&self, px: i32) {
+        self.apply_panel_width(px);
+        self.apply_layout_surfaces();
+    }
+
+    /// The tween stopped for any reason: drop the render tween frame cache,
+    /// clear the pty's tween flag and fire the deferred grid resize, if an
+    /// animated apply left one pending (`anim_stop`'s glue half).
+    fn on_tween_stopped(&self) {
+        (self.hooks.tween_cache_drop)();
+        (self.hooks.set_tween_active)(false);
+        self.fire_deferred_grid_resize();
+    }
+
+    /// Fire the deferred terminal grid resize behind the frame that presents
+    /// the tween's final width (`glue_grid_resize_deferred_fire` +
+    /// `deferred_grid_resize`). A tween that retargeted meanwhile keeps
+    /// waiting; the grid lands when the last tween ends.
+    fn fire_deferred_grid_resize(&self) {
+        if !self.deferred_grid.get() {
+            return;
+        }
+        self.deferred_grid.set(false);
+        let weak = self.weak.borrow().clone();
+        glib::idle_add_local(move || {
+            let Some(surfaces) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            guarded(&surfaces.poisoned, || {
+                deferred_grid_step(surfaces.closed.get(), surfaces.anim.active(), || {
+                    (surfaces.hooks.apply_size)()
+                })
+            })
+            .unwrap_or(glib::ControlFlow::Break)
+        });
+    }
+
+    /// Validate the layout against the live metrics and publish it
+    /// (`glue_publish_layout`).
+    pub fn publish(&self, layout: Layout, duration_ms: u32) -> PublishOutcome {
+        if self.closed.get() || self.monitor.borrow().is_none() {
+            // A panel without live metrics is a lifecycle state, not a layout
+            // verdict (`GLUE_NOT_LIVE`).
+            return PublishOutcome::NotLive;
+        }
+        // Validate the staged column count, not the one already applied: a
+        // rejected Apply must leave the live layout untouched.
+        let geometry = self.monitor.borrow().as_ref().map(gdk::Monitor::geometry);
+        let Some(geometry) = geometry else {
+            return PublishOutcome::NotLive;
+        };
+        if !metrics_valid(
+            layout,
+            self.cell_w.get(),
+            self.cell_h.get(),
+            geometry.width(),
+            geometry.height(),
+        ) {
+            return PublishOutcome::InvalidLayout;
+        }
+
+        // Only a column change animates: the side and the left and right
+        // gutters must match, since they move the reservation. A tween already
+        // heading for these columns just keeps going.
+        let applied = self.layout.get();
+        let animate = should_animate(duration_ms, Anim::allowed(), &applied, &layout);
+        let from_px = self.panel_px();
+        let cols_changed = layout.cols().get() != self.cols.get();
+
+        self.layout.set(layout);
+        self.cols.set(layout.cols().get());
+        self.deferred_grid.set(false);
+        if !animate {
+            self.anim.cancel();
+        } else if cols_changed {
+            self.anim
+                .begin(&self.win, from_px, self.grid_px(), duration_ms);
+            (self.hooks.set_tween_active)(true);
+            // The terminal grid resize does not run at t0: the vt reflow costs
+            // tens to hundreds of ms on a real grid, which would block the
+            // caller for that long and delay the tween's first frame. The
+            // tween draws the old grid from the cache; the grid catches up
+            // when the tween ends.
+            self.deferred_grid.set(true);
+        }
+        self.apply_geometry();
+        if self.deferred_grid.get() {
+            return PublishOutcome::Applied;
+        }
+        // A terminal allocation failure keeps the previous grid and is an
+        // internal failure of this apply, not a layout verdict; the panel
+        // snaps to the requested layout rather than stay mid-animation.
+        if !(self.hooks.apply_size)() {
+            self.anim.cancel();
+            self.apply_geometry();
+            return PublishOutcome::Terminal;
+        }
+        PublishOutcome::Applied
+    }
+
+    /// The visible panel mapped (`on_win_map`): mark the first-draw monitor
+    /// resolution pending, create and present the reservation, then size the
+    /// terminal.
+    fn on_map(&self) {
+        self.latch.set(true);
+
+        // The reservation is created and presented only after the visible
+        // panel is mapped; the first draw then pins it to the resolved monitor.
+        let reserve = gtk4::ApplicationWindow::new(&self.app);
+        reserve.init_layer_shell();
+        reserve.set_namespace(Some("pinwin-reserve"));
+        reserve.set_layer(Layer::Bottom);
+        reserve.set_default_size(1, -1);
+        reserve.set_opacity(0.0);
+        *self.reserve.borrow_mut() = Some(reserve.clone());
+
+        self.apply_layout_surfaces();
+        reserve.present();
+        (self.hooks.apply_size)();
+    }
+
+    /// One-shot, from the first draw after map (`resolve_layout_monitor`): by
+    /// then the surface has entered its output, so the monitor reported here
+    /// is the panel's real monitor, and the live metrics exist, so this
+    /// completes the start handshake. Success requires a resolved monitor:
+    /// with no output the panel has no metrics to validate or publish against,
+    /// so the handshake fails and the loop quits (the surfaces are left alone
+    /// here; the caller closes them after the loop returns).
+    pub fn resolve_monitor(&self) {
+        self.latch.set(false);
+        let monitor = gdk::Display::default().and_then(|display| {
+            self.win
+                .surface()
+                .and_then(|surface| display.monitor_at_surface(&surface))
+        });
+        let Some(monitor) = monitor else {
+            (self.hooks.start_result)(false);
+            self.app.quit();
+            return;
+        };
+        *self.monitor.borrow_mut() = Some(monitor);
+        self.apply_layout_surfaces();
+        (self.hooks.apply_size)();
+        (self.hooks.start_result)(true);
+    }
+
+    /// Close both layer-shell surfaces (`glue_close_surfaces`). Shared by the
+    /// stop teardown and the failed start after a NULL monitor resolution.
+    pub fn close(&self) {
+        self.anim.cancel();
+        if let Some(reserve) = self.reserve.borrow_mut().take() {
+            reserve.destroy();
+        }
+        self.win.destroy();
+        self.closed.set(true);
+    }
+}
+
+/// The local D5 guard, matching `term::callbacks` and `pty` until row 4.2
+/// lifts the shared helper: run `body`, latching `poisoned` and returning
+/// `None` when it panics.
+fn guarded<T>(poisoned: &AtomicBool, body: impl FnOnce() -> T) -> Option<T> {
+    match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            poisoned.store(true, Ordering::Relaxed);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::num::NonZeroU16;
+
+    fn layout(side: Side, cols: u16, top: i32, bottom: i32, left: i32, right: i32) -> Layout {
+        Layout::new(
+            side,
+            NonZeroU16::new(cols).expect("test column count is non-zero"),
+            top,
+            bottom,
+            left,
+            right,
+        )
+    }
+
+    #[test]
+    fn only_a_column_change_animates() {
+        let applied = layout(Side::Left, 40, 0, 0, 0, 12);
+        // Columns change, everything else matches, animations on: animate.
+        assert!(should_animate(
+            200,
+            true,
+            &applied,
+            &layout(Side::Left, 120, 0, 0, 0, 12)
+        ));
+        // Zero duration snaps.
+        assert!(!should_animate(
+            0,
+            true,
+            &applied,
+            &layout(Side::Left, 120, 0, 0, 0, 12)
+        ));
+        // Animations disabled snap.
+        assert!(!should_animate(
+            200,
+            false,
+            &applied,
+            &layout(Side::Left, 120, 0, 0, 0, 12)
+        ));
+        // The side moves the reservation: snap.
+        assert!(!should_animate(
+            200,
+            true,
+            &applied,
+            &layout(Side::Right, 120, 0, 0, 0, 12)
+        ));
+        // The left or right gutter moves the reservation: snap.
+        assert!(!should_animate(
+            200,
+            true,
+            &applied,
+            &layout(Side::Left, 120, 0, 0, 4, 12)
+        ));
+        assert!(!should_animate(
+            200,
+            true,
+            &applied,
+            &layout(Side::Left, 120, 0, 0, 0, 20)
+        ));
+        // The top and bottom gutters do not: animate.
+        assert!(should_animate(
+            200,
+            true,
+            &applied,
+            &layout(Side::Left, 120, 8, 8, 0, 12)
+        ));
+        // The same columns keep an already-heading tween going.
+        assert!(should_animate(200, true, &applied, &applied));
+    }
+
+    #[test]
+    fn metrics_validation_rejects_degenerate_and_bad_geometry() {
+        let good = layout(Side::Left, 60, 0, 0, 0, 12);
+        assert!(metrics_valid(good, 8, 16, 1920, 1080));
+        // Degenerate monitor metrics are never valid (D6).
+        assert!(!metrics_valid(good, 8, 16, 0, 1080));
+        assert!(!metrics_valid(good, 8, 16, 1920, 0));
+        assert!(!metrics_valid(good, 0, 16, 1920, 1080));
+        assert!(!metrics_valid(good, 8, 0, 1920, 1080));
+        // Negative metrics: same story.
+        assert!(!metrics_valid(good, -8, 16, 1920, 1080));
+        // Reachable layout verdicts reject.
+        assert!(!metrics_valid(
+            layout(Side::Left, 600, 0, 0, 0, 0),
+            1,
+            16,
+            600,
+            1080
+        ));
+        assert!(!metrics_valid(
+            layout(Side::Left, 1, 1000, 1000, 0, 0),
+            1,
+            16,
+            1920,
+            1080
+        ));
+        assert!(!metrics_valid(
+            layout(Side::Left, 1, 0, 0, -100, -100),
+            1,
+            16,
+            1920,
+            1080
+        ));
+        assert!(!metrics_valid(
+            layout(Side::Left, 65535, 0, 0, 0, 0),
+            65536,
+            16,
+            1920,
+            1080
+        ));
+    }
+
+    #[test]
+    fn keyboard_modes_map_one_to_one() {
+        assert_eq!(keyboard_mode(Keyboard::None), LayerKeyboardMode::None);
+        assert_eq!(
+            keyboard_mode(Keyboard::OnDemand),
+            LayerKeyboardMode::OnDemand
+        );
+        assert_eq!(
+            keyboard_mode(Keyboard::Exclusive),
+            LayerKeyboardMode::Exclusive
+        );
+    }
+
+    /// The deferred grid resize waits out a still-running tween, then applies
+    /// exactly once and returns `Break` — an idle that kept looping after the
+    /// tween ended (a latched tween flag, or a `Continue` past the end) would
+    /// spin hot and keep the pty drain throttled.
+    #[test]
+    fn the_deferred_grid_idle_waits_out_the_tween_then_applies_once() {
+        let applies = Cell::new(0);
+        let apply = || {
+            applies.set(applies.get() + 1);
+            true
+        };
+        // A tween still running: keep waiting, no grid resize.
+        assert_eq!(
+            deferred_grid_step(false, true, apply),
+            glib::ControlFlow::Continue
+        );
+        assert_eq!(applies.get(), 0);
+        // The tween ended: one apply, then the idle is gone.
+        assert_eq!(
+            deferred_grid_step(false, false, apply),
+            glib::ControlFlow::Break
+        );
+        assert_eq!(applies.get(), 1);
+        // A closed panel never applies.
+        assert_eq!(
+            deferred_grid_step(true, false, apply),
+            glib::ControlFlow::Break
+        );
+        assert_eq!(applies.get(), 1);
+    }
+}
