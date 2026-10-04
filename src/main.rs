@@ -234,43 +234,64 @@ fn hang_up_child_and_wait(pid: i32) {
     wait_for_child(pid);
 }
 
-/// Replace this (child) process with the command, exiting 127 when the exec
-/// fails — the child never returns from here. Only async-signal-safe calls
-/// happen between the fork and the exec.
-fn child_exec(command: &[OsString]) -> ! {
-    let program = match CString::new(command[0].as_bytes()) {
-        Ok(program) => program,
-        Err(_) => {
-            eprintln!(
+/// The command ready for `execvp`: the argv as `CString`s, with the pointer
+/// array built, so everything allocation-based happens in the parent before
+/// the fork.
+struct ChildCommand {
+    argv: Vec<CString>,
+    /// `argv`'s pointers plus the terminating null, as `execvp` wants them.
+    /// The pointers target the `argv` buffers, which are never moved after
+    /// this is built.
+    pointers: Vec<*const libc::c_char>,
+}
+
+/// Build the child's exec arguments in the parent, before the fork, so the
+/// child between `forkpty` and `exec` only calls `signal`/`execvp`/`_exit`.
+/// An interior NUL in any argument is reported with the program's name here —
+/// the caller exits 127 without any child, matching the status and message
+/// the child produced before (`host/main.c`'s exec path).
+fn build_child_command(command: &[OsString]) -> Result<ChildCommand, String> {
+    let mut argv = Vec::with_capacity(command.len());
+    for arg in command {
+        let Ok(cstring) = CString::new(arg.as_bytes()) else {
+            return Err(format!(
                 "pinwin: {}: argument has an interior NUL",
                 command[0].to_string_lossy()
-            );
-            // SAFETY: `_exit` never runs atexit handlers or unwinds.
-            unsafe { libc::_exit(127) }
-        }
-    };
-    let argv: Vec<CString> = command
-        .iter()
-        .map(|arg| CString::new(arg.as_bytes()))
-        .collect::<Result<_, _>>()
-        .unwrap_or_else(|_| {
-            eprintln!(
-                "pinwin: {}: argument has an interior NUL",
-                command[0].to_string_lossy()
-            );
-            // SAFETY: `_exit` never runs atexit handlers or unwinds.
-            unsafe { libc::_exit(127) }
-        });
+            ));
+        };
+        argv.push(cstring);
+    }
     let mut pointers: Vec<*const libc::c_char> = argv.iter().map(|arg| arg.as_ptr()).collect();
     pointers.push(std::ptr::null());
-    // SAFETY: `program` and `pointers` are NUL-terminated C strings and the
-    // array is null-terminated; on success this call never returns.
+    Ok(ChildCommand { argv, pointers })
+}
+
+/// Restore the default signal dispositions the Rust runtime changed, so the
+/// exec'd command keeps the default contract `host/main.c`'s child had from
+/// its plain C fork: std sets `SIGPIPE` to `SIG_IGN` at startup and an
+/// ignored disposition survives `execve`, so it must go back to `SIG_DFL`.
+/// The `SIGINT`/`SIGTERM` handlers are installed after the fork and `exec`
+/// resets caught dispositions, so they need no reset here.
+fn child_signal_setup() {
+    // SAFETY: a plain signal number, `SIG_DFL` a valid disposition.
     unsafe {
-        libc::execvp(program.as_ptr(), pointers.as_ptr());
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+/// Replace this (child) process with the command, exiting 127 when the exec
+/// fails — the child never returns from here. Only async-signal-safe calls
+/// happen here: the arguments and pointer array were built in the parent.
+fn child_exec(child: &ChildCommand) -> ! {
+    child_signal_setup();
+    // SAFETY: the pointers are NUL-terminated C strings and the array is
+    // null-terminated; on success this call never returns.
+    unsafe {
+        libc::execvp(child.argv[0].as_ptr(), child.pointers.as_ptr());
     }
     // execvp only returns on failure.
     let error = io::Error::last_os_error();
-    eprintln!("pinwin: {}: {error}", command[0].to_string_lossy());
+    eprintln!("pinwin: {}: {error}", child.argv[0].to_string_lossy());
     // SAFETY: `_exit` never runs atexit handlers or unwinds, which matters in
     // this forked child.
     unsafe { libc::_exit(127) }
@@ -310,6 +331,17 @@ fn run() -> i32 {
         env::set_var("COLORTERM", "truecolor");
     }
 
+    // Build the child's exec arguments before the fork, so the child between
+    // `forkpty` and `exec` only calls `signal`/`execvp`/`_exit`; an interior
+    // NUL is reported here and exits 127 without any child.
+    let child = match build_child_command(&command) {
+        Ok(child) => child,
+        Err(message) => {
+            eprintln!("{message}");
+            return 127;
+        }
+    };
+
     // Fork the child onto a new pty; the parent keeps the master fd.
     let mut master: libc::c_int = -1;
     // SAFETY: `master` is writable; the termios and winsize arguments are
@@ -327,7 +359,7 @@ fn run() -> i32 {
         return 1;
     }
     if pid == 0 {
-        child_exec(&command);
+        child_exec(&child);
     }
     CHILD_PID.store(pid, Ordering::Relaxed);
 
@@ -598,5 +630,171 @@ mod tests {
         assert_eq!(child_exit_status(1), 1);
         // Killed by SIGKILL (signal 9).
         assert_eq!(child_exit_status(9), 1);
+    }
+
+    /// The exec arguments are the C strings of the command, with the pointer
+    /// array terminated, and an interior NUL is reported naming the program.
+    #[test]
+    fn build_child_command_builds_the_exec_arguments() {
+        let os = |slice: &[&str]| -> Vec<OsString> {
+            slice
+                .iter()
+                .map(OsStr::new)
+                .map(OsStr::to_os_string)
+                .collect()
+        };
+
+        let child = build_child_command(&os(&["htop", "-d", "10"])).expect("no NUL");
+        assert_eq!(child.argv.len(), 3);
+        assert_eq!(child.argv[0].to_bytes(), b"htop");
+        assert_eq!(child.argv[2].to_bytes(), b"10");
+        // The pointer array mirrors `argv` and ends on a null.
+        assert_eq!(child.pointers.len(), 4);
+        assert_eq!(child.pointers[0], child.argv[0].as_ptr());
+        assert_eq!(child.pointers[2], child.argv[2].as_ptr());
+        assert!(child.pointers[3].is_null());
+
+        // An interior NUL anywhere names the program, not the offending
+        // argument, like the child's message did.
+        let command = os(&["htop"]);
+        let mut nul = OsString::from("-d");
+        nul.push(OsStr::from_bytes(&[b'a', 0, b'b']));
+        let mut command = command;
+        command.push(nul);
+        let Err(error) = build_child_command(&command) else {
+            panic!("expected the interior-NUL error")
+        };
+        assert_eq!(error, "pinwin: htop: argument has an interior NUL");
+    }
+
+    /// The child's signal reset: `signal` reports the previous disposition,
+    /// so after the reset `SIGPIPE`'s previous handler is `SIG_DFL` — not the
+    /// `SIG_IGN` the Rust runtime installed at startup.
+    #[test]
+    fn child_signal_setup_restores_the_sigpipe_default() {
+        child_signal_setup();
+        // SAFETY: a plain signal number; the ignore is restored below so the
+        // rest of the test process keeps std's contract.
+        let previous = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+        assert_eq!(previous, libc::SIG_DFL);
+    }
+
+    /// The reset reaches the exec'd program, through the real `child_exec`
+    /// path (`std::process::Command` resets `SIGPIPE` in its own children, so
+    /// it cannot show the inheritance). Fork, dup the reporting pipe onto
+    /// stdout, then either run [`child_exec`] itself or — the control, as
+    /// `child_exec` was before the fix — the same `execve` without the
+    /// signal reset, and read the `SigIgn` mask of the exec'd `cat` back
+    /// through the pipe: the Rust runtime ignores `SIGPIPE` (bit
+    /// `SIGPIPE - 1`), the ignore would survive the exec, and the reset puts
+    /// the default back. Linux-only (`/proc`, `SigIgn`), like the panel.
+    #[test]
+    fn the_execed_child_sees_the_default_sigpipe_disposition() {
+        use std::path::Path;
+
+        fn sigpipe_ignored(reset: bool) -> bool {
+            // `cat` installs no signal handlers, so its `SigIgn` mask is
+            // exactly what the exec delivered. Everything is built in the
+            // parent; the absolute program path also keeps `execvp` off its
+            // PATH search in the forked child.
+            let program_path = ["/usr/bin/cat", "/bin/cat"]
+                .into_iter()
+                .find(|path| Path::new(path).exists())
+                .expect("cat at a known absolute path");
+            let child_command = build_child_command(&[
+                OsString::from(program_path),
+                OsString::from("/proc/self/status"),
+            ])
+            .expect("no NUL");
+            let program = CString::new(program_path).expect("no NUL");
+            let arg0 = CString::new("cat").expect("no NUL");
+            let file = CString::new("/proc/self/status").expect("no NUL");
+
+            let mut fds = [0 as libc::c_int; 2];
+            // SAFETY: `fds` is writable.
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
+            // SAFETY: fork in a threaded test process; the child between the
+            // fork and the exec only calls async-signal-safe functions —
+            // close, signal, dup2, exec, _exit — exactly like `child_exec`.
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
+            if pid == 0 {
+                unsafe {
+                    libc::close(fds[0]);
+                    libc::dup2(fds[1], libc::STDOUT_FILENO);
+                }
+                if reset {
+                    // The real child path, reset and exec included; it
+                    // never returns.
+                    child_exec(&child_command);
+                }
+                // The control: the same exec without the reset; it never
+                // returns.
+                unsafe {
+                    let argv = [arg0.as_ptr(), file.as_ptr(), std::ptr::null()];
+                    libc::execve(program.as_ptr(), argv.as_ptr(), std::ptr::null());
+                    libc::_exit(127);
+                }
+            }
+            // SAFETY: each end is closed by its own process only.
+            unsafe {
+                libc::close(fds[1]);
+            }
+            let mut output = Vec::new();
+            loop {
+                let mut chunk = [0u8; 512];
+                // SAFETY: `fds[0]` is the read end, `chunk` is writable.
+                let n = unsafe { libc::read(fds[0], chunk.as_mut_ptr().cast(), chunk.len()) };
+                if n == 0 {
+                    break;
+                }
+                if n < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.raw_os_error() == Some(libc::EINTR) {
+                        continue;
+                    }
+                    panic!("read: {error}");
+                }
+                output.extend_from_slice(&chunk[..n as usize]);
+            }
+            // SAFETY: the read end is drained.
+            unsafe {
+                libc::close(fds[0]);
+            }
+            let mut status: i32 = 0;
+            // SAFETY: `pid` is this test's child, `status` writable.
+            assert_eq!(
+                unsafe { libc::waitpid(pid, &mut status, 0) },
+                pid,
+                "waitpid"
+            );
+            assert!(
+                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+                "cat failed: {:?}",
+                String::from_utf8_lossy(&output)
+            );
+
+            let text = String::from_utf8(output).expect("utf-8");
+            let line = text
+                .lines()
+                .find(|line| line.starts_with("SigIgn:"))
+                .expect("a SigIgn line");
+            let mask =
+                u64::from_str_radix(line.split_whitespace().nth(1).expect("the mask field"), 16)
+                    .expect("a hex mask");
+            // Signals are numbered from one, so `SIGPIPE` is bit 12.
+            mask & (1u64 << (libc::SIGPIPE - 1)) != 0
+        }
+
+        // The runtime's ignore survives the exec without the reset.
+        assert!(
+            sigpipe_ignored(false),
+            "SIGPIPE should be ignored without the reset"
+        );
+        // The child's reset puts the default back before the exec.
+        assert!(
+            !sigpipe_ignored(true),
+            "SIGPIPE should be default after the reset"
+        );
     }
 }
