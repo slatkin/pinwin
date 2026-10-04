@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pin mbv to the left edge of niri. Rule + reservation live in pin.kdl only while running.
+# Pin a command to the left edge of niri. Rule + reservation live in pin.kdl only while running.
 { # parse the whole script up front, so editing it doesn't break running pins
 PIN=~/.config/niri/woims/pin.kdl
 COLS=${COLS:-40}
@@ -33,7 +33,7 @@ cleanup() { pkill -P $$; : > "$PIN"; niri msg action load-config-file; }
 trap cleanup EXIT
 
 write_pin 0 0
-ghostty --gtk-single-instance=false --class=dev.pinwin --window-width="$COLS" --window-height=1000 -e "${@:-mbv}" &
+ghostty --gtk-single-instance=false --class=dev.pinwin --window-width="$COLS" --window-height=1000 -e "${@:-$SHELL}" &
 gpid=$!
 # Wait for the window and for its size to settle (first reports are pre-configure).
 prev=

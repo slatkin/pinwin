@@ -5,7 +5,7 @@
 `pinwin/src/pty.c` sets the pty winsize in two places: `attach_pty` (the initial
 `TIOCSWINSZ` for the host-supplied master fd, design D6 of add-library-abi) and
 `glue_pty_resize` (every layout apply that changes the grid). Neither raises any signal
-today. The mbv consumer (`pin-mbv-in-pinwin`, design D2 "required upstream addition" 1 and
+today. The the client consumer (`the consumer-side pin change`, design D2 "required upstream addition" 1 and
 D3) renders with crossterm, which reports `Event::Resize` only when the process receives
 SIGWINCH.
 

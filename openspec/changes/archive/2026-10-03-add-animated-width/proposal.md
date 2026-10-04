@@ -2,7 +2,7 @@
 
 ## Why
 
-mbv toggles the panel between a collapsed and an expanded width with one
+The client toggles the panel between a collapsed and an expanded width with one
 `pinwin_apply_layout`. niri does not animate layer-surface resizes, so the panel and the
 tiling reflow snap in a single frame, which reads as jarring. Only pinwin owns the surface and
 its GTK4 frame clock, so the smoothing has to live here.
@@ -35,11 +35,11 @@ its GTK4 frame clock, so the smoothing has to live here.
 - `src/glue_anim.c` (new), `src/glue.c`, `src/glue_internal.h`, `src/pinwin_api.c`,
   `src/pinwin_api.h`, `src/render.c`, `src/input.c`, `build.zig`, `build.zig.zon`.
 - No new dependencies.
-- **Rollout order: pinwin first, then mbv.** Any pinwin `src/` change alters the Zig package
-  content hash, so mbv's `crates/mbv-pinwin/build.zig.zon` URL+hash must be bumped
-  (`zig fetch --save`) to consume it. mbv then adds the `ffi.rs` declaration and
-  `Panel::apply_layout_animated(Layout, Duration)`, then switches its toggle path. mbv cannot
-  call the symbol before its pin includes it. Those mbv edits are a separate change in the mbv
+- **Rollout order: pinwin first, then the client.** Any pinwin `src/` change alters the Zig package
+  content hash, so the client's `the consumer's ffi crate/build.zig.zon` URL+hash must be bumped
+  (`zig fetch --save`) to consume it. The client then adds the `ffi.rs` declaration and
+  `Panel::apply_layout_animated(Layout, Duration)`, then switches its toggle path. The client cannot
+  call the symbol before its pin includes it. Those the client edits are a separate change in the the client
   repo and are out of scope here.
 - Non-goals: animating side or gutter changes (they snap); spring physics; a runtime config
-  or env override; any mbv-side change.
+  or env override; any consumer-side change.

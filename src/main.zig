@@ -1,5 +1,5 @@
 //! pinwin — a terminal docked at the left edge of one monitor via
-//! wlr-layer-shell, running one command (mbv by default).
+//! wlr-layer-shell, running one command ($SHELL by default).
 //!
 //! Layout: `main.zig` owns the terminal (libghostty-vt), its setup and the
 //! render/input state the other Zig files drive; `cells.zig` runs the frame
@@ -60,7 +60,7 @@ const std = @import("std");
 
 const c = @import("c.zig").c;
 
-/// Ghostty's own default for `image-storage-limit`, and what mbv's posters fit in.
+/// Ghostty's own default for `image-storage-limit`, and headroom for image-heavy hosts.
 const KITTY_STORAGE_LIMIT: u64 = 320 * 1024 * 1024;
 
 pub const allocator = std.heap.c_allocator;

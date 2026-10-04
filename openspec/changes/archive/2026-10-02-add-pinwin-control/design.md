@@ -10,7 +10,7 @@ dbusmenu). Facts the design relies on:
   so the Wayland-only requirement needs no new code.
 - `pinwin_options_open()` already presents the single options window and reuses it if it is open.
   A control request only has to call it.
-- `commandArgv` in `main.zig` treats every argument as the command and defaults to `mbv`.
+- `commandArgv` in `main.zig` treats every argument as the command and defaults to the client.
 - `tray.c` rasterises `$HOME/pinwin.svg` into SNI pixmaps (`tray_argb_from_rgba`, covered by the
   check program) and falls back to a theme icon.
 - The child is spawned in `spawn_pty()` with `forkpty`. `setenv("TERM", ...)` runs between fork
@@ -21,7 +21,7 @@ dbusmenu). Facts the design relies on:
 
 **Goals:**
 - The smallest control API a host app needs: open the options window.
-- Source files under 800 lines and checks runnable from `zig build`, so the code can move into mbv
+- Source files under 800 lines and checks runnable from `zig build`, so the code can move into the client's repository
   unchanged.
 
 **Non-Goals:**
@@ -91,8 +91,8 @@ a one-off generator, and the generated header is the source of truth.
 
 - [The split changes behaviour by accident] → the split is in its own commit as pure moves, and
   the manual check (task group 4) covers drawing, input, images, resize and options after it.
-- [Bare `pinwin` no longer runs `mbv`] → this is intended. The README and desktop-entry examples
-  change to `pinwin mbv`.
+- [Bare `pinwin` no longer runs the client] → this is intended. The README and desktop-entry examples
+  change to `pinwin <command>`.
 - [A user's `$HOME/pinwin.svg` stops being used] → the README says to install an icon named
   `pinwin` into the icon theme instead.
 - [A blocking request handler would freeze the panel] → all socket I/O uses gio async calls on the

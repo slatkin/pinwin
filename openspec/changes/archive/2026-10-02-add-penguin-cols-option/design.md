@@ -39,7 +39,7 @@ Width resizing in GTK4 cannot use `gtk_window_resize` (it does not exist in GTK4
 ## Risks / Trade-offs
 
 - [Layer-shell width follow on a runtime natural-size change] → Verify on a live niri session that the visible panel and the reservation both track the new width (manual checklist item; ask before touching the live session, per project rule).
-- [Grid resize while the child runs] → Same path rows already take (`penguin_size` + `glue_pty_resize`); mbv and other TUIs already survive row resizes from output changes.
+- [Grid resize while the child runs] → Same path rows already take (`penguin_size` + `glue_pty_resize`); the client and other TUIs already survive row resizes from output changes.
 - [Saved layouts written by the previous build lack `cols`] → Missing key falls back to launch `COLS`; old configs stay valid without migration.
 - [Two instances with different column counts write the same config] → Existing last-save-wins semantics, unchanged.
 

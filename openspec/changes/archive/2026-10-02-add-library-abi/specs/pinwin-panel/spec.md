@@ -329,7 +329,7 @@ There is no executable to install. `make install` goes away with the `Makefile` 
 Vacuous in library form: nothing the library builds or writes touches `pin.kdl` or
 `~/.local/bin/pinwin` paths. `pinwin.sh` itself is untouched by this change.
 
-### Requirement: Terminal features mbv depends on
+### Requirement: Terminal features the client depends on
 Replaced by the ADDED "Terminal features for the host's child" requirement: the terminal
 capabilities are unchanged, but the requirement is stated for the host's child rather than a
 named consumer.

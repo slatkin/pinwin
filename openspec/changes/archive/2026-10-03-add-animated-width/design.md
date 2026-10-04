@@ -18,11 +18,11 @@ Verified against the sources:
   rows or `g_cols != g_grid_cols` change, so `on_area_resize` per frame is a no-op once
   `g_cols` is the target.
 - The Rust wrapper documents `Panel::apply_layout` as stateless and repeatable
-  (`crates/mbv-pinwin/src/panel.rs`). Only that doc comment was checked, not mbv's call sites.
+  (`the consumer's ffi crate/src/panel.rs`). Only that doc comment was checked, not the client's call sites.
 - `PinwinLayout` is six `int32`s (24 bytes), passed by pointer, with no size or version field.
-- The "hash" mbv pins is the Zig package content hash over `build.zig`, `build.zig.zon`, `src`,
+- The "hash" the client pins is the Zig package content hash over `build.zig`, `build.zig.zon`, `src`,
   `host` and `demo`; there is no separate ABI hash. The only tag is `library-abi` (on
-  `6c2201f`); mbv pins commit `835d39c`.
+  `6c2201f`); the client pins commit `835d39c`.
 
 ## Goals / Non-Goals
 
@@ -30,7 +30,7 @@ Verified against the sources:
 frame exactly the requested width; non-animated path unchanged in latency and correctness;
 one frame callback, no per-frame allocation.
 
-**Non-Goals:** side/gutter animation; spring physics; env/config overrides; mbv changes.
+**Non-Goals:** side/gutter animation; spring physics; env/config overrides; the client changes.
 
 ## Decisions
 
@@ -100,7 +100,7 @@ Read once per apply with `g_object_get` on `GtkSettings`; FALSE forces `duration
 env var or flag.
 
 **D7. Versioning and rollout.**
-Bump `.version` to 0.2.0 and no new tag (OQ-1). pinwin lands first; mbv
+Bump `.version` to 0.2.0 and no new tag (OQ-1). pinwin lands first; the client
 then bumps its pin and adds the call (separate change).
 
 ## Risks / Trade-offs
@@ -115,7 +115,7 @@ then bumps its pin and adds the call (separate change).
 
 ## Open Questions
 
-- **OQ-1 (resolved).** No new tag: mbv pins a commit hash, not `library-abi`.
+- **OQ-1 (resolved).** No new tag: the client pins a commit hash, not `library-abi`.
 - **OQ-2.** Does `gtk_layer_set_exclusive_zone` on `g_reserve`, an unrendered opacity-0
   window, commit every frame without that window redrawing? Needs gtk4-layer-shell source or
   an experiment (task 1.1). Biggest risk.
@@ -135,13 +135,13 @@ then bumps its pin and adds the call (separate change).
   covers only manual resizes (e.g. `switch-preset-column-width`, `maximize-column`) and skips
   changes up to 10 px; a layer-shell surface resize or exclusive-zone change is not such an
   action, so niri reflows tiles immediately on each change, i.e. per frame during the tween.
-  Source: mbv orchestrator review. Whether the reservation commits each step is still tested by task 1.1
+  Source: the client orchestrator review. Whether the reservation commits each step is still tested by task 1.1
   (OQ-2).
-- **OQ-4 (resolved).** mbv holds no one-shot state, verified against its call sites:
+- **OQ-4 (resolved).** the client holds no one-shot state, verified against its call sites:
   `src/pin.rs` builds a fresh `Layout` per call (`layout_from_config`, `apply_layout`);
   `src/app/dispatch/settings.rs` `toggle_pinned_width` calls `pin::apply_layout` at the
-  toggled width and stores the width only on `Ok`; `crates/mbv-pinwin` `Panel::apply_layout`
-  is stateless and repeatable. Retargeting from mbv is safe.
+  toggled width and stores the width only on `Ok`; `the consumer's ffi crate` `Panel::apply_layout`
+  is stateless and repeatable. Retargeting from the client is safe.
 - **OQ-5.** Does `input.c` need more than a coordinate offset for right docking? Not read.
 
 ## Benchmarks to run later

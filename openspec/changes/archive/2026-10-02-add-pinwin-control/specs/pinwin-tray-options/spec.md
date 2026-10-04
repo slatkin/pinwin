@@ -56,8 +56,8 @@ window SHALL remain available through the control API (pinwin-control), and ever
 SHALL be unchanged.
 
 #### Scenario: Hosted without a tray
-- **WHEN** the user runs `pinwin --no-tray mbv` with a tray host running
-- **THEN** no pinwin tray entry appears, and the panel runs `mbv` normally
+- **WHEN** the user runs `pinwin --no-tray <command>` with a tray host running
+- **THEN** no pinwin tray entry appears, and the panel runs the client normally
 
 #### Scenario: Options without a tray
 - **WHEN** a pinwin started with `--no-tray` receives an `options` control request

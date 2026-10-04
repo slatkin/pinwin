@@ -96,7 +96,7 @@ Alternative: applying before saving requires reverting surface state when disk w
 
 - [Tray-host compatibility differs] --> Export a real dbusmenu tree and test right-click/Options on the current host, including host restart. D-Bus introspection alone is not acceptance.
 - [Transparent reservation accidentally targets a different output] --> Resolve the visible monitor before presenting the reservation and use that same monitor for every update.
-- [Fractional scaling or resize changes rows differently than expected] --> Validate/render in the existing logical coordinate system; accept configured widget size as authoritative and test with the real mbv client and size queries.
+- [Fractional scaling or resize changes rows differently than expected] --> Validate/render in the existing logical coordinate system; accept configured widget size as authoritative and test with the real client and size queries.
 - [Output unplug/geometry changes invalidate saved values] --> Validate at startup and each Apply. Dynamic monitor relocation after unplug remains compositor behavior, not a new monitor-following feature.
 - [Config persistence supersedes an old no-write guarantee] --> Write only the penguin config on successful Apply; never touch niri. Call out the unarchived spec conflict for reconciliation at promotion.
 - [Existing launch defaults themselves do not fit a tiny output] --> Preserve existing launch behavior; interactive Apply must satisfy the stricter validation. Do not silently rewrite COLS or saved gutters.

@@ -119,12 +119,11 @@ void glue_pty_resize(int32_t cols, int32_t rows) {
     ws.ws_row = (unsigned short)rows;
     ws.ws_xpixel = (unsigned short)(cols * g_cell_w);
     ws.ws_ypixel = (unsigned short)(rows * g_cell_h);
-    /* The host's crossterm loop learns of resizes from SIGWINCH (mbv's
-     * pin-mbv-in-pinwin, required upstream addition 1): raise it after every
-     * successful winsize update. Disposition is process-wide, so the raise
-     * reaches the host's handler from any thread; a host without a handler
-     * ignores the signal (default disposition). A failed ioctl leaves the
-     * winsize untouched and raises nothing. */
+    /* The host's event loop learns of resizes from SIGWINCH: raise it after
+     * every successful winsize update. Disposition is process-wide, so the
+     * raise reaches the host's handler from any thread; a host without a
+     * handler ignores the signal (default disposition). A failed ioctl leaves
+     * the winsize untouched and raises nothing. */
     if (ioctl(g_pty_fd, TIOCSWINSZ, &ws) >= 0) raise(SIGWINCH);
 }
 

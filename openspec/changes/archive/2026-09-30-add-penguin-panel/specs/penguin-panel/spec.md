@@ -2,16 +2,16 @@
 
 ## Purpose
 
-`penguin` docks a terminal running one command (mbv by default) at the left edge of one monitor, reserving that space so the compositor tiles windows to its right, and releases the space when the command exits.
+`penguin` docks a terminal running one command (the client by default) at the left edge of one monitor, reserving that space so the compositor tiles windows to its right, and releases the space when the command exits.
 
 ## ADDED Requirements
 
 ### Requirement: Launch a command in the panel
-`penguin` SHALL run the command given as its arguments inside its terminal, or `mbv` when no arguments are given. Arguments SHALL be passed to the command unchanged.
+`penguin` SHALL run the command given as its arguments inside its terminal, or the client when no arguments are given. Arguments SHALL be passed to the command unchanged.
 
 #### Scenario: Default command
 - **WHEN** the user runs `penguin` with no arguments
-- **THEN** the panel opens and runs `mbv`
+- **THEN** the panel opens and runs the client
 
 #### Scenario: Custom command
 - **WHEN** the user runs `penguin htop -d 10`
@@ -85,12 +85,12 @@
 - **WHEN** the user runs `PENGUIN_KEYBOARD=sideways penguin`
 - **THEN** `penguin` prints an error naming `PENGUIN_KEYBOARD` to stderr, opens nothing, and exits non-zero
 
-### Requirement: Terminal features mbv depends on
+### Requirement: Terminal features the client depends on
 The panel's terminal SHALL support, as seen by the program running in it: alternate screen; 24-bit and 256-color text with bold, italic and inverse; the kitty keyboard protocol including "disambiguate escape codes", with key press and release and Shift/Ctrl/Alt/Super modifiers; mouse reporting in SGR format with coordinates in cells; focus in/out reports (`CSI I` / `CSI O`) when the program enables them; `CSI > 1 s` (XTSHIFTESCAPE); and the kitty graphics protocol, including answering the kitty graphics query and drawing transmitted images at their placements.
 
-#### Scenario: mbv detects kitty graphics
-- **WHEN** `penguin` runs `mbv` with no image protocol override in mbv's config
-- **THEN** mbv selects the kitty image protocol (not half-blocks) and posters render as images
+#### Scenario: the client detects kitty graphics
+- **WHEN** `penguin` runs the client with no image protocol override in the client's config
+- **THEN** the client selects the kitty image protocol (not half-blocks) and posters render as images
 
 #### Scenario: Key disambiguation
 - **WHEN** a program in the panel enables kitty keyboard disambiguation and the user presses Escape
@@ -127,7 +127,7 @@ The panel's terminal SHALL answer terminal queries on the PTY: primary device at
 - **THEN** it receives `CSI 6 ; <cell height px> ; <cell width px> t` matching the drawn cell size
 
 #### Scenario: Images are not clipped
-- **WHEN** mbv shows a poster in the panel
+- **WHEN** the client shows a poster in the panel
 - **THEN** the whole image is visible, with no part cut off at the right or bottom edge
 
 #### Scenario: Pixel size in window size
@@ -145,8 +145,8 @@ The repository SHALL provide `make install`, which builds `penguin` and installs
 `penguin` SHALL close its surface and exit when the command exits, with the command's exit status. The reserved space SHALL be released without any cleanup step and without writing any files. `penguin` SHALL NOT read or write niri configuration.
 
 #### Scenario: Normal exit
-- **WHEN** the user quits mbv inside the panel
-- **THEN** the panel disappears, tiled windows move back to the left, and `penguin` exits with mbv's exit status
+- **WHEN** the user quits the client inside the panel
+- **THEN** the panel disappears, tiled windows move back to the left, and `penguin` exits with the client's exit status
 
 #### Scenario: penguin killed
 - **WHEN** `penguin` is killed with `SIGKILL`

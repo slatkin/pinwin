@@ -19,11 +19,11 @@ an error message on stderr naming the argument, before opening any surface.
 - **THEN** the panel opens and runs `htop` with arguments `-d` and `10`
 
 #### Scenario: Options before the command
-- **WHEN** the user runs `pinwin --no-tray mbv`
-- **THEN** the panel opens without a tray entry and runs `mbv` with no arguments
+- **WHEN** the user runs `pinwin --no-tray <command>`
+- **THEN** the panel opens without a tray entry and runs the client with no arguments
 
 #### Scenario: Unknown option
-- **WHEN** the user runs `pinwin --sideways mbv`
+- **WHEN** the user runs `pinwin --sideways <command>`
 - **THEN** `pinwin` prints an error naming `--sideways` to stderr, opens nothing, and exits non-zero
 
 ## ADDED Requirements

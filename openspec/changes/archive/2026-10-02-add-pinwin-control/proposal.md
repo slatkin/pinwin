@@ -20,7 +20,7 @@ drop its bespoke table script.
   through the control API.
 - **Option parsing**: pinwin's own options come before the command, `--` ends them, and an unknown
   leading `--…` argument is an error.
-- **Default command**: with no command, pinwin runs `$SHELL` (`/bin/sh` if unset) instead of `mbv`.
+- **Default command**: with no command, pinwin runs `$SHELL` (`/bin/sh` if unset) instead of the client.
 - **Tray icon from the icon theme**: `pinwin`, falling back to `utilities-terminal`, instead of
   `$HOME/pinwin.svg`.
 - **Wayland-only** is written down as a requirement. The code already exits with a diagnostic when
@@ -48,5 +48,5 @@ drop its bespoke table script.
   (control parsing cases), README.
 - No new dependencies: the socket uses gio, which is already linked.
 - `pinwin.sh` is unaffected.
-- Behaviour change for anyone relying on bare `pinwin` running `mbv`: they must now run
-  `pinwin mbv`.
+- Behaviour change for anyone relying on bare `pinwin` running the client: they must now run
+  `pinwin <command>`.

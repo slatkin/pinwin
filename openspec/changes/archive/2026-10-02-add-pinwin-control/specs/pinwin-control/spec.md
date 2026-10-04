@@ -34,8 +34,8 @@ path in the command's environment. When there is no control socket, pinwin SHALL
 instance.
 
 #### Scenario: Child learns the address
-- **WHEN** pinwin runs `mbv` with a listening control socket
-- **THEN** `mbv`'s environment contains `PINWIN_SOCKET` equal to that socket's path
+- **WHEN** pinwin runs a client with a listening control socket
+- **THEN** the client's environment contains `PINWIN_SOCKET` equal to that socket's path
 
 #### Scenario: Nested launch does not inherit
 - **WHEN** pinwin has no control socket and was itself started with `PINWIN_SOCKET` set by another instance

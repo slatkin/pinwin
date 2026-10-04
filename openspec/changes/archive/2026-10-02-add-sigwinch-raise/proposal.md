@@ -2,7 +2,7 @@
 
 ## Why
 
-mbv's `pin-mbv-in-pinwin` change depends on a behaviour the library form never specified:
+The client's `the consumer-side pin change` change depends on a behaviour the library form never specified:
 when the panel's winsize changes, the host's crossterm event loop must see
 `Event::Resize`. crossterm learns of resizes by SIGWINCH, and today `pinwin/src/pty.c`
 updates the pty winsize (`TIOCSWINSZ`) without ever raising the signal, so the host would

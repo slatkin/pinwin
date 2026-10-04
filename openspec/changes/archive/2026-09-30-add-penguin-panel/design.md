@@ -13,13 +13,13 @@ Facts this design rests on (checked against source on 2026-09-29):
 - **Ghostty's own GTK app** binds GTK4 through `gobject` (zig-gobject generated bindings) and gtk4-layer-shell through its own `pkg/gtk4-layer-shell`.
 - **Installed system libraries**: GTK 4.22.5, gtk4-layer-shell 1.3.0, pangocairo 1.58.2, `/usr/include/pty.h`.
 - **niri** (`src/handlers/layer_shell.rs`, `new_layer_surface`): a layer surface created without an output goes to `layout.active_output()`, the focused monitor. niri's `update_keyboard_focus` gives an `on-demand` surface keyboard focus when clicked and clears it when a window is clicked.
-- **mbv** (`src/app/infra/terminal.rs`, `crates/mbv-images/src/protocol.rs`) enables alternate screen, mouse capture, `CSI > 1 s`, focus change, kitty keyboard `DISAMBIGUATE_ESCAPE_CODES`, and probes images with ratatui-image `Picker::from_query_stdio` (kitty query + `CSI 16 t`, falling back to half-blocks without replies; wrong cell size clipped images in mbv #654).
+- **The client** (its terminal and image-protocol modules) enables alternate screen, mouse capture, `CSI > 1 s`, focus change, kitty keyboard `DISAMBIGUATE_ESCAPE_CODES`, and probes images with ratatui-image `Picker::from_query_stdio` (kitty query + `CSI 16 t`, falling back to half-blocks without replies; wrong cell size clipped images in a client (#654)).
 
 ## Goals / Non-Goals
 
 **Goals:**
 - One Zig program, `penguin/`, built with `zig build`, linking system GTK4 / gtk4-layer-shell / pangocairo and libghostty-vt from a pinned ghostty commit.
-- Every query mbv sends gets the reply Ghostty itself would give.
+- Every query the client sends gets the reply Ghostty itself would give.
 
 **Non-Goals:**
 - `penguin --focus` as a flag: the same capability was added during implementation as the `PENGUIN_KEYBOARD` environment variable (see D4), which is also what the verification of keyboard input uses.
@@ -79,11 +79,11 @@ Alternative: `GtkSnapshot` + `GdkTexture`. Deferred: cairo is enough at 40 colum
 ## Risks / Trade-offs
 
 - [libghostty-vt API signatures still change] → pin one ghostty commit in `build.zig.zon`; bump deliberately.
-- [Physical-key mapping gaps break kitty keyboard encoding for some keys] → copy Ghostty's GTK keycode table instead of writing one; manual check of Escape, arrows, Enter, Tab, and modified letters in mbv.
+- [Physical-key mapping gaps break kitty keyboard encoding for some keys] → copy Ghostty's GTK keycode table instead of writing one; manual check of Escape, arrows, Enter, Tab, and modified letters in the client.
 - [Cell metrics rounding mismatches Pango's actual glyph advance] → draw every grapheme at `col * cell_w` (never let Pango advance across cells), so the grid is exactly what's reported.
 - [Rendering all dirty cells through Pango layouts is slow] → acceptable at 40×~90 cells; profile only if redraws visibly lag.
 - [Exclusive zone stacks with niri's own left strut] → visible gap = `GUTTER` + the niri layout's left strut (24 in the user's `woims/layout.kdl`). Documented in the README; users can set `GUTTER=0`.
-- [OSC 52 unavailable] → mbv doesn't use it; not needed for v1.
+- [OSC 52 unavailable] → the client doesn't use it; not needed for v1.
 - [Zig 0.16 not installed] → install step in tasks; `pinwin` users are unaffected.
 
 ## Migration Plan

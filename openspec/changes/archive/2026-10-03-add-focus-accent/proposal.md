@@ -5,7 +5,7 @@
 The panel is a layer-shell surface, and niri draws its focus ring and border only around
 layout windows — so while the panel holds keyboard focus, nothing on screen says so. The
 panel must mark focus itself. The accent shipped ad hoc in `ef778e4` (pushed to
-`origin/main`; mbv's `pinned-panel-focus-accent` change pins that SHA). This change folds
+`origin/main`; the client's `pinned-panel-focus-accent` change pins that SHA). This change folds
 the shipped behavior into the spec and addresses the two review notes from `pe-r8`:
 `startup_valid`'s accent checks are untestable as static inline code, and the host parses
 `PINWIN_ACCENT_COLOR` even when `PINWIN_ACCENT=off`.
@@ -33,5 +33,5 @@ the shipped behavior into the spec and addresses the two review notes from `pe-r
 
 - `src/options.h`, `src/options.c`, `src/options_test.zig`, `src/pinwin.h`,
   `src/pinwin_api.c`, `host/main.c`.
-- No new dependencies; no `PinwinStartup` shape change, so mbv's pin of `ef778e4` stays
+- No new dependencies; no `PinwinStartup` shape change, so the client's pin of `ef778e4` stays
   valid (the follow-up commits add symbols, not fields).

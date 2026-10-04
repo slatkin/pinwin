@@ -4,7 +4,7 @@
 
 - [x] 1.1 Split `pinwin/src/glue.c` into `glue.c`, `render.c`, `images.c`, `pty.c`, `input.c`, `fontconfig.c` plus `glue_internal.h` for shared state, as in design D4, with no behaviour edits; add the new files to `build.zig`. Verify: `zig build` succeeds with `-Wall` clean and every C file under `pinwin/src/` is under 800 lines (`wc -l`).
 - [x] 1.2 Split `pinwin/src/main.zig` into `main.zig`, `cells.zig`, `input.zig` as in design D4, with no behaviour edits. Verify: `zig build` succeeds and every `.zig` file is under 800 lines.
-- [x] 1.3 Manual check after the split: `pinwin mbv` draws text and posters (kitty graphics), takes keys after a click, reports mouse clicks, resizes on Apply, and exits with mbv's status. Commit the split on its own.
+- [x] 1.3 Manual check after the split: `pinwin <command>` draws text and posters (kitty graphics), takes keys after a click, reports mouse clicks, resizes on Apply, and exits with the client's status. Commit the split on its own.
 
 ## 2. Checks and tooling
 
@@ -13,10 +13,10 @@
 
 ## 3. Launch options and tray
 
-- [x] 3.1 Rework `commandArgv` in `main.zig`: consume leading `--no-tray` and `--`; reject any other leading argument starting with `--` with exit 2 and an error naming it; default the command to `$SHELL`, or `/bin/sh` if `SHELL` is empty or unset. Verify by hand: `pinwin --sideways mbv` exits 2 naming `--sideways`; `SHELL=/bin/bash pinwin` runs bash; `pinwin -- --odd` tries to run `--odd`.
+- [x] 3.1 Rework `commandArgv` in `main.zig`: consume leading `--no-tray` and `--`; reject any other leading argument starting with `--` with exit 2 and an error naming it; default the command to `$SHELL`, or `/bin/sh` if `SHELL` is empty or unset. Verify by hand: `pinwin --sideways <command>` exits 2 naming `--sideways`; `SHELL=/bin/bash pinwin` runs bash; `pinwin -- --odd` tries to run `--odd`.
 - [x] 3.2 Pass `--no-tray` through `glue_init` and skip `tray_init()` when set. Verify by hand: `pinwin --no-tray htop` shows no tray entry while a tray host runs, and plain `pinwin htop` still shows one.
 - [x] 3.3 Publish the tray icon by theme name (`pinwin` if the GTK icon theme has it, else `utilities-terminal`). Delete the `$HOME/pinwin.svg` loading, pixmap rasterising, `tray_argb_from_rgba` and their check cases. Verify: `zig build check` passes, and the tray shows `utilities-terminal` when no `pinwin` icon is installed.
-- [x] 3.4 Update the README: usage (`pinwin [--no-tray] [--] [command...]`, `$SHELL` default, desktop-entry example `pinwin mbv`), the tray icon via the theme, and Wayland layer-shell only. Verify that the documented commands match the behaviour from 3.1–3.3.
+- [x] 3.4 Update the README: usage (`pinwin [--no-tray] [--] [command...]`, `$SHELL` default, desktop-entry example `pinwin <command>`), the tray icon via the theme, and Wayland layer-shell only. Verify that the documented commands match the behaviour from 3.1–3.3.
 
 ## 4. Control API
 
@@ -27,4 +27,4 @@
 
 ## 5. Integration check
 
-- [x] 5.1 Run `pinwin --no-tray mbv` under niri: no pinwin tray entry; `options` sent over `PINWIN_SOCKET` opens the options window; Apply resizes the panel without restarting mbv; quitting mbv exits pinwin and removes the socket.
+- [x] 5.1 Run `pinwin --no-tray <command>` under niri: no pinwin tray entry; `options` sent over `PINWIN_SOCKET` opens the options window; Apply resizes the panel without restarting the client; quitting the client exits pinwin and removes the socket.

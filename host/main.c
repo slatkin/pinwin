@@ -5,7 +5,7 @@
  *   pinwin [--] [command...]
  *   COLS=60 GUTTER=8 PINWIN_KEYBOARD=on-demand|exclusive|none
  *   PINWIN_ACCENT=on|off PINWIN_ACCENT_COLOR=#RRGGBB PINWIN_ACCENT_WIDTH=2
- *   pinwin mbv
+ *   pinwin htop
  *
  * A thin host over libpinwin's C ABI (pinwin_api.h): it owns the pty, the
  * child's environment and the process lifetime; the library owns the panel.

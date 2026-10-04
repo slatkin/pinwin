@@ -2,7 +2,7 @@
 
 ## Why
 
-Penguin currently fixes its terminal to the left edge and accepts only a launch-time extra gutter. A tray entry lets the user adjust spacing and docking without restarting mbv, and remember those choices across launches.
+Penguin currently fixes its terminal to the left edge and accepts only a launch-time extra gutter. A tray entry lets the user adjust spacing and docking without restarting the client, and remember those choices across launches.
 
 ## What Changes
 
