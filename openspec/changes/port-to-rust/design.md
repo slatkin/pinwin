@@ -216,13 +216,35 @@ unwinding through C is undefined).
 
 ### D6. Layout types that cannot express the former rejections
 
-`Layout { side: Side, cols: NonZeroU16, top: i32, bottom: i32, left: i32, right: i32 }`,
-`Keyboard { None, OnDemand, Exclusive }`, `Accent { rgb: [u8; 3], width: NonZeroU16 }` passed as
-`Option<Accent>`, and `Side { Left, Right }` are `Copy` types with public fields (no builder:
-the invariants live in the field types). `PinwinError` is a `#[non_exhaustive]` enum with
-`InvalidLayout`, `InvalidFd`, `NoDisplay`, `AlreadyRunning`, `NotRunning`, `Internal`,
-implementing `std::error::Error` without a derive crate. Monitor validation stays a runtime
-check inside the GTK thread, reusing the existing checked-arithmetic geometry in `layout`.
+`Layout`, `SideGeometry`, `CellSize`, `OutputSize`, `Accent` and `Side` are `Copy` types with
+private fields built by `new` and read through accessors, so the invariants live in the field
+types rather than in a runtime check: `Layout { side: Side, cols: NonZeroU16, top: i32,
+bottom: i32, left: i32, right: i32 }`, `Side { Left, Right }`, `CellSize` / `OutputSize`
+each holding a `NonZeroI32` width and height, and `Accent { rgb: [u8; 3], width:
+NonZeroU16 }` passed as `Option<Accent>` (absence is "disabled"). `Keyboard { None,
+OnDemand, Exclusive }`, `InvalidLayout { Overflow, NoReserve, NoWidth, NoRow }` and
+`PinwinError` — a `#[non_exhaustive]` enum with `InvalidLayout`, `InvalidFd`, `NoDisplay`,
+`AlreadyRunning`, `NotRunning`, `Internal`, implementing `std::error::Error` without a derive
+crate — complete the set.
+
+Unrepresentable by construction, so with no runtime check and no ported test: an unknown side,
+a zero column count, a column count above 65535, non-positive cell or output metrics, and an
+accent width outside 1..=65535 (absent accent is the disabled case). `Layout::validate(cell,
+output)` derives the panel width as `cols * cell.width()` and is the only runtime geometry
+check, run inside the GTK thread against the live monitor. `Layout::side_geometry` stays a
+public method taking an arbitrary `i64` panel width (so tests and callers can probe placement
+without constructing a `CellSize`) and reports `InvalidLayout::Overflow` when that width lies
+outside `0..=i32::MAX` or when `left + panel_width + right` falls outside `i32` in either
+direction (a sum below `i32::MIN` is `Overflow`, not `NoReserve`), then `NoReserve`, `NoWidth`
+and `NoRow` as before. `pty_yield` computes `now_us - started_us` with `saturating_sub`, so a
+backwards clock cannot wrap into a spurious yield.
+
+Degenerate monitor metrics are the one former `PINWIN_GEOM_ERR_METRICS` case the `layout` types
+cannot absorb: `CellSize::new` / `OutputSize::new` return `None` for a non-positive GTK monitor
+geometry, and `layout` has no `InvalidLayout` cause for it. `Panel` (task 4.1) maps that `None`
+to `Err(PinwinError::InvalidLayout)` itself instead of panicking or skipping validation (C
+`glue.c` answered `PINWIN_GEOM_ERR_METRICS`, which the host already observed as
+`PinwinError::InvalidLayout`).
 
 Alternative: keep integer fields and validate at runtime as before (rejected, the proposal
 and spec delta make these type guarantees).
@@ -263,8 +285,9 @@ parameters rather than process-globals for the same reason):
 - `SIGWINCH` after a successful winsize ioctl and replay of pty data that arrives before the
   terminal exists (both from `pinwin_api_test.zig`, they catch real regressions).
 
-Not ported: invalid side, keyboard mode, zero or oversized columns, accent enabled/width
-checks, null-layout checks. These are type guarantees now; there is no test per former
+Not ported: invalid side, keyboard mode, zero or oversized columns, non-positive cell/output
+metrics, accent enabled/width checks, null-layout checks. These are type guarantees now; there
+is no test per former
 rejection (optionally one `compile_fail` doctest is NOT added either, as it only tests the
 compiler).
 
