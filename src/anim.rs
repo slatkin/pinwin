@@ -200,10 +200,12 @@ impl Anim {
     /// (`glue_anim_draw_offset`). `area_width` is the drawing area's width,
     /// `None` when the glue has no live area; `grid_px` is `cols * cell_w`.
     pub fn draw_offset(&self, side: Side, area_width: Option<i32>, grid_px: i32) -> i32 {
-        if !self.inner.tween.borrow().is_active() || side != Side::Right || area_width.is_none() {
-            return 0;
+        match area_width {
+            Some(width) if self.inner.tween.borrow().is_active() && side == Side::Right => {
+                width - grid_px
+            }
+            _ => 0,
         }
-        area_width.unwrap_or(0) - grid_px
     }
 
     /// False when the `gtk-enable-animations` setting is off (`glue_anim_allowed`).

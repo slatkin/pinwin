@@ -80,22 +80,18 @@ fn env_number(
 
 /// `PINWIN_KEYBOARD`: `on-demand` (the default), `exclusive` or `none`.
 fn keyboard_mode(raw: Option<&str>) -> Result<Keyboard, String> {
-    match raw.filter(|raw| !raw.is_empty()) {
-        None => Ok(Keyboard::OnDemand),
-        Some("on-demand") => Ok(Keyboard::OnDemand),
-        Some("exclusive") => Ok(Keyboard::Exclusive),
-        Some("none") => Ok(Keyboard::None),
-        Some(raw) => Err(format!(
-            "pinwin: PINWIN_KEYBOARD: expected on-demand, exclusive or none, got '{raw}'"
-        )),
-    }
+    let Some(raw) = raw.filter(|raw| !raw.is_empty()) else {
+        return Ok(Keyboard::OnDemand);
+    };
+    Keyboard::parse(raw).ok_or_else(|| {
+        format!("pinwin: PINWIN_KEYBOARD: expected on-demand, exclusive or none, got '{raw}'")
+    })
 }
 
 /// `PINWIN_ACCENT`: `on` (the default) or `off`.
 fn accent_enabled(raw: Option<&str>) -> Result<bool, String> {
     match raw.filter(|raw| !raw.is_empty()) {
-        None => Ok(true),
-        Some("on") => Ok(true),
+        None | Some("on") => Ok(true),
         Some("off") => Ok(false),
         Some(raw) => Err(format!(
             "pinwin: PINWIN_ACCENT: expected on or off, got '{raw}'"
@@ -110,13 +106,12 @@ fn accent_color(raw: Option<&str>) -> Result<[u8; 3], String> {
         return Ok(DEFAULT_ACCENT_RGB);
     };
     let hex = raw.strip_prefix('#').unwrap_or(raw);
-    let parsed = match (hex.len(), u32::from_str_radix(hex, 16)) {
-        (6, Ok(value)) if hex.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
-            Ok([(value >> 16) as u8, (value >> 8) as u8, value as u8])
-        }
-        _ => Err(()),
-    };
-    parsed.map_err(|_| format!("pinwin: PINWIN_ACCENT_COLOR: expected #RRGGBB, got '{raw}'"))
+    let bad = || format!("pinwin: PINWIN_ACCENT_COLOR: expected #RRGGBB, got '{raw}'");
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(bad());
+    }
+    let value = u32::from_str_radix(hex, 16).map_err(|_| bad())?;
+    Ok([(value >> 16) as u8, (value >> 8) as u8, value as u8])
 }
 
 /// Read the whole environment contract into [`Settings`]. `get` returns the

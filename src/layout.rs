@@ -254,6 +254,18 @@ pub enum Keyboard {
     Exclusive,
 }
 
+impl Keyboard {
+    /// The mode named by `on-demand`, `exclusive` or `none`.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "on-demand" => Some(Self::OnDemand),
+            "exclusive" => Some(Self::Exclusive),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
 /// The pty read loop's yield decision for one main-loop dispatch.
 ///
 /// A `budget_us` of zero or less means unbounded (no tween running): never
@@ -267,6 +279,15 @@ pub const fn pty_yield(started_us: i64, now_us: i64, budget_us: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_parse_accepts_the_three_modes_and_nothing_else() {
+        assert_eq!(Keyboard::parse("on-demand"), Some(Keyboard::OnDemand));
+        assert_eq!(Keyboard::parse("exclusive"), Some(Keyboard::Exclusive));
+        assert_eq!(Keyboard::parse("none"), Some(Keyboard::None));
+        assert_eq!(Keyboard::parse(""), None);
+        assert_eq!(Keyboard::parse("Exclusive"), None);
+    }
 
     fn layout(cols: u16, top: i32, bottom: i32, left: i32, right: i32) -> Layout {
         Layout::new(

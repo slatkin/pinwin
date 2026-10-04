@@ -345,14 +345,14 @@ fn build_glue(
     )));
 
     let hooks = SurfaceHooks {
-        draw: Some(draw_hook(
+        draw: draw_hook(
             link.clone(),
             draw.clone(),
             terminal.clone(),
             focused.clone(),
             poisoned.clone(),
             handshake.clone(),
-        )),
+        ),
         apply_size: apply_size_hook(
             link.clone(),
             terminal.clone(),

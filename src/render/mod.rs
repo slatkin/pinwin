@@ -240,7 +240,7 @@ impl DrawState {
             if !sprites::draw_sprite(
                 cr,
                 &cell,
-                text::first_codepoint(cell.text_bytes()),
+                crate::term::cells::first_codepoint(cell.text_bytes()),
                 &cell_metrics,
             ) {
                 let fonts = self.fonts_ref();

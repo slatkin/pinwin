@@ -50,7 +50,7 @@ pub type MeasureFn = dyn Fn(&gtk4::Widget) -> (i32, i32);
 pub struct SurfaceHooks {
     /// `render.c`'s `on_draw` (row 3.6): the drawing area's draw function,
     /// receiving the cairo context and the pixel extents.
-    pub draw: Option<Rc<DrawFn>>,
+    pub draw: Rc<DrawFn>,
     /// `pty.c`'s `apply_size` (rows 3.6/4.1): recompute the grid from the
     /// drawing area's allocation and push it through the terminal and the pty.
     /// `false` reports a terminal that could not be allocated; the previous
@@ -69,19 +69,6 @@ pub struct SurfaceHooks {
     /// The pty tween-flag relay (row 4.1): `Pty::set_tween_active`, called on
     /// every tween start and stop so the pty read drain bounds itself.
     pub set_tween_active: Rc<dyn Fn(bool)>,
-}
-
-impl Default for SurfaceHooks {
-    fn default() -> Self {
-        SurfaceHooks {
-            draw: None,
-            apply_size: Rc::new(|| true),
-            measure: Rc::new(|_| (0, 0)),
-            tween_cache_drop: Rc::new(|| {}),
-            start_result: Rc::new(|_| {}),
-            set_tween_active: Rc::new(|_| {}),
-        }
-    }
 }
 
 /// The outcome of publishing a layout (`glue_publish_layout`'s return codes).
@@ -208,7 +195,7 @@ pub struct Surfaces {
     closed: Cell<bool>,
     /// A weak self reference for closures the struct installs later (the
     /// deferred-grid idle).
-    weak: RefCell<Weak<Surfaces>>,
+    weak: Weak<Surfaces>,
     /// The width tween.
     pub anim: Anim,
     /// The hooks rows 3.6 and 4.1 fill in.
@@ -259,7 +246,8 @@ impl Surfaces {
         win.set_keyboard_mode(keyboard_mode(keyboard));
 
         let area = gtk4::DrawingArea::new();
-        if let Some(draw) = hooks.draw.clone() {
+        {
+            let draw = hooks.draw.clone();
             let draw_poisoned = poisoned.clone();
             area.set_draw_func(move |_area, cr, width, height| {
                 let _ = guard(&draw_poisoned, || draw(cr, width, height));
@@ -300,13 +288,12 @@ impl Surfaces {
                 latch: Cell::new(false),
                 deferred_grid: Cell::new(false),
                 closed: Cell::new(false),
-                weak: RefCell::new(weak.clone()),
+                weak: weak.clone(),
                 anim,
                 hooks,
                 poisoned,
             }
         });
-        *surfaces.weak.borrow_mut() = Rc::downgrade(&surfaces);
 
         // Initial anchors/margins from the startup layout; the map callback
         // resolves the original monitor and presents the reservation once
@@ -489,7 +476,7 @@ impl Surfaces {
             return;
         }
         self.deferred_grid.set(false);
-        let weak = self.weak.borrow().clone();
+        let weak = self.weak.clone();
         glib::idle_add_local(move || {
             let Some(surfaces) = weak.upgrade() else {
                 return glib::ControlFlow::Break;

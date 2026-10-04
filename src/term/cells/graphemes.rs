@@ -29,7 +29,7 @@ fn is_regional_indicator(cp: u32) -> bool {
 }
 
 /// The first Unicode scalar of `text`, or 0 when it is empty or malformed.
-pub(super) fn first_codepoint(text: &[u8]) -> u32 {
+pub(crate) fn first_codepoint(text: &[u8]) -> u32 {
     let Ok(string) = std::str::from_utf8(text) else {
         return 0;
     };
@@ -37,10 +37,7 @@ pub(super) fn first_codepoint(text: &[u8]) -> u32 {
 }
 
 fn ends_with_zwj(text: &[u8]) -> bool {
-    let Ok(string) = std::str::from_utf8(text) else {
-        return false;
-    };
-    string.ends_with('\u{200D}')
+    text.ends_with("\u{200D}".as_bytes())
 }
 
 fn count_regionals(text: &[u8]) -> u32 {

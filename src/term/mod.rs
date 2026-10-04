@@ -242,9 +242,6 @@ pub struct Terminal {
     input_state: input::InputState,
     /// Per-frame state for the cell/glyph protocol (port-to-rust D3).
     frame: cells::FrameState,
-    /// When true, the frame code prints its debug trace to stderr, mirroring
-    /// the `main.zig` `debug_enabled` global (which was never set true).
-    debug_enabled: bool,
 }
 
 impl Terminal {
@@ -291,19 +288,7 @@ impl Terminal {
             early_pty_data: Vec::new(),
             input_state: input::InputState::default(),
             frame: cells::FrameState::default(),
-            debug_enabled: false,
         }
-    }
-
-    /// Whether the frame code should print its debug trace (`main.zig`
-    /// `debug_enabled`).
-    pub fn debug_enabled(&self) -> bool {
-        self.debug_enabled
-    }
-
-    /// Enable or disable the frame code's debug trace.
-    pub fn set_debug_enabled(&mut self, enabled: bool) {
-        self.debug_enabled = enabled;
     }
 
     /// Whether a callback panicked and latched the terminal poisoned (D5).
@@ -339,32 +324,6 @@ impl Terminal {
     /// The terminal handle, once created.
     pub fn terminal(&self) -> Option<GhosttyTerminal> {
         self.handles.as_ref().and_then(|handles| handles.terminal)
-    }
-
-    /// The render-state handle, once created.
-    pub fn render_state(&self) -> Option<GhosttyRenderState> {
-        self.handles
-            .as_ref()
-            .and_then(|handles| handles.render_state)
-    }
-
-    /// The row-iterator handle, once created.
-    pub fn row_iterator(&self) -> Option<GhosttyRenderStateRowIterator> {
-        self.handles
-            .as_ref()
-            .and_then(|handles| handles.row_iterator)
-    }
-
-    /// The row-cells handle, once created.
-    pub fn row_cells(&self) -> Option<GhosttyRenderStateRowCells> {
-        self.handles.as_ref().and_then(|handles| handles.row_cells)
-    }
-
-    /// The kitty placement-iterator handle, once created.
-    pub fn placement_iterator(&self) -> Option<GhosttyKittyGraphicsPlacementIterator> {
-        self.handles
-            .as_ref()
-            .and_then(|handles| handles.placement_iterator)
     }
 
     /// The key encoder handle, once created.

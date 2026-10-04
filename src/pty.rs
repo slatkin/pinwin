@@ -103,9 +103,7 @@ pub fn write_pty(fd: RawFd, data: &[u8]) {
 
 /// The thread-local `errno`, for classifying a failed syscall.
 fn errno() -> i32 {
-    // SAFETY: reads the thread-local errno on the Linux/glibc runtime this
-    // crate targets.
-    unsafe { *libc::__errno_location() }
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 /// The outcome of one main-loop dispatch of the pty read source.

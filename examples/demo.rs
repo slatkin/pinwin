@@ -75,50 +75,6 @@ fn parse_cols(arg: &str) -> Option<u16> {
     arg.parse::<u16>().ok().filter(|cols| *cols >= 1)
 }
 
-/// The optional `DEMO_KEYBOARD` argument: the `Keyboard` mode named by one of
-/// the accepted spellings, or `None` for an unknown value.
-fn parse_keyboard(arg: &str) -> Option<Keyboard> {
-    match arg {
-        "on-demand" => Some(Keyboard::OnDemand),
-        "exclusive" => Some(Keyboard::Exclusive),
-        "none" => Some(Keyboard::None),
-        _ => None,
-    }
-}
-
-/// Base64 as the C demo rolled it: standard alphabet, `=` padding, for the
-/// kitty image transmission payload.
-fn encode_base64(data: &[u8]) -> String {
-    const TAB: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    let (chunks, rest) = data.as_chunks::<3>();
-    for chunk in chunks {
-        let v = (u32::from(chunk[0]) << 16) | (u32::from(chunk[1]) << 8) | u32::from(chunk[2]);
-        for shift in [18u32, 12, 6, 0] {
-            out.push(TAB[((v >> shift) & 63) as usize] as char);
-        }
-    }
-    match rest {
-        [] => {}
-        [b0] => {
-            let v = u32::from(*b0) << 16;
-            out.push(TAB[((v >> 18) & 63) as usize] as char);
-            out.push(TAB[((v >> 12) & 63) as usize] as char);
-            out.push('=');
-            out.push('=');
-        }
-        [b0, b1] => {
-            let v = (u32::from(*b0) << 16) | (u32::from(*b1) << 8);
-            out.push(TAB[((v >> 18) & 63) as usize] as char);
-            out.push(TAB[((v >> 12) & 63) as usize] as char);
-            out.push(TAB[((v >> 6) & 63) as usize] as char);
-            out.push('=');
-        }
-        _ => unreachable!("at most two bytes remain after as_chunks::<3>"),
-    }
-    out
-}
-
 /// The dense child's `SIGWINCH` handler: set the repaint latch, nothing else
 /// (async-signal-safe). Ports `dense_on_winch`.
 extern "C" fn dense_on_winch(_sig: std::os::raw::c_int) {
@@ -138,7 +94,7 @@ fn dense_send_image() {
         Err(_) => return,
     };
     let raw = &raw[..raw.len().min(1 << 17)];
-    let b64 = encode_base64(raw);
+    let b64 = gtk4::glib::base64_encode(raw);
 
     let mut out = String::new();
     for id in 1..=4u32 {
@@ -375,7 +331,7 @@ fn main() {
         None => Keyboard::OnDemand,
         Some(value) => {
             let value = value.to_string_lossy();
-            match parse_keyboard(&value) {
+            match Keyboard::parse(&value) {
                 Some(keyboard) => keyboard,
                 None => {
                     eprintln!(
@@ -496,17 +452,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base64_matches_the_rfc4648_vectors() {
-        assert_eq!(encode_base64(b""), "");
-        assert_eq!(encode_base64(b"f"), "Zg==");
-        assert_eq!(encode_base64(b"fo"), "Zm8=");
-        assert_eq!(encode_base64(b"foo"), "Zm9v");
-        assert_eq!(encode_base64(b"foob"), "Zm9vYg==");
-        assert_eq!(encode_base64(b"fooba"), "Zm9vYmE=");
-        assert_eq!(encode_base64(b"foobar"), "Zm9vYmFy");
-    }
-
-    #[test]
     fn canned_layout_reserves_only_the_right_gutter() {
         for side in [Side::Left, Side::Right] {
             let layout = canned_layout(side, DEMO_COLS);
@@ -528,16 +473,5 @@ mod tests {
         assert_eq!(parse_cols("65536"), None);
         assert_eq!(parse_cols("junk"), None);
         assert_eq!(parse_cols(""), None);
-    }
-
-    #[test]
-    fn parse_keyboard_accepts_the_three_modes_and_nothing_else() {
-        assert_eq!(parse_keyboard("on-demand"), Some(Keyboard::OnDemand));
-        assert_eq!(parse_keyboard("exclusive"), Some(Keyboard::Exclusive));
-        assert_eq!(parse_keyboard("none"), Some(Keyboard::None));
-        assert_eq!(parse_keyboard(""), None);
-        assert_eq!(parse_keyboard("Exclusive"), None);
-        assert_eq!(parse_keyboard("ondemand"), None);
-        assert_eq!(parse_keyboard("junk"), None);
     }
 }

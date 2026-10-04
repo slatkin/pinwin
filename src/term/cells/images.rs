@@ -59,7 +59,7 @@ impl PlaceholderMap {
 
     /// Record that a placeholder cell for `image_id` was seen at `(row, col)`,
     /// keeping the top-left-most origin for that image.
-    pub(super) fn note(&mut self, image_id: u32, row: i32, col: i32, debug: bool) {
+    pub(super) fn note(&mut self, image_id: u32, row: i32, col: i32) {
         let key = image_id & PLACEHOLDER_ID_MASK;
         for origin in &mut self.origins {
             if origin.image_id != key {
@@ -70,9 +70,6 @@ impl PlaceholderMap {
                 origin.col = col;
             }
             return;
-        }
-        if debug {
-            eprintln!("placeholder new image_id={key} at row={row} col={col}");
         }
         if self.origins.len() == MAX_PLACEHOLDERS {
             return;
@@ -150,7 +147,6 @@ pub(super) fn image_next(
     handles: &mut Handles,
     cell_w: u32,
     cell_h: u32,
-    debug: bool,
 ) -> Option<Image> {
     if !frame.open {
         return None;
@@ -169,9 +165,6 @@ pub(super) fn image_next(
                 (&mut graphics as *mut GhosttyKittyGraphics).cast(),
             )
         };
-        if debug {
-            eprintln!("img: graphics get={got} handle={}", !graphics.0.is_null());
-        }
         if got != GHOSTTY_SUCCESS || graphics.0.is_null() {
             return None;
         }
@@ -188,12 +181,6 @@ pub(super) fn image_next(
                 ptr::from_mut(&mut placement_iterator).cast(),
             )
         };
-        if debug {
-            eprintln!(
-                "img: iterator get={iterator} handle={}",
-                !placement_iterator.0.is_null()
-            );
-        }
         if iterator != GHOSTTY_SUCCESS {
             return None;
         }
@@ -234,9 +221,6 @@ pub(super) fn image_next(
                 GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL,
                 (&mut is_virtual as *mut bool).cast(),
             );
-        }
-        if debug {
-            eprintln!("img: placement id={image_id} virtual={is_virtual} z={z}");
         }
 
         // SAFETY: `graphics` is live and `image_id` was read from it.
@@ -288,18 +272,9 @@ pub(super) fn image_next(
 
         if is_virtual {
             let Some(origin) = frame.placeholders.origin(image_id) else {
-                if debug {
-                    eprintln!("img: no placeholder origin for {image_id}");
-                }
                 continue;
             };
             let rect = virtual_rect(origin, cell_w, cell_h, image_w, image_h);
-            if debug {
-                eprintln!(
-                    "img: virtual origin row={} col={} size={image_w}x{image_h}",
-                    origin.row, origin.col
-                );
-            }
             out.apply_rect(rect);
             return Some(out);
         }
@@ -334,18 +309,18 @@ mod tests {
     fn placeholder_ids_are_masked_and_merge_top_left() {
         let mut map = PlaceholderMap::default();
         // The same low-24-bit id with different placement ids shares one entry.
-        map.note(0x0100_0001, 5, 3, false);
-        map.note(0x0200_0001, 2, 7, false);
+        map.note(0x0100_0001, 5, 3);
+        map.note(0x0200_0001, 2, 7);
         let origin = map.origin(0x0300_0001).expect("masked lookup");
         assert_eq!(origin.image_id, 0x0000_0001);
         assert_eq!((origin.row, origin.col), (2, 7), "top-left-most wins");
 
         // A later, lower-left origin also wins.
-        map.note(0x0000_0001, 2, 4, false);
+        map.note(0x0000_0001, 2, 4);
         assert_eq!(map.origin(0x0000_0001).unwrap().col, 4);
 
         // A different id is a separate entry.
-        map.note(0x0000_0002, 0, 0, false);
+        map.note(0x0000_0002, 0, 0);
         assert_eq!(map.origin(0x0000_0002).unwrap().image_id, 0x0000_0002);
         assert_eq!(map.origins.len(), 2);
 
@@ -357,7 +332,7 @@ mod tests {
     fn placeholder_map_caps_at_eight_origins() {
         let mut map = PlaceholderMap::default();
         for id in 0..12u32 {
-            map.note(id, 0, 0, false);
+            map.note(id, 0, 0);
         }
         assert_eq!(map.origins.len(), MAX_PLACEHOLDERS);
         assert!(map.origin(7).is_some());

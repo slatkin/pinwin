@@ -1,13 +1,13 @@
 //! The text pass (port-to-rust D3): drawing one cell's grapheme through
 //! Pango, with Ghostty's Nerd Font glyph constraints applied, plus the UTF-8
 //! first-codepoint helper the sprite ranges share. Ported from `draw_text`,
-//! `nerd_constrain` and `first_codepoint` in `src/render.c` (design D5 there).
+//! `nerd_constrain` in `src/render.c` (design D5 there).
 
 use pango::FontDescription;
 
 use super::metrics::{CellMetrics, NerdMetrics};
 use crate::nerd_font::{Align, Constraint, Height, Size, constraint};
-use crate::term::cells::{Cell, StyleFlags};
+use crate::term::cells::{Cell, StyleFlags, first_codepoint};
 
 /// A glyph's box relative to the cell's bottom-left corner (`NerdGlyph`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -16,29 +16,6 @@ pub(crate) struct NerdGlyph {
     pub y: f64,
     pub width: f64,
     pub height: f64,
-}
-
-/// The first codepoint of a cell's UTF-8 text, for the sprite ranges (which
-/// are always a single codepoint). 0 when there is none (`first_codepoint`).
-pub(crate) fn first_codepoint(text: &[u8]) -> u32 {
-    if text.is_empty() {
-        return 0;
-    }
-    let b0 = u32::from(text[0]);
-    if b0 < 0x80 {
-        return b0;
-    }
-    let b = |i: usize| u32::from(text[i]);
-    if (b0 & 0xE0) == 0xC0 && text.len() >= 2 {
-        return ((b0 & 0x1F) << 6) | (b(1) & 0x3F);
-    }
-    if (b0 & 0xF0) == 0xE0 && text.len() >= 3 {
-        return ((b0 & 0x0F) << 12) | ((b(1) & 0x3F) << 6) | (b(2) & 0x3F);
-    }
-    if (b0 & 0xF8) == 0xF0 && text.len() >= 4 {
-        return ((b0 & 0x07) << 18) | ((b(1) & 0x3F) << 12) | ((b(2) & 0x3F) << 6) | (b(3) & 0x3F);
-    }
-    0
 }
 
 fn max(a: f64, b: f64) -> f64 {
@@ -404,16 +381,5 @@ mod tests {
         // width at half its height.
         let out = constrain(&c, &metrics(), glyph(0.0, 0.0, 10.0, 10.0), 1);
         assert!((out.width - out.height * 0.5).abs() < 1e-9, "box {:?}", out);
-    }
-
-    #[test]
-    fn first_codepoint_decodes_each_utf8_length() {
-        assert_eq!(first_codepoint(b""), 0);
-        assert_eq!(first_codepoint(b"a"), 0x61);
-        assert_eq!(first_codepoint("\u{00E9}".as_bytes()), 0xE9);
-        assert_eq!(first_codepoint("\u{4E2D}".as_bytes()), 0x4E2D);
-        assert_eq!(first_codepoint("\u{1F600}".as_bytes()), 0x1F600);
-        // Malformed lead byte: 0, like the C.
-        assert_eq!(first_codepoint(&[0xFF]), 0);
     }
 }

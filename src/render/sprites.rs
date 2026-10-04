@@ -67,12 +67,6 @@ fn braille_geometry(cell_w: i32, cell_h: i32) -> (i32, [i32; 2], [i32; 4]) {
     }
     if x_left >= 2 && y_left >= 4 {
         dot += 1;
-        // The C decrements its leftovers here too; they are dead afterwards.
-        #[allow(unused_assignments)]
-        {
-            x_left -= 2;
-            y_left -= 4;
-        }
     }
 
     let dx = [x_margin, x_margin + dot + x_spacing];

@@ -134,11 +134,6 @@ impl Modifiers {
     pub const SUPER: Modifiers = Modifiers(crate::ghostty_sys::input::GHOSTTY_MODS_SUPER);
     pub const CAPS_LOCK: Modifiers = Modifiers(crate::ghostty_sys::input::GHOSTTY_MODS_CAPS_LOCK);
 
-    /// Build from raw modifier bits.
-    pub const fn from_bits(bits: u16) -> Self {
-        Modifiers(bits)
-    }
-
     /// The raw modifier bits for the FFI call.
     pub const fn bits(self) -> u16 {
         self.0

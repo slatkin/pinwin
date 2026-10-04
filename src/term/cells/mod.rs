@@ -33,6 +33,7 @@ use crate::ghostty_sys::screen::{
 use crate::ghostty_sys::style::{GHOSTTY_STYLE_COLOR_RGB, GhosttyColorRgb, GhosttyStyle};
 
 mod graphemes;
+pub(crate) use graphemes::first_codepoint;
 mod images;
 mod types;
 
@@ -67,11 +68,10 @@ impl Terminal {
     /// terminal does not exist or its render state cannot be refreshed, in
     /// which case no cells should be drawn.
     pub fn frame_begin(&mut self) -> bool {
-        let debug = self.debug_enabled;
         let Some(handles) = self.handles.as_mut() else {
             return false;
         };
-        begin(&mut self.frame, handles, debug)
+        begin(&mut self.frame, handles)
     }
 
     /// Revisit the captured cells after painting all backgrounds, so glyphs may
@@ -87,9 +87,8 @@ impl Terminal {
     /// The next raw cell of the frame, after grapheme joining. `None` at the
     /// end of the grid.
     pub fn cell_next(&mut self) -> Option<Cell> {
-        let debug = self.debug_enabled;
         let handles = self.handles.as_mut()?;
-        cell_next(&mut self.frame, handles, debug)
+        cell_next(&mut self.frame, handles)
     }
 
     /// The cursor, if the frame has one that is visible with a viewport
@@ -112,11 +111,10 @@ impl Terminal {
 
     /// The next kitty graphics placement of the frame, or `None` at the end.
     pub fn image_next(&mut self) -> Option<Image> {
-        let debug = self.debug_enabled;
         let cell_w = self.cell_w();
         let cell_h = self.cell_h();
         let handles = self.handles.as_mut()?;
-        images::image_next(&mut self.frame, handles, cell_w, cell_h, debug)
+        images::image_next(&mut self.frame, handles, cell_w, cell_h)
     }
 
     /// Finish the frame and clear the render state's dirty flags.
@@ -130,7 +128,7 @@ impl Terminal {
 
 /// Start a frame (`pinwin_frame_begin`): refresh the render state, capture the
 /// default colours and cursor, and rewind the row iterator.
-fn begin(frame: &mut FrameState, handles: &mut Handles, debug: bool) -> bool {
+fn begin(frame: &mut FrameState, handles: &mut Handles) -> bool {
     let terminal = handles.terminal.expect("frame_begin with a live terminal");
     let render_state = handles
         .render_state
@@ -191,10 +189,6 @@ fn begin(frame: &mut FrameState, handles: &mut Handles, debug: bool) -> bool {
         frame.cursor.wide_tail = cursor.wide_tail;
     }
 
-    if debug {
-        eprintln!("frame: begin cursor={:?}", frame.cursor);
-    }
-
     frame.open = true;
     frame.has_pending = false;
     frame.last_emitted_cp = 0;
@@ -248,14 +242,14 @@ fn end(frame: &mut FrameState, handles: &Handles) {
 
 /// Advance to the next raw cell, before grapheme joining (`nextRawCell`).
 /// `None` at the end of the grid.
-fn next_raw_cell(frame: &mut FrameState, handles: &mut Handles, debug: bool) -> Option<Cell> {
+fn next_raw_cell(frame: &mut FrameState, handles: &mut Handles) -> Option<Cell> {
     loop {
         if frame.in_row {
             let cells = handles.row_cells.expect("next_raw_cell with row cells");
             // SAFETY: the row cells handle was filled by the row iterator for
             // the current row.
             if unsafe { ghostty_render_state_row_cells_next(cells) } {
-                let cell = fill_cell(frame, cells, debug);
+                let cell = fill_cell(frame, cells);
                 frame.cell_x += 1;
                 return Some(cell);
             }
@@ -310,12 +304,12 @@ fn next_raw_cell(frame: &mut FrameState, handles: &mut Handles, debug: bool) -> 
 /// The cells, with a one-cell lookahead so that a grapheme cluster split over
 /// several cells is drawn as a single glyph at the first of them
 /// (`pinwin_cell_next`).
-fn cell_next(frame: &mut FrameState, handles: &mut Handles, debug: bool) -> Option<Cell> {
+fn cell_next(frame: &mut FrameState, handles: &mut Handles) -> Option<Cell> {
     if !frame.open {
         return None;
     }
     loop {
-        let Some(mut next) = next_raw_cell(frame, handles, debug) else {
+        let Some(mut next) = next_raw_cell(frame, handles) else {
             if frame.has_pending {
                 frame.has_pending = false;
                 let mut out = Cell::default();
@@ -370,7 +364,7 @@ fn emit_pending(frame: &mut FrameState, out: &mut Cell, next: &Cell) {
 }
 
 /// Read the current cell's graphemes, width, style and colours (`fillCell`).
-fn fill_cell(frame: &mut FrameState, cells: GhosttyRenderStateRowCells, debug: bool) -> Cell {
+fn fill_cell(frame: &mut FrameState, cells: GhosttyRenderStateRowCells) -> Cell {
     let mut cell = Cell {
         x: frame.cell_x,
         y: frame.cell_y,
@@ -528,7 +522,7 @@ fn fill_cell(frame: &mut FrameState, cells: GhosttyRenderStateRowCells, debug: b
         if let Some(image_id) = style_fg_rgb {
             frame
                 .placeholders
-                .note(image_id, frame.cell_y, frame.cell_x, debug);
+                .note(image_id, frame.cell_y, frame.cell_x);
         }
     } else if has_fg {
         cell.has_fg = true;
