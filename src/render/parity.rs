@@ -18,6 +18,89 @@ pub(super) fn snapshot() -> gtk4::Snapshot {
     glib::Object::new()
 }
 
+/// The opaque backing both parity surfaces get, so a fractional edge blends
+/// against the same colour on both painters (the real panel draws over an
+/// opaque window).
+pub(super) const BACKDROP: [u8; 3] = [40, 40, 40];
+
+/// The stated blend-bound tolerance: half the channel distance between the
+/// drawn colour and [`BACKDROP`], rounded up. An antialiased edge pixel can
+/// differ by at most that much between the two painters; the measured delta
+/// on this suite is 0, so any failure at this bound is a real rendering
+/// difference, not noise.
+pub(super) const BLEND_TOLERANCE: u8 = 128;
+
+/// A terminal fed `data` with the cursor hidden (`DECTCEM`), so the frame is
+/// backgrounds and cells only.
+pub(super) fn terminal_with(data: &[u8]) -> crate::term::Terminal {
+    let mut terminal = super::tests::terminal();
+    terminal.push_pty_data(b"\x1b[?25l");
+    terminal.push_pty_data(data);
+    assert!(
+        terminal.cursor().is_none(),
+        "the frame parity tests need a hidden cursor"
+    );
+    terminal
+}
+
+/// A terminal fed `data`, with whatever cursor state the data leaves — the
+/// cursor tests need a visible cursor, which the fresh terminal already
+/// parks on the first cell.
+pub(super) fn terminal_raw(data: &[u8]) -> crate::term::Terminal {
+    let mut terminal = super::tests::terminal();
+    terminal.push_pty_data(data);
+    terminal
+}
+
+/// The cairo oracle for the frame parity tests: the full
+/// [`DrawState::draw`](super::DrawState::draw) path into a backed surface at
+/// `scale`. With the cursor hidden and no images in the test data, that is
+/// exactly the theme fill, the background pass and the cell pass.
+pub(super) fn cairo_frame(
+    draw_state: &mut super::DrawState,
+    terminal: &mut crate::term::Terminal,
+    width: i32,
+    height: i32,
+    scale: f64,
+) -> cairo::ImageSurface {
+    let surface = backed_surface(width, height, scale, BACKDROP);
+    {
+        let cr = cairo::Context::new(&surface).expect("context");
+        draw_state.draw(&cr, terminal, width, height, 0, false);
+    }
+    surface
+}
+
+/// The node side of the frame parity tests: [`emit_backgrounds`](
+/// super::DrawState::emit_backgrounds) plus — when `cells` is set —
+/// [`emit_cells`](super::DrawState::emit_cells) into a snapshot, drawn to a
+/// backed surface at `scale`. The background tests pass `cells: false` so
+/// the cell pass cannot add pixels the [`cairo_frame`] oracle does not draw.
+pub(super) fn node_frame(
+    draw_state: &super::DrawState,
+    terminal: &mut crate::term::Terminal,
+    width: i32,
+    height: i32,
+    scale: f64,
+    cells: bool,
+) -> cairo::ImageSurface {
+    let snapshot = snapshot();
+    assert!(
+        draw_state.emit_backgrounds(&snapshot, terminal, width, height),
+        "backgrounds were emitted"
+    );
+    if cells {
+        assert!(
+            draw_state.emit_cells(&snapshot, terminal),
+            "cells were emitted"
+        );
+    }
+    let node = snapshot.to_node().expect("snapshot produced a node");
+    let surface = backed_surface(width, height, scale, BACKDROP);
+    draw_node(&node, &surface);
+    surface
+}
+
 /// An opaque ARGB32 surface of `width`×`height` logical pixels at device
 /// scale `scale`, filled with `backdrop` first: both painters then blend
 /// their fractional edges against the same colours, the way the real panel

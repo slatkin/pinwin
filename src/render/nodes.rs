@@ -13,7 +13,8 @@
 //! `save`/`translate`/`scale`/`append_layout`/`restore` — `pango_cairo_show`
 //! draws a layout with its top-left at the current point, and a layout node
 //! draws it at the snapshot's current transform, so the two agree point for
-//! point. Sprites are skipped here until task 2.2 emits them as nodes.
+//! point. Sprites are emitted by [`node_sprites`], the decorations and the
+//! cursor by [`node_cursor`], from the same cell pass.
 //!
 //! The geometry the two painters share lives here ([`cell_background_rect`])
 //! so they cannot drift; the cairo painter calls it from
@@ -30,7 +31,8 @@ use gtk4::prelude::SnapshotExt as _;
 
 use super::DrawState;
 use super::metrics::CellMetrics;
-use super::sprites;
+use super::node_cursor;
+use super::node_sprites;
 use super::text::{FontsRef, NerdGlyph, constrain};
 use crate::nerd_font::constraint;
 use crate::term::Terminal;
@@ -117,15 +119,17 @@ impl DrawState {
         true
     }
 
-    /// Emit the frame's cell text as Pango layout nodes (gsk-render-nodes
-    /// task 2.1), mirroring [`render_grid`](super::DrawState::render_grid)'s
-    /// text branch: the same cell skips, the same foreground selection and
-    /// the same sprite decision ([`sprites::is_sprite`]) — sprite cells stay
-    /// untouched until task 2.2 emits them. Needs the fonts and the pango
-    /// context from [`Self::cell_metrics_update`] (gsk-render-nodes task
-    /// 1.2's `emit_backgrounds` carries the same fall-back-to-cairo
-    /// contract); `false` asks the caller to draw the cairo path instead.
-    pub fn emit_text(&self, snapshot: &gtk4::Snapshot, terminal: &mut Terminal) -> bool {
+    /// Emit the frame's cells as nodes (gsk-render-nodes tasks 2.1–2.3),
+    /// mirroring [`render_grid`](super::DrawState::render_grid)'s cell pass:
+    /// the same cell skips, the same foreground selection, sprites before
+    /// text ([`super::node_sprites::emit_cell_sprite`], whose `false` is
+    /// `draw_sprite`'s), the underline/strikethrough strokes and
+    /// — after the loop, as `render_grid` draws it — the cursor. Needs the
+    /// fonts and the pango context from [`Self::cell_metrics_update`]
+    /// (gsk-render-nodes task 1.2's `emit_backgrounds` carries the same
+    /// fall-back-to-cairo contract); `false` asks the caller to draw the
+    /// cairo path instead.
+    pub fn emit_cells(&self, snapshot: &gtk4::Snapshot, terminal: &mut Terminal) -> bool {
         let (Some(context), Some(fonts)) = (&self.pango_context, self.fonts.as_ref()) else {
             return false;
         };
@@ -143,6 +147,9 @@ impl DrawState {
             bold_italic: &fonts.bold_italic,
         };
         let layout = pango::Layout::new(context);
+        let mut cursor_text = [0u8; crate::term::cells::CELL_TEXT_CAP];
+        let mut cursor_text_len = 0usize;
+        let mut have_cursor_text = false;
         while let Some(cell) = terminal.cell_next() {
             if cell.wide == Wide::SpacerTail {
                 continue; // do not render
@@ -150,15 +157,38 @@ impl DrawState {
             if cell.len == 0 || cell.flags.contains(StyleFlags::INVISIBLE) {
                 continue;
             }
-            if sprites::is_sprite(first_codepoint(cell.text_bytes())) {
-                continue; // task 2.2 emits sprites
-            }
             let fg = if cell.has_fg {
                 &cell.fg
             } else {
                 &self.theme_foreground
             };
-            emit_cell_text(snapshot, &layout, &cell, &fonts, &metrics, fg);
+            let colour = rgba(fg);
+            let cp = first_codepoint(cell.text_bytes());
+            if !node_sprites::emit_cell_sprite(snapshot, &cell, cp, &metrics, &colour) {
+                emit_cell_text(snapshot, &layout, &cell, &fonts, &metrics, fg);
+            }
+            node_cursor::emit_decorations(snapshot, &cell, &metrics, &colour);
+
+            // The block cursor redraws the glyph under it; the same cell
+            // render_grid's cursor pass collects it for.
+            if !have_cursor_text
+                && let Some(cursor) = terminal.cursor()
+                && cursor.x == cell.x
+                && cursor.y == cell.y
+            {
+                cursor_text_len = cell.len.min(cursor_text.len() - 1);
+                cursor_text[..cursor_text_len].copy_from_slice(&cell.text[..cursor_text_len]);
+                have_cursor_text = true;
+            }
+        }
+
+        if let Some(cursor) = terminal.cursor() {
+            let text = if have_cursor_text {
+                &cursor_text[..cursor_text_len]
+            } else {
+                &[]
+            };
+            node_cursor::emit_cursor(snapshot, self, terminal, &cursor, text);
         }
         terminal.frame_end();
         true
@@ -171,7 +201,7 @@ impl DrawState {
 /// the ink is empty. The layout's top-left lands where `pango_cairo_show`
 /// would put it — a layout node draws at the snapshot's current transform,
 /// so each `move_to` becomes a `translate`.
-fn emit_cell_text(
+pub(super) fn emit_cell_text(
     snapshot: &gtk4::Snapshot,
     layout: &pango::Layout,
     cell: &Cell,
@@ -245,15 +275,15 @@ fn emit_cell_text(
 mod tests {
     use super::super::tests::{state, terminal};
     use super::*;
+    use crate::render::parity;
+    use crate::render::parity::{cairo_frame, node_frame, terminal_with};
     use crate::render::set_rgb;
 
     use crate::render::font_lock;
-    use crate::render::parity;
 
-    /// The opaque backing both parity surfaces get, so a fractional edge
-    /// blends against the same colour on both painters (the real panel draws
-    /// over an opaque window).
-    const BACKDROP: [u8; 3] = [40, 40, 40];
+    /// The opaque backing both parity surfaces get (from the parity harness;
+    /// the cairo background oracle below blends against the same colour).
+    use crate::render::parity::BACKDROP;
 
     /// The stated text tolerance (gsk-render-nodes task 2.1): an antialiased
     /// glyph edge pixel can differ by up to half the channel distance between
@@ -284,66 +314,6 @@ mod tests {
             terminal.frame_end();
         }
         surface
-    }
-
-    /// The node side: the emitters under test into a snapshot, drawn to a
-    /// backed surface at `scale`.
-    fn node_frame(
-        draw_state: &DrawState,
-        terminal: &mut Terminal,
-        width: i32,
-        height: i32,
-        scale: f64,
-        text: bool,
-    ) -> cairo::ImageSurface {
-        let snapshot = parity::snapshot();
-        assert!(
-            draw_state.emit_backgrounds(&snapshot, terminal, width, height),
-            "backgrounds were emitted"
-        );
-        if text {
-            assert!(
-                draw_state.emit_text(&snapshot, terminal),
-                "text was emitted"
-            );
-        }
-        let node = snapshot.to_node().expect("snapshot produced a node");
-        let surface = parity::backed_surface(width, height, scale, BACKDROP);
-        parity::draw_node(&node, &surface);
-        surface
-    }
-
-    /// The cairo oracle for the text parity tests: the full [`DrawState::draw`]
-    /// path. With the cursor hidden and no sprites, underline flags or images
-    /// in the test data, that is exactly the theme fill, the background pass
-    /// and the text pass — the cursor, sprites and decorations are tasks 2.2
-    /// and 2.3, not emitted yet.
-    fn cairo_frame(
-        draw_state: &mut DrawState,
-        terminal: &mut Terminal,
-        width: i32,
-        height: i32,
-        scale: f64,
-    ) -> cairo::ImageSurface {
-        let surface = parity::backed_surface(width, height, scale, BACKDROP);
-        {
-            let cr = cairo::Context::new(&surface).expect("context");
-            draw_state.draw(&cr, terminal, width, height, 0, false);
-        }
-        surface
-    }
-
-    /// A terminal with the cursor hidden (`DECTCEM`), so the oracle's frame
-    /// is backgrounds + text only.
-    fn terminal_with(data: &[u8]) -> crate::term::Terminal {
-        let mut terminal = terminal();
-        terminal.push_pty_data(b"\x1b[?25l");
-        terminal.push_pty_data(data);
-        assert!(
-            terminal.cursor().is_none(),
-            "the text parity tests need a hidden cursor"
-        );
-        terminal
     }
 
     /// A terminal whose cells carry three different explicit backgrounds:

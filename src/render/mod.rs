@@ -23,6 +23,8 @@ pub use images::PixbufDecoder;
 
 mod images;
 mod metrics;
+mod node_cursor;
+mod node_sprites;
 mod nodes;
 #[cfg(test)]
 mod parity;
@@ -271,24 +273,16 @@ impl DrawState {
             if cell.flags.contains(StyleFlags::UNDERLINE)
                 || cell.flags.contains(StyleFlags::STRIKETHROUGH)
             {
-                let x = f64::from(cell.x) * f64::from(cell_metrics.cell_w);
-                let y = f64::from(cell.y) * f64::from(cell_metrics.cell_h);
+                // The same rectangles the node emitter fills
+                // (node_cursor::decoration_rects), stroked as their
+                // centre lines — identical geometry, so the two painters
+                // cannot drift.
                 cr.set_line_width(1.0);
-                if cell.flags.contains(StyleFlags::UNDERLINE) {
-                    cr.move_to(x, y + f64::from(cell_metrics.ascent) + 1.5);
-                    cr.line_to(
-                        x + f64::from(cell_metrics.cell_w),
-                        y + f64::from(cell_metrics.ascent) + 1.5,
-                    );
+                for (x, y, w, h) in node_cursor::decoration_rects(&cell, &cell_metrics) {
+                    cr.move_to(x, y + h / 2.0);
+                    cr.line_to(x + w, y + h / 2.0);
+                    let _ = cr.stroke();
                 }
-                if cell.flags.contains(StyleFlags::STRIKETHROUGH) {
-                    cr.move_to(x, y + f64::from(cell_metrics.cell_h) / 2.0);
-                    cr.line_to(
-                        x + f64::from(cell_metrics.cell_w),
-                        y + f64::from(cell_metrics.cell_h) / 2.0,
-                    );
-                }
-                let _ = cr.stroke();
             }
 
             if !have_cursor_text
@@ -334,7 +328,8 @@ impl DrawState {
     }
 
     /// Draw the cursor shape, and the character under a block cursor in its
-    /// background colour (`draw_cursor`).
+    /// background colour (`draw_cursor`). The shape geometry is
+    /// [`node_cursor::cursor_shape`]'s, shared with the node emitter.
     fn draw_cursor(
         &mut self,
         cr: &cairo::Context,
@@ -344,43 +339,32 @@ impl DrawState {
     ) {
         let cell_metrics = self.cell_metrics;
         let colors = terminal.colors();
-        let x = f64::from(cursor.x) * f64::from(cell_metrics.cell_w);
-        let y = f64::from(cursor.y) * f64::from(cell_metrics.cell_h);
-        let cw = f64::from(cell_metrics.cell_w);
-        let ch = f64::from(cell_metrics.cell_h);
 
         set_rgb(cr, &colors.foreground);
 
-        match cursor.style {
-            CursorStyle::Bar => {
-                cr.rectangle(x, y, 2.0, ch);
+        match node_cursor::cursor_shape(cursor, &cell_metrics) {
+            node_cursor::CursorShape::Fill((x, y, w, h)) => {
+                cr.rectangle(x, y, w, h);
                 let _ = cr.fill();
             }
-            CursorStyle::Underline => {
-                cr.rectangle(x, y + ch - 2.0, cw, 2.0);
-                let _ = cr.fill();
-            }
-            CursorStyle::BlockHollow => {
+            node_cursor::CursorShape::Hollow((x, y, w, h)) => {
                 cr.set_line_width(1.0);
-                cr.rectangle(x + 0.5, y + 0.5, cw - 1.0, ch - 1.0);
+                cr.rectangle(x, y, w, h);
                 let _ = cr.stroke();
             }
-            CursorStyle::Block => {
-                cr.rectangle(x, y, cw, ch);
-                let _ = cr.fill();
-                if !text.is_empty() && !cursor.wide_tail {
-                    let mut cell = crate::term::cells::Cell::default();
-                    let len = text.len().min(crate::term::cells::CELL_TEXT_CAP - 1);
-                    cell.x = cursor.x;
-                    cell.y = cursor.y;
-                    cell.text[..len].copy_from_slice(&text[..len]);
-                    cell.len = len;
-                    set_rgb(cr, &colors.background);
-                    let layout = pangocairo::functions::create_layout(cr);
-                    let fonts = self.fonts_ref();
-                    text::draw_text(cr, &layout, &cell, &fonts, &cell_metrics);
-                }
-            }
+        }
+
+        if cursor.style == CursorStyle::Block && !text.is_empty() && !cursor.wide_tail {
+            let mut cell = crate::term::cells::Cell::default();
+            let len = text.len().min(crate::term::cells::CELL_TEXT_CAP - 1);
+            cell.x = cursor.x;
+            cell.y = cursor.y;
+            cell.text[..len].copy_from_slice(&text[..len]);
+            cell.len = len;
+            set_rgb(cr, &colors.background);
+            let layout = pangocairo::functions::create_layout(cr);
+            let fonts = self.fonts_ref();
+            text::draw_text(cr, &layout, &cell, &fonts, &cell_metrics);
         }
     }
 
