@@ -13,7 +13,7 @@
 
 ## 3. Kitty images
 
-- [ ] 3.1 Hold a `gdk::MemoryTexture` per kitty image in `ImageCache` (same keys and eviction) and emit placements as texture nodes with clip; verify the image cache tests
+- [x] 3.1 Hold a `gdk::MemoryTexture` per kitty image in `ImageCache` (same keys and eviction) and emit placements as texture nodes with clip; verify the image cache tests
 
 ## 4. Retained node cache
 
