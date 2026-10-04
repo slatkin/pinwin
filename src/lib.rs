@@ -5,6 +5,7 @@
 //! arrive in tasks 3 and 4; everything below is scaffolding.
 
 pub mod layout;
+pub mod nerd_font;
 
 use std::os::raw::{c_int, c_void};
 
