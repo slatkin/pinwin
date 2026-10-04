@@ -416,4 +416,19 @@ unsafe extern "C" {
         buf_len: usize,
         out_written: *mut usize,
     ) -> GhosttyResult;
+
+    /// Free a key encoder created with `ghostty_key_encoder_new`
+    /// (key/encoder.h).
+    pub fn ghostty_key_encoder_free(encoder: GhosttyKeyEncoder);
+
+    /// Free a key event created with `ghostty_key_event_new` (key/event.h).
+    pub fn ghostty_key_event_free(event: GhosttyKeyEvent);
+
+    /// Free a mouse encoder created with `ghostty_mouse_encoder_new`
+    /// (mouse/encoder.h).
+    pub fn ghostty_mouse_encoder_free(encoder: GhosttyMouseEncoder);
+
+    /// Free a mouse event created with `ghostty_mouse_event_new`
+    /// (mouse/event.h).
+    pub fn ghostty_mouse_event_free(event: GhosttyMouseEvent);
 }

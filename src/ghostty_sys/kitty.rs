@@ -119,4 +119,10 @@ unsafe extern "C" {
         terminal: GhosttyTerminal,
         out_info: *mut GhosttyKittyGraphicsPlacementRenderInfo,
     ) -> GhosttyResult;
+
+    /// Free a placement iterator created with
+    /// `ghostty_kitty_graphics_placement_iterator_new` (kitty_graphics.h).
+    pub fn ghostty_kitty_graphics_placement_iterator_free(
+        iterator: GhosttyKittyGraphicsPlacementIterator,
+    );
 }

@@ -19,6 +19,7 @@ pub struct GhosttySysImage {
 /// A sys option id (`GhosttySysOption`, sys.h).
 pub type GhosttySysOption = c_int;
 
+pub const GHOSTTY_SYS_OPT_USERDATA: GhosttySysOption = 0;
 pub const GHOSTTY_SYS_OPT_DECODE_PNG: GhosttySysOption = 1;
 
 /// The `GHOSTTY_SYS_OPT_DECODE_PNG` callback (sys.h). `out.data` must be

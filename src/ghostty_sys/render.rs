@@ -149,4 +149,15 @@ unsafe extern "C" {
         data: GhosttyRenderStateRowCellsData,
         out: *mut c_void,
     ) -> GhosttyResult;
+
+    /// Free a render state created with `ghostty_render_state_new` (render.h).
+    pub fn ghostty_render_state_free(state: GhosttyRenderState);
+
+    /// Free a row iterator created with `ghostty_render_state_row_iterator_new`
+    /// (render.h).
+    pub fn ghostty_render_state_row_iterator_free(iterator: GhosttyRenderStateRowIterator);
+
+    /// Free row cells created with `ghostty_render_state_row_cells_new`
+    /// (render.h).
+    pub fn ghostty_render_state_row_cells_free(cells: GhosttyRenderStateRowCells);
 }

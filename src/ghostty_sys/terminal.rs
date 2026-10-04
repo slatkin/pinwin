@@ -149,4 +149,7 @@ unsafe extern "C" {
         data: GhosttyTerminalData,
         out: *mut c_void,
     ) -> GhosttyResult;
+
+    /// Free a terminal created with `ghostty_terminal_new` (terminal.h).
+    pub fn ghostty_terminal_free(terminal: GhosttyTerminal);
 }
