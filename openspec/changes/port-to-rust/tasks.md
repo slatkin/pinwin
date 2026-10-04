@@ -25,7 +25,7 @@
 
 ## 5. Binary and example
 
-- [ ] 5.1 `src/main.rs`: port `host/main.c` (forkpty, env contract, `--` handling, SIGINT/SIGTERM to SIGHUP, exit statuses) (D8).
+- [x] 5.1 `src/main.rs`: port `host/main.c` (forkpty, env contract, `--` handling, SIGINT/SIGTERM to SIGHUP, exit statuses) (D8).
 - [x] 5.2 `examples/demo.rs`: port `demo/main.c`, including `DEMO_DENSE=1` (D9).
 
 ## 6. Tests
