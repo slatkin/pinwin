@@ -85,8 +85,36 @@ crate pins and whether it equals ours, whether its build needs Zig and a network
 whether callback trampolines catch panics (D5). The docs do not say; a missing item is a
 spike result of "partial", not an assumption.
 
-Result: **TO BE RECORDED by task 1.1** (chosen route, crate version or ghostty commit, the
-per-item yes/no table, and the rationale). Tasks 2 onward do not start until it is filled in.
+Result (task 1.1 spike; scratch dir `/tmp/ptr-spike`, never in this worktree): **the crate is
+rejected, the route is own FFI** — a `ghostty_sys` module (hand-written or bindgen-generated
+and checked in) of `extern` declarations against the pinned commit
+`3a3047f6b62a791fd8b12d9f07a85b3d2160370b`. The checked crate was `libghostty-vt` v0.2.2
+(and `libghostty-vt-sys` v0.2.2, features `kitty-graphics` + `png`); its build script pins
+ghostty `a887df42c56f6de86c0fe6da9c4eeca37931e083` (2026-07-11), which `gh` compare shows is
+**1404 commits behind** the pin (2026-09-29) and is not an equivalent commit: the C API moved
+(`ghostty_terminal_new` changed from `(alloc, &term, GhosttyTerminalOptions)` to
+`(alloc, &term, cols, rows)`, `GHOSTTY_RENDER_STATE_ROW_DATA_VIEWPORT_Y` was added,
+`ghostty_render_state_colors_get` and `ghostty_terminal_mode_set` were removed). Under the D2
+rule (any "no" means own FFI for all of it) three independent blockers decide it:
+
+| # | Item | Verdict | Evidence |
+|---|---|---|---|
+| 1 | Terminal new/resize/`vt_write` | **no** (against the pinned commit) | `Terminal::new` passes the crate's transparent `TerminalOptions` struct where the pinned API takes two `u16`s. Probe: `TerminalOptions { cols: 132, rows: 43, max_scrollback: 77 }` produced a terminal whose `rows()` is 77 (the `max_scrollback` word read as rows) and `max_scrollback: 0` returned `InvalidValue`; both are 132x43 / accepted at the crate's own pin. `resize`/`vt_write` themselves match. |
+| 2 | Effect callbacks: write-to-pty, size report (`CSI 16 t`), primary device attributes | **yes** | `on_pty_write`/`on_size`/`on_device_attributes` all fired (`pty=3 size=1 da=1`) on `\x1b[16t`, `\x1b[?7$p`, `\x1b[c`. Caveat for D5: the crate's `extern "C"` trampolines do **not** catch panics — a panic in a callback aborted the process ("panic in a function that cannot unwind", exit 134). |
+| 3 | Kitty image storage limit and the PNG decode hook | **yes** | `Terminal::set_kitty_image_storage_limit(64 MiB)` and `graphics::set_png_decoder(Some(Box<dyn DecodePng>))` both succeed; pinwin would supply its own gdk-pixbuf decoder (the bundled `RustPngDecoder` has no public constructor, so it cannot be used, but it is not needed). |
+| 4 | Render state, row iterator, row cells with styles and colours | **no** | Cells, styles, fg/bg colours and cursor viewport work, but (a) the row's viewport-y position (`GHOSTTY_RENDER_STATE_ROW_DATA_VIEWPORT_Y`, which `src/cells.zig` reads to place every row) has no accessor and no constant: the crate's bindings stop at `SELECTION`, and at its own pin the datum does not exist; (b) against the pinned commit `Snapshot::colors()` — the only accessor for render-state fg/bg/palette — fails to link: `undefined symbol: ghostty_render_state_colors_get` (removed upstream after the crate pin). |
+| 5 | Key encoder (from-terminal options, press/release, mods, utf8), mouse encoder (SGR, cell size), focus encoder | **yes** | Key with `set_options_from_terminal` + kitty `REPORT_EVENTS`: press `\x1b[97;6u`, release `\x1b[97;6:3u`, repeat. Mouse with `set_options_from_terminal` + `Format::Sgr` + `EncoderSize`: `\x1b[<0;2;1M`. `focus::Event::encode` OK. Caveat: `encode_to_vec`'s grow path reserves `required - remaining` instead of enough for `required`, so a `Vec` that already has spare capacity fails with `OutOfSpace`; use `encode` with a caller buffer. |
+| 6 | Kitty graphics placement iterator and per-placement render info | **yes** | A PNG command yielded one placement with `image()` 1x1 RGBA (4 bytes) and `placement_render_info()` geometry (viewport position, pixel and grid size). |
+| 7 | Builds against the pinned commit; Nerd Font constraints | **no** | The vendored build clones `a887df42` and needs Zig 0.15.2: with the repo's Zig 0.16.0 `zig build` fails ("Your Zig version v0.16.0 does not meet the required build version of v0.15.2"). Setting `GHOSTTY_SOURCE_DIR` to the pinned source does build with Zig 0.16.0, but the wrappers are then ABI-incompatible (item 1) and `Terminal::set_mode`/`Snapshot::colors()` fail to link (item 4). Nerd Font constraints are not exposed by the crate *or* by libghostty-vt's C API (`grep -i nerd include/` is empty; the table is in ghostty `src/font/nerd_font_tables.zig`), so `nerd_font` is a conversion under either route. |
+| 8 | `!Send`/`!Sync` compatible with D4 | **yes** | `Terminal` is `!Send` ("`NonNull<TerminalImpl>` cannot be sent between threads safely") and `!Sync` ("`*mut c_void` cannot be shared"), matching D4's thread_local-on-the-GTK-thread plan. |
+
+Rationale: an ABI-broken constructor, two data paths the panel uses today that the crate cannot
+reach (row viewport-y, render-state colours), and a pin 1404 commits behind the commit the
+panel was written and verified against. Own FFI also keeps D5 under pinwin's control: the
+crate's `extern "C"` effect trampolines do not catch panics, so with the crate every callback
+body would need its own guard and a missed one aborts the host; with own declarations the
+trampoline is pinwin's and can wrap `catch_unwind` itself. Tasks 2 onward may start from this
+result.
 
 Alternatives: always own FFI (more code, but no dependency on an unstable third-party API);
 always the crate (breaks the moment an item is missing). The spike picks between them instead
@@ -114,28 +142,36 @@ may, per the main spec's "No pinwin-owned configuration".
 
 ### D4. Thread and main-loop model: keep the existing one
 
-`Panel::start` spawns one `pinwin-gtk` thread (`std::thread`). That thread calls `gtk::init`
+`Panel::start` lazily spawns the one process-lifetime `pinwin-gtk` thread (`std::thread`).
+That thread calls `gtk::init`
 and layer-shell setup, creates the application and runs its main loop; all GTK objects,
 terminal state and the pty source live in a `thread_local` on it, so none need to be `Send`
-(which also satisfies the crate's `!Send` terminal types). The host thread waits on an
+(ghostty's terminal types are `!Send`/`!Sync`, D2 item 8). The host thread waits on an
 `mpsc` channel for the start result.
 
 Apply: the host thread posts a closure with `glib::MainContext::invoke`, carrying the layout
 (a `Copy` value) and a `mpsc::sync_channel(1)` reply sender, then `recv_timeout(5 s)`. A
 timeout is `PinwinError::Internal`. Dropping the receiver replaces the C refcount, since a
 late reply fails harmlessly on send. Drop: post teardown (cancel animation, close surfaces,
-quit the loop), then join the thread. A process-wide `Mutex<bool>`/atomic enforces
-single-instance (`AlreadyRunning`).
+quit the application loop) and wait for the reply; it does not join the parked thread (restart
+caveat below). A process-wide `Mutex<bool>`/atomic enforces single-instance (`AlreadyRunning`).
 
 Alternatives: run GTK on the host's main thread (rejected: the host owns its own loop, e.g.
 crossterm, and the existing contract is a library that brings its own thread); `async`
 channels (rejected, no runtime needed for a few calls); share state behind `Arc<Mutex<_>>`
 with the host reading it directly (rejected: GTK objects are thread-bound).
 
-Restart caveat: gtk-rs records the thread that first initialised GTK. If a second `start`
-after a drop fails because GTK cannot be initialised on a new thread, the fallback is one
-process-lifetime GTK thread that is parked between panels. The spike (task 1.2) checks this
-before the panel module is written.
+Restart caveat (task 1.2 spike, `/tmp/ptr-spike/gtk-restart`; gtk4 crate 0.11.5, GTK
+4.22.5): **confirmed, and the parked-thread fallback is adopted**. `gtk::init()` records the
+first initialising thread and *panics* (`Attempted to initialize GTK from two different
+threads`, `gtk4-0.11.5/src/rt.rs:138`) when a second thread calls it, so a thread per `start`
+that is joined on `Drop` cannot restart the panel: the spike's first panel (its own thread)
+ran and quit, the second (a new thread) panicked inside `gtk::init`. Decision: one
+process-lifetime GTK thread, created lazily on the first `start` and parked on a
+`glib::MainLoop` between panels; `start` and `Drop` post work to it with
+`MainContext::invoke` exactly as above, and `Drop` never joins it. The spike verified two
+consecutive panel lifecycles (`GtkApplication::run` → `quit`, distinct application ids) on the
+same parked thread with a single `gtk::init`, both succeeding.
 
 ### D5. Panics never cross the API: `catch_unwind` at every boundary
 
