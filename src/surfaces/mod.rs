@@ -285,7 +285,7 @@ impl Surfaces {
         win.set_exclusive_zone(-1);
 
         let surfaces = Rc::new_cyclic(|weak: &Weak<Surfaces>| {
-            let anim = Anim::new(Self::anim_hooks(weak));
+            let anim = Anim::new(poisoned.clone(), Self::anim_hooks(weak));
             Surfaces {
                 app: app.clone(),
                 win: win.clone(),

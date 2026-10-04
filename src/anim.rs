@@ -23,7 +23,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::guard::{Poisoned, guard};
+use crate::guard::{Poisoned, guard, guard_always};
 
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -128,7 +128,9 @@ struct AnimInner {
     /// without touching the GTK state (D4). Written only through
     /// [`set_tween_flag`], next to the tween-state writes it mirrors.
     tween_flag: Arc<AtomicBool>,
-    /// Latched when a tick, watchdog or hook body panicked (D5).
+    /// The shared poisoned flag the owner passes in (D5): one latch spans the
+    /// anim, surfaces, pty, input, render and term closures a panel wires
+    /// together, so a single panic stops that panel's glue code.
     poisoned: Poisoned,
 }
 
@@ -146,8 +148,12 @@ pub struct Anim {
 }
 
 impl Anim {
-    /// Build an idle tween with the glue hooks attached.
-    pub fn new(hooks: AnimHooks) -> Self {
+    /// Build an idle tween with the glue hooks attached. `poisoned` is the
+    /// panel's shared latch (like `InputLinks::poisoned`): the anim's tick,
+    /// watchdog and hook bodies guard against the same flag the rest of the
+    /// panel's glue guards against, so one panic anywhere stops the panel's
+    /// glue code everywhere.
+    pub fn new(poisoned: Poisoned, hooks: AnimHooks) -> Self {
         Anim {
             inner: Rc::new(AnimInner {
                 tween: RefCell::new(Tween::default()),
@@ -155,7 +161,7 @@ impl Anim {
                 tick: std::cell::Cell::new(None),
                 watchdog: std::cell::Cell::new(None),
                 tween_flag: Arc::new(AtomicBool::new(false)),
-                poisoned: Poisoned::new(),
+                poisoned,
             }),
         }
     }
@@ -298,10 +304,15 @@ impl Anim {
         // only in `begin` — or `active()` latches true and the deferred grid
         // resize idles forever.
         set_tween_flag(inner, false);
-        // The hook runs under the D5 guard like `on_finish`; the temporary
-        // hook borrow ends with the guarded statement, matching the frame and
-        // finish paths' borrow shape.
-        let _ = guard(&inner.poisoned, || (inner.hooks.borrow_mut().on_stop)());
+        // The stop relay runs even on a latched flag: the hook resets state
+        // owned by other modules (the render tween frame cache, the pty's
+        // tween flag, the deferred grid resize), and skipping it because a
+        // panic happened earlier would strand that state forever. A panic in
+        // the relay itself is still caught and logged, never re-latched out
+        // loud into GTK ([`guard_always`]). The temporary hook borrow ends
+        // with the guarded statement, matching the frame and finish paths'
+        // borrow shape.
+        let _ = guard_always(&inner.poisoned, || (inner.hooks.borrow_mut().on_stop)());
     }
 
     /// The panic half of [`Anim::stop_inner`]: tear the sources down without
@@ -407,7 +418,7 @@ mod tests {
     /// An idle tween reports the applied width, no offset and no activity.
     #[test]
     fn idle_anim_reports_the_applied_width() {
-        let anim = Anim::new(Recording::hooks(&Recording::new()));
+        let anim = Anim::new(Poisoned::new(), Recording::hooks(&Recording::new()));
         assert!(!anim.active());
         assert!(!anim.poisoned());
         assert_eq!(anim.current_px(320), 320);
@@ -420,7 +431,7 @@ mod tests {
     #[test]
     fn active_anim_reports_the_eased_width_and_offset() {
         let recording = Recording::new();
-        let anim = Anim::new(Recording::hooks(&recording));
+        let anim = Anim::new(Poisoned::new(), Recording::hooks(&recording));
         anim.begin_state(320, 480, 1000);
 
         assert!(anim.active());
@@ -442,7 +453,7 @@ mod tests {
     #[test]
     fn cancel_fires_the_stop_hook_and_resets() {
         let recording = Recording::new();
-        let anim = Anim::new(Recording::hooks(&recording));
+        let anim = Anim::new(Poisoned::new(), Recording::hooks(&recording));
         anim.cancel();
         assert!(!anim.active());
         let recording = recording.borrow();
@@ -457,7 +468,7 @@ mod tests {
     #[test]
     fn the_tween_flag_clears_on_every_stop_path() {
         let recording = Recording::new();
-        let anim = Anim::new(Recording::hooks(&recording));
+        let anim = Anim::new(Poisoned::new(), Recording::hooks(&recording));
 
         // begin's state half raises the flag...
         anim.begin_state(320, 480, 1000);
@@ -487,17 +498,37 @@ mod tests {
     }
 
     /// A panicking stop hook cannot cross back into GTK (D5): the guarded
-    /// `on_stop` call latches the poison flag instead.
+    /// `on_stop` call latches the shared poison flag instead.
     #[test]
     fn a_panicking_stop_hook_latches_the_poison_flag() {
-        let anim = Anim::new(AnimHooks {
-            on_frame: Box::new(|_| {}),
-            on_stop: Box::new(|| panic!("hook blew up")),
-            on_finish: Box::new(|| {}),
-        });
+        let poisoned = Poisoned::new();
+        let anim = Anim::new(
+            poisoned.clone(),
+            AnimHooks {
+                on_frame: Box::new(|_| {}),
+                on_stop: Box::new(|| panic!("hook blew up")),
+                on_finish: Box::new(|| {}),
+            },
+        );
         anim.begin_state(320, 480, 1000);
         anim.cancel();
         assert!(!anim.active());
         assert!(anim.poisoned());
+        assert!(poisoned.is_poisoned(), "the latch is the shared flag");
+    }
+
+    /// A latched poison flag must not skip the stop relay: `on_stop` resets
+    /// state owned by other modules (the render tween frame cache, the pty's
+    /// tween flag, the deferred grid resize), so a poisoned anim that stops
+    /// still relays the stop and still clears the tween flag (D5).
+    #[test]
+    fn a_latched_flag_still_relays_the_stop_and_clears_the_tween_flag() {
+        let recording = Recording::new();
+        let anim = Anim::new(Poisoned::latched(), Recording::hooks(&recording));
+        anim.begin_state(320, 480, 1000);
+        assert!(anim.active());
+        anim.cancel();
+        assert!(!anim.active(), "the tween flag clears despite the latch");
+        assert_eq!(recording.borrow().stops, 1, "the on_stop relay ran");
     }
 }

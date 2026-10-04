@@ -60,6 +60,18 @@ pub fn guard<T>(poisoned: &Poisoned, body: impl FnOnce() -> T) -> Result<T, Pois
     if poisoned.is_poisoned() {
         return Err(poisoned.clone());
     }
+    guard_always(poisoned, body)
+}
+
+/// The relay variant of [`guard`] (D5): the body runs even when the flag is
+/// already latched, and a panic in it is caught, logged and latched as usual.
+/// Use it only for calls that reset state owned by other modules — the stop
+/// relays (`Anim`'s `on_stop`, which drops the render tween frame cache,
+/// clears the pty's tween flag and fires the deferred grid resize): skipping
+/// those because the latch is set would strand that state (a throttled pty
+/// drain, an undropped cache) forever. Ordinary glue code keeps using
+/// [`guard`], so a latched panel runs nothing further.
+pub fn guard_always<T>(poisoned: &Poisoned, body: impl FnOnce() -> T) -> Result<T, Poisoned> {
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(value) => Ok(value),
         Err(payload) => {
@@ -81,20 +93,40 @@ pub fn guard_default<T>(poisoned: &Poisoned, default: T, body: impl FnOnce() -> 
 /// `Box<dyn Any + Send>`; most payloads are the `&'static str` or `String`
 /// a `panic!`/`unwrap` produced.
 fn log_panic(payload: &Box<dyn Any + Send>) {
-    let message = payload
+    let message: &str = payload
         .downcast_ref::<&'static str>()
         .copied()
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
         .unwrap_or("<non-string panic payload>");
     // Write straight to the raw stderr descriptor: this runs while a panic
     // unwinds, so the log must not itself panic and any redirection of
-    // Rust's stderr handle must not swallow it (D5). A failed write is
-    // ignored — stderr logging is best-effort.
-    let line = format!("pinwin: caught a panic in a guarded boundary: {message}\n");
-    // SAFETY: fd 2 is the process stderr and `line` is a valid buffer of
-    // `line.len()` bytes for the duration of the call.
+    // Rust's stderr handle must not swallow it (D5). Assembling the line
+    // with `format!` would allocate, and an allocation panic here would
+    // escape the guard into the C frames the guard exists to protect, so the
+    // pieces are handed to `writev` as static/slice buffers instead. A
+    // failed write is ignored — stderr logging is best-effort.
+    const PREFIX: &str = "pinwin: caught a panic in a guarded boundary: ";
+    let prefix = PREFIX.as_bytes();
+    let message = message.as_bytes();
+    let newline: &[u8] = b"\n";
+    let iov = [
+        libc::iovec {
+            iov_base: prefix.as_ptr().cast_mut().cast(),
+            iov_len: prefix.len(),
+        },
+        libc::iovec {
+            iov_base: message.as_ptr().cast_mut().cast(),
+            iov_len: message.len(),
+        },
+        libc::iovec {
+            iov_base: newline.as_ptr().cast_mut().cast(),
+            iov_len: newline.len(),
+        },
+    ];
+    // SAFETY: fd 2 is the process stderr and each iovec points at a valid
+    // buffer of its own `iov_len` bytes for the duration of the call.
     unsafe {
-        let _ = libc::write(2, line.as_ptr().cast(), line.len());
+        let _ = libc::writev(2, iov.as_ptr(), iov.len() as libc::c_int);
     }
 }
 
@@ -183,6 +215,20 @@ mod tests {
             logged.contains("guard-log-marker"),
             "the panic payload is missing: {logged}"
         );
+    }
+
+    /// The relay variant runs the body even when the flag is already
+    /// latched — a poisoned latch must not skip the state reset owned by
+    /// another module — and a panic in that body is still caught and latched.
+    #[test]
+    fn guard_always_runs_the_body_even_when_latched() {
+        let poisoned = Poisoned::latched();
+        let ran = Cell::new(false);
+        assert!(guard_always(&poisoned, || ran.set(true)).is_ok());
+        assert!(ran.get(), "the relay body runs despite the latch");
+
+        assert!(guard_always(&poisoned, || panic!("relay boom")).is_err());
+        assert!(poisoned.is_poisoned());
     }
 
     /// Clones share one latch: poisoning one poisons every clone.
