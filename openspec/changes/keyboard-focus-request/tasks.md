@@ -7,8 +7,8 @@
 
 ## 2. Library focus request
 
-- [ ] 2.1 Add `Panel::request_focus(&self) -> Result<(), PinwinError>`. It posts the remap to the GTK thread. It uses the same poisoned test, `NotRunning` test and bounded wait as `apply_via_inner`. In `none` and `exclusive` mode it returns `Ok(())` and changes nothing. Remove the temporary debug trigger from 1.2. Verify: a test for `NotRunning` on a dead panel, and a test for `Ok` with no remap in `none` mode. Also repeat the niri test from 1.2 through the new method.
-- [ ] 2.2 Update the rustdoc on `Panel`, on `Keyboard` ("fixed at start time"), and on the new method to describe focus on request. Verify: `cargo doc` builds with no warnings.
+- [x] 2.1 Add `Panel::request_focus(&self) -> Result<(), PinwinError>`. It posts the remap to the GTK thread. It uses the same poisoned test, `NotRunning` test and bounded wait as `apply_via_inner`. In `none` and `exclusive` mode it returns `Ok(())` and changes nothing. Remove the temporary debug trigger from 1.2. Verify: a test for `NotRunning` on a dead panel, and a test for `Ok` with no remap in `none` mode. Also repeat the niri test from 1.2 through the new method.
+- [x] 2.2 Update the rustdoc on `Panel`, on `Keyboard` ("fixed at start time"), and on the new method to describe focus on request. Verify: `cargo doc` builds with no warnings.
 
 ## 3. Binary command-line IPC
 
