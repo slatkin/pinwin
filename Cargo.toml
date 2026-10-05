@@ -1,6 +1,6 @@
 [package]
 name = "pinwin"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 # The pinned libghostty-vt archive is built by build.rs from the commit in
 # build.rs (port-to-rust D2); it is deliberately not a Cargo dependency.
