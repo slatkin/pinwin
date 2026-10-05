@@ -2,8 +2,8 @@
 
 ## 1. Remap check on niri
 
-- [ ] 1.1 If `self.reserve` is already `Some`, make `Surfaces::on_map` return early, before it sets `latch`. Then a second map creates no second reserve window and no second scale handler, and `resolve_monitor` and the start handshake hook do not run again. Verify: the live check in 1.2 observes one reserve window and an unchanged gap.
-- [ ] 1.2 Add a GTK-thread remap of the panel window (hide, then present) for `on-demand` mode only. Verify on niri with a temporary debug trigger. After the remap, typed keys reach the pty and the accent appears. The tiled windows keep their position and size. A click on a tiled window releases focus. Record in this task whether a one-frame blink is visible. If it is visible, stop and ask the user before group 2.
+- [x] 1.1 If `self.reserve` is already `Some`, make `Surfaces::on_map` return early, before it sets `latch`. Then a second map creates no second reserve window and no second scale handler, and `resolve_monitor` and the start handshake hook do not run again. Verify: the live check in 1.2 observes one reserve window and an unchanged gap.
+- [x] 1.2 Add a GTK-thread remap of the panel window (hide, then present) for `on-demand` mode only. Verify on niri with a temporary debug trigger. After the remap, typed keys reach the pty and the accent appears. The tiled windows keep their position and size. A click on a tiled window releases focus. Record in this task whether a one-frame blink is visible. If it is visible, stop and ask the user before group 2. Result: a one-frame blink is visible (1-2 frames, about 8-16 ms, in 121 fps recordings); no blink-free path exists on niri, so the user accepted it.
 
 ## 2. Library focus request
 
