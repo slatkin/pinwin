@@ -8,7 +8,7 @@ use super::GhosttyAllocator;
 /// sys.h). `data` is `width * height * 4` RGBA bytes allocated with
 /// `ghostty_alloc`.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttySysImage {
     pub width: u32,
     pub height: u32,
