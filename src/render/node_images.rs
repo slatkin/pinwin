@@ -82,11 +82,18 @@ impl super::DrawState {
     /// [`emit_cells`](super::DrawState::emit_cells)'s; `false` — no live
     /// frame, or no metrics yet — asks the caller to draw the cairo path
     /// instead.
+    ///
+    /// The image pass reopens the frame with
+    /// [`Terminal::frame_begin_images`](crate::term::Terminal::frame_begin_images)
+    /// rather than a plain `frame_begin`: the cell pass that ran just before
+    /// recorded the unicode-placeholder origins, and a fresh frame would
+    /// clear them and silently drop every U=1 image — which is how the
+    /// whole mbv grid went blank.
     pub fn emit_images(&mut self, snapshot: &gtk4::Snapshot, terminal: &mut Terminal) -> bool {
         if self.cell_metrics.cell_h <= 0 {
             return false;
         }
-        if !terminal.frame_begin() {
+        if !terminal.frame_begin_images() {
             return false;
         }
         self.images.draw_nodes(snapshot, terminal);
@@ -258,6 +265,28 @@ mod tests {
             &mut node_side,
             parity::BLEND_TOLERANCE,
             "scaled sub-rect at scale 1",
+        );
+    }
+
+    /// `emit_images` reopens the frame keeping the placeholder origins the
+    /// cell pass recorded, so a unicode-placeholder image (U=1) emitted the
+    /// way mbv does is placed and cached. A plain `frame_begin` here cleared
+    /// the origins and silently dropped every such image — the mbv bug.
+    #[test]
+    fn emit_images_keeps_the_cell_pass_placeholder_origins() {
+        let _font = crate::render::font_lock::guard();
+        let mut terminal = crate::render::tests::terminal();
+        terminal.push_pty_data(&crate::term::cells::mbv_replay_bytes());
+
+        let snapshot = parity::snapshot();
+        let mut state = super::super::tests::state();
+        assert!(state.emit_cell_backgrounds(&snapshot, &mut terminal, 4 * 16));
+        assert!(state.emit_cells(&snapshot, &mut terminal));
+        assert!(state.emit_images(&snapshot, &mut terminal));
+        assert_eq!(
+            state.images.entry_count(),
+            1,
+            "the U=1 placement produced a cached texture"
         );
     }
 
