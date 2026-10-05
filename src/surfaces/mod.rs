@@ -537,6 +537,19 @@ impl Surfaces {
         self.win.set_default_size(px, -1);
     }
 
+    /// The gap the reserve surface draws right now (overlay-expand D2, D3):
+    /// the held strip, except while a flagged gap tween runs and the applied
+    /// layout pushes, when the strip moves with the panel. One rule for both
+    /// the per-frame apply and the tween decision, so they cannot disagree.
+    fn drawn_gap(&self, layout: Layout, panel_px: i32) -> (Side, i32) {
+        reserve_gap(
+            self.held_gap.get(),
+            self.gap_tweening.get() && self.anim.active(),
+            layout,
+            panel_px,
+        )
+    }
+
     /// Push the applied layout onto both surfaces in one main-loop turn
     /// (`apply_layout_surfaces`): the visible panel gets its side anchor and
     /// margins from the applied layout, the reservation its side and strip
@@ -563,15 +576,9 @@ impl Surfaces {
         win.set_margin(Edge::Top, layout.top());
         win.set_margin(Edge::Bottom, layout.bottom());
 
-        // The reservation follows the held gap, not the applied layout, so
-        // a covering layout cannot move it (overlay-expand D2); the flagged
-        // tween is the one place the strip moves with the panel.
-        let (reserve_side, reserve_zone) = reserve_gap(
-            self.held_gap.get(),
-            self.gap_tweening.get() && self.anim.active(),
-            layout,
-            self.panel_px(),
-        );
+        // The reservation follows the drawn gap, not the applied layout (D2):
+        // a covering layout cannot move it.
+        let (reserve_side, reserve_zone) = self.drawn_gap(layout, self.panel_px());
         let reserve_left = reserve_side == Side::Left;
         if let Some(reserve) = self.reserve.borrow().as_ref() {
             reserve.set_anchor(Edge::Left, reserve_left);
@@ -670,15 +677,8 @@ impl Surfaces {
         let cols_changed = layout.cols().get() != self.cols.get();
         let coverage_changed = layout.coverage() != applied.coverage();
 
-        // The strip the gap rests at right now, before this apply mutates
-        // anything: the gap-tween decision compares against it, not against
-        // the held gap this publish stages (overlay-expand D3).
-        let (_, gap_zone) = reserve_gap(
-            self.held_gap.get(),
-            self.gap_tweening.get() && self.anim.active(),
-            applied,
-            from_px,
-        );
+        // The strip the gap rests at right now, before this apply mutates (D3).
+        let (_, gap_zone) = self.drawn_gap(applied, from_px);
         let target_px = i32::from(layout.cols().get()) * self.cell_w.get();
         let gap_tweens = gap_tween_decision(gap_zone, animate, layout, target_px);
 
