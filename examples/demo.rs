@@ -6,13 +6,16 @@
 //! It makes its own pty pair (`forkpty`), forks a canned child on the slave
 //! side and sets the child's terminal environment, then drives the panel API
 //! from this thread: a canned startup layout, a live apply, a rejected
-//! layout, an animated and a plain width toggle, and a drop to stop. Fork and
+//! layout, an animated and a plain width toggle, a covering toggle, and a
+//! drop to stop. Fork and
 //! exec are fine here because this is a program; only the library must not.
 //!
 //! Commands on the demo's own stdin (one per line):
 //!   <enter>  toggle side/width and apply live (resize/re-dock)
 //!   e        animated width toggle 40 <-> 120 cols, same side (200 ms)
 //!   p        the same toggle through the plain snap apply
+//!   c        animated cover toggle: pushing 40 cols vs covering 120 cols,
+//!            same side (200 ms) — the reservation holds, tiles stay put
 //!   b        apply a rejected layout: expect `InvalidLayout`, host lives
 //!   q        stop the panel and exit
 //! Run `exit` inside the panel to watch a pty hangup leave the host alone.
@@ -42,6 +45,8 @@ use pinwin::layout::{Accent, Keyboard, Layout, Side};
 use pinwin::panel::{Panel, Startup};
 
 const DEMO_COLS: u16 = 40;
+/// The wide end of the width and cover toggles, in columns.
+const DEMO_COVER_COLS: u16 = 120;
 const DEMO_GUTTER: i32 = 12;
 /// The default animated duration, `pinwin.h`'s `PINWIN_ANIM_DEFAULT_MS`.
 const DEMO_ANIM_MS: u32 = 200;
@@ -393,11 +398,14 @@ fn run_commands(panel: Panel, mut cols: u16) {
     std::thread::sleep(SETTLE);
     let mut side = Side::Right;
     apply(&panel, side, cols);
+    // The cover toggle's state, independent of the width toggles: `c` flips
+    // it and applies the matching narrow-pushing or wide-covering layout.
+    let mut covering = false;
 
     println!(
         "commands, typed in THIS terminal (not in the panel):\n          \
-         <enter> toggle side/width, 'b' rejected layout, 'q' quit;\n          \
-         run `exit` in the panel to see a pty hangup survive."
+         <enter> toggle side/width, 'c' cover toggle, 'b' rejected layout,\n          \
+         'q' quit; run `exit` in the panel to see a pty hangup survive."
     );
 
     for line in std::io::stdin().lock().lines() {
@@ -415,8 +423,31 @@ fn run_commands(panel: Panel, mut cols: u16) {
                 let result = panel.apply_layout(bad);
                 println!("apply_layout(invalid) = {result:?} (want Err(InvalidLayout))");
             }
+            Some('c') => {
+                // The cover toggle (overlay-expand): the narrow size pushes
+                // and the wide size covers, so a same-side excursion moves
+                // no tiles. The panel width still tweens; the reservation
+                // holds at the narrow strip the whole way.
+                covering = !covering;
+                let (target, layout) = if covering {
+                    cols = DEMO_COVER_COLS;
+                    (
+                        DEMO_COVER_COLS,
+                        canned_layout(side, DEMO_COVER_COLS).covering(),
+                    )
+                } else {
+                    cols = DEMO_COLS;
+                    (DEMO_COLS, canned_layout(side, DEMO_COLS))
+                };
+                let result = panel.apply_layout_animated(layout, DEMO_ANIM_MS);
+                println!("cover toggle(cols={target}, covering={covering}) = {result:?}");
+            }
             Some(kind @ ('e' | 'p')) => {
-                cols = if cols == DEMO_COLS { 120 } else { DEMO_COLS };
+                cols = if cols == DEMO_COLS {
+                    DEMO_COVER_COLS
+                } else {
+                    DEMO_COLS
+                };
                 let layout = canned_layout(side, cols);
                 let result = match kind {
                     'e' => panel.apply_layout_animated(layout, DEMO_ANIM_MS),
@@ -450,6 +481,7 @@ fn run_commands(panel: Panel, mut cols: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pinwin::layout::Coverage;
 
     #[test]
     fn canned_layout_reserves_only_the_right_gutter() {
@@ -462,6 +494,20 @@ mod tests {
             assert_eq!(layout.left(), 0);
             assert_eq!(layout.right(), DEMO_GUTTER);
         }
+    }
+
+    #[test]
+    fn the_cover_toggle_is_pushing_narrow_and_covering_wide() {
+        let narrow = canned_layout(Side::Left, DEMO_COLS);
+        assert_eq!(narrow.coverage(), Coverage::Push);
+        let wide = canned_layout(Side::Left, DEMO_COVER_COLS).covering();
+        assert_eq!(wide.coverage(), Coverage::Cover);
+        assert_eq!(wide.cols().get(), DEMO_COVER_COLS);
+        // Same side and gutters, so the toggle animates and the held strip
+        // stays put.
+        assert_eq!(wide.side(), narrow.side());
+        assert_eq!(wide.left(), narrow.left());
+        assert_eq!(wide.right(), narrow.right());
     }
 
     #[test]
