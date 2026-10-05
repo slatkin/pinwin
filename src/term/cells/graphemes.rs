@@ -92,7 +92,7 @@ pub(super) fn is_symbol(cp: u32) -> bool {
         | 0x1F600..=0x1F64F // emoticons
         | 0x1F680..=0x1F6FF // transport and map symbols
         | 0xF0000..=0xFFFFD // private use plane 15
-        | 0x100000..=0x10FFFD // private use plane 16
+        | 0x0010_0000..=0x0010_FFFD // private use plane 16
     )
 }
 
@@ -138,7 +138,7 @@ pub(super) fn constraint_width(cell: &Cell, prev_cp: u32, next_cp: u32, at_row_e
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::term::cells::{Cell, Wide};
+    use crate::term::cells::Wide;
 
     /// A cell carrying `text` at column `x`.
     fn cell(x: i32, text: &str) -> Cell {

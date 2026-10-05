@@ -5,7 +5,7 @@
 use std::ptr;
 
 use crate::ghostty_sys::render::{
-    GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR, GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK,
+    GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK,
     GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW,
     GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE, GhosttyRenderStateCursorVisualStyle,
 };
@@ -73,7 +73,6 @@ impl CursorStyle {
             GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK => CursorStyle::Block,
             GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE => CursorStyle::Underline,
             GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW => CursorStyle::BlockHollow,
-            GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR => CursorStyle::Bar,
             _ => CursorStyle::Bar,
         }
     }
@@ -100,16 +99,19 @@ impl StyleFlags {
     pub const UNDERLINE: StyleFlags = StyleFlags(1 << 6);
 
     /// The raw bits, for code that compares against a plain integer.
+    #[must_use]
     pub const fn bits(self) -> u32 {
         self.0
     }
 
     /// Whether no style bit is set.
+    #[must_use]
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
 
     /// Whether every bit in `other` is set.
+    #[must_use]
     pub const fn contains(self, other: StyleFlags) -> bool {
         self.0 & other.0 == other.0
     }
@@ -180,11 +182,13 @@ pub struct Cell {
 
 impl Cell {
     /// The glyph bytes, valid UTF-8.
+    #[must_use]
     pub fn text_bytes(&self) -> &[u8] {
         &self.text[..self.len]
     }
 
     /// The glyph as a string, or `""` when it is empty or malformed.
+    #[must_use]
     pub fn text_str(&self) -> &str {
         std::str::from_utf8(self.text_bytes()).unwrap_or("")
     }
