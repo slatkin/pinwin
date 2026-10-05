@@ -72,6 +72,7 @@ static INSTANCE: Mutex<Instance> = Mutex::new(Instance {
 /// and whether the GTK side is still live. The GTK thread holds a clone of
 /// the `Arc` and clears `live` when the panel ends on its own, so an apply on
 /// a dead panel reports `NotRunning` without posting anything.
+#[derive(Debug)]
 pub(crate) struct Inner {
     pub(crate) id: u64,
     pub(crate) poisoned: Poisoned,
@@ -82,6 +83,7 @@ pub(crate) struct Inner {
 ///
 /// Not `Clone`: one handle per panel, so the single-instance rule is
 /// ownership, not bookkeeping.
+#[derive(Debug)]
 pub struct Panel {
     inner: Arc<Inner>,
 }
@@ -121,14 +123,15 @@ impl Panel {
         });
 
         // Claim the single-instance slot before touching GTK, so two
-        // concurrent starts cannot both reach the handshake.
-        {
-            let mut instance = INSTANCE.lock().expect("pinwin instance lock");
-            if !matches!(instance.phase, Phase::Idle) {
-                return Err(PinwinError::AlreadyRunning);
-            }
-            instance.phase = Phase::Starting;
+        // concurrent starts cannot both reach the handshake. The guard is
+        // dropped explicitly: a bare scope block ping-pongs between the two
+        // semicolon-placement lints.
+        let mut instance = INSTANCE.lock().expect("pinwin instance lock");
+        if !matches!(instance.phase, Phase::Idle) {
+            return Err(PinwinError::AlreadyRunning);
         }
+        instance.phase = Phase::Starting;
+        drop(instance);
 
         let (reply_tx, reply_rx) = mpsc::channel();
         let command = StartCommand {
@@ -136,7 +139,7 @@ impl Panel {
             id,
             poisoned: poisoned.clone(),
             handshake: Handshake::new(reply_tx),
-            inner: inner.clone(),
+            inner: Arc::clone(&inner),
         };
 
         // Deliver to the parked GTK thread, or spawn it on the first start
@@ -145,12 +148,9 @@ impl Panel {
         // handshake will report `Internal` through its closed channel.
         let command = deliver(command).err();
         if let Some(command) = command {
-            let sender = match spawn_gtk_thread() {
-                Ok(sender) => sender,
-                Err(_) => {
-                    release_phase();
-                    return Err(PinwinError::Internal);
-                }
+            let Ok(sender) = spawn_gtk_thread() else {
+                release_phase();
+                return Err(PinwinError::Internal);
             };
             if sender.send(command).is_err() {
                 release_phase();
@@ -160,7 +160,7 @@ impl Panel {
 
         // Wait for the GTK/layer-shell side to go live (the handshake), like
         // pinwin_start's cond wait. The GTK side always reports.
-        let outcome = wait_for_start(reply_rx);
+        let outcome = wait_for_start(&reply_rx);
 
         {
             let mut instance = INSTANCE.lock().expect("pinwin instance lock");
@@ -168,9 +168,9 @@ impl Panel {
                 Phase::Running
             } else {
                 Phase::Idle
-            };
-        }
-        outcome.map(|_| Panel { inner })
+            }
+        };
+        outcome.map(|()| Panel { inner })
     }
 
     /// Apply a layout without animation: update the applied column count,
@@ -236,8 +236,8 @@ fn post_apply(inner: &Inner, layout: Layout, duration_ms: u32) -> Result<(), Pin
     // must run there (D4): post the command and wait for the synchronous
     // result, bounded (D5).
     gtk4::glib::MainContext::default()
-        .invoke(move || dispatch_apply(id, layout, duration_ms, reply_tx));
-    wait_for_apply(reply_rx, APPLY_WAIT)
+        .invoke(move || dispatch_apply(id, layout, duration_ms, &reply_tx));
+    wait_for_apply(&reply_rx, APPLY_WAIT)
 }
 
 impl Drop for Panel {
@@ -254,7 +254,7 @@ fn teardown_inner(inner: &Inner) {
     if inner.live.swap(false, Ordering::Relaxed) {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         let id = inner.id;
-        gtk4::glib::MainContext::default().invoke(move || dispatch_teardown(id, reply_tx));
+        gtk4::glib::MainContext::default().invoke(move || dispatch_teardown(id, &reply_tx));
         // Wait for the reply, bounded: a wedged loop must not block the host
         // forever (the C joined the thread; the port never joins, D4).
         let _ = reply_rx.recv_timeout(APPLY_WAIT);
@@ -279,7 +279,7 @@ fn spawn_gtk_thread() -> std::io::Result<mpsc::Sender<StartCommand>> {
     let (sender, receiver) = mpsc::channel();
     std::thread::Builder::new()
         .name("pinwin-gtk".to_owned())
-        .spawn(move || gtk_thread_main(receiver))?;
+        .spawn(move || gtk_thread_main(&receiver))?;
     INSTANCE.lock().expect("pinwin instance lock").gtk = Some(sender.clone());
     Ok(sender)
 }
@@ -343,14 +343,14 @@ mod tests {
         ));
 
         // A descriptor that has been closed.
-        let mut fds = [0 as libc::c_int; 2];
+        let mut fds: [libc::c_int; 2] = [0; 2];
         // SAFETY: `fds` is a writable two-element array for the call.
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
         // SAFETY: closing a descriptor this test owns.
         unsafe {
             libc::close(fds[0]);
-            libc::close(fds[1]);
-        }
+            libc::close(fds[1])
+        };
         assert!(matches!(
             Panel::start(startup(fds[0])),
             Err(PinwinError::InvalidFd)
@@ -528,18 +528,14 @@ mod tests {
         assert!(!fd_is_open(-1));
         let file = std::fs::File::open("/dev/null").expect("/dev/null");
         assert!(fd_is_open(file.as_raw_fd()));
-        let mut fds = [0 as libc::c_int; 2];
+        let mut fds: [libc::c_int; 2] = [0; 2];
         // SAFETY: `fds` is a writable two-element array for the call.
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
         // SAFETY: closing descriptors this test owns.
-        unsafe {
-            libc::close(fds[1]);
-        }
+        unsafe { libc::close(fds[1]) };
         assert!(!fd_is_open(fds[1]));
         // SAFETY: closing a descriptor this test owns.
-        unsafe {
-            libc::close(fds[0]);
-        }
+        unsafe { libc::close(fds[0]) };
     }
 
     /// The animated apply's duration clamp matches `PINWIN_ANIM_MAX_MS`.
@@ -590,8 +586,8 @@ mod tests {
         let file = std::fs::File::open("/dev/null").expect("/dev/null");
         let panel = Panel::start(startup(file.as_raw_fd()))
             .expect("the panel starts in a layer-shell session");
-        assert!(panel.apply_layout(layout()).is_ok());
-        assert!(panel.apply_layout_animated(layout(), 200).is_ok());
+        panel.apply_layout(layout()).unwrap();
+        panel.apply_layout_animated(layout(), 200).unwrap();
         drop(panel);
         // A later start MAY succeed; whether it does is compositor
         // behaviour, so only the drop returning is asserted here.

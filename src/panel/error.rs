@@ -65,11 +65,11 @@ mod tests {
             PinwinError::Internal,
         ];
         for error in errors {
-            assert!(!error.to_string().is_empty());
+            assert_ne!(error.to_string(), "");
             // The std::error::Error supertrait is usable through a trait
             // object, which is what `?`/`Box<dyn Error>` consumers rely on.
             let boxed: Box<dyn std::error::Error> = Box::new(error);
-            assert!(!boxed.to_string().is_empty());
+            assert_ne!(boxed.to_string(), "");
         }
     }
 

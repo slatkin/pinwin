@@ -95,7 +95,7 @@ pub(crate) fn map_start(outcome: StartOutcome) -> Result<(), PinwinError> {
 /// the GTK side always reports (the start-result hook, the startup watchdog
 /// or the loop-returned cleanup), and a GTK thread that died closes the
 /// channel, which becomes `Internal` instead of a hang.
-pub(crate) fn wait_for_start(receiver: mpsc::Receiver<StartOutcome>) -> Result<(), PinwinError> {
+pub(crate) fn wait_for_start(receiver: &mpsc::Receiver<StartOutcome>) -> Result<(), PinwinError> {
     match receiver.recv() {
         Ok(outcome) => map_start(outcome),
         Err(_) => Err(PinwinError::Internal),
@@ -106,12 +106,12 @@ pub(crate) fn wait_for_start(receiver: mpsc::Receiver<StartOutcome>) -> Result<(
 /// bound, for tests). A timeout and a closed channel are both `Internal`: the
 /// wedged and the dead GTK side are unexpected failures, not layout verdicts.
 pub(crate) fn wait_for_apply(
-    receiver: mpsc::Receiver<PublishOutcome>,
+    receiver: &mpsc::Receiver<PublishOutcome>,
     timeout: Duration,
 ) -> Result<(), PinwinError> {
     match receiver.recv_timeout(timeout) {
         Ok(outcome) => map_outcome(outcome),
-        Err(mpsc::RecvTimeoutError::Timeout) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+        Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
             Err(PinwinError::Internal)
         }
     }
@@ -138,7 +138,7 @@ mod tests {
 
         assert_eq!(rx.recv().expect("first report"), StartOutcome::Started);
         // The channel is empty: the later reports were dropped.
-        assert!(rx.recv_timeout(Duration::from_millis(10)).is_err());
+        rx.recv_timeout(Duration::from_millis(10)).unwrap_err();
     }
 
     /// A GTK thread that died without reporting closes the channel: the
@@ -147,7 +147,7 @@ mod tests {
     fn a_dropped_handshake_sender_is_internal() {
         let (tx, rx) = mpsc::channel::<StartOutcome>();
         drop(tx);
-        assert_eq!(wait_for_start(rx), Err(PinwinError::Internal));
+        assert_eq!(wait_for_start(&rx), Err(PinwinError::Internal));
     }
 
     /// The start mappings cover every outcome.
@@ -197,7 +197,7 @@ mod tests {
     fn an_apply_reply_in_time_maps_normally() {
         let (tx, rx) = mpsc::sync_channel(1);
         tx.send(PublishOutcome::Applied).expect("send");
-        assert_eq!(wait_for_apply(rx, Duration::from_secs(1)), Ok(()));
+        assert_eq!(wait_for_apply(&rx, Duration::from_secs(1)), Ok(()));
     }
 
     /// A reply that never arrives within the bound is `Internal`, and the
@@ -213,7 +213,7 @@ mod tests {
         });
         let started = std::time::Instant::now();
         assert_eq!(
-            wait_for_apply(rx, Duration::from_millis(50)),
+            wait_for_apply(&rx, Duration::from_millis(50)),
             Err(PinwinError::Internal)
         );
         assert!(started.elapsed() < Duration::from_millis(250), "bounded");
@@ -227,7 +227,7 @@ mod tests {
         let (tx, rx) = mpsc::sync_channel::<PublishOutcome>(1);
         drop(tx);
         assert_eq!(
-            wait_for_apply(rx, Duration::from_secs(5)),
+            wait_for_apply(&rx, Duration::from_secs(5)),
             Err(PinwinError::Internal)
         );
     }

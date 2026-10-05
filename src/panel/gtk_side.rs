@@ -39,7 +39,6 @@ use crate::render::{DrawState, OutputScale};
 use crate::surfaces::{DrawFn, GridSnapshotFn, MeasureFn, PublishOutcome, SurfaceHooks, Surfaces};
 use crate::term::Terminal;
 
-use gtk4::cairo;
 use gtk4::glib;
 use gtk4::glib::ControlFlow;
 use gtk4::prelude::*;
@@ -120,7 +119,7 @@ impl SurfacesLink {
 /// The GTK thread's entry (D5 boundary): a panic anywhere in the loop leaves
 /// the command channel closed, so a pending start reports `Internal` instead
 /// of hanging, and the thread ends rather than run broken glue.
-pub(crate) fn gtk_thread_main(receiver: mpsc::Receiver<StartCommand>) {
+pub(crate) fn gtk_thread_main(receiver: &mpsc::Receiver<StartCommand>) {
     let latch = Poisoned::new();
     let _ = guard_always(&latch, || {
         while let Ok(command) = receiver.recv() {
@@ -166,24 +165,21 @@ fn run_one_panel(command: StartCommand) {
         let Some(app) = weak_app.upgrade() else {
             return;
         };
-        match guard(&activate_poisoned, || {
+        if let Ok(surfaces) = guard(&activate_poisoned, || {
             build_glue(&app, &startup, &activate_poisoned, &activate_handshake)
         }) {
-            Ok(surfaces) => {
-                GLUE.with(|cell| {
-                    *cell.borrow_mut() = Some(LivePanel {
-                        id,
-                        poisoned: activate_poisoned.clone(),
-                        surfaces,
-                    });
+            GLUE.with(|cell| {
+                *cell.borrow_mut() = Some(LivePanel {
+                    id,
+                    poisoned: activate_poisoned.clone(),
+                    surfaces,
                 });
-            }
+            });
+        } else {
             // A caught panic latched the shared flag: fail a still-pending
             // start handshake and quit the loop (D5).
-            Err(_) => {
-                activate_handshake.report(StartOutcome::Internal);
-                app.quit();
-            }
+            activate_handshake.report(StartOutcome::Internal);
+            app.quit();
         }
     });
 
@@ -202,7 +198,7 @@ fn run_one_panel(command: StartCommand) {
         // short-circuits on a latched flag, and a latched or panicked startup
         // is exactly what the watchdog tears down, so both reach the same
         // report/close/quit in the `Err` arm.
-        match guard(&watchdog_poisoned, || {
+        if let Ok(flow) = guard(&watchdog_poisoned, || {
             if watchdog_handshake.resolved() {
                 ControlFlow::Break
             } else {
@@ -210,18 +206,17 @@ fn run_one_panel(command: StartCommand) {
             }
         }) {
             // Healthy: keep watching, or stop once the handshake is resolved.
-            Ok(flow) => flow,
+            flow
+        } else {
             // Latched (a panic elsewhere in the startup path, or one caught
             // under this guard): fail the pending start, tear the half-built
             // panel down and quit the loop.
-            Err(_) => {
-                watchdog_handshake.report(StartOutcome::Internal);
-                close_glue(id);
-                if let Some(app) = watchdog_app.upgrade() {
-                    app.quit();
-                }
-                ControlFlow::Break
+            watchdog_handshake.report(StartOutcome::Internal);
+            close_glue(id);
+            if let Some(app) = watchdog_app.upgrade() {
+                app.quit();
             }
+            ControlFlow::Break
         }
     });
 
@@ -262,12 +257,12 @@ fn close_glue(id: u64) {
 /// no longer the one running — a queued command from a dropped panel must not
 /// touch the panel that runs now — and `Terminal` when the publish panicked
 /// or the shared latch was already set (D5: a panic reports Internal, never
-/// NotRunning).
+/// `NotRunning`).
 pub(crate) fn dispatch_apply(
     id: u64,
     layout: Layout,
     duration_ms: u32,
-    reply: mpsc::SyncSender<PublishOutcome>,
+    reply: &mpsc::SyncSender<PublishOutcome>,
 ) {
     GLUE.with(|cell| {
         // The plumbing around the publish is itself a boundary closure (D5):
@@ -291,7 +286,7 @@ pub(crate) fn dispatch_apply(
 /// does), quit the loop so the thread returns to its park, and report. Runs
 /// even on a latched flag — the drop contract closes the panel regardless —
 /// and always replies.
-pub(crate) fn dispatch_teardown(id: u64, reply: mpsc::SyncSender<()>) {
+pub(crate) fn dispatch_teardown(id: u64, reply: &mpsc::SyncSender<()>) {
     GLUE.with(|cell| {
         let scratch = Poisoned::new();
         let _ = guard_always(&scratch, || {
@@ -343,29 +338,71 @@ fn build_glue(
                 // repaint, or any other bytes): the stale pre-resize grid is
                 // done drawing (gsk-render-nodes design, Post-task decisions: C52), and the frame asks
                 // for a redraw as before.
-                link.with(|surfaces| surfaces.note_terminal_output());
+                link.with(Surfaces::note_terminal_output);
             }
         },
     )));
 
-    let hooks = SurfaceHooks {
+    let hooks = build_hooks(&link, &draw, &terminal, &pty, &focused, poisoned, handshake);
+    let surfaces = Surfaces::build(
+        app,
+        startup.layout,
+        startup.keyboard,
+        startup.accent,
+        hooks,
+        poisoned.clone(),
+    );
+    surfaces.attach_input(&InputLinks {
+        terminal: Rc::clone(&terminal),
+        draw_offset: {
+            let link = link.clone();
+            Rc::new(move || link.with(Surfaces::draw_offset).unwrap_or(0.0))
+        },
+        focused: Rc::clone(&focused),
+        queue_draw: {
+            let link = link.clone();
+            Rc::new(move || {
+                link.with(Surfaces::queue_draw);
+            })
+        },
+        poisoned: poisoned.clone(),
+    });
+    // The late-bound handles are live from here on.
+    link.set(Rc::downgrade(&surfaces));
+    surfaces
+}
+
+/// One panel's [`SurfaceHooks`] slots over its shared terminal, pty, draw
+/// state and focus flag (split from [`build_glue`] for size): the draw,
+/// measure, resize, snapshot and relay closures with the panel's one shared
+/// poisoned latch.
+fn build_hooks(
+    link: &SurfacesLink,
+    draw: &Rc<RefCell<DrawState>>,
+    terminal: &Rc<RefCell<Terminal>>,
+    pty: &Rc<RefCell<Pty>>,
+    focused: &Rc<Cell<bool>>,
+    poisoned: &Poisoned,
+    handshake: &Handshake,
+) -> SurfaceHooks {
+    SurfaceHooks {
         draw: draw_hook(
             link.clone(),
-            draw.clone(),
-            terminal.clone(),
-            focused.clone(),
+            Rc::clone(draw),
+            Rc::clone(terminal),
+            Rc::clone(focused),
             poisoned.clone(),
             handshake.clone(),
         ),
         apply_size: apply_size_hook(
             link.clone(),
-            terminal.clone(),
-            pty.clone(),
+            Rc::clone(terminal),
+            Rc::clone(pty),
             poisoned.clone(),
         ),
-        measure: measure_hook(draw.clone(), pty.clone(), poisoned.clone()),
+        measure: measure_hook(Rc::clone(draw), Rc::clone(pty), poisoned.clone()),
         tween_cache_drop: {
-            let draw = draw.clone();
+            let draw = Rc::clone(draw);
             let poisoned = poisoned.clone();
             Rc::new(move || {
                 // A stop relay, not ordinary glue (D5): `Anim` fires `on_stop`
@@ -377,9 +414,9 @@ fn build_glue(
         },
         grid_snapshot: grid_snapshot_hook(
             link.clone(),
-            draw.clone(),
-            terminal.clone(),
-            focused.clone(),
+            Rc::clone(draw),
+            Rc::clone(terminal),
+            Rc::clone(focused),
             poisoned.clone(),
         ),
         start_result: {
@@ -393,7 +430,7 @@ fn build_glue(
             })
         },
         set_tween_active: {
-            let pty = pty.clone();
+            let pty = Rc::clone(pty);
             let poisoned = poisoned.clone();
             Rc::new(move |active| {
                 // A stop relay like `tween_cache_drop` above (D5): a latched
@@ -403,7 +440,7 @@ fn build_glue(
             })
         },
         live_grid_px: {
-            let terminal = terminal.clone();
+            let terminal = Rc::clone(terminal);
             let poisoned = poisoned.clone();
             let link = link.clone();
             Rc::new(move || {
@@ -421,33 +458,7 @@ fn build_glue(
                 .unwrap_or(0)
             })
         },
-    };
-    let surfaces = Surfaces::build(
-        app,
-        startup.layout,
-        startup.keyboard,
-        startup.accent,
-        hooks,
-        poisoned.clone(),
-    );
-    surfaces.attach_input(InputLinks {
-        terminal: terminal.clone(),
-        draw_offset: {
-            let link = link.clone();
-            Rc::new(move || link.with(|surfaces| surfaces.draw_offset()).unwrap_or(0.0))
-        },
-        focused: focused.clone(),
-        queue_draw: {
-            let link = link.clone();
-            Rc::new(move || {
-                link.with(|surfaces| surfaces.queue_draw());
-            })
-        },
-        poisoned: poisoned.clone(),
-    });
-    // The late-bound handles are live from here on.
-    link.set(Rc::downgrade(&surfaces));
-    surfaces
+    }
 }
 
 /// The drawing area's draw function (`render.c`'s `on_draw`): resolve the
@@ -490,7 +501,7 @@ fn draw_hook(
 /// never completes, `Panel::start` blocks in `wait_for_start` forever and
 /// the reservation is never anchored to the resolved monitor. The surface
 /// has entered its output by the first paint, so the monitor reported here
-/// is the panel's real one (glue.c's resolve_layout_monitor); the failure
+/// is the panel's real one (glue.c's `resolve_layout_monitor`); the failure
 /// path (no monitor) reports through the start-result hook and quits, the
 /// same from either caller.
 fn resolve_first_draw_monitor(link: &SurfacesLink) {
@@ -565,7 +576,8 @@ fn measure_hook(
                 draw.cell_metrics_update(&context);
                 (draw.cell_w(), draw.cell_h())
             };
-            pty.borrow_mut().set_cell_size(cell_w as u32, cell_h as u32);
+            pty.borrow_mut()
+                .set_cell_size(cell_w.cast_unsigned(), cell_h.cast_unsigned());
             (cell_w, cell_h)
         })
         .unwrap_or((0, 0))
@@ -644,9 +656,9 @@ fn apply_size_to(
             let terminal = terminal.borrow();
             (i32::from(terminal.cols()), i32::from(terminal.rows()))
         };
-        let feed_terminal = terminal.clone();
+        let feed_terminal = Rc::clone(terminal);
         let _ = pty.borrow_mut().attach(cols, rows, move |data| {
-            feed_terminal.borrow_mut().push_pty_data(data)
+            feed_terminal.borrow_mut().push_pty_data(data);
         });
     }
     true
