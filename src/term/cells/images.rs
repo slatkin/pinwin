@@ -19,7 +19,8 @@ use crate::ghostty_sys::kitty::{
     GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z,
     GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, GHOSTTY_KITTY_IMAGE_DATA_GENERATION,
     GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, GHOSTTY_KITTY_IMAGE_DATA_WIDTH, GhosttyKittyGraphics,
-    GhosttyKittyGraphicsImageData, GhosttyKittyGraphicsPlacementRenderInfo,
+    GhosttyKittyGraphicsImage, GhosttyKittyGraphicsImageData,
+    GhosttyKittyGraphicsPlacementIterator, GhosttyKittyGraphicsPlacementRenderInfo,
     ghostty_kitty_graphics_get, ghostty_kitty_graphics_image,
     ghostty_kitty_graphics_image_get_multi, ghostty_kitty_graphics_placement_get,
     ghostty_kitty_graphics_placement_next, ghostty_kitty_graphics_placement_render_info,
@@ -114,14 +115,14 @@ pub(super) fn virtual_rect(
     image_h: u32,
 ) -> Rect {
     Rect {
-        x: origin.col * cell_w as i32,
-        y: origin.row * cell_h as i32,
-        w: image_w as i32,
-        h: image_h as i32,
+        x: origin.col * cell_w.cast_signed(),
+        y: origin.row * cell_h.cast_signed(),
+        w: image_w.cast_signed(),
+        h: image_h.cast_signed(),
         sx: 0,
         sy: 0,
-        sw: image_w as i32,
-        sh: image_h as i32,
+        sw: image_w.cast_signed(),
+        sh: image_h.cast_signed(),
     }
 }
 
@@ -133,15 +134,139 @@ pub(super) fn viewport_rect(
     cell_h: u32,
 ) -> Rect {
     Rect {
-        x: info.viewport_col * cell_w as i32,
-        y: info.viewport_row * cell_h as i32,
-        w: info.pixel_width as i32,
-        h: info.pixel_height as i32,
-        sx: info.source_x as i32,
-        sy: info.source_y as i32,
-        sw: info.source_width as i32,
-        sh: info.source_height as i32,
+        x: info.viewport_col * cell_w.cast_signed(),
+        y: info.viewport_row * cell_h.cast_signed(),
+        w: info.pixel_width.cast_signed(),
+        h: info.pixel_height.cast_signed(),
+        sx: info.source_x.cast_signed(),
+        sy: info.source_y.cast_signed(),
+        sw: info.source_width.cast_signed(),
+        sh: info.source_height.cast_signed(),
     }
+}
+
+/// Resolve the graphics storage and the placement iterator for the image
+/// pass. False when there is nothing to walk.
+#[must_use]
+fn begin_image_pass(frame: &mut FrameState, handles: &mut Handles) -> bool {
+    if frame.flags.images_started {
+        return true;
+    }
+    frame.flags.images_started = true;
+    let terminal = handles.terminal.expect("image_next with a live terminal");
+    let mut graphics = GhosttyKittyGraphics(ptr::null_mut());
+    // SAFETY: the terminal is live and `graphics` is writable storage of
+    // the type `GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS` returns.
+    let got = unsafe {
+        ghostty_terminal_get(
+            terminal,
+            GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+            (&raw mut graphics).cast(),
+        )
+    };
+    if got != GHOSTTY_SUCCESS || graphics.0.is_null() {
+        return false;
+    }
+    frame.graphics = Some(graphics);
+    let mut placement_iterator = handles
+        .placement_iterator
+        .expect("image_next with a placement iterator");
+    // SAFETY: `graphics` is live and the placement iterator is writable
+    // storage created by `ghostty_kitty_graphics_placement_iterator_new`.
+    let iterator = unsafe {
+        ghostty_kitty_graphics_get(
+            graphics,
+            GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
+            ptr::from_mut(&mut placement_iterator).cast(),
+        )
+    };
+    if iterator != GHOSTTY_SUCCESS {
+        return false;
+    }
+    handles.placement_iterator = Some(placement_iterator);
+    true
+}
+
+/// Read the current placement's image id, z order and virtual flag. `None`
+/// when the placement carries no image id.
+#[must_use]
+fn placement_request(iterator: GhosttyKittyGraphicsPlacementIterator) -> Option<(u32, i32, bool)> {
+    let mut image_id: u32 = 0;
+    let mut z: i32 = 0;
+    let mut is_virtual = false;
+    // SAFETY: each out pointer is writable storage of the type its data
+    // selector names; the placement iterator is live.
+    let have_id = unsafe {
+        ghostty_kitty_graphics_placement_get(
+            iterator,
+            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
+            (&raw mut image_id).cast(),
+        )
+    } == GHOSTTY_SUCCESS;
+    if !have_id {
+        return None;
+    }
+    // SAFETY: each out pointer is writable storage of the type its data
+    // selector names; the placement iterator is live.
+    unsafe {
+        ghostty_kitty_graphics_placement_get(
+            iterator,
+            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z,
+            (&raw mut z).cast(),
+        );
+        ghostty_kitty_graphics_placement_get(
+            iterator,
+            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL,
+            (&raw mut is_virtual).cast(),
+        );
+    };
+    Some((image_id, z, is_virtual))
+}
+
+/// Read the image's handle, pixels, size and generation. `None` when the
+/// image is gone or has no pixels.
+#[must_use]
+fn placement_pixels(
+    graphics: GhosttyKittyGraphics,
+    image_id: u32,
+) -> Option<(GhosttyKittyGraphicsImage, *const u8, u32, u32, u64)> {
+    // SAFETY: `graphics` is live and `image_id` was read from it.
+    let image = unsafe { ghostty_kitty_graphics_image(graphics, image_id) };
+    if image.0.is_null() {
+        return None;
+    }
+
+    let mut pixels: *const u8 = ptr::null();
+    let mut image_w: u32 = 0;
+    let mut image_h: u32 = 0;
+    let mut generation: u64 = 0;
+    let kinds: [GhosttyKittyGraphicsImageData; 4] = [
+        GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
+        GHOSTTY_KITTY_IMAGE_DATA_WIDTH,
+        GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
+        GHOSTTY_KITTY_IMAGE_DATA_GENERATION,
+    ];
+    let mut values: [*mut std::os::raw::c_void; 4] = [
+        (&raw mut pixels).cast(),
+        (&raw mut image_w).cast(),
+        (&raw mut image_h).cast(),
+        (&raw mut generation).cast(),
+    ];
+    // SAFETY: `image` is live; `kinds`/`values` are parallel arrays of
+    // matching length and each value points at writable storage.
+    let ok = unsafe {
+        ghostty_kitty_graphics_image_get_multi(
+            image,
+            kinds.len(),
+            kinds.as_ptr(),
+            values.as_mut_ptr(),
+            ptr::null_mut(),
+        )
+    } == GHOSTTY_SUCCESS;
+    if !ok || pixels.is_null() || image_w == 0 || image_h == 0 {
+        return None;
+    }
+    Some((image, pixels, image_w, image_h, generation))
 }
 
 /// The next image placement of the frame, or `None` at the end.
@@ -151,43 +276,11 @@ pub(super) fn image_next(
     cell_w: u32,
     cell_h: u32,
 ) -> Option<Image> {
-    if !frame.open {
+    if !frame.flags.open {
         return None;
     }
-
-    if !frame.images_started {
-        frame.images_started = true;
-        let terminal = handles.terminal.expect("image_next with a live terminal");
-        let mut graphics = GhosttyKittyGraphics(ptr::null_mut());
-        // SAFETY: the terminal is live and `graphics` is writable storage of
-        // the type `GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS` returns.
-        let got = unsafe {
-            ghostty_terminal_get(
-                terminal,
-                GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
-                (&mut graphics as *mut GhosttyKittyGraphics).cast(),
-            )
-        };
-        if got != GHOSTTY_SUCCESS || graphics.0.is_null() {
-            return None;
-        }
-        frame.graphics = Some(graphics);
-        // SAFETY: `graphics` is live and the placement iterator is writable
-        // storage created by `ghostty_kitty_graphics_placement_iterator_new`.
-        let mut placement_iterator = handles
-            .placement_iterator
-            .expect("image_next with a placement iterator");
-        let iterator = unsafe {
-            ghostty_kitty_graphics_get(
-                graphics,
-                GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
-                ptr::from_mut(&mut placement_iterator).cast(),
-            )
-        };
-        if iterator != GHOSTTY_SUCCESS {
-            return None;
-        }
-        handles.placement_iterator = Some(placement_iterator);
+    if !begin_image_pass(frame, handles) {
+        return None;
     }
 
     let graphics = frame.graphics?;
@@ -198,77 +291,21 @@ pub(super) fn image_next(
 
     // SAFETY: `iterator` was initialized from the live graphics storage above.
     while unsafe { ghostty_kitty_graphics_placement_next(iterator) } {
-        let mut image_id: u32 = 0;
-        let mut z: i32 = 0;
-        let mut is_virtual = false;
-        // SAFETY: each out pointer is writable storage of the type its data
-        // selector names; the placement iterator is live.
-        let have_id = unsafe {
-            ghostty_kitty_graphics_placement_get(
-                iterator,
-                GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
-                (&mut image_id as *mut u32).cast(),
-            )
-        } == GHOSTTY_SUCCESS;
-        if !have_id {
+        let Some((image_id, z, is_virtual)) = placement_request(iterator) else {
             continue;
-        }
-        unsafe {
-            ghostty_kitty_graphics_placement_get(
-                iterator,
-                GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z,
-                (&mut z as *mut i32).cast(),
-            );
-            ghostty_kitty_graphics_placement_get(
-                iterator,
-                GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL,
-                (&mut is_virtual as *mut bool).cast(),
-            );
-        }
-
-        // SAFETY: `graphics` is live and `image_id` was read from it.
-        let image = unsafe { ghostty_kitty_graphics_image(graphics, image_id) };
-        if image.0.is_null() {
+        };
+        let Some((image, pixels, image_w, image_h, generation)) =
+            placement_pixels(graphics, image_id)
+        else {
             continue;
-        }
-
-        let mut pixels: *const u8 = ptr::null();
-        let mut image_w: u32 = 0;
-        let mut image_h: u32 = 0;
-        let mut generation: u64 = 0;
-        let kinds: [GhosttyKittyGraphicsImageData; 4] = [
-            GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
-            GHOSTTY_KITTY_IMAGE_DATA_WIDTH,
-            GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
-            GHOSTTY_KITTY_IMAGE_DATA_GENERATION,
-        ];
-        let mut values: [*mut std::os::raw::c_void; 4] = [
-            (&mut pixels as *mut *const u8).cast(),
-            (&mut image_w as *mut u32).cast(),
-            (&mut image_h as *mut u32).cast(),
-            (&mut generation as *mut u64).cast(),
-        ];
-        // SAFETY: `image` is live; `kinds`/`values` are parallel arrays of
-        // matching length and each value points at writable storage.
-        let ok = unsafe {
-            ghostty_kitty_graphics_image_get_multi(
-                image,
-                kinds.len(),
-                kinds.as_ptr(),
-                values.as_mut_ptr(),
-                ptr::null_mut(),
-            )
-        } == GHOSTTY_SUCCESS;
-        if !ok || pixels.is_null() || image_w == 0 || image_h == 0 {
-            continue;
-        }
+        };
 
         let mut out = Image {
             image_id,
-            generation: generation as i64,
+            generation: generation.cast_signed(),
             z,
-            image_w: image_w as i32,
-            image_h: image_h as i32,
+            image_w: image_w.cast_signed(),
+            image_h: image_h.cast_signed(),
             pixels,
             ..Image::default()
         };
@@ -292,7 +329,7 @@ pub(super) fn image_next(
                 iterator,
                 image,
                 handles.terminal.expect("image_next with a live terminal"),
-                (&mut info as *mut GhosttyKittyGraphicsPlacementRenderInfo).cast(),
+                (&raw mut info).cast(),
             )
         } == GHOSTTY_SUCCESS;
         if !resolved || !info.viewport_visible {
@@ -307,7 +344,7 @@ pub(super) fn image_next(
 /// The image id the captured mbv 0.22.5 bytes carry (see
 /// [`mbv_replay_bytes`]).
 #[cfg(test)]
-pub(crate) const IMAGE_ID: u32 = 536687111;
+pub(crate) const IMAGE_ID: u32 = 536_687_111;
 
 /// The captured mbv 0.22.5 image transmission (see the `tests` module):
 /// a chunked `a=T` transmission with raw `f=32` pixels and `U=1`

@@ -4,7 +4,7 @@ use std::os::raw::c_int;
 
 /// An 8-bit RGB color (`GhosttyColorRgb`, color.h).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyColorRgb {
     pub r: u8,
     pub g: u8,
@@ -35,9 +35,25 @@ pub union GhosttyStyleColorValue {
     pub _padding: u64,
 }
 
+/// The raw bits of a [`GhosttyStyleColorValue`]: every arm is an integer
+/// type where all bit patterns are valid, so the widest arm always reports
+/// a well-formed value.
+impl std::fmt::Debug for GhosttyStyleColorValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // SAFETY: the union is 8 bytes and every arm is an integer type
+        // where all bit patterns are valid, so reinterpreting the raw bits
+        // as u64 cannot produce an invalid value; the tag that names the
+        // live arm lives outside this union.
+        let raw: u64 = unsafe { std::mem::transmute_copy(self) };
+        f.debug_struct("GhosttyStyleColorValue")
+            .field("raw", &raw)
+            .finish()
+    }
+}
+
 /// A tagged style color (`GhosttyStyleColor`, style.h).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyStyleColor {
     pub tag: GhosttyStyleColorTag,
     pub value: GhosttyStyleColorValue,
@@ -46,7 +62,7 @@ pub struct GhosttyStyleColor {
 /// A cell style (`GhosttyStyle`, style.h). A sized struct: set `size` to
 /// `size_of::<GhosttyStyle>()` before passing it to the library.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyStyle {
     pub size: usize,
     pub fg_color: GhosttyStyleColor,

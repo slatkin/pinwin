@@ -8,22 +8,22 @@ use super::{GhosttyAllocator, GhosttyMode, GhosttyResult};
 
 /// Opaque handle to a key encoder (`GhosttyKeyEncoder`, key/encoder.h).
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyKeyEncoder(pub *mut c_void);
 
 /// Opaque handle to a key event (`GhosttyKeyEvent`, key/event.h).
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyKeyEvent(pub *mut c_void);
 
 /// Opaque handle to a mouse encoder (`GhosttyMouseEncoder`, mouse/encoder.h).
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyMouseEncoder(pub *mut c_void);
 
 /// Opaque handle to a mouse event (`GhosttyMouseEvent`, mouse/event.h).
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyMouseEvent(pub *mut c_void);
 
 /// Key and mouse modifier bits (`GhosttyMods`, key/event.h).
@@ -270,7 +270,7 @@ pub const GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED: GhosttyMouseEncoderOptio
 /// A mouse position in terminal surface pixels (`GhosttyMousePosition`,
 /// mouse/event.h).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyMousePosition {
     pub x: f32,
     pub y: f32,
@@ -280,7 +280,7 @@ pub struct GhosttyMousePosition {
 /// mouse/encoder.h). A sized struct: set `size` to
 /// `size_of::<GhosttyMouseEncoderSize>()` first.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyMouseEncoderSize {
     pub size: usize,
     pub screen_width: u32,

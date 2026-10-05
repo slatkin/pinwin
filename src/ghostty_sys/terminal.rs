@@ -6,7 +6,7 @@ use super::{GhosttyAllocator, GhosttyMode, GhosttyResult};
 
 /// Opaque handle to a terminal instance (`GhosttyTerminal`, terminal.h).
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyTerminal(pub *mut c_void);
 
 /// A terminal option id (`GhosttyTerminalOption`, terminal.h).
@@ -30,16 +30,16 @@ pub const GHOSTTY_TERMINAL_DATA_MODE: GhosttyTerminalData = 37;
 /// Initialize `mode`, then pass the struct to `ghostty_terminal_get` with
 /// [`GHOSTTY_TERMINAL_DATA_MODE`] to read `value`.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyTerminalModeConfig {
     pub mode: GhosttyMode,
     pub value: bool,
 }
 
-/// A terminal size report (`GhosttySizeReportSize`, size_report.h). The
+/// A terminal size report (`GhosttySizeReportSize`, `size_report.h`). The
 /// `GHOSTTY_TERMINAL_OPT_SIZE` callback fills one.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttySizeReportSize {
     pub rows: u16,
     pub columns: u16,
@@ -49,7 +49,7 @@ pub struct GhosttySizeReportSize {
 
 /// Primary device attributes (`GhosttyDeviceAttributesPrimary`, device.h).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyDeviceAttributesPrimary {
     pub conformance_level: u16,
     pub features: [u16; 64],
@@ -58,7 +58,7 @@ pub struct GhosttyDeviceAttributesPrimary {
 
 /// Secondary device attributes (`GhosttyDeviceAttributesSecondary`, device.h).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyDeviceAttributesSecondary {
     pub device_type: u16,
     pub firmware_version: u16,
@@ -67,7 +67,7 @@ pub struct GhosttyDeviceAttributesSecondary {
 
 /// Tertiary device attributes (`GhosttyDeviceAttributesTertiary`, device.h).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyDeviceAttributesTertiary {
     pub unit_id: u32,
 }
@@ -75,7 +75,7 @@ pub struct GhosttyDeviceAttributesTertiary {
 /// Device attributes (`GhosttyDeviceAttributes`, device.h). The
 /// `GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES` callback fills one.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyDeviceAttributes {
     pub primary: GhosttyDeviceAttributesPrimary,
     pub secondary: GhosttyDeviceAttributesSecondary,

@@ -91,7 +91,7 @@ pub fn write_pty(fd: RawFd, data: &[u8]) {
         // handed to `write` for the duration of the call.
         let n = unsafe { libc::write(fd, data[off..].as_ptr().cast(), data.len() - off) };
         if n > 0 {
-            off += n as usize;
+            off += n.cast_unsigned();
             continue;
         }
         if n < 0 && matches!(errno(), libc::EINTR | libc::EAGAIN) {
@@ -132,7 +132,7 @@ fn drain(
     budget_us: i64,
     now_us: &dyn Fn() -> i64,
 ) -> Drain {
-    let mut buf = [0u8; READ_BUF_LEN];
+    let mut buf = vec![0u8; READ_BUF_LEN].into_boxed_slice();
     loop {
         let chunk = if budget_us > 0 {
             READ_BUF_LEN / 4
@@ -143,7 +143,7 @@ fn drain(
         // bytes for the duration of the call.
         let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), chunk) };
         if n > 0 {
-            feed(&buf[..n as usize]);
+            feed(&buf[..n.cast_unsigned()]);
             if pty_yield(started_us, now_us(), budget_us) {
                 return Drain::Dispatched;
             }
@@ -171,7 +171,7 @@ fn drain(
 /// is gone, so a write after hangup or teardown is a no-op like the
 /// `g_pty_fd < 0` guard in `src/pty.c`. This is the [`PtySink`] the glue
 /// hands to `Terminal::new`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PtyWriter {
     fd: Arc<AtomicI32>,
 }
@@ -196,6 +196,7 @@ impl PtySink for PtyWriter {
 /// source, the cell size used for the winsize pixel fields, and the tween
 /// switch that bounds the drain. Lives on the GTK thread (D4); the shared fd
 /// slot is the only state the [`PtyWriter`] needs across objects.
+#[derive(Debug)]
 pub struct Pty {
     /// The host-owned master fd, retired to -1 when the read source is gone.
     /// The library never closes the real descriptor (D7).
@@ -220,6 +221,7 @@ impl Pty {
     /// Take the host-supplied master fd and the current cell size.
     /// `poisoned` is the panel's shared D5 latch: a read-source panic latches
     /// it so the rest of the panel's glue code stops too.
+    #[must_use]
     pub fn new(poisoned: Poisoned, fd: RawFd, cell_w: u32, cell_h: u32) -> Self {
         Pty {
             fd: Arc::new(AtomicI32::new(fd)),
@@ -233,9 +235,10 @@ impl Pty {
     }
 
     /// The write handle to hand to `Terminal::new` as its [`PtySink`].
+    #[must_use]
     pub fn writer(&self) -> PtyWriter {
         PtyWriter {
-            fd: self.fd.clone(),
+            fd: Arc::clone(&self.fd),
         }
     }
 
@@ -252,17 +255,20 @@ impl Pty {
     }
 
     /// Whether a callback panic was caught in the read source (D5).
+    #[must_use]
     pub fn poisoned(&self) -> bool {
         self.poisoned.is_poisoned()
     }
 
     /// Whether the fd was attached (sticky, like `g_attached`).
+    #[must_use]
     pub fn attached(&self) -> bool {
         self.attached
     }
 
     /// Whether the read source is gone (hangup or teardown): writes and
     /// resizes are no-ops from here on.
+    #[must_use]
     pub fn hung_up(&self) -> bool {
         self.fd.load(Ordering::Relaxed) < 0
     }
@@ -294,10 +300,10 @@ impl Pty {
         let _ = apply_winsize(fd, cols, rows, self.cell_w, self.cell_h);
 
         let state = Box::into_raw(Box::new(SourceState {
-            fd: self.fd.clone(),
-            tween_active: self.tween_active.clone(),
+            fd: Arc::clone(&self.fd),
+            tween_active: Arc::clone(&self.tween_active),
             poisoned: self.poisoned.clone(),
-            source: self.source.clone(),
+            source: Arc::clone(&self.source),
             feed: Box::new(feed),
         }));
         // SAFETY: `g_unix_fd_add_full` is stable GLib API (2.36) that glib-sys
@@ -390,7 +396,7 @@ fn retire(fd: &AtomicI32, source: &AtomicU32) {
 }
 
 /// The `GUnixFDSourceFunc` trampoline: drain the pty for one dispatch (D5
-/// guard; unwinding out of here would cross into GLib).
+/// guard; unwinding out of here would cross into `GLib`).
 ///
 /// # Safety
 /// `user_data` must be the `SourceState` pointer `g_unix_fd_add_full` was
@@ -478,6 +484,7 @@ unsafe extern "C" {
 mod tests {
     use super::*;
     use std::fs::File;
+    use std::io::Write;
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::sync::Mutex;
     use std::sync::Once;
@@ -491,7 +498,7 @@ mod tests {
 
     /// A connected pipe pair (read end, write end), blocking like a fresh fd.
     fn pipe_pair() -> (File, File) {
-        let mut fds = [0 as libc::c_int; 2];
+        let mut fds: [libc::c_int; 2] = [0; 2];
         // SAFETY: `fds` is a writable two-element array for the call.
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
         // SAFETY: the descriptors are owned by these `File`s from here on.
@@ -508,7 +515,7 @@ mod tests {
             let n =
                 unsafe { libc::read(file.as_raw_fd(), out[off..].as_mut_ptr().cast(), len - off) };
             assert!(n > 0, "read failed at {off}");
-            off += n as usize;
+            off += usize::try_from(n).expect("positive read count");
         }
         out
     }
@@ -522,10 +529,8 @@ mod tests {
             ws_ypixel: 0,
         };
         // SAFETY: `fd` is open and `ws` is writable for the call.
-        assert!(
-            unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } >= 0,
-            "TIOCGWINSZ"
-        );
+        let result = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) };
+        assert!(result >= 0, "TIOCGWINSZ");
         ws
     }
 
@@ -550,7 +555,7 @@ mod tests {
                 action.sa_sigaction = record_sigwinch as *const () as usize;
                 action.sa_flags = libc::SA_RESTART;
                 assert!(
-                    libc::sigaction(libc::SIGWINCH, &action, std::ptr::null_mut()) == 0,
+                    libc::sigaction(libc::SIGWINCH, &raw const action, std::ptr::null_mut()) == 0,
                     "sigaction"
                 );
             }
@@ -599,15 +604,12 @@ mod tests {
     #[test]
     fn set_non_blocking_makes_reads_would_block() {
         let (read_end, mut write_end) = pipe_pair();
-        use std::io::Write;
         write_end.write_all(&[7]).expect("write one byte");
         set_non_blocking(read_end.as_raw_fd()).expect("set non-blocking");
         let mut byte = [0u8; 1];
         // SAFETY: `read_end` is open and `byte` is writable.
-        assert_eq!(
-            unsafe { libc::read(read_end.as_raw_fd(), byte.as_mut_ptr().cast(), 1) },
-            1
-        );
+        let n = unsafe { libc::read(read_end.as_raw_fd(), byte.as_mut_ptr().cast(), 1) };
+        assert_eq!(n, 1);
         // SAFETY: as above; the pipe is now empty.
         let n = unsafe { libc::read(read_end.as_raw_fd(), byte.as_mut_ptr().cast(), 1) };
         assert_eq!(n, -1);
@@ -636,12 +638,11 @@ mod tests {
     fn drain_without_budget_drains_until_eagain() {
         let (read_end, mut write_end) = pipe_pair();
         set_non_blocking(read_end.as_raw_fd()).expect("non-blocking");
-        use std::io::Write;
         let payload = vec![42u8; 60_000];
         write_end.write_all(&payload).expect("fill the pipe");
 
         let fed = Arc::new(AtomicUsize::new(0));
-        let fed_for_feed = fed.clone();
+        let fed_for_feed = Arc::clone(&fed);
         let outcome = drain(
             read_end.as_raw_fd(),
             false,
@@ -661,12 +662,11 @@ mod tests {
     fn drain_yields_within_the_budget() {
         let (read_end, mut write_end) = pipe_pair();
         set_non_blocking(read_end.as_raw_fd()).expect("non-blocking");
-        use std::io::Write;
         let payload = vec![7u8; 60_000];
         write_end.write_all(&payload).expect("fill the pipe");
 
         let fed = Arc::new(AtomicUsize::new(0));
-        let fed_for_feed = fed.clone();
+        let fed_for_feed = Arc::clone(&fed);
         // The fake clock advances 2000 us per check: two reduced chunks
         // (16384 bytes each) put the dispatch past the 4000 us budget.
         let clock = AtomicUsize::new(0);
@@ -680,7 +680,7 @@ mod tests {
             PTY_BUDGET_US,
             &|| {
                 let tick = clock.fetch_add(1, Ordering::Relaxed);
-                1000 + 2000 * tick as i64 + 2000
+                1000 + 2000 * i64::try_from(tick).expect("few ticks") + 2000
             },
         );
         assert_eq!(outcome, Drain::Dispatched);
@@ -693,7 +693,7 @@ mod tests {
         let (read_end, write_end) = pipe_pair();
         drop(write_end);
         let fed = Arc::new(AtomicUsize::new(0));
-        let fed_for_feed = fed.clone();
+        let fed_for_feed = Arc::clone(&fed);
         let outcome = drain(
             read_end.as_raw_fd(),
             false,
@@ -727,7 +727,7 @@ mod tests {
         let raw = master.as_raw_fd();
         let mut pty = Pty::new(Poisoned::new(), raw, 8, 16);
         let fed = Arc::new(AtomicUsize::new(0));
-        let fed_for_feed = fed.clone();
+        let fed_for_feed = Arc::clone(&fed);
         let seen = sigwinch_during(|| {
             pty.attach(80, 24, move |data| {
                 fed_for_feed.fetch_add(data.len(), Ordering::Relaxed);

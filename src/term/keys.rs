@@ -55,11 +55,13 @@ impl Key {
     pub const UNIDENTIFIED: Key = Key(GHOSTTY_KEY_UNIDENTIFIED);
 
     /// Wrap a raw `GhosttyKey`.
+    #[must_use]
     pub const fn new(raw: GhosttyKey) -> Self {
         Key(raw)
     }
 
     /// The raw `GhosttyKey` value for the FFI call.
+    #[must_use]
     pub const fn raw(self) -> GhosttyKey {
         self.0
     }
@@ -322,9 +324,9 @@ const KEYVAL_TABLE: &[(u32, GhosttyKey)] = &[
     (0xffeb, GHOSTTY_KEY_META_LEFT),
     (0xffec, GHOSTTY_KEY_META_RIGHT),
     (0xffff, GHOSTTY_KEY_DELETE),
-    (0x1008ff57, GHOSTTY_KEY_COPY),
-    (0x1008ff58, GHOSTTY_KEY_CUT),
-    (0x1008ff6d, GHOSTTY_KEY_PASTE),
+    (0x1008_ff57, GHOSTTY_KEY_COPY),
+    (0x1008_ff58, GHOSTTY_KEY_CUT),
+    (0x1008_ff6d, GHOSTTY_KEY_PASTE),
 ];
 
 /// Keyvals that only ever mean "a modifier is held".
@@ -402,14 +404,11 @@ fn lookup<T>(table: &[T], target: u32, field: impl Fn(&T) -> u32) -> Option<usiz
             hi = mid;
         }
     }
-    if lo < table.len() && field(&table[lo]) == target {
-        Some(lo)
-    } else {
-        None
-    }
+    (lo < table.len() && field(&table[lo]) == target).then_some(lo)
 }
 
 /// XKB keycode -> physical key.
+#[must_use]
 pub fn key_from_keycode(keycode: u32) -> Key {
     match lookup(KEYCODE_TABLE, keycode, |entry| u32::from(entry.0)) {
         Some(i) => Key(KEYCODE_TABLE[i].1),
@@ -419,17 +418,20 @@ pub fn key_from_keycode(keycode: u32) -> Key {
 
 /// GDK keyval -> logical key, for the writing-system remap and for synthetic
 /// keymaps that report every key with one keycode.
+#[must_use]
 pub fn key_from_keyval(keyval: u32) -> Option<Key> {
     lookup(KEYVAL_TABLE, keyval, |entry| entry.0).map(|i| Key(KEYVAL_TABLE[i].1))
 }
 
 /// Whether a keyval only ever means "a modifier is held".
+#[must_use]
 pub fn is_modifier_keyval(keyval: u32) -> bool {
     lookup(MODIFIER_KEYVALS, keyval, |value| *value).is_some()
 }
 
 /// Writing-system keys (W3C section 3.1.1): the keyval, not the keycode,
 /// decides which key the user meant.
+#[must_use]
 pub fn should_be_remappable(key: Key) -> bool {
     REMAPPABLE_KEYS.contains(&key.0)
 }

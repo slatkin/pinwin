@@ -69,16 +69,19 @@ pub const GHOSTTY_REJECTED: GhosttyResult = -7;
 pub type GhosttyMode = u16;
 
 /// Build a `GhosttyMode` from a mode number and whether it is an ANSI mode.
+#[must_use]
 pub const fn ghostty_mode_new(value: u16, ansi: bool) -> GhosttyMode {
     (value & 0x7fff) | ((ansi as u16) << 15)
 }
 
 /// The mode number of a `GhosttyMode`, without the ANSI bit.
+#[must_use]
 pub const fn ghostty_mode_value(mode: GhosttyMode) -> u16 {
     mode & 0x7fff
 }
 
 /// Whether a `GhosttyMode` is an ANSI mode.
+#[must_use]
 pub const fn ghostty_mode_ansi(mode: GhosttyMode) -> bool {
     (mode >> 15) != 0
 }
@@ -87,7 +90,7 @@ pub const fn ghostty_mode_ansi(mode: GhosttyMode) -> bool {
 /// passed to any function that takes `*const GhosttyAllocator` selects the
 /// library's default allocator.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyAllocator {
     /// Opaque context passed to every vtable call.
     pub ctx: *mut c_void,
@@ -97,7 +100,7 @@ pub struct GhosttyAllocator {
 
 /// The Zig-style allocator vtable (`GhosttyAllocatorVtable`, allocator.h).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyAllocatorVtable {
     pub alloc: Option<
         unsafe extern "C" fn(
@@ -148,15 +151,16 @@ unsafe extern "C" {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::mem::{offset_of, size_of};
+    use std::fmt::Write as _;
+    use std::mem::offset_of;
     use std::path::PathBuf;
     use std::process::Command;
 
     /// Every `extern` declared in this module and its submodules. Taking each
     /// function's address forces the linker to resolve it in the pinned
     /// archive, so this test fails if the pin lacks a symbol pinwin uses.
-    #[allow(clippy::type_complexity)]
-    const LINKED_SYMBOLS: &[*const ()] = &[
+    type LinkedSymbol = *const ();
+    const LINKED_SYMBOLS: &[LinkedSymbol] = &[
         ghostty_alloc as *const (),
         build_info::ghostty_build_info as *const (),
         input::ghostty_focus_encode as *const (),
@@ -226,7 +230,7 @@ mod tests {
         let result = unsafe {
             build_info::ghostty_build_info(
                 build_info::GHOSTTY_BUILD_INFO_SIMD,
-                (&mut simd as *mut u8).cast(),
+                (&raw mut simd).cast(),
             )
         };
         assert_eq!(
@@ -536,6 +540,395 @@ mod tests {
         }
     }
 
+    /// `sizeof` for every `#[repr(C)]` type in this module, checked
+    /// against the pinned headers by `struct_layouts_match_the_pinned_headers`.
+    const LAYOUT_SIZES: [(&str, usize); 18] = [
+        ("GhosttyAllocator", size_of::<GhosttyAllocator>()),
+        (
+            "GhosttyAllocatorVtable",
+            size_of::<GhosttyAllocatorVtable>(),
+        ),
+        ("GhosttyColorRgb", size_of::<style::GhosttyColorRgb>()),
+        (
+            "GhosttyDeviceAttributes",
+            size_of::<terminal::GhosttyDeviceAttributes>(),
+        ),
+        (
+            "GhosttyDeviceAttributesPrimary",
+            size_of::<terminal::GhosttyDeviceAttributesPrimary>(),
+        ),
+        (
+            "GhosttyDeviceAttributesSecondary",
+            size_of::<terminal::GhosttyDeviceAttributesSecondary>(),
+        ),
+        (
+            "GhosttyDeviceAttributesTertiary",
+            size_of::<terminal::GhosttyDeviceAttributesTertiary>(),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo",
+            size_of::<kitty::GhosttyKittyGraphicsPlacementRenderInfo>(),
+        ),
+        (
+            "GhosttyMouseEncoderSize",
+            size_of::<input::GhosttyMouseEncoderSize>(),
+        ),
+        (
+            "GhosttyMousePosition",
+            size_of::<input::GhosttyMousePosition>(),
+        ),
+        (
+            "GhosttyRenderStateColors",
+            size_of::<render::GhosttyRenderStateColors>(),
+        ),
+        (
+            "GhosttyRenderStateCursor",
+            size_of::<render::GhosttyRenderStateCursor>(),
+        ),
+        (
+            "GhosttySizeReportSize",
+            size_of::<terminal::GhosttySizeReportSize>(),
+        ),
+        ("GhosttyStyle", size_of::<style::GhosttyStyle>()),
+        ("GhosttyStyleColor", size_of::<style::GhosttyStyleColor>()),
+        (
+            "GhosttyStyleColorValue",
+            size_of::<style::GhosttyStyleColorValue>(),
+        ),
+        ("GhosttySysImage", size_of::<sys::GhosttySysImage>()),
+        (
+            "GhosttyTerminalModeConfig",
+            size_of::<terminal::GhosttyTerminalModeConfig>(),
+        ),
+    ];
+
+    /// `offsetof` for every field of the sized structs, checked against
+    /// the pinned headers by `struct_layouts_match_the_pinned_headers`.
+    const LAYOUT_OFFSETS: [(&str, usize); 85] = [
+        ("GhosttyAllocator.ctx", offset_of!(GhosttyAllocator, ctx)),
+        (
+            "GhosttyAllocator.vtable",
+            offset_of!(GhosttyAllocator, vtable),
+        ),
+        (
+            "GhosttyAllocatorVtable.alloc",
+            offset_of!(GhosttyAllocatorVtable, alloc),
+        ),
+        (
+            "GhosttyAllocatorVtable.resize",
+            offset_of!(GhosttyAllocatorVtable, resize),
+        ),
+        (
+            "GhosttyAllocatorVtable.remap",
+            offset_of!(GhosttyAllocatorVtable, remap),
+        ),
+        (
+            "GhosttyAllocatorVtable.free",
+            offset_of!(GhosttyAllocatorVtable, free),
+        ),
+        ("GhosttyColorRgb.r", offset_of!(style::GhosttyColorRgb, r)),
+        ("GhosttyColorRgb.g", offset_of!(style::GhosttyColorRgb, g)),
+        ("GhosttyColorRgb.b", offset_of!(style::GhosttyColorRgb, b)),
+        (
+            "GhosttyDeviceAttributes.primary",
+            offset_of!(terminal::GhosttyDeviceAttributes, primary),
+        ),
+        (
+            "GhosttyDeviceAttributes.secondary",
+            offset_of!(terminal::GhosttyDeviceAttributes, secondary),
+        ),
+        (
+            "GhosttyDeviceAttributes.tertiary",
+            offset_of!(terminal::GhosttyDeviceAttributes, tertiary),
+        ),
+        (
+            "GhosttyDeviceAttributesPrimary.conformance_level",
+            offset_of!(terminal::GhosttyDeviceAttributesPrimary, conformance_level),
+        ),
+        (
+            "GhosttyDeviceAttributesPrimary.features",
+            offset_of!(terminal::GhosttyDeviceAttributesPrimary, features),
+        ),
+        (
+            "GhosttyDeviceAttributesPrimary.num_features",
+            offset_of!(terminal::GhosttyDeviceAttributesPrimary, num_features),
+        ),
+        (
+            "GhosttyDeviceAttributesSecondary.device_type",
+            offset_of!(terminal::GhosttyDeviceAttributesSecondary, device_type),
+        ),
+        (
+            "GhosttyDeviceAttributesSecondary.firmware_version",
+            offset_of!(terminal::GhosttyDeviceAttributesSecondary, firmware_version),
+        ),
+        (
+            "GhosttyDeviceAttributesSecondary.rom_cartridge",
+            offset_of!(terminal::GhosttyDeviceAttributesSecondary, rom_cartridge),
+        ),
+        (
+            "GhosttyDeviceAttributesTertiary.unit_id",
+            offset_of!(terminal::GhosttyDeviceAttributesTertiary, unit_id),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo.grid_cols",
+            offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, grid_cols),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo.grid_rows",
+            offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, grid_rows),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo.pixel_height",
+            offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, pixel_height),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo.pixel_width",
+            offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, pixel_width),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo.size",
+            offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, size),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo.source_height",
+            offset_of!(
+                kitty::GhosttyKittyGraphicsPlacementRenderInfo,
+                source_height
+            ),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo.source_width",
+            offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, source_width),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo.source_x",
+            offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, source_x),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo.source_y",
+            offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, source_y),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo.viewport_col",
+            offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, viewport_col),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo.viewport_row",
+            offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, viewport_row),
+        ),
+        (
+            "GhosttyKittyGraphicsPlacementRenderInfo.viewport_visible",
+            offset_of!(
+                kitty::GhosttyKittyGraphicsPlacementRenderInfo,
+                viewport_visible
+            ),
+        ),
+        (
+            "GhosttyMouseEncoderSize.cell_height",
+            offset_of!(input::GhosttyMouseEncoderSize, cell_height),
+        ),
+        (
+            "GhosttyMouseEncoderSize.cell_width",
+            offset_of!(input::GhosttyMouseEncoderSize, cell_width),
+        ),
+        (
+            "GhosttyMouseEncoderSize.padding_bottom",
+            offset_of!(input::GhosttyMouseEncoderSize, padding_bottom),
+        ),
+        (
+            "GhosttyMouseEncoderSize.padding_left",
+            offset_of!(input::GhosttyMouseEncoderSize, padding_left),
+        ),
+        (
+            "GhosttyMouseEncoderSize.padding_right",
+            offset_of!(input::GhosttyMouseEncoderSize, padding_right),
+        ),
+        (
+            "GhosttyMouseEncoderSize.padding_top",
+            offset_of!(input::GhosttyMouseEncoderSize, padding_top),
+        ),
+        (
+            "GhosttyMouseEncoderSize.screen_height",
+            offset_of!(input::GhosttyMouseEncoderSize, screen_height),
+        ),
+        (
+            "GhosttyMouseEncoderSize.screen_width",
+            offset_of!(input::GhosttyMouseEncoderSize, screen_width),
+        ),
+        (
+            "GhosttyMouseEncoderSize.size",
+            offset_of!(input::GhosttyMouseEncoderSize, size),
+        ),
+        (
+            "GhosttyMousePosition.x",
+            offset_of!(input::GhosttyMousePosition, x),
+        ),
+        (
+            "GhosttyMousePosition.y",
+            offset_of!(input::GhosttyMousePosition, y),
+        ),
+        (
+            "GhosttyRenderStateColors.background",
+            offset_of!(render::GhosttyRenderStateColors, background),
+        ),
+        (
+            "GhosttyRenderStateColors.cursor",
+            offset_of!(render::GhosttyRenderStateColors, cursor),
+        ),
+        (
+            "GhosttyRenderStateColors.cursor_has_value",
+            offset_of!(render::GhosttyRenderStateColors, cursor_has_value),
+        ),
+        (
+            "GhosttyRenderStateColors.foreground",
+            offset_of!(render::GhosttyRenderStateColors, foreground),
+        ),
+        (
+            "GhosttyRenderStateColors.palette",
+            offset_of!(render::GhosttyRenderStateColors, palette),
+        ),
+        (
+            "GhosttyRenderStateColors.size",
+            offset_of!(render::GhosttyRenderStateColors, size),
+        ),
+        (
+            "GhosttyRenderStateCursor.blinking",
+            offset_of!(render::GhosttyRenderStateCursor, blinking),
+        ),
+        (
+            "GhosttyRenderStateCursor.password_input",
+            offset_of!(render::GhosttyRenderStateCursor, password_input),
+        ),
+        (
+            "GhosttyRenderStateCursor.size",
+            offset_of!(render::GhosttyRenderStateCursor, size),
+        ),
+        (
+            "GhosttyRenderStateCursor.viewport_has_value",
+            offset_of!(render::GhosttyRenderStateCursor, viewport_has_value),
+        ),
+        (
+            "GhosttyRenderStateCursor.viewport_x",
+            offset_of!(render::GhosttyRenderStateCursor, viewport_x),
+        ),
+        (
+            "GhosttyRenderStateCursor.viewport_y",
+            offset_of!(render::GhosttyRenderStateCursor, viewport_y),
+        ),
+        (
+            "GhosttyRenderStateCursor.visible",
+            offset_of!(render::GhosttyRenderStateCursor, visible),
+        ),
+        (
+            "GhosttyRenderStateCursor.visual_style",
+            offset_of!(render::GhosttyRenderStateCursor, visual_style),
+        ),
+        (
+            "GhosttyRenderStateCursor.wide_tail",
+            offset_of!(render::GhosttyRenderStateCursor, wide_tail),
+        ),
+        (
+            "GhosttySizeReportSize.cell_height",
+            offset_of!(terminal::GhosttySizeReportSize, cell_height),
+        ),
+        (
+            "GhosttySizeReportSize.cell_width",
+            offset_of!(terminal::GhosttySizeReportSize, cell_width),
+        ),
+        (
+            "GhosttySizeReportSize.columns",
+            offset_of!(terminal::GhosttySizeReportSize, columns),
+        ),
+        (
+            "GhosttySizeReportSize.rows",
+            offset_of!(terminal::GhosttySizeReportSize, rows),
+        ),
+        (
+            "GhosttyStyle.bg_color",
+            offset_of!(style::GhosttyStyle, bg_color),
+        ),
+        ("GhosttyStyle.blink", offset_of!(style::GhosttyStyle, blink)),
+        ("GhosttyStyle.bold", offset_of!(style::GhosttyStyle, bold)),
+        ("GhosttyStyle.faint", offset_of!(style::GhosttyStyle, faint)),
+        (
+            "GhosttyStyle.fg_color",
+            offset_of!(style::GhosttyStyle, fg_color),
+        ),
+        (
+            "GhosttyStyle.inverse",
+            offset_of!(style::GhosttyStyle, inverse),
+        ),
+        (
+            "GhosttyStyle.invisible",
+            offset_of!(style::GhosttyStyle, invisible),
+        ),
+        (
+            "GhosttyStyle.italic",
+            offset_of!(style::GhosttyStyle, italic),
+        ),
+        (
+            "GhosttyStyle.overline",
+            offset_of!(style::GhosttyStyle, overline),
+        ),
+        ("GhosttyStyle.size", offset_of!(style::GhosttyStyle, size)),
+        (
+            "GhosttyStyle.strikethrough",
+            offset_of!(style::GhosttyStyle, strikethrough),
+        ),
+        (
+            "GhosttyStyle.underline",
+            offset_of!(style::GhosttyStyle, underline),
+        ),
+        (
+            "GhosttyStyle.underline_color",
+            offset_of!(style::GhosttyStyle, underline_color),
+        ),
+        (
+            "GhosttyStyleColor.tag",
+            offset_of!(style::GhosttyStyleColor, tag),
+        ),
+        (
+            "GhosttyStyleColor.value",
+            offset_of!(style::GhosttyStyleColor, value),
+        ),
+        (
+            "GhosttyStyleColorValue._padding",
+            offset_of!(style::GhosttyStyleColorValue, _padding),
+        ),
+        (
+            "GhosttyStyleColorValue.palette",
+            offset_of!(style::GhosttyStyleColorValue, palette),
+        ),
+        (
+            "GhosttyStyleColorValue.rgb",
+            offset_of!(style::GhosttyStyleColorValue, rgb),
+        ),
+        (
+            "GhosttySysImage.data",
+            offset_of!(sys::GhosttySysImage, data),
+        ),
+        (
+            "GhosttySysImage.data_len",
+            offset_of!(sys::GhosttySysImage, data_len),
+        ),
+        (
+            "GhosttySysImage.height",
+            offset_of!(sys::GhosttySysImage, height),
+        ),
+        (
+            "GhosttySysImage.width",
+            offset_of!(sys::GhosttySysImage, width),
+        ),
+        (
+            "GhosttyTerminalModeConfig.mode",
+            offset_of!(terminal::GhosttyTerminalModeConfig, mode),
+        ),
+        (
+            "GhosttyTerminalModeConfig.value",
+            offset_of!(terminal::GhosttyTerminalModeConfig, value),
+        ),
+    ];
+
     /// Compile a C probe against the pinned headers at test time, run it, and
     /// compare `sizeof`/`offsetof` for every `#[repr(C)]` type here. This is
     /// the stronger of the two options in the task: the layout is checked
@@ -544,397 +937,21 @@ mod tests {
     #[test]
     fn struct_layouts_match_the_pinned_headers() {
         let probe = probe_output();
-        let sizes: [(&str, usize); 18] = [
-            ("GhosttyAllocator", size_of::<GhosttyAllocator>()),
-            (
-                "GhosttyAllocatorVtable",
-                size_of::<GhosttyAllocatorVtable>(),
-            ),
-            ("GhosttyColorRgb", size_of::<style::GhosttyColorRgb>()),
-            (
-                "GhosttyDeviceAttributes",
-                size_of::<terminal::GhosttyDeviceAttributes>(),
-            ),
-            (
-                "GhosttyDeviceAttributesPrimary",
-                size_of::<terminal::GhosttyDeviceAttributesPrimary>(),
-            ),
-            (
-                "GhosttyDeviceAttributesSecondary",
-                size_of::<terminal::GhosttyDeviceAttributesSecondary>(),
-            ),
-            (
-                "GhosttyDeviceAttributesTertiary",
-                size_of::<terminal::GhosttyDeviceAttributesTertiary>(),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo",
-                size_of::<kitty::GhosttyKittyGraphicsPlacementRenderInfo>(),
-            ),
-            (
-                "GhosttyMouseEncoderSize",
-                size_of::<input::GhosttyMouseEncoderSize>(),
-            ),
-            (
-                "GhosttyMousePosition",
-                size_of::<input::GhosttyMousePosition>(),
-            ),
-            (
-                "GhosttyRenderStateColors",
-                size_of::<render::GhosttyRenderStateColors>(),
-            ),
-            (
-                "GhosttyRenderStateCursor",
-                size_of::<render::GhosttyRenderStateCursor>(),
-            ),
-            (
-                "GhosttySizeReportSize",
-                size_of::<terminal::GhosttySizeReportSize>(),
-            ),
-            ("GhosttyStyle", size_of::<style::GhosttyStyle>()),
-            ("GhosttyStyleColor", size_of::<style::GhosttyStyleColor>()),
-            (
-                "GhosttyStyleColorValue",
-                size_of::<style::GhosttyStyleColorValue>(),
-            ),
-            ("GhosttySysImage", size_of::<sys::GhosttySysImage>()),
-            (
-                "GhosttyTerminalModeConfig",
-                size_of::<terminal::GhosttyTerminalModeConfig>(),
-            ),
-        ];
-        for (name, expected) in sizes {
+        for (name, expected) in LAYOUT_SIZES {
             let actual = probe[&format!("SIZE:{name}")];
-            assert_eq!(actual, expected as i64, "{name} size");
+            assert_eq!(
+                actual,
+                i64::try_from(expected).expect("layout size fits in i64"),
+                "{name} size"
+            );
         }
-
-        let offsets: [(&str, usize); 85] = [
-            ("GhosttyAllocator.ctx", offset_of!(GhosttyAllocator, ctx)),
-            (
-                "GhosttyAllocator.vtable",
-                offset_of!(GhosttyAllocator, vtable),
-            ),
-            (
-                "GhosttyAllocatorVtable.alloc",
-                offset_of!(GhosttyAllocatorVtable, alloc),
-            ),
-            (
-                "GhosttyAllocatorVtable.resize",
-                offset_of!(GhosttyAllocatorVtable, resize),
-            ),
-            (
-                "GhosttyAllocatorVtable.remap",
-                offset_of!(GhosttyAllocatorVtable, remap),
-            ),
-            (
-                "GhosttyAllocatorVtable.free",
-                offset_of!(GhosttyAllocatorVtable, free),
-            ),
-            ("GhosttyColorRgb.r", offset_of!(style::GhosttyColorRgb, r)),
-            ("GhosttyColorRgb.g", offset_of!(style::GhosttyColorRgb, g)),
-            ("GhosttyColorRgb.b", offset_of!(style::GhosttyColorRgb, b)),
-            (
-                "GhosttyDeviceAttributes.primary",
-                offset_of!(terminal::GhosttyDeviceAttributes, primary),
-            ),
-            (
-                "GhosttyDeviceAttributes.secondary",
-                offset_of!(terminal::GhosttyDeviceAttributes, secondary),
-            ),
-            (
-                "GhosttyDeviceAttributes.tertiary",
-                offset_of!(terminal::GhosttyDeviceAttributes, tertiary),
-            ),
-            (
-                "GhosttyDeviceAttributesPrimary.conformance_level",
-                offset_of!(terminal::GhosttyDeviceAttributesPrimary, conformance_level),
-            ),
-            (
-                "GhosttyDeviceAttributesPrimary.features",
-                offset_of!(terminal::GhosttyDeviceAttributesPrimary, features),
-            ),
-            (
-                "GhosttyDeviceAttributesPrimary.num_features",
-                offset_of!(terminal::GhosttyDeviceAttributesPrimary, num_features),
-            ),
-            (
-                "GhosttyDeviceAttributesSecondary.device_type",
-                offset_of!(terminal::GhosttyDeviceAttributesSecondary, device_type),
-            ),
-            (
-                "GhosttyDeviceAttributesSecondary.firmware_version",
-                offset_of!(terminal::GhosttyDeviceAttributesSecondary, firmware_version),
-            ),
-            (
-                "GhosttyDeviceAttributesSecondary.rom_cartridge",
-                offset_of!(terminal::GhosttyDeviceAttributesSecondary, rom_cartridge),
-            ),
-            (
-                "GhosttyDeviceAttributesTertiary.unit_id",
-                offset_of!(terminal::GhosttyDeviceAttributesTertiary, unit_id),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo.grid_cols",
-                offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, grid_cols),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo.grid_rows",
-                offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, grid_rows),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo.pixel_height",
-                offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, pixel_height),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo.pixel_width",
-                offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, pixel_width),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo.size",
-                offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, size),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo.source_height",
-                offset_of!(
-                    kitty::GhosttyKittyGraphicsPlacementRenderInfo,
-                    source_height
-                ),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo.source_width",
-                offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, source_width),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo.source_x",
-                offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, source_x),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo.source_y",
-                offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, source_y),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo.viewport_col",
-                offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, viewport_col),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo.viewport_row",
-                offset_of!(kitty::GhosttyKittyGraphicsPlacementRenderInfo, viewport_row),
-            ),
-            (
-                "GhosttyKittyGraphicsPlacementRenderInfo.viewport_visible",
-                offset_of!(
-                    kitty::GhosttyKittyGraphicsPlacementRenderInfo,
-                    viewport_visible
-                ),
-            ),
-            (
-                "GhosttyMouseEncoderSize.cell_height",
-                offset_of!(input::GhosttyMouseEncoderSize, cell_height),
-            ),
-            (
-                "GhosttyMouseEncoderSize.cell_width",
-                offset_of!(input::GhosttyMouseEncoderSize, cell_width),
-            ),
-            (
-                "GhosttyMouseEncoderSize.padding_bottom",
-                offset_of!(input::GhosttyMouseEncoderSize, padding_bottom),
-            ),
-            (
-                "GhosttyMouseEncoderSize.padding_left",
-                offset_of!(input::GhosttyMouseEncoderSize, padding_left),
-            ),
-            (
-                "GhosttyMouseEncoderSize.padding_right",
-                offset_of!(input::GhosttyMouseEncoderSize, padding_right),
-            ),
-            (
-                "GhosttyMouseEncoderSize.padding_top",
-                offset_of!(input::GhosttyMouseEncoderSize, padding_top),
-            ),
-            (
-                "GhosttyMouseEncoderSize.screen_height",
-                offset_of!(input::GhosttyMouseEncoderSize, screen_height),
-            ),
-            (
-                "GhosttyMouseEncoderSize.screen_width",
-                offset_of!(input::GhosttyMouseEncoderSize, screen_width),
-            ),
-            (
-                "GhosttyMouseEncoderSize.size",
-                offset_of!(input::GhosttyMouseEncoderSize, size),
-            ),
-            (
-                "GhosttyMousePosition.x",
-                offset_of!(input::GhosttyMousePosition, x),
-            ),
-            (
-                "GhosttyMousePosition.y",
-                offset_of!(input::GhosttyMousePosition, y),
-            ),
-            (
-                "GhosttyRenderStateColors.background",
-                offset_of!(render::GhosttyRenderStateColors, background),
-            ),
-            (
-                "GhosttyRenderStateColors.cursor",
-                offset_of!(render::GhosttyRenderStateColors, cursor),
-            ),
-            (
-                "GhosttyRenderStateColors.cursor_has_value",
-                offset_of!(render::GhosttyRenderStateColors, cursor_has_value),
-            ),
-            (
-                "GhosttyRenderStateColors.foreground",
-                offset_of!(render::GhosttyRenderStateColors, foreground),
-            ),
-            (
-                "GhosttyRenderStateColors.palette",
-                offset_of!(render::GhosttyRenderStateColors, palette),
-            ),
-            (
-                "GhosttyRenderStateColors.size",
-                offset_of!(render::GhosttyRenderStateColors, size),
-            ),
-            (
-                "GhosttyRenderStateCursor.blinking",
-                offset_of!(render::GhosttyRenderStateCursor, blinking),
-            ),
-            (
-                "GhosttyRenderStateCursor.password_input",
-                offset_of!(render::GhosttyRenderStateCursor, password_input),
-            ),
-            (
-                "GhosttyRenderStateCursor.size",
-                offset_of!(render::GhosttyRenderStateCursor, size),
-            ),
-            (
-                "GhosttyRenderStateCursor.viewport_has_value",
-                offset_of!(render::GhosttyRenderStateCursor, viewport_has_value),
-            ),
-            (
-                "GhosttyRenderStateCursor.viewport_x",
-                offset_of!(render::GhosttyRenderStateCursor, viewport_x),
-            ),
-            (
-                "GhosttyRenderStateCursor.viewport_y",
-                offset_of!(render::GhosttyRenderStateCursor, viewport_y),
-            ),
-            (
-                "GhosttyRenderStateCursor.visible",
-                offset_of!(render::GhosttyRenderStateCursor, visible),
-            ),
-            (
-                "GhosttyRenderStateCursor.visual_style",
-                offset_of!(render::GhosttyRenderStateCursor, visual_style),
-            ),
-            (
-                "GhosttyRenderStateCursor.wide_tail",
-                offset_of!(render::GhosttyRenderStateCursor, wide_tail),
-            ),
-            (
-                "GhosttySizeReportSize.cell_height",
-                offset_of!(terminal::GhosttySizeReportSize, cell_height),
-            ),
-            (
-                "GhosttySizeReportSize.cell_width",
-                offset_of!(terminal::GhosttySizeReportSize, cell_width),
-            ),
-            (
-                "GhosttySizeReportSize.columns",
-                offset_of!(terminal::GhosttySizeReportSize, columns),
-            ),
-            (
-                "GhosttySizeReportSize.rows",
-                offset_of!(terminal::GhosttySizeReportSize, rows),
-            ),
-            (
-                "GhosttyStyle.bg_color",
-                offset_of!(style::GhosttyStyle, bg_color),
-            ),
-            ("GhosttyStyle.blink", offset_of!(style::GhosttyStyle, blink)),
-            ("GhosttyStyle.bold", offset_of!(style::GhosttyStyle, bold)),
-            ("GhosttyStyle.faint", offset_of!(style::GhosttyStyle, faint)),
-            (
-                "GhosttyStyle.fg_color",
-                offset_of!(style::GhosttyStyle, fg_color),
-            ),
-            (
-                "GhosttyStyle.inverse",
-                offset_of!(style::GhosttyStyle, inverse),
-            ),
-            (
-                "GhosttyStyle.invisible",
-                offset_of!(style::GhosttyStyle, invisible),
-            ),
-            (
-                "GhosttyStyle.italic",
-                offset_of!(style::GhosttyStyle, italic),
-            ),
-            (
-                "GhosttyStyle.overline",
-                offset_of!(style::GhosttyStyle, overline),
-            ),
-            ("GhosttyStyle.size", offset_of!(style::GhosttyStyle, size)),
-            (
-                "GhosttyStyle.strikethrough",
-                offset_of!(style::GhosttyStyle, strikethrough),
-            ),
-            (
-                "GhosttyStyle.underline",
-                offset_of!(style::GhosttyStyle, underline),
-            ),
-            (
-                "GhosttyStyle.underline_color",
-                offset_of!(style::GhosttyStyle, underline_color),
-            ),
-            (
-                "GhosttyStyleColor.tag",
-                offset_of!(style::GhosttyStyleColor, tag),
-            ),
-            (
-                "GhosttyStyleColor.value",
-                offset_of!(style::GhosttyStyleColor, value),
-            ),
-            (
-                "GhosttyStyleColorValue._padding",
-                offset_of!(style::GhosttyStyleColorValue, _padding),
-            ),
-            (
-                "GhosttyStyleColorValue.palette",
-                offset_of!(style::GhosttyStyleColorValue, palette),
-            ),
-            (
-                "GhosttyStyleColorValue.rgb",
-                offset_of!(style::GhosttyStyleColorValue, rgb),
-            ),
-            (
-                "GhosttySysImage.data",
-                offset_of!(sys::GhosttySysImage, data),
-            ),
-            (
-                "GhosttySysImage.data_len",
-                offset_of!(sys::GhosttySysImage, data_len),
-            ),
-            (
-                "GhosttySysImage.height",
-                offset_of!(sys::GhosttySysImage, height),
-            ),
-            (
-                "GhosttySysImage.width",
-                offset_of!(sys::GhosttySysImage, width),
-            ),
-            (
-                "GhosttyTerminalModeConfig.mode",
-                offset_of!(terminal::GhosttyTerminalModeConfig, mode),
-            ),
-            (
-                "GhosttyTerminalModeConfig.value",
-                offset_of!(terminal::GhosttyTerminalModeConfig, value),
-            ),
-        ];
-        for (name, expected) in offsets {
+        for (name, expected) in LAYOUT_OFFSETS {
             let actual = probe[&format!("OFF:{name}")];
-            assert_eq!(actual, expected as i64, "{name} offset");
+            assert_eq!(
+                actual,
+                i64::try_from(expected).expect("layout offset fits in i64"),
+                "{name} offset"
+            );
         }
     }
 
@@ -948,13 +965,17 @@ mod tests {
     }
 
     fn build_probe_output() -> HashMap<String, i64> {
-        let out_dir = PathBuf::from(env!("OUT_DIR")).join("ghostty-layout-probe");
+        // Unique per test process: concurrent runners share OUT_DIR, and
+        // compiling and executing one probe path from two of them fails
+        // with ETXTBSY ("Text file busy").
+        let out_dir = PathBuf::from(env!("OUT_DIR"))
+            .join(format!("ghostty-layout-probe-{}", std::process::id()));
         std::fs::create_dir_all(&out_dir).expect("create probe dir");
         let source = out_dir.join("layout_probe.c");
         let mut id_lines = String::new();
         for (path, _) in ID_CONSTANTS {
             let name = path.rsplit("::").next().expect("a name").trim();
-            id_lines.push_str(&format!("  V({name});\n"));
+            writeln!(id_lines, "  V({name});").expect("writing to a String cannot fail");
         }
         let probe_c = LAYOUT_PROBE_C.replace("  //ID_CONSTANTS\n", &id_lines);
         std::fs::write(&source, probe_c).expect("write probe source");

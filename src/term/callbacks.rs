@@ -59,7 +59,7 @@ static SYS_USERDATA: u8 = 0;
 fn install_sys_hooks() {
     static INSTALLED: Once = Once::new();
     INSTALLED.call_once(|| {
-        let userdata = &SYS_USERDATA as *const u8 as *mut c_void;
+        let userdata = &raw const SYS_USERDATA as *mut c_void;
         // SAFETY: `ghostty_sys_set` takes the option's value directly (sys.zig
         // casts it to the option's `InType`): the stable userdata token and
         // the decode function pointer.
@@ -122,7 +122,7 @@ pub(super) fn init_ghostty(userdata: *mut c_void, cols: u16, rows: u16) -> Resul
         if ghostty_terminal_set(
             terminal,
             crate::ghostty_sys::terminal::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
-            (&storage_limit as *const u64).cast(),
+            (&raw const storage_limit).cast(),
         ) != GHOSTTY_SUCCESS
         {
             return Err(());
@@ -145,17 +145,17 @@ unsafe extern "C" fn write_pty(
         return;
     }
     // SAFETY: the caller guarantees `userdata` points at the live context.
-    let ctx = unsafe { &mut *(userdata as *mut CallbackContext) };
+    let ctx = unsafe { &mut *userdata.cast::<CallbackContext>() };
     if ctx.poisoned.is_poisoned() {
         return;
     }
     let poisoned = ctx.poisoned.clone();
     let _ = guard(&poisoned, || {
-        // SAFETY: the caller guarantees `data`/`len` describe a readable
-        // region; an empty write never touches the pointer.
         let bytes = if data.is_null() || len == 0 {
             &[][..]
         } else {
+            // SAFETY: the caller guarantees `data`/`len` describe a readable
+            // region; an empty write never touches the pointer.
             unsafe { slice::from_raw_parts(data, len) }
         };
         ctx.sink.write_pty(bytes);
@@ -188,7 +188,7 @@ unsafe extern "C" fn size_report(
             (*out).columns = ctx.cols;
             (*out).cell_width = ctx.cell_w;
             (*out).cell_height = ctx.cell_h;
-        }
+        };
         true
     })
 }
@@ -223,7 +223,7 @@ unsafe extern "C" fn device_attributes(
             (*out).secondary.firmware_version = 10;
             (*out).secondary.rom_cartridge = 0;
             (*out).tertiary.unit_id = 0;
-        }
+        };
         true
     })
 }
@@ -257,11 +257,11 @@ unsafe extern "C" fn decode_png(
     }
     let poisoned = ctx.poisoned.clone();
     guard_default(&poisoned, false, || {
-        // SAFETY: the caller guarantees `data`/`data_len` describe a readable
-        // region; an empty decode never touches the pointer.
         let bytes = if data.is_null() || data_len == 0 {
             &[][..]
         } else {
+            // SAFETY: the caller guarantees `data`/`data_len` describe a
+            // readable region; an empty decode never touches the pointer.
             unsafe { slice::from_raw_parts(data, data_len) }
         };
         let Some(image) = ctx.decoder.decode_png(bytes) else {
@@ -293,7 +293,7 @@ unsafe extern "C" fn decode_png(
             (*out).height = image.height;
             (*out).data = buffer;
             (*out).data_len = len;
-        }
+        };
         true
     })
 }
@@ -347,7 +347,7 @@ mod tests {
             crate::guard::Poisoned::new(),
             NullSink,
             OneShotDecoder {
-                calls: older_calls.clone(),
+                calls: Arc::clone(&older_calls),
                 image: Some(one_pixel()),
             },
             || {},
@@ -356,7 +356,7 @@ mod tests {
             crate::guard::Poisoned::new(),
             NullSink,
             OneShotDecoder {
-                calls: newer_calls.clone(),
+                calls: Arc::clone(&newer_calls),
                 image: Some(one_pixel()),
             },
             || {},
@@ -374,7 +374,15 @@ mod tests {
         };
         // SAFETY: `out` is writable and `data` is readable; the forwarder
         // resolves the live context itself.
-        let ok = unsafe { decode_png(ptr::null_mut(), ptr::null(), b"png".as_ptr(), 3, &mut out) };
+        let ok = unsafe {
+            decode_png(
+                ptr::null_mut(),
+                ptr::null(),
+                b"png".as_ptr(),
+                3,
+                &raw mut out,
+            )
+        };
         assert!(ok, "the surviving terminal answered the decode");
         assert_eq!((out.width, out.height), (1, 1));
         assert_eq!(older_calls.load(Ordering::Relaxed), 1);
@@ -403,7 +411,7 @@ mod tests {
             crate::guard::Poisoned::new(),
             NullSink,
             ScriptedDecoder {
-                calls: calls.clone(),
+                calls: Arc::clone(&calls),
                 images: vec![
                     // 2x2 needs 16 bytes; this buffer is padded to 17.
                     Some(DecodedPng {
@@ -429,13 +437,15 @@ mod tests {
             data: ptr::null_mut(),
             data_len: 0,
         };
+        // SAFETY: `rejected` is writable and `data` is readable; the forwarder
+        // resolves the live context itself.
         let ok = unsafe {
             decode_png(
                 ptr::null_mut(),
                 ptr::null(),
                 b"png".as_ptr(),
                 3,
-                &mut rejected,
+                &raw mut rejected,
             )
         };
         assert!(!ok, "a padded buffer is rejected");
@@ -446,13 +456,15 @@ mod tests {
             data: ptr::null_mut(),
             data_len: 0,
         };
+        // SAFETY: `accepted` is writable and `data` is readable; the forwarder
+        // resolves the live context itself.
         let ok = unsafe {
             decode_png(
                 ptr::null_mut(),
                 ptr::null(),
                 b"png".as_ptr(),
                 3,
-                &mut accepted,
+                &raw mut accepted,
             )
         };
         assert!(ok, "an exact buffer is accepted");

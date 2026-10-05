@@ -10,19 +10,19 @@ use super::{GhosttyAllocator, GhosttyResult};
 /// Opaque handle to a render state instance (`GhosttyRenderState`,
 /// render.h).
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyRenderState(pub *mut c_void);
 
 /// Opaque handle to a render-state row iterator
 /// (`GhosttyRenderStateRowIterator`, render.h).
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyRenderStateRowIterator(pub *mut c_void);
 
 /// Opaque handle to render-state row cells (`GhosttyRenderStateRowCells`,
 /// render.h).
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyRenderStateRowCells(pub *mut c_void);
 
 /// A render-state query id (`GhosttyRenderStateData`, render.h).
@@ -64,7 +64,7 @@ pub const GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW:
 /// The cursor state (`GhosttyRenderStateCursor`, render.h). A sized struct:
 /// set `size` to `size_of::<GhosttyRenderStateCursor>()` first.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyRenderStateCursor {
     pub size: usize,
     pub viewport_has_value: bool,
@@ -82,7 +82,7 @@ pub struct GhosttyRenderStateCursor {
 /// This is the other data path the rejected crate could not reach against the
 /// pin (D2): `ghostty_render_state_colors_get` was removed upstream.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GhosttyRenderStateColors {
     pub size: usize,
     pub background: GhosttyColorRgb,
