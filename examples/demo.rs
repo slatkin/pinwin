@@ -391,16 +391,86 @@ fn main() {
     }
 }
 
+/// The demo's tracked layout state: the layout actually applied — side,
+/// columns and coverage — so a later `c` flips the coverage that is really
+/// on screen even after `e`, `p` or `<enter>` re-applied a pushing layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DemoLayout {
+    side: Side,
+    cols: u16,
+    covering: bool,
+}
+
+impl DemoLayout {
+    /// The next state for one stdin command: `e`/`p` the width toggle and
+    /// `c` the cover toggle on the same side, anything else (an empty line
+    /// included) the `<enter>` side/width re-dock. Every command applies a
+    /// plain pushing layout except `c` flipping into covering, so the
+    /// coverage always tracks what the panel is actually in.
+    fn step(self, cmd: Option<char>) -> Self {
+        match cmd {
+            Some('e' | 'p') => {
+                let cols = if self.cols == DEMO_COLS {
+                    DEMO_COVER_COLS
+                } else {
+                    DEMO_COLS
+                };
+                Self {
+                    side: self.side,
+                    cols,
+                    covering: false,
+                }
+            }
+            Some('c') => {
+                let covering = !self.covering;
+                let cols = if covering { DEMO_COVER_COLS } else { DEMO_COLS };
+                Self {
+                    side: self.side,
+                    cols,
+                    covering,
+                }
+            }
+            _ => {
+                let side = match self.side {
+                    Side::Left => Side::Right,
+                    Side::Right => Side::Left,
+                };
+                let cols = if self.cols == DEMO_COLS {
+                    DEMO_COLS + 8
+                } else {
+                    DEMO_COLS
+                };
+                Self {
+                    side,
+                    cols,
+                    covering: false,
+                }
+            }
+        }
+    }
+
+    /// The layout this state applies, covering only when the state says so.
+    fn layout(self) -> Layout {
+        let layout = canned_layout(self.side, self.cols);
+        if self.covering {
+            layout.covering()
+        } else {
+            layout
+        }
+    }
+}
+
 /// The command loop after a successful start: the C demo's settle, re-dock
 /// and stdin command handling, ending with the stop (drop).
-fn run_commands(panel: Panel, mut cols: u16) {
+fn run_commands(panel: Panel, cols: u16) {
     // Let the canned layout dock, then re-dock live so the change is visible.
     std::thread::sleep(SETTLE);
-    let mut side = Side::Right;
-    apply(&panel, side, cols);
-    // The cover toggle's state, independent of the width toggles: `c` flips
-    // it and applies the matching narrow-pushing or wide-covering layout.
-    let mut covering = false;
+    let mut state = DemoLayout {
+        side: Side::Right,
+        cols,
+        covering: false,
+    };
+    apply(&panel, state.side, state.cols);
 
     println!(
         "commands, typed in THIS terminal (not in the panel):\n          \
@@ -419,56 +489,29 @@ fn run_commands(panel: Panel, mut cols: u16) {
                 // The C applied cols 0; zero columns are unrepresentable in
                 // `Layout` now (D6), so the demo's rejected layout is one the
                 // monitor cannot hold instead: the full column range.
-                let bad = canned_layout(side, u16::MAX);
+                let bad = canned_layout(state.side, u16::MAX);
                 let result = panel.apply_layout(bad);
                 println!("apply_layout(invalid) = {result:?} (want Err(InvalidLayout))");
             }
-            Some('c') => {
-                // The cover toggle (overlay-expand): the narrow size pushes
-                // and the wide size covers, so a same-side excursion moves
-                // no tiles. The panel width still tweens; the reservation
-                // holds at the narrow strip the whole way.
-                covering = !covering;
-                let (target, layout) = if covering {
-                    cols = DEMO_COVER_COLS;
-                    (
-                        DEMO_COVER_COLS,
-                        canned_layout(side, DEMO_COVER_COLS).covering(),
-                    )
-                } else {
-                    cols = DEMO_COLS;
-                    (DEMO_COLS, canned_layout(side, DEMO_COLS))
-                };
-                let result = panel.apply_layout_animated(layout, DEMO_ANIM_MS);
-                println!("cover toggle(cols={target}, covering={covering}) = {result:?}");
-            }
-            Some(kind @ ('e' | 'p')) => {
-                cols = if cols == DEMO_COLS {
-                    DEMO_COVER_COLS
-                } else {
-                    DEMO_COLS
-                };
-                let layout = canned_layout(side, cols);
-                let result = match kind {
-                    'e' => panel.apply_layout_animated(layout, DEMO_ANIM_MS),
+            cmd => {
+                state = state.step(cmd);
+                let layout = state.layout();
+                let result = match cmd {
+                    Some('e' | 'c') => panel.apply_layout_animated(layout, DEMO_ANIM_MS),
                     _ => panel.apply_layout(layout),
                 };
-                println!(
-                    "{}(cols={cols}) = {result:?}",
-                    if kind == 'e' { "animated" } else { "plain" }
-                );
-            }
-            _ => {
-                side = match side {
-                    Side::Left => Side::Right,
-                    Side::Right => Side::Left,
-                };
-                cols = if cols == DEMO_COLS {
-                    DEMO_COLS + 8
-                } else {
-                    DEMO_COLS
-                };
-                apply(&panel, side, cols);
+                match cmd {
+                    Some('e') => println!("animated(cols={}) = {result:?}", state.cols),
+                    Some('p') => println!("plain(cols={}) = {result:?}", state.cols),
+                    Some('c') => println!(
+                        "cover toggle(cols={}, covering={}) = {result:?}",
+                        state.cols, state.covering
+                    ),
+                    _ => println!(
+                        "apply_layout(side={:?}, cols={}) = {result:?}",
+                        state.side, state.cols
+                    ),
+                }
             }
         }
     }
@@ -508,6 +551,45 @@ mod tests {
         assert_eq!(wide.side(), narrow.side());
         assert_eq!(wide.left(), narrow.left());
         assert_eq!(wide.right(), narrow.right());
+    }
+
+    #[test]
+    fn the_cover_toggle_tracks_the_layout_actually_applied() {
+        // Start pushing 40, as after the re-dock.
+        let start = DemoLayout {
+            side: Side::Right,
+            cols: DEMO_COLS,
+            covering: false,
+        };
+        // `c` covers 120.
+        let state = start.step(Some('c'));
+        let layout = state.layout();
+        assert_eq!(layout.coverage(), Coverage::Cover);
+        assert_eq!(layout.cols().get(), DEMO_COVER_COLS);
+        // `e` re-applies a pushing width toggle, so the coverage is pushing
+        // now even though the cover toggle had just covered.
+        let state = state.step(Some('e'));
+        let layout = state.layout();
+        assert_eq!(layout.coverage(), Coverage::Push);
+        assert_eq!(layout.cols().get(), DEMO_COLS);
+        // `p` the same, at the wide end but still pushing.
+        let state = state.step(Some('p'));
+        let layout = state.layout();
+        assert_eq!(layout.coverage(), Coverage::Push);
+        assert_eq!(layout.cols().get(), DEMO_COVER_COLS);
+        // So this `c` flips into covering; the old desynced flag would have
+        // flipped away from a covering state that was no longer there and
+        // re-applied the same pushing layout as a visible no-op.
+        let state = state.step(Some('c'));
+        let layout = state.layout();
+        assert_eq!(layout.coverage(), Coverage::Cover);
+        assert_eq!(layout.cols().get(), DEMO_COVER_COLS);
+        // And `<enter>` re-docks pushing again.
+        let state = state.step(None);
+        let layout = state.layout();
+        assert_eq!(layout.coverage(), Coverage::Push);
+        assert_eq!(layout.cols().get(), DEMO_COLS);
+        assert_eq!(layout.side(), Side::Left);
     }
 
     #[test]
