@@ -3,8 +3,10 @@
 //! moves them, and what a frame draws. GTK-free so every decision is unit
 //! tested here, like [`crate::layout`].
 //!
-//! The state lives on the [`Surfaces`] struct as a `Cell`; these helpers are
-//! the only code that reads or writes it.
+//! The state lives on the [`Surfaces`] struct as a `Cell`; these helpers
+//! own the decisions about it — when a publish moves it and what a frame
+//! draws from it — while `Surfaces` itself only stores and fetches what
+//! they compute.
 
 use crate::layout::{Coverage, Layout, Side};
 
@@ -47,10 +49,11 @@ pub(super) fn held_gap_after_publish(held: HeldGap, layout: Layout, cell_w: i32)
     }
 }
 
-/// The strip a pushing layout reserves at its own width (`cols * cell_w`).
+/// The strip a pushing layout reserves at its own width (`cols * cell_w`),
+/// `None` where [`pushing_strip_at`] rejects the width.
 fn pushing_strip(layout: Layout, cell_w: i32) -> Option<i32> {
     let panel_px = i64::from(layout.cols().get()) * i64::from(cell_w);
-    layout.side_geometry(panel_px).ok().map(|g| g.reservation())
+    pushing_strip_at(layout, i32::try_from(panel_px).ok()?)
 }
 
 /// The gap the reserve surface draws for one frame: its side and exclusive
@@ -80,7 +83,7 @@ pub(super) fn reserve_gap(
 
 /// The strip a layout reserves at an explicit panel width, `None` on the
 /// checked-arithmetic overflow that a validated apply excludes.
-pub(super) fn pushing_strip_at(layout: Layout, panel_px: i32) -> Option<i32> {
+fn pushing_strip_at(layout: Layout, panel_px: i32) -> Option<i32> {
     layout
         .side_geometry(i64::from(panel_px))
         .ok()
