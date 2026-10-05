@@ -271,7 +271,7 @@ impl fmt::Display for InvalidLayout {
         match self {
             Self::Overflow => f.write_str("layout geometry overflows"),
             Self::NoReserve => f.write_str("layout reservation is negative"),
-            Self::NoWidth => f.write_str("layout leaves no output width"),
+            Self::NoWidth => f.write_str("layout leaves no output width beside the panel"),
             Self::NoRow => f.write_str("layout leaves no complete terminal row"),
         }
     }
