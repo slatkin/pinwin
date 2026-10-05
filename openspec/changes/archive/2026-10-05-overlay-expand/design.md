@@ -34,7 +34,9 @@ flag) rejected: it cannot express "small pushes, big covers" in one handle.
 
 ### D2: `Surfaces` holds the gap separately from the applied layout
 Store the held gap as a (side, zone px) pair updated only when a pushing layout
-publishes (or any layout switches sides); covering publishes leave it untouched.
+publishes, or on any side switch — where the side flips and the width stays at
+the last pushing width (an empty held strip stays empty); covering publishes on
+the same side leave it untouched.
 `apply_layout_surfaces` draws the visible panel from the current layout plus the
 tweened `panel_px`, and the reserve surface from the held gap. Alternatives considered:
 deriving the gap from the layout each frame (today's behavior — the bug being fixed);
@@ -45,7 +47,9 @@ risks compositor flicker; setting the zone from held state is a single commit).
 `should_animate` admits layouts differing only in columns and/or the push/cover flag
 (same side, same left/right gutters). Per frame the panel width tweens; the gap tweens
 only when the target pushes and its strip differs from the held one. Snap rules are
-unchanged: side/gutter change, zero duration, or reduced motion snaps. Rationale: this
+unchanged: side/gutter change, zero duration, or reduced motion snaps. A push/cover-flag
+difference alone never forces a snap — the existing side/gutter comparison already
+admits it. Rationale: this
 keeps one tween path with a conditional gap, rather than two animation modes.
 
 ### D4: Validation splits by choice
@@ -57,7 +61,8 @@ nothing. Rationale: a covering panel wider than the output is nonsense even thou
 reserves nothing; everything else about covering is intentionally unchecked.
 
 ### D5: Covering start holds an empty gap
-A panel started covering holds a zero strip on its side until the first pushing apply
+A panel started pushing holds its startup strip from the start. A panel started
+covering holds a zero strip on its side until the first pushing apply
 establishes it. Rationale: there is no earlier pushing width to hold; "reserve
 nothing" is the only non-jarring initial state.
 
@@ -76,3 +81,8 @@ nothing" is the only non-jarring initial state.
 - [Held-gap staleness] The held strip can outlive the layout that set it across many
   covering toggles. → Mitigation: single stored pair, updated on every pushing
   publish; unit tests pin push→cover→cover→push sequences.
+- [Covering retarget mid-tween] A covering apply that interrupts a pushing tween holds
+  the gap at the held strip from that pushing publish while the panel retargets from
+  its live width, so one frame may shift tiles a single step. → Mitigation: specified
+  behavior — every scenario starts from a settled gap; the window is one tween
+  duration and the next push re-syncs.
