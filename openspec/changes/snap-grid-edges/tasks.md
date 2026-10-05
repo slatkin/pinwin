@@ -17,9 +17,9 @@
 
 ## 4. Docked-edge offset and seam test
 
-- [ ] 4.1 Make `Surfaces::draw_offset()` return the snapped offset (design D7). Change `draw_offset` from `i32` to `f64` in `DrawState::draw`, `DrawState::snapshot_grid` and the two hooks in `src/panel/gtk_side.rs`. Update the test call sites that pass an integer offset. Make sure that the existing `anim` tests pass unchanged and that `cargo test` passes.
-- [ ] 4.2 Make sure that the input controllers read the snapped offset through `Surfaces::draw_offset()` and that nothing casts it to an integer. Search `src/` for `draw_offset() as` and make sure that no match remains.
-- [ ] 4.3 Add one seam test in `src/render/snapshot.rs` at scales 1.25 and 1.5. It renders two regions with a docked-edge offset: a row of full blocks, and a right-half block beside a left-half block of the same colour. Use an odd logical offset such as 135 and snap it with `OutputScale` first. The real snap runs in `Surfaces::draw_offset()`, which this test does not call. Make sure that every pixel in each region has the same colour. This test covers the spec scenarios for seams and half blocks. The exact parity test in 3.1 covers the uniform background field. Task 5.2 covers the snapped offset during a width animation.
+- [x] 4.1 Make `Surfaces::draw_offset()` return the snapped offset (design D7). Change `draw_offset` from `i32` to `f64` in `DrawState::draw`, `DrawState::snapshot_grid` and the two hooks in `src/panel/gtk_side.rs`. Update the test call sites that pass an integer offset. Make sure that the existing `anim` tests pass unchanged and that `cargo test` passes.
+- [x] 4.2 Make sure that the input controllers read the snapped offset through `Surfaces::draw_offset()` and that nothing casts it to an integer. Search `src/` for `draw_offset() as` and make sure that no match remains.
+- [x] 4.3 Add one seam test in `src/render/snapshot.rs` at scales 1.25 and 1.5. It renders two regions with a docked-edge offset: a row of full blocks, and a right-half block beside a left-half block of the same colour. Use an odd logical offset such as 135 and snap it with `OutputScale` first. The real snap runs in `Surfaces::draw_offset()`, which this test does not call. Make sure that every pixel in each region has the same colour. This test covers the spec scenarios for seams and half blocks. The exact parity test in 3.1 covers the uniform background field. Task 5.2 covers the snapped offset during a width animation.
 
 ## 5. Documentation and acceptance
 
