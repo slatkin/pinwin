@@ -23,7 +23,7 @@
 
 ## 5. Documentation and acceptance
 
-- [ ] 5.1 Update `README.md` with the GTK version note: the 4.12 API floor, and 4.14 for fractional scale with the default renderer. Update the render file list in `AGENTS.md` for `snap.rs`. Make sure that `git diff` shows only these changes.
+- [x] 5.1 Update `README.md` with the GTK version note: the 4.12 API floor, and 4.14 for fractional scale with the default renderer. Update the render file list in `AGENTS.md` for `snap.rs`. Make sure that `git diff` shows only these changes.
 - [ ] 5.2 Final acceptance. Run `cargo run --example demo` with `DEMO_DENSE=1` on an output at scale 1.25, 1.5 and 2. Repeat with `GSK_RENDERER` set to `ngl`, `vulkan` and `cairo`. Make sure with a screenshot that no seam is visible in a field of one colour and in a field of block glyphs. Run a width animation on a right-docked panel and make sure that no seam appears. If a second output with a different scale exists, move the panel to it and make sure that the grid redraws without a seam. If a seam shows only in frames with a docked-edge offset, the grid origin is off the device pixel lattice (design D7). Stop and report it to the user instead of adding a workaround.
 - [ ] 5.3 Run `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` and `openspec validate snap-grid-edges --strict`. Make sure that all four pass.
 - [ ] 5.4 Sync the delta into `openspec/specs/pinwin-panel/spec.md` and archive the change.
