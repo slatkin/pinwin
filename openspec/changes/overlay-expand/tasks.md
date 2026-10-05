@@ -14,9 +14,9 @@
 
 ## 3. API docs and demo exercise
 
-- [ ] 3.1 Document the per-size choice on the `Panel` apply methods in `src/panel/mod.rs` and verify `cargo doc --no-deps` builds without warnings.
-- [ ] 3.2 Add a demo cover toggle (pushing narrow vs covering wide) in `examples/demo.rs` and verify `cargo build --examples` succeeds.
-- [ ] 3.3 Update `README.md` Behaviour (push vs cover, same-side stillness, side-switch moves) and verify the documented demo toggle runs as written.
+- [x] 3.1 Document the per-size choice on the `Panel` apply methods in `src/panel/mod.rs` and verify `cargo doc --no-deps` builds without warnings.
+- [x] 3.2 Add a demo cover toggle (pushing narrow vs covering wide) in `examples/demo.rs` and verify `cargo build --examples` succeeds.
+- [x] 3.3 Update `README.md` Behaviour (push vs cover, same-side stillness, side-switch moves) and verify the documented demo toggle runs as written.
 
 ## 4. Integration checks
 
