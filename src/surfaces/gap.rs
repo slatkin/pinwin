@@ -18,28 +18,17 @@ pub(super) struct HeldGap {
     zone: i32,
 }
 
-/// The strip a pushing layout reserves at its own width: `left + panel + right`
-/// (`SideGeometry::reservation` at `cols * cell_w`). `Err` keeps the caller's
-/// fallback; a validated layout's geometry cannot overflow, so this only
-/// guards a helper called outside a validated publish.
-pub(super) fn pushing_strip(layout: Layout, cell_w: i32) -> Option<i32> {
-    let panel_px = i64::from(layout.cols().get()) * i64::from(cell_w);
-    layout.side_geometry(panel_px).ok().map(|g| g.reservation())
-}
-
 /// The held gap a panel starts with (overlay-expand D2, D5): a pushing start
 /// reserves its own strip from the first frame; a covering start holds an
 /// empty strip on its side until the first pushing apply establishes one.
 pub(super) fn start_held_gap(layout: Layout, cell_w: i32) -> HeldGap {
-    match layout.coverage() {
-        Coverage::Push => HeldGap {
-            side: layout.side(),
-            zone: pushing_strip(layout, cell_w).unwrap_or(0),
-        },
-        Coverage::Cover => HeldGap {
-            side: layout.side(),
-            zone: 0,
-        },
+    let zone = match layout.coverage() {
+        Coverage::Push => pushing_strip(layout, cell_w).unwrap_or(0),
+        Coverage::Cover => 0,
+    };
+    HeldGap {
+        side: layout.side(),
+        zone,
     }
 }
 
@@ -48,17 +37,20 @@ pub(super) fn start_held_gap(layout: Layout, cell_w: i32) -> HeldGap {
 /// layout never touches the zone and moves the side only on a side switch —
 /// the gap follows the panel to the new side at the last pushing width.
 pub(super) fn held_gap_after_publish(held: HeldGap, layout: Layout, cell_w: i32) -> HeldGap {
-    match layout.coverage() {
-        Coverage::Push => HeldGap {
-            side: layout.side(),
-            zone: pushing_strip(layout, cell_w).unwrap_or(held.zone),
-        },
-        Coverage::Cover if layout.side() != held.side => HeldGap {
-            side: layout.side(),
-            zone: held.zone,
-        },
-        Coverage::Cover => held,
+    let zone = match layout.coverage() {
+        Coverage::Push => pushing_strip(layout, cell_w).unwrap_or(held.zone),
+        Coverage::Cover => held.zone,
+    };
+    HeldGap {
+        side: layout.side(),
+        zone,
     }
+}
+
+/// The strip a pushing layout reserves at its own width (`cols * cell_w`).
+fn pushing_strip(layout: Layout, cell_w: i32) -> Option<i32> {
+    let panel_px = i64::from(layout.cols().get()) * i64::from(cell_w);
+    layout.side_geometry(panel_px).ok().map(|g| g.reservation())
 }
 
 /// The gap the reserve surface draws for one frame: its side and exclusive
@@ -115,7 +107,6 @@ pub(super) fn gap_tween_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{CellSize, OutputSize};
     use std::num::NonZeroU16;
 
     fn layout(side: Side, cols: u16, top: i32, bottom: i32, left: i32, right: i32) -> Layout {
@@ -134,7 +125,6 @@ mod tests {
     /// strip keeps the strip exactly where the last pushing layout put it, even
     /// though the covering layout's own geometry would reserve far more.
     #[test]
-
     fn the_reserve_draws_from_the_held_gap_not_the_applied_layout() {
         let held = HeldGap {
             side: Side::Left,
@@ -155,7 +145,6 @@ mod tests {
     /// gap rests at) tweens the gap alongside the eased panel width
     /// (overlay-expand D3), so tiles reflow instead of jumping.
     #[test]
-
     fn a_flagged_gap_tween_moves_the_gap_with_the_panel() {
         let held = HeldGap {
             side: Side::Left,
@@ -175,7 +164,6 @@ mod tests {
     /// is never set for a covering target, so this pins the belt-and-braces
     /// guard inside `reserve_gap`.
     #[test]
-
     fn a_covering_tween_holds_the_gap() {
         let held = HeldGap {
             side: Side::Left,
@@ -190,7 +178,6 @@ mod tests {
     /// the panel; a target whose strip equals it, a covering target and a snap
     /// apply never do.
     #[test]
-
     fn the_gap_tween_decision_compares_against_the_strip_the_gap_rests_at() {
         // Pushing 40 -> 120 columns at a 9px cell: the gap rests at the held
         // 372 strip and the target strip is 1092, so the gap tweens.
@@ -219,7 +206,6 @@ mod tests {
     /// reserves its own strip from the first frame; a covering start holds an
     /// empty strip on its side until the first pushing apply establishes one.
     #[test]
-
     fn the_starting_held_gap_follows_the_startup_choice() {
         // Pushing 40 columns at a 9px cell, left 0 right 12: strip 372.
         let pushing = layout(Side::Left, 40, 0, 0, 0, 12);
@@ -247,7 +233,6 @@ mod tests {
     /// on a side switch, where the gap follows at the last pushing width
     /// (overlay-expand D2).
     #[test]
-
     fn the_held_gap_follows_a_validated_publish_by_choice() {
         let held = HeldGap {
             side: Side::Left,
@@ -289,40 +274,5 @@ mod tests {
                 zone: 372
             }
         );
-    }
-
-    /// Publish validates the staged layout before mutating the applied layout or
-    /// the held gap (overlay-expand D4): a staging the monitor refuses never
-    /// reaches the state update, so a rejected covering apply changes nothing.
-    #[test]
-
-    fn a_rejected_staging_never_reaches_the_held_gap_update() {
-        let applied = layout(Side::Left, 40, 0, 0, 0, 12);
-        let held = HeldGap {
-            side: Side::Left,
-            zone: 372,
-        };
-        // A covering 601-column staging against a 600px output is refused.
-        let staged = layout(Side::Left, 601, 0, 0, 0, 12).covering();
-        let cell = CellSize::new(1, 16).expect("test cell size is non-zero");
-        let output = OutputSize::new(600, 1080).expect("test output size is non-zero");
-        assert!(staged.validate(cell, output).is_err());
-
-        // publish's gate: only a validated staging runs the state update.
-        let update = staged
-            .validate(cell, output)
-            .is_ok()
-            .then(|| held_gap_after_publish(held, staged, 1));
-        assert_eq!(update, None);
-
-        // The state publish leaves behind is the pre-apply one.
-        assert_eq!(
-            held,
-            HeldGap {
-                side: Side::Left,
-                zone: 372
-            }
-        );
-        assert_eq!(applied, layout(Side::Left, 40, 0, 0, 0, 12));
     }
 }

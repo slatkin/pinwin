@@ -408,44 +408,36 @@ impl DemoLayout {
     /// plain pushing layout except `c` flipping into covering, so the
     /// coverage always tracks what the panel is actually in.
     fn step(self, cmd: Option<char>) -> Self {
-        match cmd {
-            Some('e' | 'p') => {
-                let cols = if self.cols == DEMO_COLS {
-                    DEMO_COVER_COLS
-                } else {
-                    DEMO_COLS
-                };
-                Self {
-                    side: self.side,
-                    cols,
-                    covering: false,
-                }
+        let toggled = |wide| {
+            if self.cols == DEMO_COLS {
+                wide
+            } else {
+                DEMO_COLS
             }
+        };
+        match cmd {
+            Some('e' | 'p') => Self {
+                cols: toggled(DEMO_COVER_COLS),
+                covering: false,
+                ..self
+            },
             Some('c') => {
                 let covering = !self.covering;
                 let cols = if covering { DEMO_COVER_COLS } else { DEMO_COLS };
                 Self {
-                    side: self.side,
                     cols,
                     covering,
+                    ..self
                 }
             }
-            _ => {
-                let side = match self.side {
+            _ => Self {
+                side: match self.side {
                     Side::Left => Side::Right,
                     Side::Right => Side::Left,
-                };
-                let cols = if self.cols == DEMO_COLS {
-                    DEMO_COLS + 8
-                } else {
-                    DEMO_COLS
-                };
-                Self {
-                    side,
-                    cols,
-                    covering: false,
-                }
-            }
+                },
+                cols: toggled(DEMO_COLS + 8),
+                covering: false,
+            },
         }
     }
 
@@ -496,22 +488,28 @@ fn run_commands(panel: Panel, cols: u16) {
             cmd => {
                 state = state.step(cmd);
                 let layout = state.layout();
-                let result = match cmd {
-                    Some('e' | 'c') => panel.apply_layout_animated(layout, DEMO_ANIM_MS),
-                    _ => panel.apply_layout(layout),
+                let (label, result) = match cmd {
+                    Some('e') => (
+                        format!("animated(cols={})", state.cols),
+                        panel.apply_layout_animated(layout, DEMO_ANIM_MS),
+                    ),
+                    Some('p') => (
+                        format!("plain(cols={})", state.cols),
+                        panel.apply_layout(layout),
+                    ),
+                    Some('c') => (
+                        format!(
+                            "cover toggle(cols={}, covering={})",
+                            state.cols, state.covering
+                        ),
+                        panel.apply_layout_animated(layout, DEMO_ANIM_MS),
+                    ),
+                    _ => (
+                        format!("apply_layout(side={:?}, cols={})", state.side, state.cols),
+                        panel.apply_layout(layout),
+                    ),
                 };
-                match cmd {
-                    Some('e') => println!("animated(cols={}) = {result:?}", state.cols),
-                    Some('p') => println!("plain(cols={}) = {result:?}", state.cols),
-                    Some('c') => println!(
-                        "cover toggle(cols={}, covering={}) = {result:?}",
-                        state.cols, state.covering
-                    ),
-                    _ => println!(
-                        "apply_layout(side={:?}, cols={}) = {result:?}",
-                        state.side, state.cols
-                    ),
-                }
+                println!("{label} = {result:?}");
             }
         }
     }

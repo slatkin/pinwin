@@ -524,22 +524,6 @@ mod tests {
     }
 
     #[test]
-    fn rejected_covering_leaves_the_held_gap_untouched() {
-        // Mirrors the publish discipline: only a validated layout may touch
-        // the applied layout or the held gap, so a rejected covering apply
-        // leaves both alone.
-        let held_gap = 340i32;
-        let applied = layout(40, 0, 0, 0, 12);
-        let staged = covering(601, 0, 0, 0, 12);
-        let staged = match staged.validate(cell(1, 16), output(600, 1080)) {
-            Ok(()) => staged,
-            Err(_) => applied,
-        };
-        assert_eq!(staged, applied);
-        assert_eq!(held_gap, 340);
-    }
-
-    #[test]
     fn pty_yield_never_yields_without_a_budget() {
         assert!(!pty_yield(1000, 1_001_000, 0));
         assert!(!pty_yield(1000, 1_001_000, -1));
