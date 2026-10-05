@@ -31,7 +31,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::guard::{Poisoned, guard, guard_always};
+use crate::guard::{Poisoned, guard, guard_always, guard_default};
 use crate::input::InputLinks;
 use crate::layout::Layout;
 use crate::pty::Pty;
@@ -341,7 +341,7 @@ fn build_glue(
             move || {
                 // The terminal produced output (the host's post-resize
                 // repaint, or any other bytes): the stale pre-resize grid is
-                // done drawing (gsk-render-nodes C52), and the frame asks
+                // done drawing (gsk-render-nodes design, Post-task decisions: C52), and the frame asks
                 // for a redraw as before.
                 link.with(|surfaces| surfaces.note_terminal_output());
             }
@@ -404,13 +404,21 @@ fn build_glue(
         },
         live_grid_px: {
             let terminal = terminal.clone();
+            let poisoned = poisoned.clone();
             let link = link.clone();
             Rc::new(move || {
                 // The terminal's current grid, not the applied cols: a tween
                 // defers the grid resize to its end, so mid-tween the two
-                // differ and the draw shift must follow the terminal.
-                link.with(|surfaces| i32::from(terminal.borrow().cols()) * surfaces.cell_w())
-                    .unwrap_or(0)
+                // differ and the draw shift must follow the terminal. The
+                // borrow runs under the D5 guard like the other terminal
+                // relays; a latched or panicked hook reports no live grid,
+                // which glues the shift to zero.
+                link.with(|surfaces| {
+                    guard_default(&poisoned, 0, || {
+                        i32::from(terminal.borrow().cols()) * surfaces.cell_w()
+                    })
+                })
+                .unwrap_or(0)
             })
         },
     };
@@ -472,7 +480,7 @@ fn draw_hook(
 }
 
 /// The first paint's monitor resolution (`g_layout_latch`), shared by the
-/// cairo draw hook and the GSK snapshot hook (gsk-render-nodes C5): a
+/// cairo draw hook and the GSK snapshot hook (gsk-render-nodes design, Post-task decisions: C5): a
 /// snapshot frame bypasses the draw func entirely, so the snapshot hook must
 /// consume the same one-shot before emitting — otherwise the start handshake
 /// never completes, `Panel::start` blocks in `wait_for_start` forever and
@@ -498,7 +506,8 @@ fn resolve_first_draw_monitor(link: &SurfacesLink) {
 /// state here just as [`draw_hook`] does, since a snapshot frame bypasses
 /// the draw func. The first frame after map also resolves the layout
 /// monitor through the same shared one-shot as [`draw_hook`] (gsk-render-nodes
-/// C5), before the emission, or the start handshake never completes. A panic
+/// design, Post-task decisions: C5), before the emission, or the start
+/// handshake never completes. A panic
 /// here latches the shared flag (D5) and falls back the same way.
 fn grid_snapshot_hook(
     link: SurfacesLink,
@@ -608,7 +617,7 @@ fn apply_size_to(
             // leftmost columns until the host repaints (the vt does not
             // rewrap): keep that content glued to the docked edge until the
             // terminal produces output for the new width (gsk-render-nodes
-            // C52).
+            // design, Post-task decisions: C52).
             if cols > i32::from(previous_cols) {
                 surfaces.note_grid_widened(i32::from(previous_cols) * surfaces.cell_w());
             }

@@ -81,7 +81,7 @@ impl DrawState {
     /// `height` are the widget's logical size, the same coordinates
     /// [`DrawState::draw`] paints. Split from [`Self::emit_backgrounds`] so
     /// a frame can paint the background unshifted and still emit the grid
-    /// itself translated to the docked edge (gsk-render-nodes C52).
+    /// itself translated to the docked edge (gsk-render-nodes design, Post-task decisions: C52).
     pub fn emit_theme_background(&self, snapshot: &gtk4::Snapshot, width: i32, height: i32) {
         snapshot.append_color(
             &rgba(&self.theme_background),
@@ -95,8 +95,8 @@ impl DrawState {
     ///
     /// Reports whether nodes were emitted. `false` — no live frame — asks
     /// the caller to fall back to the cairo draw path, which paints the same
-    /// thing; a draw before the first `cell_metrics_update` has no grid pass
-    /// (render P2 in `draw_inner`), so it reports `true` with no cells.
+    /// thing; a draw before the first `cell_metrics_update` has no grid
+    /// pass, so it reports `true` with no cells.
     pub fn emit_cell_backgrounds(
         &self,
         snapshot: &gtk4::Snapshot,
@@ -131,9 +131,8 @@ impl DrawState {
     ///
     /// Reports whether nodes were emitted. `false` — no live frame — asks
     /// the caller to fall back to the cairo draw path, which paints the same
-    /// thing; a draw before the first `cell_metrics_update` has no grid pass
-    /// (render P2 in `draw_inner`), so it emits the theme background only
-    /// and still reports `true`.
+    /// thing; a draw before the first `cell_metrics_update` has no grid
+    /// pass, so it emits the theme background only and still reports `true`.
     pub fn emit_backgrounds(
         &self,
         snapshot: &gtk4::Snapshot,

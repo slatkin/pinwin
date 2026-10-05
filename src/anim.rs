@@ -263,7 +263,7 @@ impl Anim {
     /// is the terminal's LIVE grid width — its current cols times the cell
     /// width.
     ///
-    /// The shift is not tied to a running tween (gsk-render-nodes C52): the
+    /// The shift is not tied to a running tween (gsk-render-nodes design, Post-task decisions: C52): the
     /// terminal's grid resize lags the applied width at every transient the
     /// glue drives — while a width tween runs (the resize is deferred to the
     /// tween's end), and in the frames around a tween's stop or a snap apply
@@ -505,7 +505,7 @@ mod tests {
     /// An idle tween reports the applied width, and its draw offset follows
     /// the live grid even with no tween running: the offset is a property of
     /// the surface's width versus the terminal's live grid, not of the tween
-    /// (gsk-render-nodes C52) — the frames around a tween's stop, where the
+    /// (gsk-render-nodes design, Post-task decisions: C52) — the frames around a tween's stop, where the
     /// resize has not landed yet, must keep the grid glued to the docked
     /// edge too.
     #[test]
@@ -526,7 +526,7 @@ mod tests {
 
     /// The offset survives the tween's stop: after the tween is gone, a live
     /// grid still narrower than the surface draws glued to the docked edge,
-    /// not at the widget's left edge (gsk-render-nodes C52).
+    /// not at the widget's left edge (gsk-render-nodes design, Post-task decisions: C52).
     #[test]
     fn the_offset_glues_the_grid_after_the_tween_stops() {
         let recording = Recording::new();

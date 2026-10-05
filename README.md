@@ -163,8 +163,9 @@ Only the binary reads these; the library reads no pinwin-owned configuration.
 `pinwin-gtk` thread (spawned once, parked between panels) and the start
 handshake and apply replies; `src/layout.rs` is the GTK-free geometry core;
 `src/term/` wraps the pinned libghostty-vt terminal and its cells, keys and
-input encoders; `src/render/` paints frames, the tween frame cache, the focus
-accent and kitty image surfaces; `src/surfaces/` builds the layer-shell panel
+input encoders; `src/render/` paints frames through the GSK render-node
+snapshot path with a cairo fallback, plus the focus accent and kitty image
+surfaces; `src/surfaces/` builds the layer-shell panel
 and reservation surfaces; `src/input/` wires the GDK controllers;
 `src/anim.rs` eases the width; `src/pty.rs` drives the host-supplied fd;
 `src/fontconfig.rs` reads the Ghostty font and theme; `src/nerd_font.rs` is a

@@ -220,7 +220,7 @@ pub struct Surfaces {
     deferred_grid: Cell<bool>,
     /// The pixel width of the terminal grid whose content is still on screen
     /// after a column-widening resize, before the host's first output for the
-    /// new width (gsk-render-nodes C52). libghostty-vt's resize does not
+    /// new width (gsk-render-nodes design, Post-task decisions: C52). libghostty-vt's resize does not
     /// rewrap the active screen, so right after the resize the terminal's own
     /// content sits in the leftmost columns of the new, wider grid — drawing
     /// it unshifted would park it at the widget's left edge, opposite the
@@ -245,7 +245,7 @@ pub struct Surfaces {
 /// still open. Split out so the gate is unit testable without a display.
 /// There is no waiting-for-the-tween case any more: the gate runs at the
 /// stop itself, synchronously, so the resized grid is on screen with the
-/// tween's final frame (gsk-render-nodes C52).
+/// tween's final frame (gsk-render-nodes design, Post-task decisions: C52).
 fn deferred_grid_at_stop(pending: bool, closed: bool) -> bool {
     pending && !closed
 }
@@ -254,7 +254,7 @@ fn deferred_grid_at_stop(pending: bool, closed: bool) -> bool {
 /// while its content is still on screen after a widening resize, else the
 /// terminal's live grid. The draw shift keys against this so the stale
 /// content stays glued to the docked edge instead of parking at the widget's
-/// left edge opposite the docked side (gsk-render-nodes C52). Split out so
+/// left edge opposite the docked side (gsk-render-nodes design, Post-task decisions: C52). Split out so
 /// the selection is unit testable without a display.
 fn drawn_grid_px(live_grid_px: i32, stale_grid_px: i32) -> i32 {
     if stale_grid_px > 0 {
@@ -416,7 +416,7 @@ impl Surfaces {
     /// resize's stale content is still there — the pre-resize grid the
     /// terminal still shows in its leftmost columns. The shift keeps that
     /// grid glued to the docked edge whenever it does not fill the widget,
-    /// tween or not (gsk-render-nodes C52).
+    /// tween or not (gsk-render-nodes design, Post-task decisions: C52).
     pub fn draw_offset(&self) -> f64 {
         let width = if self.closed.get() {
             None
@@ -441,7 +441,7 @@ impl Surfaces {
     /// Record that a resize widened the terminal grid from `previous_cols_px`:
     /// the content the host drew for the old width is still on screen (the
     /// vt does not rewrap), so draws keep it glued to the docked edge until
-    /// the host produces output for the new width (gsk-render-nodes C52).
+    /// the host produces output for the new width (gsk-render-nodes design, Post-task decisions: C52).
     /// The content occupies the narrowest grid since the last host output —
     /// a widening after a widening without any output in between keeps the
     /// narrower of the two stale widths.
@@ -552,7 +552,7 @@ impl Surfaces {
     /// see the resized grid, or a right-docked panel paints its old, narrower
     /// grid at offset 0 against the wider widget and the gap on the docked
     /// side stays on screen until the next damage-driven frame
-    /// (gsk-render-nodes C52). The vt reflow cost lands inside the tween's
+    /// (gsk-render-nodes design, Post-task decisions: C52). The vt reflow cost lands inside the tween's
     /// last frame instead of after it; the tween is over, so nothing animates
     /// behind the block.
     fn on_tween_stopped(&self) {

@@ -56,7 +56,7 @@ impl DrawState {
     /// (`glue_anim_draw_offset`): nonzero whenever the terminal's live grid
     /// does not fill the widget on a right-docked panel — during a tween and
     /// in the frames around its stop before the deferred resize lands
-    /// (gsk-render-nodes C52) — and both arms translate by it.
+    /// (gsk-render-nodes design, Post-task decisions: C52) — and both arms translate by it.
     pub fn snapshot_grid(
         &mut self,
         snapshot: &gtk4::Snapshot,
@@ -87,7 +87,7 @@ impl DrawState {
             // sits; the grid contents are emitted translated to the docked
             // edge whenever the live grid does not fill the widget — the
             // frames around a tween's stop or a snap apply before the
-            // terminal's resize lands (gsk-render-nodes C52). At offset zero
+            // terminal's resize lands (gsk-render-nodes design, Post-task decisions: C52). At offset zero
             // the translate is skipped so the common frame stays flat.
             snapshot.append_color(&rgba(&self.theme_background), &bounds);
             if draw_offset != 0 {
@@ -178,7 +178,7 @@ impl DrawState {
     /// fill), cells and cursor, kitty images — without the theme background.
     /// The caller owns the background and the translate: the non-tween frame
     /// emits these shifted to the docked edge whenever the live grid does not
-    /// fill the widget (gsk-render-nodes C52), the retained tween node builds
+    /// fill the widget (gsk-render-nodes design, Post-task decisions: C52), the retained tween node builds
     /// them at the build-time width. `false` — no fonts or metrics yet, or no
     /// live frame — asks the caller to fall back to the cairo draw path.
     fn emit_grid_contents(
@@ -303,7 +303,7 @@ mod tests {
     }
 
     /// A non-tween frame whose live grid does not fill the widget emits the
-    /// grid translated to the docked edge (gsk-render-nodes C52): the frames
+    /// grid translated to the docked edge (gsk-render-nodes design, Post-task decisions: C52): the frames
     /// around a tween's stop, where the deferred resize has not landed yet,
     /// must not draw the old grid at the widget's left edge against a wider
     /// right-docked panel. The exposed region left of the shifted grid is
@@ -456,7 +456,7 @@ mod tests {
 
     /// A frame before the first `cell_metrics_update` has no fonts and a
     /// zero cell pitch: node emission reports `false` — tween and non-tween
-    /// alike — and the cairo draw path draws the frame instead (render P2).
+    /// alike — and the cairo draw path draws the frame instead.
     #[test]
     fn a_frame_before_the_metrics_exist_falls_back_to_the_cairo_path() {
         let _font = font_lock::guard();

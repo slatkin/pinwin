@@ -20,7 +20,7 @@ use crate::term::cells::{Cell, Cursor, CursorStyle, StyleFlags};
 /// horizontal centre line — the stroke covers exactly the band, so the
 /// two painters share these numbers. `None` when the flag is unset; the
 /// split (instead of a shared list) keeps the per-cell pass
-/// allocation-free (gsk-render-nodes U3 review).
+/// allocation-free.
 pub(crate) fn underline_rect(
     cell: &Cell,
     cell_metrics: &CellMetrics,

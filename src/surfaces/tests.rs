@@ -131,7 +131,7 @@ fn keyboard_modes_map_one_to_one() {
 /// once, and a closed panel never applies — there is no idle and no
 /// waiting-for-the-tween step any more, so the resized grid is on screen
 /// with the tween's final frame instead of a frame later
-/// (gsk-render-nodes C52).
+/// (gsk-render-nodes design, Post-task decisions: C52).
 #[test]
 fn the_deferred_grid_applies_at_the_stop_itself() {
     // A pending resize on a live panel: apply.
@@ -148,7 +148,7 @@ fn the_deferred_grid_applies_at_the_stop_itself() {
 /// is the narrower pre-resize grid — the shift then keeps it glued to the
 /// docked edge instead of parking it at the widget's left edge opposite the
 /// docked side; once the terminal has produced output for the new width, the
-/// live grid takes over (gsk-render-nodes C52).
+/// live grid takes over (gsk-render-nodes design, Post-task decisions: C52).
 #[test]
 fn the_draw_shift_keys_against_the_stale_grid_until_terminal_output() {
     // Live grid 120 cols (1080px at a 9px cell), stale pre-resize content

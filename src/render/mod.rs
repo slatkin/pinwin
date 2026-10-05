@@ -1,8 +1,7 @@
 //! The render row (port-to-rust D3): how pinwin draws a frame — cairo and
 //! pangocairo painting of the terminal's cells, the sprite ranges drawn as
-//! graphics, the cursor, the focus accent and the tween frame cache, plus the
-//! kitty image surfaces (`src/render.c` and `src/images.c`, designs D4/D5
-//! there).
+//! graphics, the cursor, the focus accent and the kitty image surfaces
+//! (`src/render.c` and `src/images.c`, designs D4/D5 there).
 //!
 //! The draw state lives in the private [`DrawState`]; the frame data comes
 //! from the [`Terminal`] frame API (`frame_begin`/`cell_next`/`cursor`/
@@ -52,8 +51,8 @@ use text::FontsRef;
 use gtk4::gsk;
 
 /// One frame's draw state (`g_font*`, `g_cell_*`, `g_nerd_*`, `g_theme_*`,
-/// `g_accent`, `g_focused`, the tween frame cache and the image cache in the
-/// C glue). Everything here lives on the GTK thread only.
+/// `g_accent`, `g_focused`, the retained tween grid node and the image cache
+/// in the C glue). Everything here lives on the GTK thread only.
 pub struct DrawState {
     theme_background: Rgb,
     theme_foreground: Rgb,
@@ -196,7 +195,7 @@ impl DrawState {
         // metrics update runs from the widget's pango context before the first
         // draw (glue.c `on_activate`), so this is the never-expected state;
         // degraded (no metrics yet) draws keep the background and the accent
-        // and stop there instead of panicking or poisoning (render P2).
+        // and stop there instead of panicking or poisoning.
         if self.fonts.is_none() || self.cell_metrics.cell_h <= 0 {
             self.draw_focus_accent(cr, width, height);
             return;
