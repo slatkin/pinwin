@@ -400,7 +400,7 @@ impl Surfaces {
 
     /// Attach the input controllers (`attach_controllers`). Call once after
     /// [`Surfaces::build`], with the links the panel composed.
-    pub fn attach_input(&self, links: input::InputLinks) {
+    pub fn attach_input(&self, links: &input::InputLinks) {
         input::attach(self.area.upcast_ref(), links);
     }
 

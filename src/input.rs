@@ -46,9 +46,19 @@ pub struct InputLinks {
     pub poisoned: Poisoned,
 }
 
+impl std::fmt::Debug for InputLinks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InputLinks")
+            .field("focused", &self.focused)
+            .field("poisoned", &self.poisoned)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Translate GDK modifier state into the encoder's modifier bits
 /// (`mods_from_gdk`). Everything GDK can report beyond these five is ignored,
 /// exactly like the C.
+#[must_use]
 pub fn mods_from_gdk(state: gdk::ModifierType) -> Modifiers {
     let mut mods = Modifiers::NONE;
     if state.contains(gdk::ModifierType::SHIFT_MASK) {
@@ -71,6 +81,7 @@ pub fn mods_from_gdk(state: gdk::ModifierType) -> Modifiers {
 
 /// Translate a GDK button number into the encoder's button (`pinwin_button_from_gdk`).
 /// Anything unrecognised — including the button-less 0 — is [`MouseButton::Unknown`].
+#[must_use]
 pub fn button_from_gdk(button: u32) -> MouseButton {
     match button {
         gdk::BUTTON_PRIMARY => MouseButton::Left,
@@ -87,6 +98,7 @@ pub fn button_from_gdk(button: u32) -> MouseButton {
 /// selection): the entry matching the keyboard layout first, else any level-0
 /// entry. `layout` is `gdk_key_event_get_layout` as the key controller last
 /// saw it.
+#[must_use]
 pub fn select_unshifted_keyval(entries: &[(i32, i32, u32)], layout: i32) -> Option<u32> {
     for (group, level, keyval) in entries {
         if *group == layout && *level == 0 {
@@ -142,11 +154,11 @@ fn on_key(
     let consumed_mods = event.as_ref().map_or(Modifiers::NONE, |event| {
         mods_from_gdk(event.consumed_modifiers())
     });
-    let is_modifier = event.as_ref().is_some_and(|event| event.is_modifier());
+    let is_modifier = event.as_ref().is_some_and(gdk::KeyEvent::is_modifier);
     if action == KeyAction::Press
         && let Some(event) = event
     {
-        layout.set(event.layout() as i32);
+        layout.set(event.layout().cast_signed());
     }
     links.terminal.borrow_mut().push_key(KeyInput {
         action,
@@ -187,13 +199,25 @@ fn on_mouse(
 /// Attach the key, mouse, scroll and focus controllers to the drawing area
 /// (`attach_controllers`). Call once, on the GTK thread, after the area exists
 /// and the links are composed.
-pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
+pub fn attach(area: &gtk4::DrawingArea, links: &InputLinks) {
+    // The pointer position the scroll handler reports (g_last_x/g_last_y):
+    // presses and motion update it, release does not. One cell shared by
+    // the click, motion and scroll controllers below.
+    let position = Rc::new(Cell::new((0.0f64, 0.0f64)));
+    attach_key(area, links);
+    attach_click(area, links, &position);
+    attach_motion(area, links, &position);
+    attach_scroll(area, links, &position);
+    attach_focus(area, links);
+}
+
+fn attach_key(area: &gtk4::DrawingArea, links: &InputLinks) {
     let key = gtk4::EventControllerKey::new();
     key.set_propagation_phase(gtk4::PropagationPhase::Capture);
     let pressed = links.clone();
     let pressed_layout = Rc::new(Cell::new(0i32));
     let released = links.clone();
-    let released_layout = pressed_layout.clone();
+    let released_layout = Rc::clone(&pressed_layout);
     key.connect_key_pressed(move |controller, keyval, keycode, state| {
         let _ = guard(&pressed.poisoned, || {
             on_key(
@@ -224,18 +248,17 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
         });
     });
     area.add_controller(key);
+}
 
+fn attach_click(area: &gtk4::DrawingArea, links: &InputLinks, position: &Rc<Cell<(f64, f64)>>) {
     // Button 0 listens to every button, as the C's
     // gtk_gesture_single_set_button(click, 0) did.
     let click = gtk4::GestureClick::new();
     click.set_button(0);
-    // The pointer position the scroll handler reports (g_last_x/g_last_y):
-    // presses and motion update it, release does not.
-    let position = Rc::new(Cell::new((0.0f64, 0.0f64)));
     let pressed = links.clone();
-    let pressed_position = position.clone();
+    let pressed_position = Rc::clone(position);
     let released = links.clone();
-    let released_position = position.clone();
+    let released_position = Rc::clone(position);
     click.connect_pressed(move |gesture, _n_press, x, y| {
         let _ = guard(&pressed.poisoned, || {
             on_mouse(
@@ -263,10 +286,12 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
         });
     });
     area.add_controller(click);
+}
 
+fn attach_motion(area: &gtk4::DrawingArea, links: &InputLinks, position: &Rc<Cell<(f64, f64)>>) {
     let motion = gtk4::EventControllerMotion::new();
     let motion_links = links.clone();
-    let motion_position = position.clone();
+    let motion_position = Rc::clone(position);
     motion.connect_motion(move |controller, x, y| {
         let _ = guard(&motion_links.poisoned, || {
             let x = x - (motion_links.draw_offset)();
@@ -282,7 +307,9 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
         });
     });
     area.add_controller(motion);
+}
 
+fn attach_scroll(area: &gtk4::DrawingArea, links: &InputLinks, position: &Rc<Cell<(f64, f64)>>) {
     // The flags gate the axes: DISCRETE alone delivers no scroll events.
     // VERTICAL and HORIZONTAL make a wheel notch exactly one unit, which is
     // what the mouse encoder turns into a wheel button.
@@ -290,7 +317,7 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
         gtk4::EventControllerScrollFlags::VERTICAL | gtk4::EventControllerScrollFlags::HORIZONTAL,
     );
     let scroll_links = links.clone();
-    let scroll_position = position.clone();
+    let scroll_position = Rc::clone(position);
     scroll.connect_scroll(move |controller, dx, dy| {
         let _ = guard(&scroll_links.poisoned, || {
             let (x, y) = scroll_position.get();
@@ -305,7 +332,9 @@ pub fn attach(area: &gtk4::DrawingArea, links: InputLinks) {
         gtk4::glib::Propagation::Stop
     });
     area.add_controller(scroll);
+}
 
+fn attach_focus(area: &gtk4::DrawingArea, links: &InputLinks) {
     let focus = gtk4::EventControllerFocus::new();
     let entered = links.clone();
     focus.connect_enter(move |_controller| {
