@@ -87,11 +87,28 @@ pub struct DrawState {
     images: images::ImageCache,
 }
 
+impl std::fmt::Debug for DrawState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The font, context, grid-node and image-cache fields hold GTK and
+        // cairo handles without a `Debug` impl; the scalar state is enough
+        // to identify a draw state in test failures.
+        f.debug_struct("DrawState")
+            .field("theme_background", &self.theme_background)
+            .field("theme_foreground", &self.theme_foreground)
+            .field("accent", &self.accent)
+            .field("focused", &self.focused)
+            .field("poisoned", &self.poisoned)
+            .field("cell_metrics", &self.cell_metrics)
+            .finish_non_exhaustive()
+    }
+}
+
 impl DrawState {
     /// A draw state with the theme colours from the Ghostty config and the
     /// startup accent (`glue_init`'s `g_theme_*` and `g_accent`). `poisoned`
     /// is the panel's shared D5 latch: a draw panic latches it so the rest of
     /// the panel's glue code stops too.
+    #[must_use]
     pub fn new(
         poisoned: Poisoned,
         accent: Option<Accent>,
@@ -128,11 +145,13 @@ impl DrawState {
     }
 
     /// The horizontal cell pitch in pixels (`glue_cell_width`).
+    #[must_use]
     pub fn cell_w(&self) -> i32 {
         self.cell_metrics.cell_w
     }
 
     /// The vertical cell pitch in pixels (`glue_cell_height`).
+    #[must_use]
     pub fn cell_h(&self) -> i32 {
         self.cell_metrics.cell_h
     }
@@ -209,7 +228,7 @@ impl DrawState {
         height: i32,
         draw_offset: f64,
     ) {
-        set_rgb(cr, &self.theme_background);
+        set_rgb(cr, self.theme_background);
         cr.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
         let _ = cr.fill();
 
@@ -260,9 +279,9 @@ impl DrawState {
                 continue;
             }
             if cell.has_fg {
-                set_rgb(cr, &cell.fg);
+                set_rgb(cr, cell.fg);
             } else {
-                set_rgb(cr, &self.theme_foreground);
+                set_rgb(cr, self.theme_foreground);
             }
             if !sprites::draw_sprite(
                 cr,
@@ -344,7 +363,7 @@ impl DrawState {
         let cell_metrics = self.cell_metrics;
         let colors = terminal.colors();
 
-        set_rgb(cr, &colors.foreground);
+        set_rgb(cr, colors.foreground);
 
         match node_cursor::cursor_shape(cursor, &cell_metrics) {
             node_cursor::CursorShape::Fill((x, y, w, h)) => {
@@ -364,7 +383,7 @@ impl DrawState {
             cell.y = cursor.y;
             cell.text[..len].copy_from_slice(&text[..len]);
             cell.len = len;
-            set_rgb(cr, &colors.background);
+            set_rgb(cr, colors.background);
             let layout = pangocairo::functions::create_layout(cr);
             let fonts = self.fonts_ref();
             text::draw_text(cr, &layout, &cell, &fonts, &cell_metrics);
@@ -418,7 +437,7 @@ fn paint_backgrounds(
     cr.set_antialias(cairo::Antialias::None);
     while let Some(cell) = terminal.cell_next() {
         if let Some((x, y, w, h)) = nodes::cell_background_rect(&cell, cell_metrics, height) {
-            set_rgb(cr, &cell.bg);
+            set_rgb(cr, cell.bg);
             cr.rectangle(x, y, w, h);
             let _ = cr.fill();
         }
@@ -426,7 +445,7 @@ fn paint_backgrounds(
     cr.set_antialias(cairo::Antialias::Default);
 }
 
-fn set_rgb(cr: &cairo::Context, color: &Rgb) {
+fn set_rgb(cr: &cairo::Context, color: Rgb) {
     cr.set_source_rgb(
         f64::from(color.r) / 255.0,
         f64::from(color.g) / 255.0,
@@ -515,10 +534,8 @@ mod tests {
         draw_offset: f64,
     ) -> cairo::ImageSurface {
         let surface = surface(width, height);
-        {
-            let cr = cairo::Context::new(&surface).unwrap();
-            state.draw(&cr, terminal, width, height, draw_offset);
-        }
+        let cr = cairo::Context::new(&surface).unwrap();
+        state.draw(&cr, terminal, width, height, draw_offset);
         surface
     }
 

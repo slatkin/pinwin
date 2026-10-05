@@ -26,12 +26,12 @@ pub(super) fn surface_texture(surface: &mut cairo::ImageSurface) -> Option<gdk::
     }
     surface.flush();
     let data = surface.data().ok()?;
-    let bytes = gtk4::glib::Bytes::from(&data[..]);
+    let bytes = gtk4::glib::Bytes::from(&*data);
     Some(gdk::MemoryTexture::new(
         width,
         height,
         CACHE_MEMORY_FORMAT,
         &bytes,
-        stride as usize,
+        stride.cast_unsigned() as usize,
     ))
 }

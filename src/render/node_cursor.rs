@@ -143,9 +143,6 @@ pub(crate) fn emit_cursor(
     text: &[u8],
 ) {
     use gtk4::graphene;
-    let colors = terminal.colors();
-    let colour = rgba(&colors.foreground);
-    let metrics = state.cell_metrics;
 
     fn band(
         snapshot: &gtk4::Snapshot,
@@ -157,6 +154,10 @@ pub(crate) fn emit_cursor(
             &graphene::Rect::new(x as f32, y as f32, w as f32, h as f32),
         );
     }
+
+    let colors = terminal.colors();
+    let colour = rgba(colors.foreground);
+    let metrics = state.cell_metrics;
 
     match cursor_shape(cursor, &metrics) {
         CursorShape::Fill(rect) => band(snapshot, &colour, rect),
@@ -186,7 +187,7 @@ pub(crate) fn emit_cursor(
             &cell,
             &state.fonts_ref(),
             &metrics,
-            &colors.background,
+            colors.background,
         );
     }
 }
@@ -211,10 +212,8 @@ mod tests {
     ) -> cairo::ImageSurface {
         state.set_scale(super::super::OutputScale::new(scale));
         let surface = parity::backed_surface(64, 64, scale, parity::BACKDROP);
-        {
-            let cr = cairo::Context::new(&surface).expect("context");
-            state.draw_cursor(&cr, terminal, cursor, text);
-        }
+        let cr = cairo::Context::new(&surface).expect("context");
+        state.draw_cursor(&cr, terminal, cursor, text);
         surface
     }
 
@@ -258,8 +257,8 @@ mod tests {
         }
     }
 
-    /// All four styles (plus the wide-tail block, whose text draw_cursor
-    /// suppresses) match the cairo painter exactly at scale 1. BlockHollow
+    /// All four styles (plus the wide-tail block, whose text `draw_cursor`
+    /// suppresses) match the cairo painter exactly at scale 1. `BlockHollow`
     /// is not reachable through DECSCUSR — ghostty reports it only for its
     /// own unfocused rendering — so the direct test is how hollow gets its
     /// parity proof; the full-frame tests below cover the DECSCUSR styles.

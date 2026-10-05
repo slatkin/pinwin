@@ -178,10 +178,8 @@ mod tests {
     fn cairo_placement(img: &Image, scale: f64) -> cairo::ImageSurface {
         let (surface, _) = cache_assets(img);
         let out = parity::backed_surface(24, 16, scale, parity::BACKDROP);
-        {
-            let cr = cairo::Context::new(&out).expect("context");
-            draw_placement(&cr, &surface, img);
-        }
+        let cr = cairo::Context::new(&out).expect("context");
+        draw_placement(&cr, &surface, img);
         out
     }
 

@@ -77,7 +77,7 @@ impl DrawState {
             // The background fills the whole widget, as draw_inner's fill
             // does; the cached node covers only its build-time bounds, and a
             // tween resizes the widget every frame.
-            snapshot.append_color(&rgba(&self.theme_background), &bounds);
+            snapshot.append_color(&rgba(self.theme_background), &bounds);
 
             // The cached grid at the docked edge: translate, node, pop.
             snapshot.save();
@@ -91,7 +91,7 @@ impl DrawState {
             // frames around a tween's stop or a snap apply before the
             // terminal's resize lands (gsk-render-nodes design, Post-task decisions: C52). At offset zero
             // the translate is skipped so the common frame stays flat.
-            snapshot.append_color(&rgba(&self.theme_background), &bounds);
+            snapshot.append_color(&rgba(self.theme_background), &bounds);
             if draw_offset != 0.0 {
                 snapshot.save();
                 snapshot.translate(&graphene::Point::new(draw_offset as f32, 0.0));
@@ -208,7 +208,6 @@ mod tests {
     use crate::render::font_lock;
     use crate::render::parity;
 
-    use crate::render::DrawState;
     use crate::render::OutputScale;
 
     /// Run one `snapshot_grid` call and render its output to a backed
@@ -350,7 +349,8 @@ mod tests {
             let data = shifted.data().expect("surface data");
             for y in 0..64i32 {
                 for x in 0..136i32 {
-                    let px = &data[(y * stride + x * 4) as usize..][..3];
+                    let px = &data[(y.cast_unsigned() * stride.cast_unsigned()
+                        + x.cast_unsigned() * 4) as usize..][..3];
                     assert_eq!(
                         (px[0], px[1], px[2]),
                         (0, 0, 0),
@@ -462,7 +462,8 @@ mod tests {
             let data = frame.data().expect("surface data");
             for y in 0..64i32 {
                 for x in 0..136i32 {
-                    let px = &data[(y * stride + x * 4) as usize..][..3];
+                    let px = &data[(y.cast_unsigned() * stride.cast_unsigned()
+                        + x.cast_unsigned() * 4) as usize..][..3];
                     assert_eq!(
                         (px[0], px[1], px[2]),
                         (0, 0, 0),
@@ -502,7 +503,8 @@ mod tests {
         let data = surface.data().expect("surface data");
         for y in y0..y1 {
             for x in x0..x1 {
-                let px = &data[(y * stride + x * 4) as usize..][..4];
+                let px = &data[(y.cast_unsigned() * stride.cast_unsigned() + x.cast_unsigned() * 4)
+                    as usize..][..4];
                 assert_eq!(
                     (px[0], px[1], px[2], px[3]),
                     (255, 255, 255, 255),
@@ -510,6 +512,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Draw one block row's frame at `off`/`scale`: the shared preamble of
+    /// the two arms of `a_docked_edge_offset_...` below, split into a
+    /// helper because a bare scope block satisfies neither
+    /// semicolon-placement lint.
+    fn block_row_frame(
+        pty_data: &[u8],
+        off: f64,
+        scale: f64,
+        scale_s: OutputScale,
+    ) -> cairo::ImageSurface {
+        let mut draw_state = state();
+        draw_state.set_scale(scale_s);
+        let mut terminal = terminal();
+        terminal.push_pty_data(pty_data);
+        drawn_frame_at_scale(&mut draw_state, &mut terminal, 200, 64, off, false, scale)
     }
 
     /// A region of one colour holds one colour at a fractional scale, with
@@ -531,56 +550,33 @@ mod tests {
             // A row of full blocks: eight cells of an 8 px pitch, one
             // colour. The snapped cell edges tile with no blended pixel
             // between them.
-            {
-                let mut draw_state = state();
-                draw_state.set_scale(scale_s);
-                let mut terminal = terminal();
-                terminal
-                    .push_pty_data(b"\x1b[?25l\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88");
-                let mut frame = drawn_frame_at_scale(
-                    &mut draw_state,
-                    &mut terminal,
-                    200,
-                    64,
-                    off,
-                    false,
-                    scale,
-                );
-                // The block row spans device x [off_dev, off_dev + 64*scale]
-                // and device y [0, 16*scale]; sample one pixel inside every
-                // boundary.
-                let (x0, x1) = (off_dev + 1, off_dev + (64.0 * scale) as i32 - 1);
-                let (y0, y1) = (1, (16.0 * scale) as i32 - 1);
-                assert_region_is_block_colour(&mut frame, x0, x1, y0, y1, "full blocks");
-            }
+            let mut frame = block_row_frame(
+                b"\x1b[?25l\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88",
+                off,
+                scale,
+                scale_s,
+            );
+            // The block row spans device x [off_dev, off_dev + 64*scale]
+            // and device y [0, 16*scale]; sample one pixel inside every
+            // boundary.
+            let (x0, x1) = (off_dev + 1, off_dev + (64.0 * scale) as i32 - 1);
+            let (y0, y1) = (1, (16.0 * scale) as i32 - 1);
+            assert_region_is_block_colour(&mut frame, x0, x1, y0, y1, "full blocks");
 
             // A right-half block beside a left-half block of the same
             // colour: the shared edge snaps to the same value on both
             // sides, so the two halves show one uniform colour.
-            {
-                let mut draw_state = state();
-                draw_state.set_scale(scale_s);
-                let mut terminal = terminal();
-                terminal.push_pty_data(b"\x1b[?25l\xe2\x96\x90\xe2\x96\x8c");
-                let mut frame = drawn_frame_at_scale(
-                    &mut draw_state,
-                    &mut terminal,
-                    200,
-                    64,
-                    off,
-                    false,
-                    scale,
-                );
-                // The two halves together span device x
-                // [off_dev + 4*scale, off_dev + 12*scale] — the right half
-                // of cell 0 and the left half of cell 1.
-                let (x0, x1) = (
-                    off_dev + (4.0 * scale) as i32 + 1,
-                    off_dev + (12.0 * scale) as i32 - 1,
-                );
-                let (y0, y1) = (1, (16.0 * scale) as i32 - 1);
-                assert_region_is_block_colour(&mut frame, x0, x1, y0, y1, "half blocks");
-            }
+            let mut frame =
+                block_row_frame(b"\x1b[?25l\xe2\x96\x90\xe2\x96\x8c", off, scale, scale_s);
+            // The two halves together span device x
+            // [off_dev + 4*scale, off_dev + 12*scale] — the right half
+            // of cell 0 and the left half of cell 1.
+            let (x0, x1) = (
+                off_dev + (4.0 * scale) as i32 + 1,
+                off_dev + (12.0 * scale) as i32 - 1,
+            );
+            let (y0, y1) = (1, (16.0 * scale) as i32 - 1);
+            assert_region_is_block_colour(&mut frame, x0, x1, y0, y1, "half blocks");
         }
     }
 

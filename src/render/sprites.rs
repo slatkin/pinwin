@@ -321,11 +321,9 @@ mod tests {
             Painter::Cairo => {
                 let mut surface =
                     cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
-                {
-                    let cr = cairo::Context::new(&surface).unwrap();
-                    cr.set_source_rgb(1.0, 1.0, 1.0);
-                    assert!(draw_sprite(&cr, &cell(0, 0), cp, &metrics()));
-                }
+                let cr = cairo::Context::new(&surface).unwrap();
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                assert!(draw_sprite(&cr, &cell(0, 0), cp, &metrics()));
                 surface.flush();
                 count_filled(&mut surface)
             }
@@ -467,7 +465,7 @@ mod tests {
 
     fn dot_count(cell_w: i32, cell_h: i32) -> usize {
         let (dot, _, _) = braille_geometry(cell_w, cell_h);
-        (dot * dot) as usize
+        (dot.cast_unsigned() * dot.cast_unsigned()) as usize
     }
 
     #[test]

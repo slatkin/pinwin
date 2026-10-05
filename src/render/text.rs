@@ -141,7 +141,7 @@ pub(crate) fn constrain(
     if !(cc.size == Size::None && cc.align_vertical == Align::None) {
         let start_y = m.face_y + cc.pad_bottom * m.face_h;
         let end_y = m.face_y + (m.face_h - group.height - cc.pad_top * m.face_h);
-        let center = (start_y + end_y) / 2.0;
+        let center = f64::midpoint(start_y, end_y);
 
         match cc.align_vertical {
             Align::Start => group.y = start_y,
@@ -166,10 +166,10 @@ pub(crate) fn constrain(
         match cc.align_horizontal {
             Align::Start => group.x = start_x,
             Align::End => group.x = max(start_x, end_x),
-            Align::Center => group.x = max(start_x, (start_x + end_x) / 2.0),
+            Align::Center => group.x = max(start_x, f64::midpoint(start_x, end_x)),
             Align::Center1 => {
-                let end1_x = m.face_w - group.width - cc.pad_right * m.face_w;
-                group.x = max(start_x, (start_x + end1_x) / 2.0);
+                let single_end_x = m.face_w - group.width - cc.pad_right * m.face_w;
+                group.x = max(start_x, f64::midpoint(start_x, single_end_x));
             }
             Align::None => group.x = max(start_x, min(group.x, end_x)),
         }
@@ -244,8 +244,16 @@ pub(crate) fn draw_text(
                     - (f64::from(ink.y() + ink.height()) - f64::from(baseline)),
             };
 
-            let constrained =
-                constrain(&c, &m, glyph, if cell.cw >= 1 { cell.cw as u32 } else { 1 });
+            let constrained = constrain(
+                &c,
+                &m,
+                glyph,
+                if cell.cw >= 1 {
+                    cell.cw.cast_unsigned()
+                } else {
+                    1
+                },
+            );
 
             let _ = cr.save();
             cr.translate(
@@ -313,8 +321,8 @@ mod tests {
         c.size = Size::Cover;
         // Two cells wide, no padding: the target box is 2*face_w x face_h.
         let out = constrain(&c, &metrics(), glyph(0.0, 0.0, 5.0, 5.0), 2);
-        assert!((out.width - 20.0).abs() < 1e-9, "width {:?}", out);
-        assert!((out.height - 20.0).abs() < 1e-9, "height {:?}", out);
+        assert!((out.width - 20.0).abs() < 1e-9, "width {out:?}");
+        assert!((out.height - 20.0).abs() < 1e-9, "height {out:?}");
     }
 
     #[test]
@@ -323,13 +331,13 @@ mod tests {
         c.size = Size::Fit;
         // A wide, short glyph fits the box without being scaled.
         let out = constrain(&c, &metrics(), glyph(0.0, 0.0, 8.0, 4.0), 1);
-        assert!((out.width - 8.0).abs() < 1e-9, "width {:?}", out);
-        assert!((out.height - 4.0).abs() < 1e-9, "height {:?}", out);
+        assert!((out.width - 8.0).abs() < 1e-9, "width {out:?}");
+        assert!((out.height - 4.0).abs() < 1e-9, "height {out:?}");
 
         // A tall, narrow glyph must shrink to fit the face height.
         let out = constrain(&c, &metrics(), glyph(0.0, 0.0, 2.0, 40.0), 1);
-        assert!((out.height - 20.0).abs() < 1e-9, "height {:?}", out);
-        assert!((out.width - 1.0).abs() < 1e-9, "width {:?}", out);
+        assert!((out.height - 20.0).abs() < 1e-9, "height {out:?}");
+        assert!((out.width - 1.0).abs() < 1e-9, "width {out:?}");
     }
 
     #[test]
@@ -342,8 +350,8 @@ mod tests {
         // min(1*face_w, icon_h_single) = min(10, 14) = 10 -- the glyph covers
         // exactly one cell, not two.
         let out = constrain(&c, &metrics(), glyph(0.0, 0.0, 1.0, 1.0), 2);
-        assert!((out.width - 10.0).abs() < 1e-9, "width {:?}", out);
-        assert!((out.height - 10.0).abs() < 1e-9, "height {:?}", out);
+        assert!((out.width - 10.0).abs() < 1e-9, "width {out:?}");
+        assert!((out.height - 10.0).abs() < 1e-9, "height {out:?}");
     }
 
     #[test]
@@ -356,8 +364,8 @@ mod tests {
         c.pad_bottom = -1.0;
         // Stretched glyphs measure the cell pitch: 10x10 here.
         let out = constrain(&c, &metrics(), glyph(0.0, 0.0, 5.0, 5.0), 1);
-        assert!((out.width - 10.0).abs() < 1e-9, "width {:?}", out);
-        assert!((out.height - 10.0).abs() < 1e-9, "height {:?}", out);
+        assert!((out.width - 10.0).abs() < 1e-9, "width {out:?}");
+        assert!((out.height - 10.0).abs() < 1e-9, "height {out:?}");
     }
 
     #[test]
@@ -369,7 +377,7 @@ mod tests {
         let out = constrain(&c, &metrics(), glyph(0.0, 0.0, 10.0, 10.0), 1);
         // The 10x10 glyph covers one cell; end_y = face_y + (face_h - height
         // - pad_top * face_h) = 2 + (20 - 10 - 5) = 7.
-        assert!((out.y - 7.0).abs() < 1e-9, "y {:?}", out);
+        assert!((out.y - 7.0).abs() < 1e-9, "y {out:?}");
     }
 
     #[test]
@@ -380,6 +388,6 @@ mod tests {
         // Covering one cell would make the glyph 20 high; the ratio caps the
         // width at half its height.
         let out = constrain(&c, &metrics(), glyph(0.0, 0.0, 10.0, 10.0), 1);
-        assert!((out.width - out.height * 0.5).abs() < 1e-9, "box {:?}", out);
+        assert!((out.width - out.height * 0.5).abs() < 1e-9, "box {out:?}");
     }
 }

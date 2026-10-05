@@ -41,40 +41,44 @@ struct ImageEntry {
 /// premultiplying on the way in (`image_surface`). Returns `None` when the
 /// image has no usable pixels.
 fn image_surface(img: &Image) -> Option<cairo::ImageSurface> {
-    let (w, h) = (img.image_w, img.image_h);
-    if w <= 0 || h <= 0 || img.pixels.is_null() {
+    let (img_w, img_h) = (img.image_w, img.image_h);
+    if img_w <= 0 || img_h <= 0 || img.pixels.is_null() {
         return None;
     }
 
-    let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h).ok()?;
-    let stride = surface.stride();
+    let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, img_w, img_h).ok()?;
+    let width = img_w.cast_unsigned() as usize;
+    let height = img_h.cast_unsigned() as usize;
+    let stride = surface.stride().cast_unsigned() as usize;
 
     // SAFETY: `img.pixels` is ghostty-owned storage of `image_w * image_h`
     // RGBA8 pixels, valid for this synchronous read (the placement iterator
     // hands it out between `image_next` and the next call or `frame_end`).
-    let src = unsafe { slice::from_raw_parts(img.pixels, w as usize * h as usize * 4) };
+    let src = unsafe { slice::from_raw_parts(img.pixels, width * height * 4) };
 
     {
         let mut data = surface.data().ok()?;
-        for y in 0..h as usize {
-            let src_row = &src[y * w as usize * 4..][..w as usize * 4];
-            let dst_row = &mut data[y * stride as usize..][..w as usize * 4];
-            for x in 0..w as usize {
-                let s = &src_row[x * 4..x * 4 + 4];
-                let (r, g, b, a) = (
-                    u32::from(s[0]),
-                    u32::from(s[1]),
-                    u32::from(s[2]),
-                    u32::from(s[3]),
+        for row in 0..height {
+            let src_row = &src[row * width * 4..][..width * 4];
+            let dst_row = &mut data[row * stride..][..width * 4];
+            for col in 0..width {
+                let src_px = &src_row[col * 4..col * 4 + 4];
+                let (red, green, blue, alpha) = (
+                    u32::from(src_px[0]),
+                    u32::from(src_px[1]),
+                    u32::from(src_px[2]),
+                    u32::from(src_px[3]),
                 );
                 // ARGB32 is premultiplied on little-endian: bytes B, G, R, A.
-                let pr = ((r * a + 127) / 255) as u8;
-                let pg = ((g * a + 127) / 255) as u8;
-                let pb = ((b * a + 127) / 255) as u8;
-                dst_row[x * 4] = pb;
-                dst_row[x * 4 + 1] = pg;
-                dst_row[x * 4 + 2] = pr;
-                dst_row[x * 4 + 3] = a as u8;
+                // Each channel is at most 255, so every premultiplied
+                // value fits its byte; the saturation is unreachable.
+                let pr = u8::try_from((red * alpha + 127) / 255).unwrap_or(u8::MAX);
+                let pg = u8::try_from((green * alpha + 127) / 255).unwrap_or(u8::MAX);
+                let pb = u8::try_from((blue * alpha + 127) / 255).unwrap_or(u8::MAX);
+                dst_row[col * 4] = pb;
+                dst_row[col * 4 + 1] = pg;
+                dst_row[col * 4 + 2] = pr;
+                dst_row[col * 4 + 3] = src_px[3];
             }
         }
     }
@@ -206,6 +210,7 @@ pub(crate) fn draw_placement(cr: &cairo::Context, surface: &cairo::ImageSurface,
 /// The gdk-pixbuf PNG decoder (`glue_decode_png`): the [`PngDecoder`] the
 /// panel hands to the terminal, replacing the C hook libghostty-vt called
 /// back into. Straight (non-premultiplied) RGBA out, like `DecodedPng`.
+#[derive(Debug)]
 pub struct PixbufDecoder;
 
 impl PngDecoder for PixbufDecoder {
@@ -223,16 +228,20 @@ impl PngDecoder for PixbufDecoder {
         }
         let channels = alpha.n_channels();
         let stride = alpha.rowstride();
+        let width = w.cast_unsigned() as usize;
+        let height = h.cast_unsigned() as usize;
+        let row_stride = stride.cast_unsigned() as usize;
+        let channel_count = channels.cast_unsigned() as usize;
 
         // SAFETY: the pixbuf owns its pixel buffer; the read stays within the
         // borrow of `alpha`.
         let src = unsafe { alpha.pixels() };
-        let mut rgba = vec![0u8; w as usize * h as usize * 4];
-        for y in 0..h as usize {
-            let row = &src[y * stride as usize..];
-            for x in 0..w as usize {
-                let s = &row[x * channels as usize..][..channels as usize];
-                let d = &mut rgba[(y * w as usize + x) * 4..][..4];
+        let mut rgba = vec![0u8; width * height * 4];
+        for y in 0..height {
+            let row = &src[y * row_stride..];
+            for x in 0..width {
+                let s = &row[x * channel_count..][..channel_count];
+                let d = &mut rgba[(y * width + x) * 4..][..4];
                 d[0] = s[0];
                 d[1] = s[1];
                 d[2] = s[2];
@@ -241,8 +250,8 @@ impl PngDecoder for PixbufDecoder {
         }
 
         Some(DecodedPng {
-            width: w as u32,
-            height: h as u32,
+            width: w.cast_unsigned(),
+            height: h.cast_unsigned(),
             rgba,
         })
     }
