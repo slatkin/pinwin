@@ -5,8 +5,6 @@
 
 use std::rc::Rc;
 
-use gtk4::cairo;
-
 /// A drawing-area draw function body (`render.c`'s `on_draw`).
 pub type DrawFn = dyn Fn(&cairo::Context, i32, i32);
 
