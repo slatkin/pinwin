@@ -20,5 +20,5 @@
 
 ## 4. Integration checks
 
-- [ ] 4.1 Run `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check`, and verify all three are clean.
+- [x] 4.1 Run `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check`, and verify all three are clean.
 - [ ] 4.2 In a running niri session with the demo, verify covering expand/shrink on one side moves no tiles, side switch moves the gap, and a covering start reserves nothing.
