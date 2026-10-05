@@ -135,6 +135,7 @@ impl Modifiers {
     pub const CAPS_LOCK: Modifiers = Modifiers(crate::ghostty_sys::input::GHOSTTY_MODS_CAPS_LOCK);
 
     /// The raw modifier bits for the FFI call.
+    #[must_use]
     pub const fn bits(self) -> u16 {
         self.0
     }
@@ -166,7 +167,7 @@ pub struct KeyInput {
 }
 
 /// Per-terminal input state that `src/input.zig` kept in process globals.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct InputState {
     /// Whether a non-modifier button is currently held (mouse encoder input).
     any_button_pressed: bool,
@@ -199,7 +200,7 @@ impl Terminal {
             ghostty_key_event_set_mods(event, input.mods.bits());
             ghostty_key_event_set_consumed_mods(event, input.consumed_mods.bits());
             ghostty_key_event_set_unshifted_codepoint(event, input.unshifted_codepoint);
-        }
+        };
 
         let mut text = [0u8; 8];
         let mut text_len = 0usize;
@@ -215,10 +216,12 @@ impl Terminal {
         unsafe {
             ghostty_key_event_set_utf8(event, text.as_ptr().cast(), text_len);
             ghostty_key_encoder_setopt_from_terminal(encoder, terminal);
-        }
+        };
 
-        self.write_encoded(|out, len, written| unsafe {
-            ghostty_key_encoder_encode(encoder, event, out, len, written)
+        self.write_encoded(|out, len, written| {
+            // SAFETY: `out`/`len` describe `write_encoded`'s buffer and
+            // `written` is a valid out pointer.
+            unsafe { ghostty_key_encoder_encode(encoder, event, out, len, written) }
         });
     }
 
@@ -313,7 +316,7 @@ impl Terminal {
             ghostty_terminal_get(
                 terminal,
                 GHOSTTY_TERMINAL_DATA_MODE,
-                (&mut config as *mut GhosttyTerminalModeConfig).cast(),
+                (&raw mut config).cast(),
             )
         };
         if result != GHOSTTY_SUCCESS || !config.value {
@@ -330,7 +333,7 @@ impl Terminal {
         // SAFETY: `buf` is an 8-byte buffer and `written` is a valid out
         // pointer.
         let result = unsafe {
-            ghostty_focus_encode(event, buf.as_mut_ptr().cast(), buf.len(), &mut written)
+            ghostty_focus_encode(event, buf.as_mut_ptr().cast(), buf.len(), &raw mut written)
         };
         if result == GHOSTTY_SUCCESS && written > 0 {
             self.ctx.sink.write_pty(&buf[..written]);
@@ -373,12 +376,12 @@ impl Terminal {
             ghostty_mouse_encoder_setopt(
                 encoder,
                 GHOSTTY_MOUSE_ENCODER_OPT_SIZE,
-                (&mut size as *mut GhosttyMouseEncoderSize).cast(),
+                (&raw mut size).cast(),
             );
             ghostty_mouse_encoder_setopt(
                 encoder,
                 GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
-                (&mut pressed as *mut bool).cast(),
+                (&raw mut pressed).cast(),
             );
             ghostty_mouse_event_set_action(event, action.raw());
             if button == MouseButton::Unknown {
@@ -394,10 +397,12 @@ impl Terminal {
                     y: y as f32,
                 },
             );
-        }
+        };
 
-        self.write_encoded(|out, len, written| unsafe {
-            ghostty_mouse_encoder_encode(encoder, event, out, len, written)
+        self.write_encoded(|out, len, written| {
+            // SAFETY: `out`/`len` describe `write_encoded`'s buffer and
+            // `written` is a valid out pointer.
+            unsafe { ghostty_mouse_encoder_encode(encoder, event, out, len, written) }
         });
     }
 
@@ -410,10 +415,10 @@ impl Terminal {
     ) {
         let mut buf = [0u8; 256];
         let mut written = 0usize;
-        let mut result = encode(buf.as_mut_ptr().cast(), buf.len(), &mut written);
+        let mut result = encode(buf.as_mut_ptr().cast(), buf.len(), &raw mut written);
         if result == GHOSTTY_OUT_OF_SPACE {
             let mut exact = vec![0u8; written];
-            result = encode(exact.as_mut_ptr().cast(), exact.len(), &mut written);
+            result = encode(exact.as_mut_ptr().cast(), exact.len(), &raw mut written);
             if result == GHOSTTY_SUCCESS && written > 0 {
                 self.ctx.sink.write_pty(&exact[..written]);
             }
@@ -470,7 +475,7 @@ mod tests {
         let writes = Arc::new(Mutex::new(Vec::new()));
         let mut terminal = Terminal::new(
             crate::guard::Poisoned::new(),
-            RecordingSink(writes.clone()),
+            RecordingSink(Arc::clone(&writes)),
             NoDecoder,
             || {},
         );
@@ -524,7 +529,7 @@ mod tests {
     fn release_without_kitty_report_events_writes_nothing() {
         let (mut terminal, writes) = new_terminal();
         terminal.push_key(key(KeyAction::Release));
-        assert!(take(&writes).is_empty());
+        assert_eq!(take(&writes), Vec::new());
     }
 
     /// The encoder picks up the terminal's kitty keyboard flags per event:
@@ -549,12 +554,12 @@ mod tests {
         let writes = Arc::new(Mutex::new(Vec::new()));
         let mut terminal = Terminal::new(
             crate::guard::Poisoned::new(),
-            RecordingSink(writes.clone()),
+            RecordingSink(Arc::clone(&writes)),
             NoDecoder,
             || {},
         );
         terminal.push_key(key(KeyAction::Press));
-        assert!(take(&writes).is_empty());
+        assert_eq!(take(&writes), Vec::new());
     }
 
     /// Mouse press/release/motion in SGR cells: the left button at (24,16)
@@ -606,7 +611,7 @@ mod tests {
         assert_eq!(take(&writes), b"\x1b[<66;4;2M");
 
         terminal.push_scroll(24.0, 16.0, 0.0, 5.0, ScrollUnit::Surface, Modifiers::NONE);
-        assert!(take(&writes).is_empty());
+        assert_eq!(take(&writes), Vec::new());
         terminal.push_scroll(24.0, 16.0, 0.0, 5.0, ScrollUnit::Surface, Modifiers::NONE);
         assert_eq!(take(&writes), b"\x1b[<65;4;2M");
     }
@@ -620,12 +625,12 @@ mod tests {
         terminal.push_focus(true);
         assert_eq!(take(&writes), b"\x1b[I");
         terminal.push_focus(true);
-        assert!(take(&writes).is_empty());
+        assert_eq!(take(&writes), Vec::new());
         terminal.push_focus(false);
         assert_eq!(take(&writes), b"\x1b[O");
 
         let (mut terminal, writes) = new_terminal();
         terminal.push_focus(true);
-        assert!(take(&writes).is_empty());
+        assert_eq!(take(&writes), Vec::new());
     }
 }
