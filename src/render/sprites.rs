@@ -110,26 +110,23 @@ pub(crate) enum SpriteShape {
 /// Snap each rectangle of a sprite to the device pixel grid
 /// (`snap-grid-edges` D1, D4): neighbouring cells pass the same shared-edge
 /// value, so both compute the same snapped edge and no seam appears.
-fn snap_rects(scale: OutputScale, rects: Vec<(f64, f64, f64, f64)>) -> Vec<(f64, f64, f64, f64)> {
+fn snap_rects(
+    scale: OutputScale,
+    mut rects: Vec<(f64, f64, f64, f64)>,
+) -> Vec<(f64, f64, f64, f64)> {
+    for rect in &mut rects {
+        let (x, y, w, h) = *rect;
+        *rect = scale.snap_rect(x, y, w, h);
+    }
     rects
-        .into_iter()
-        .map(|(x, y, w, h)| scale.snap_rect(x, y, w, h))
-        .collect()
 }
 
 /// Snap each triangle vertex coordinate (`snap-grid-edges` D5): the
 /// straight sides of a corner triangle lie on the cell boundary, and an
 /// unsnapped side blends with the neighbour. Each vertex moves by at most
 /// half a device pixel.
-fn snap_vertices(scale: OutputScale, [ax, ay, bx, by, cx, cy]: [f64; 6]) -> [f64; 6] {
-    [
-        scale.snap_edge(ax),
-        scale.snap_edge(ay),
-        scale.snap_edge(bx),
-        scale.snap_edge(by),
-        scale.snap_edge(cx),
-        scale.snap_edge(cy),
-    ]
+fn snap_vertices(scale: OutputScale, points: [f64; 6]) -> [f64; 6] {
+    points.map(|v| scale.snap_edge(v))
 }
 
 /// The geometry [`draw_sprite`] paints `cp` with, or [`SpriteShape::None`]

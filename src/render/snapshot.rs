@@ -221,13 +221,28 @@ mod tests {
         draw_offset: f64,
         animating: bool,
     ) -> cairo::ImageSurface {
+        drawn_frame_at_scale(state, terminal, width, height, draw_offset, animating, 1.0)
+    }
+
+    /// [`drawn_frame`] rendered onto a backed surface whose device scale is
+    /// `scale`, the way the real panel presents it, so the device pixels are
+    /// what a compositor would show.
+    fn drawn_frame_at_scale(
+        state: &mut DrawState,
+        terminal: &mut Terminal,
+        width: i32,
+        height: i32,
+        draw_offset: f64,
+        animating: bool,
+        scale: f64,
+    ) -> cairo::ImageSurface {
         let snapshot = parity::snapshot();
         assert!(
             state.snapshot_grid(&snapshot, terminal, width, height, draw_offset, animating),
             "the frame was emitted as nodes"
         );
         let node = snapshot.to_node().expect("snapshot produced a node");
-        let surface = parity::backed_surface(width, height, 1.0, parity::BACKDROP);
+        let surface = parity::backed_surface(width, height, scale, parity::BACKDROP);
         parity::draw_node(&node, &surface);
         surface
     }
@@ -497,29 +512,6 @@ mod tests {
         }
     }
 
-    /// One `snapshot_grid` frame rendered at a fractional device scale, the
-    /// way the real panel presents it: the node is drawn onto a backed
-    /// surface whose device scale is `scale`, so the device pixels are what
-    /// a compositor would show.
-    fn drawn_frame_at_scale(
-        state: &mut DrawState,
-        terminal: &mut Terminal,
-        width: i32,
-        height: i32,
-        draw_offset: f64,
-        scale: f64,
-    ) -> cairo::ImageSurface {
-        let snapshot = parity::snapshot();
-        assert!(
-            state.snapshot_grid(&snapshot, terminal, width, height, draw_offset, false),
-            "the frame was emitted as nodes"
-        );
-        let node = snapshot.to_node().expect("snapshot produced a node");
-        let surface = parity::backed_surface(width, height, scale, parity::BACKDROP);
-        parity::draw_node(&node, &surface);
-        surface
-    }
-
     /// A region of one colour holds one colour at a fractional scale, with
     /// the grid shifted by a docked-edge offset (`snap-grid-edges` spec:
     /// "Fractional scale has no seams", "Half blocks meet without a seam").
@@ -545,8 +537,15 @@ mod tests {
                 let mut terminal = terminal();
                 terminal
                     .push_pty_data(b"\x1b[?25l\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88");
-                let mut frame =
-                    drawn_frame_at_scale(&mut draw_state, &mut terminal, 200, 64, off, scale);
+                let mut frame = drawn_frame_at_scale(
+                    &mut draw_state,
+                    &mut terminal,
+                    200,
+                    64,
+                    off,
+                    false,
+                    scale,
+                );
                 // The block row spans device x [off_dev, off_dev + 64*scale]
                 // and device y [0, 16*scale]; sample one pixel inside every
                 // boundary.
@@ -563,8 +562,15 @@ mod tests {
                 draw_state.set_scale(scale_s);
                 let mut terminal = terminal();
                 terminal.push_pty_data(b"\x1b[?25l\xe2\x96\x90\xe2\x96\x8c");
-                let mut frame =
-                    drawn_frame_at_scale(&mut draw_state, &mut terminal, 200, 64, off, scale);
+                let mut frame = drawn_frame_at_scale(
+                    &mut draw_state,
+                    &mut terminal,
+                    200,
+                    64,
+                    off,
+                    false,
+                    scale,
+                );
                 // The two halves together span device x
                 // [off_dev + 4*scale, off_dev + 12*scale] — the right half
                 // of cell 0 and the left half of cell 1.

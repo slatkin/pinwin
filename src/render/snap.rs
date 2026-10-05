@@ -32,9 +32,8 @@ impl OutputScale {
         }
     }
 
-    /// The scale factor itself (device pixels per logical pixel). Used by
-    /// the snapping tests only.
-    #[allow(dead_code)]
+    /// The scale factor itself (device pixels per logical pixel).
+    #[cfg(test)]
     pub(crate) fn get(self) -> f64 {
         self.0
     }

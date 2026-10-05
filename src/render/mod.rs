@@ -228,10 +228,9 @@ impl DrawState {
         // This is the fallback a tween frame lands on when the GSK snapshot
         // could not emit nodes: it renders the full grid every frame — slow,
         // but correct (gsk-render-nodes row 4.2).
-        let offset = draw_offset;
-        cr.translate(offset, 0.0);
+        cr.translate(draw_offset, 0.0);
         self.render_grid(cr, terminal, height);
-        cr.translate(-offset, 0.0);
+        cr.translate(-draw_offset, 0.0);
         self.draw_focus_accent(cr, width, height);
     }
 

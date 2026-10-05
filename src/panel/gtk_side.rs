@@ -466,7 +466,10 @@ fn draw_hook(
         let outcome = guard(&poisoned, || {
             resolve_first_draw_monitor(&link);
             let (offset, scale) = link
-                .with(|surfaces| (surfaces.draw_offset(), surfaces.scale()))
+                .with(|surfaces| {
+                    let scale = surfaces.scale();
+                    (surfaces.draw_offset_at(scale), scale)
+                })
                 .unwrap_or((0.0, OutputScale::default()));
             draw.borrow_mut().set_scale(scale);
             draw.borrow_mut().set_focused(focused.get());
@@ -522,10 +525,11 @@ fn grid_snapshot_hook(
             resolve_first_draw_monitor(&link);
             let (offset, animating, scale) = link
                 .with(|surfaces| {
+                    let scale = surfaces.scale();
                     (
-                        surfaces.draw_offset(),
+                        surfaces.draw_offset_at(scale),
                         surfaces.anim.active(),
-                        surfaces.scale(),
+                        scale,
                     )
                 })
                 .unwrap_or((0.0, false, OutputScale::default()));

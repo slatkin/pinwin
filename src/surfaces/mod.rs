@@ -439,12 +439,18 @@ impl Surfaces {
     /// cell under the pointer agree and a moving frame cannot put a cell
     /// edge between two device pixels.
     pub fn draw_offset(&self) -> f64 {
+        self.draw_offset_at(self.scale())
+    }
+
+    /// [`Self::draw_offset`] at a scale the caller already read, so a draw
+    /// hook resolves the surface scale once.
+    pub(crate) fn draw_offset_at(&self, scale: OutputScale) -> f64 {
         let width = if self.closed.get() {
             None
         } else {
             Some(self.area.width())
         };
-        self.scale().snap_edge(f64::from(self.anim.draw_offset(
+        scale.snap_edge(f64::from(self.anim.draw_offset(
             self.layout.get().side(),
             width,
             self.drawn_grid_px(),
