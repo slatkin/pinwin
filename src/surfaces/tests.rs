@@ -16,8 +16,11 @@ fn layout(side: Side, cols: u16, top: i32, bottom: i32, left: i32, right: i32) -
     )
 }
 
+/// A layout differing only in its column count and/or push/cover choice
+/// animates (overlay-expand D3); anything touching the side or the left and
+/// right gutters snaps, as do zero durations and disabled animations.
 #[test]
-fn only_a_column_change_animates() {
+fn only_a_column_or_coverage_change_animates() {
     let applied = layout(Side::Left, 40, 0, 0, 0, 12);
     // Columns change, everything else matches, animations on: animate.
     assert!(should_animate(
@@ -66,6 +69,28 @@ fn only_a_column_change_animates() {
         true,
         &applied,
         &layout(Side::Left, 120, 8, 8, 0, 12)
+    ));
+    // A coverage-only change at the same width animates, so a pushing
+    // retarget can ease its gap back (overlay-expand D3).
+    assert!(should_animate(
+        200,
+        true,
+        &applied,
+        &layout(Side::Left, 40, 0, 0, 0, 12).covering()
+    ));
+    // Coverage and columns together: animate.
+    assert!(should_animate(
+        200,
+        true,
+        &applied,
+        &layout(Side::Left, 120, 0, 0, 0, 12).covering()
+    ));
+    // A side switch is never a covering move, and it still snaps.
+    assert!(!should_animate(
+        200,
+        true,
+        &applied,
+        &layout(Side::Right, 40, 0, 0, 0, 12).covering()
     ));
     // The same columns keep an already-heading tween going.
     assert!(should_animate(200, true, &applied, &applied));
