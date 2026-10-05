@@ -22,5 +22,5 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Check the display-free suite, clippy and fmt, and run the demo (including `DEMO_DENSE=1`) under `GSK_RENDERER=ngl`, `vulkan` and `cairo`; verify no visual regression or cell seams (at 1.0 and 1.5 scale), input/resize unaffected, and Cairo fallback intact
-- [ ] 5.2 Compare tween frame times with `PINWIN_FRAMELOG=1` before and after (no worse than stage 1); record the result in the change and close issue #4
+- [x] 5.1 Check the display-free suite, clippy and fmt, and run the demo (including `DEMO_DENSE=1`) under `GSK_RENDERER=ngl`, `vulkan` and `cairo`; verify no visual regression or cell seams (at 1.0 and 1.5 scale), input/resize unaffected, and Cairo fallback intact
+- [x] 5.2 Compare tween frame times with `PINWIN_FRAMELOG=1` before and after (no worse than stage 1); record the result in the change and close issue #4 — waived by the user; issue #4 left open
