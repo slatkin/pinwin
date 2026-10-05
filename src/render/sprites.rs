@@ -324,6 +324,9 @@ mod tests {
                 let cr = cairo::Context::new(&surface).unwrap();
                 cr.set_source_rgb(1.0, 1.0, 1.0);
                 assert!(draw_sprite(&cr, &cell(0, 0), cp, &metrics()));
+                // Drop the context before the flush: a live context on the
+                // surface makes `data()` fail with `NonExclusive`.
+                drop(cr);
                 surface.flush();
                 count_filled(&mut surface)
             }
