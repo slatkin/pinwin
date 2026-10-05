@@ -56,9 +56,31 @@ spec changes.
   with a tolerance, and treat visible regressions on the three renderers as the real gate.
 - Colour nodes are not forced to Cairo's `Antialias::None` device-pixel snapping, so cell edges
   may blend at fractional scales; parity there is a tolerance and seams are checked on the
-  renderers (task 5.1).
+  renderers (task 5.1). Scale-1 sprite parity is exact only with cell metrics pinned to 8x16 in
+  the tests; at the real fractional cell pitch (the suite's 9x20, and scale 1.5) the stated blend
+  tolerance applies (measured max delta 128 at scale 1, up to ~191 at 1.5), so real-pitch
+  fidelity is guarded by the manual row 5.1 demo run.
 - Fractional scales: node geometry must stay in logical coordinates and rely on GSK's
   device scale, unlike the Cairo path's device-scaled surfaces; check 1.0 and 1.5.
 - Two painters can drift. The parity test is the guard; keep both behind the same cell iteration
   helpers where possible.
 - A retained node tree for a full grid is memory proportional to cells; measure at 120x40.
+
+## Post-task decisions
+
+- **Shared first-draw monitor (C5).** The layout monitor is resolved once through a shared helper
+  (`resolve_first_draw_monitor`, the first-draw latch) used by both the cairo draw hook and the
+  GSK snapshot hook. A snapshot frame bypasses the draw func, so both painters must consume the
+  same one-shot before emitting or the start handshake never completes (dc70165).
+- **Tween draw shift glued to the live grid (C52).** `SurfaceHooks::live_grid_px` supplies the
+  width `Anim::draw_offset` glues against, independent of a running tween; the deferred grid
+  resize runs synchronously at the tween stop; and `Surfaces::stale_grid_px` keeps the old,
+  pre-resize content glued to the docked edge until the host's first output, because
+  libghostty-vt's resize does not rewrap the active screen. These fix a black-on-expand and an
+  end-of-tween gap that predate this change; they are outside the task rows but included.
+- **Kitty placeholders (deliberate terminal-crate change).** `Terminal::frame_begin_images`
+  keeps the placeholder origins a cell pass recorded, so `U=1` images render in the node image
+  pass (row 3.1 requires images in the node tree; a fresh `frame_begin` silently dropped every
+  U=1 placement), and `MAX_PLACEHOLDERS` rose 8 -> 64 so grids with many covers are not cut off.
+  This is the change's one terminal-crate edit, deliberate despite the proposal's "no terminal
+  behaviour change" non-goal.
