@@ -35,6 +35,7 @@ use gtk4_layer_shell::{Edge, KeyboardMode as LayerKeyboardMode, Layer};
 use crate::anim::{Anim, AnimHooks};
 use crate::input;
 use crate::layout::{Accent, Keyboard, Layout, Side};
+use crate::render::OutputScale;
 
 mod area;
 
@@ -410,6 +411,19 @@ impl Surfaces {
         self.anim.current_px(self.grid_px())
     }
 
+    /// The output scale the panel's surface is drawn at (`snap-grid-edges`
+    /// D3): `gdk::Surface::scale()`, read fresh at each draw. A missing
+    /// surface — before map, or after close — and a value that is not
+    /// positive and finite both give 1.
+    pub(crate) fn scale(&self) -> OutputScale {
+        OutputScale::new(
+            self.win
+                .surface()
+                .map(|surface| surface.scale())
+                .unwrap_or(1.0),
+        )
+    }
+
     /// The drawing shift input x coordinates subtract (`glue_anim_draw_offset`).
     /// Computed against the width of the grid that is actually on screen
     /// ([`Self::drawn_grid_px`]): the terminal's live grid, or — while a
@@ -641,9 +655,22 @@ impl Surfaces {
 
     /// The visible panel mapped (`on_win_map`): mark the first-draw monitor
     /// resolution pending, create and present the reservation, then size the
-    /// terminal.
+    /// terminal. Also connects `notify::scale` (snap-grid-edges D3): when
+    /// the panel moves to an output with a different scale, the grid must
+    /// redraw at the new scale. The handler only queues a redraw — the draw
+    /// hooks read the scale fresh at each draw, so a stored copy could go
+    /// stale between the notify and the draw.
     fn on_map(&self) {
         self.latch.set(true);
+
+        if let Some(surface) = self.win.surface() {
+            let area = self.area.clone();
+            // `_local`: the closure holds GTK-thread handles (Rc), like every
+            // other closure registered here; it runs on the GTK thread only.
+            surface.connect_notify_local(Some("scale"), move |_, _| {
+                area.queue_draw();
+            });
+        }
 
         // The reservation is created and presented only after the visible
         // panel is mapped; the first draw then pins it to the resolved monitor.

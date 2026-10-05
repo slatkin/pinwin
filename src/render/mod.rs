@@ -27,6 +27,8 @@
 
 pub use images::PixbufDecoder;
 
+pub(crate) use snap::OutputScale;
+
 mod images;
 mod metrics;
 mod node_cursor;
@@ -35,6 +37,7 @@ mod node_sprites;
 mod nodes;
 #[cfg(test)]
 mod parity;
+mod snap;
 mod snapshot;
 mod sprites;
 mod text;
@@ -141,7 +144,25 @@ impl DrawState {
         self.drop_grid_node();
         self.pango_context = Some(context.clone());
         let fonts = self.fonts.get_or_insert_with(metrics::Fonts::load);
-        self.cell_metrics = metrics::measure(context, &fonts.regular);
+        let mut measured = metrics::measure(context, &fonts.regular);
+        // `measure` builds fresh metrics from the font; the output scale is
+        // per-surface draw state, not a font measurement, so it survives the
+        // update (snap-grid-edges D2).
+        measured.scale = self.cell_metrics.scale;
+        self.cell_metrics = measured;
+    }
+
+    /// Record the output scale the next draw runs at (`snap-grid-edges` D2,
+    /// D3): the shared geometry functions snap their rectangles through it.
+    /// Called from the draw hooks on every draw. A changed scale drops the
+    /// retained grid node (snap-grid-edges D7): the node holds snapped
+    /// geometry for the scale it was built at. An unchanged scale keeps it,
+    /// so a tween does not rebuild the node every frame.
+    pub(crate) fn set_scale(&mut self, scale: OutputScale) {
+        if self.cell_metrics.scale != scale {
+            self.cell_metrics.scale = scale;
+            self.drop_grid_node();
+        }
     }
 
     /// Drop the retained grid node (`render_grid_cache_drop`): the node is

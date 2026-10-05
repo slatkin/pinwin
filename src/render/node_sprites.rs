@@ -122,6 +122,7 @@ mod tests {
             ascent: 12,
             baseline: 4,
             nerd: draw_state.cell_metrics.nerd,
+            scale: draw_state.cell_metrics.scale,
         };
         draw_state
     }

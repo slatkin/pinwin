@@ -35,7 +35,7 @@ use crate::guard::{Poisoned, guard, guard_always, guard_default};
 use crate::input::InputLinks;
 use crate::layout::Layout;
 use crate::pty::Pty;
-use crate::render::DrawState;
+use crate::render::{DrawState, OutputScale};
 use crate::surfaces::{DrawFn, GridSnapshotFn, MeasureFn, PublishOutcome, SurfaceHooks, Surfaces};
 use crate::term::Terminal;
 
@@ -465,9 +465,10 @@ fn draw_hook(
     Rc::new(move |cr: &cairo::Context, width: i32, height: i32| {
         let outcome = guard(&poisoned, || {
             resolve_first_draw_monitor(&link);
-            let offset = link
-                .with(|surfaces| surfaces.draw_offset() as i32)
-                .unwrap_or(0);
+            let (offset, scale) = link
+                .with(|surfaces| (surfaces.draw_offset() as i32, surfaces.scale()))
+                .unwrap_or((0, OutputScale::default()));
+            draw.borrow_mut().set_scale(scale);
             draw.borrow_mut().set_focused(focused.get());
             draw.borrow_mut()
                 .draw(cr, &mut terminal.borrow_mut(), width, height, offset);
@@ -519,9 +520,16 @@ fn grid_snapshot_hook(
     Rc::new(move |snapshot: &gtk4::Snapshot, width: i32, height: i32| {
         guard(&poisoned, || {
             resolve_first_draw_monitor(&link);
-            let (offset, animating) = link
-                .with(|surfaces| (surfaces.draw_offset() as i32, surfaces.anim.active()))
-                .unwrap_or((0, false));
+            let (offset, animating, scale) = link
+                .with(|surfaces| {
+                    (
+                        surfaces.draw_offset() as i32,
+                        surfaces.anim.active(),
+                        surfaces.scale(),
+                    )
+                })
+                .unwrap_or((0, false, OutputScale::default()));
+            draw.borrow_mut().set_scale(scale);
             draw.borrow_mut().set_focused(focused.get());
             draw.borrow_mut().snapshot_grid(
                 snapshot,

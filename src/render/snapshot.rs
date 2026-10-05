@@ -207,6 +207,7 @@ mod tests {
     use crate::render::parity;
 
     use crate::render::DrawState;
+    use crate::render::OutputScale;
 
     /// Run one `snapshot_grid` call and render its output to a backed
     /// surface, so the frame's pixels are inspectable.
@@ -358,7 +359,10 @@ mod tests {
 
     /// The tween's stop relay drops the retained node
     /// ([`Self::drop_grid_node`]): the next tween frame rebuilds from the
-    /// terminal's current content.
+    /// terminal's current content. The scale plumbing rides the same rule
+    /// (snap-grid-edges D2/D7): an unchanged scale keeps the node — a tween
+    /// must not rebuild it every frame — and a changed scale drops it, since
+    /// the node holds snapped geometry for the scale it was built at.
     #[test]
     fn dropping_the_cache_invalidates_the_tween_node() {
         let _font = font_lock::guard();
@@ -366,6 +370,17 @@ mod tests {
         let mut terminal = terminal();
         terminal.push_pty_data(b"aaa");
         let mut cached = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
+
+        draw_state.set_scale(OutputScale::new(1.0));
+        assert!(
+            draw_state.grid_node.is_some(),
+            "an unchanged scale kept the node"
+        );
+        draw_state.set_scale(OutputScale::new(1.5));
+        assert!(
+            draw_state.grid_node.is_none(),
+            "a changed scale dropped the node"
+        );
 
         state_drop(&mut draw_state);
         terminal.push_pty_data(b"\x1b[1;1H\x1b[41mbbb");
