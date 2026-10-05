@@ -151,10 +151,13 @@ impl Tween {
     /// Advance to `now_us`. The first call stamps the tween's start time, so
     /// the first frame is exactly `from_px`.
     // Approved per-instance (#13): microsecond timestamps are tiny against
-    // f64's 52-bit mantissa; the ratio is clamped to [0, 1] below.
+    // f64's 52-bit mantissa; the ratio is clamped to [0, 1] below; the pixel
+    // delta is rounded and screen-bounded, so the float-to-int step cannot
+    // meaningfully truncate.
     #[allow(
         clippy::cast_precision_loss,
-        reason = "tween microsecond timestamps are small by construction"
+        clippy::cast_possible_truncation,
+        reason = "tween timings are small; pixel delta is rounded and screen-bounded"
     )]
     pub fn advance(&mut self, now_us: i64) -> Advance {
         let t0 = *self.t0_us.get_or_insert(now_us);
