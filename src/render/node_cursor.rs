@@ -4,23 +4,23 @@
 //! they go out as colour nodes; the geometry is shared with the cairo
 //! painter ([`decoration_rects`], [`cursor_shape`]) so the two cannot drift.
 //!
-//! The one asymmetry: the cairo painter draws the hollow block cursor as a
-//! stroked rectangle, which is geometrically the four 1 px bands the node
-//! emitter fills — same pixels, different primitives, so [`cursor_shape`]
-//! hands the cairo side the stroke rectangle and the node side decomposes it.
+//! The hollow block cursor is the four 1 px bands of its outline on both
+//! sides (`snap-grid-edges` D6): the cairo painter used to stroke a centre
+//! rectangle, which is geometrically those bands; the shared function now
+//! hands both painters the bands themselves, snapped like every other
+//! rectangle.
 use gtk4::prelude::SnapshotExt as _;
 
 use super::DrawState;
 use super::metrics::CellMetrics;
 use super::nodes::{emit_cell_text, rgba};
+use super::snap::OutputScale;
 use crate::term::cells::{Cell, Cursor, CursorStyle, StyleFlags};
 
 /// The underline band `cell`'s UNDERLINE flag asks for, as the rectangle
-/// the node emitter fills and the cairo painter strokes along its
-/// horizontal centre line — the stroke covers exactly the band, so the
-/// two painters share these numbers. `None` when the flag is unset; the
-/// split (instead of a shared list) keeps the per-cell pass
-/// allocation-free.
+/// both painters fill, snapped to the device pixel grid (`snap-grid-edges`
+/// D1, D4). `None` when the flag is unset; the split (instead of a shared
+/// list) keeps the per-cell pass allocation-free.
 pub(crate) fn underline_rect(
     cell: &Cell,
     cell_metrics: &CellMetrics,
@@ -36,7 +36,8 @@ pub(crate) fn underline_rect(
 }
 
 /// The strikethrough band `cell`'s STRIKETHROUGH flag asks for, centred on
-/// the cell's mid-line. `None` when the flag is unset.
+/// the cell's mid-line, snapped like the underline. `None` when the flag is
+/// unset.
 pub(crate) fn strikethrough_rect(
     cell: &Cell,
     cell_metrics: &CellMetrics,
@@ -52,13 +53,14 @@ pub(crate) fn strikethrough_rect(
 }
 
 /// The 1 px band across `cell` whose top edge sits `top` px below the
-/// cell's top, spanning the cell's width.
+/// cell's top, spanning the cell's width, snapped to the device pixel grid
+/// (`snap-grid-edges` D1, D4).
 fn underline_strikethrough_rect(
     cell: &Cell,
     cell_metrics: &CellMetrics,
     top: f64,
 ) -> (f64, f64, f64, f64) {
-    (
+    cell_metrics.scale.snap_rect(
         f64::from(cell.x) * f64::from(cell_metrics.cell_w),
         f64::from(cell.y) * f64::from(cell_metrics.cell_h) + top,
         f64::from(cell_metrics.cell_w),
@@ -67,30 +69,48 @@ fn underline_strikethrough_rect(
 }
 
 /// The cursor's shape as the cairo painter and the node emitter draw it
-/// (gsk-render-nodes task 2.3). `Fill` is one rectangle to fill; `Hollow` is
-/// the outline rectangle the cairo painter strokes with a 1 px line — the
-/// node emitter fills the four 1 px bands that stroke covers instead.
+/// (gsk-render-nodes task 2.3). `Fill` is one rectangle to fill; `Hollow`
+/// is the hollow block cursor's outline as the four 1 px bands its former
+/// 1 px stroke covered (`snap-grid-edges` D6) — both painters fill them.
 pub(crate) enum CursorShape {
     Fill((f64, f64, f64, f64)),
-    Hollow((f64, f64, f64, f64)),
+    Hollow([(f64, f64, f64, f64); 4]),
 }
 
-/// The geometry [`super::DrawState::draw_cursor`] paints `cursor` with.
+/// The geometry [`super::DrawState::draw_cursor`] paints `cursor` with,
+/// snapped to the device pixel grid (`snap-grid-edges` D1, D4).
 pub(crate) fn cursor_shape(cursor: &Cursor, cell_metrics: &CellMetrics) -> CursorShape {
+    let scale = cell_metrics.scale;
     let x = f64::from(cursor.x) * f64::from(cell_metrics.cell_w);
     let y = f64::from(cursor.y) * f64::from(cell_metrics.cell_h);
     let cw = f64::from(cell_metrics.cell_w);
     let ch = f64::from(cell_metrics.cell_h);
     match cursor.style {
-        CursorStyle::Bar => CursorShape::Fill((x, y, 2.0, ch)),
-        CursorStyle::Underline => CursorShape::Fill((x, y + ch - 2.0, cw, 2.0)),
-        CursorStyle::BlockHollow => CursorShape::Hollow((x + 0.5, y + 0.5, cw - 1.0, ch - 1.0)),
-        CursorStyle::Block => CursorShape::Fill((x, y, cw, ch)),
+        CursorStyle::Bar => CursorShape::Fill(scale.snap_rect(x, y, 2.0, ch)),
+        CursorStyle::Underline => CursorShape::Fill(scale.snap_rect(x, y + ch - 2.0, cw, 2.0)),
+        CursorStyle::BlockHollow => CursorShape::Hollow(hollow_bands(scale, x, y, cw, ch)),
+        CursorStyle::Block => CursorShape::Fill(scale.snap_rect(x, y, cw, ch)),
     }
 }
 
+/// The hollow block cursor's outline as the four 1 px bands a 1 px stroke
+/// over the rectangle inset by half a pixel covered: top, bottom, left,
+/// right, each snapped on its own (`snap-grid-edges` D4, D6). Bands that
+/// share an edge pass the same value to the snap — the vertical bands'
+/// outer edges are the horizontal bands' ends — so they tile the ring
+/// without a gap or an overlap.
+fn hollow_bands(scale: OutputScale, x: f64, y: f64, cw: f64, ch: f64) -> [(f64, f64, f64, f64); 4] {
+    let snap = |(x, y, w, h): (f64, f64, f64, f64)| scale.snap_rect(x, y, w, h);
+    [
+        snap((x, y, cw, 1.0)),
+        snap((x, y + ch - 1.0, cw, 1.0)),
+        snap((x, y + 1.0, 1.0, ch - 2.0)),
+        snap((x + cw - 1.0, y + 1.0, 1.0, ch - 2.0)),
+    ]
+}
+
 /// Emit `cell`'s underline/strikethrough as colour nodes, the node form of
-/// `render_grid`'s decoration strokes.
+/// `render_grid`'s decoration fills (`snap-grid-edges` D6).
 pub(crate) fn emit_decorations(
     snapshot: &gtk4::Snapshot,
     cell: &Cell,
@@ -140,15 +160,10 @@ pub(crate) fn emit_cursor(
 
     match cursor_shape(cursor, &metrics) {
         CursorShape::Fill(rect) => band(snapshot, &colour, rect),
-        // The stroke rectangle covers four 1 px bands around its outer edge
-        // — the path sits 0.5 px inside the bands — so fill those bands from
-        // the stroke's outer bounds instead of stroking.
-        CursorShape::Hollow((rx, ry, rw, rh)) => {
-            let (x, y, w, h) = (rx - 0.5, ry - 0.5, rw + 1.0, rh + 1.0);
-            band(snapshot, &colour, (x, y, w, 1.0));
-            band(snapshot, &colour, (x, y + h - 1.0, w, 1.0));
-            band(snapshot, &colour, (x, y + 1.0, 1.0, h - 2.0));
-            band(snapshot, &colour, (x + w - 1.0, y + 1.0, 1.0, h - 2.0));
+        CursorShape::Hollow(bands) => {
+            for rect in bands {
+                band(snapshot, &colour, rect);
+            }
         }
     }
 
@@ -184,7 +199,9 @@ mod tests {
 
     /// The cairo oracle for one cursor: [`DrawState::draw_cursor`] into a
     /// backed surface at `scale`. The terminal's frame must be open so
-    /// [`crate::term::Terminal::colors`] has the frame's colours.
+    /// [`crate::term::Terminal::colors`] has the frame's colours. The
+    /// drawing scale is recorded on the draw state first (`set_scale`,
+    /// `snap-grid-edges` D2), so both painters snap at `scale`.
     fn cairo_cursor(
         state: &mut DrawState,
         terminal: &crate::term::Terminal,
@@ -192,6 +209,7 @@ mod tests {
         text: &[u8],
         scale: f64,
     ) -> cairo::ImageSurface {
+        state.set_scale(super::super::OutputScale::new(scale));
         let surface = parity::backed_surface(64, 64, scale, parity::BACKDROP);
         {
             let cr = cairo::Context::new(&surface).expect("context");
@@ -201,14 +219,17 @@ mod tests {
     }
 
     /// The node side for one cursor: [`emit_cursor`] into a snapshot, drawn
-    /// to a backed surface at `scale`.
+    /// to a backed surface at `scale`. The drawing scale is recorded on the
+    /// draw state first (`set_scale`, `snap-grid-edges` D2), so both
+    /// painters snap at `scale`.
     fn node_cursor_surface(
-        state: &DrawState,
+        state: &mut DrawState,
         terminal: &crate::term::Terminal,
         cursor: &Cursor,
         text: &[u8],
         scale: f64,
     ) -> cairo::ImageSurface {
+        state.set_scale(super::super::OutputScale::new(scale));
         let snapshot = parity::snapshot();
         emit_cursor(&snapshot, state, terminal, cursor, text);
         let node = snapshot.to_node().expect("snapshot produced a node");
@@ -262,7 +283,7 @@ mod tests {
                 &[]
             };
             let mut cairo_side = cairo_cursor(&mut draw_state, &terminal, &cursor, text, 1.0);
-            let mut node_side = node_cursor_surface(&draw_state, &terminal, &cursor, text, 1.0);
+            let mut node_side = node_cursor_surface(&mut draw_state, &terminal, &cursor, text, 1.0);
             parity::assert_exact(
                 &mut cairo_side,
                 &mut node_side,
@@ -271,12 +292,14 @@ mod tests {
         }
     }
 
-    /// At scale 1.5 the two primitives could blend their fractional edges
-    /// differently; the stated tolerance is the same blend bound as
-    /// everywhere else — half the channel distance between the drawn colour
-    /// and the backdrop, rounded up.
+    /// At scale 1.5 the two painters fill the same snapped geometry: the
+    /// shared cursor and band rectangles snap each edge to the device pixel
+    /// grid (`snap-grid-edges` D1, D4), and the cairo painter fills them
+    /// unantialiased (D6), so the shapes match pixel for pixel. The block
+    /// cursor also redraws the glyph under it — that is text, which keeps
+    /// its stated blend tolerance (the text parity tests).
     #[test]
-    fn every_cursor_style_matches_the_cairo_painter_within_tolerance_at_scale_1_5() {
+    fn every_cursor_style_matches_the_cairo_painter_exactly_at_scale_1_5() {
         let _font = crate::render::font_lock::guard();
         let mut draw_state = state();
         let terminal = terminal_with_x();
@@ -284,23 +307,42 @@ mod tests {
             CursorStyle::Bar,
             CursorStyle::Underline,
             CursorStyle::BlockHollow,
-            CursorStyle::Block,
         ] {
             let cursor = cursor(style, false);
-            let text: &[u8] = if style == CursorStyle::Block {
-                b"X"
-            } else {
-                &[]
-            };
-            let mut cairo_side = cairo_cursor(&mut draw_state, &terminal, &cursor, text, 1.5);
-            let mut node_side = node_cursor_surface(&draw_state, &terminal, &cursor, text, 1.5);
-            parity::assert_within(
+            let mut cairo_side = cairo_cursor(&mut draw_state, &terminal, &cursor, &[], 1.5);
+            let mut node_side = node_cursor_surface(&mut draw_state, &terminal, &cursor, &[], 1.5);
+            parity::assert_exact(
                 &mut cairo_side,
                 &mut node_side,
-                parity::BLEND_TOLERANCE,
                 &format!("cursor {style:?} at scale 1.5"),
             );
         }
+    }
+
+    /// The block cursor at scale 1.5: the snapped shape and the redrawn
+    /// glyph both match exactly (the glyph's measured text delta on this
+    /// suite is 0, like the text parity tests').
+    #[test]
+    fn the_block_cursor_matches_exactly_at_scale_1_5() {
+        let _font = crate::render::font_lock::guard();
+        let mut draw_state = state();
+        let terminal = terminal_with_x();
+        let cursor = cursor(CursorStyle::Block, false);
+        let mut cairo_shape = cairo_cursor(&mut draw_state, &terminal, &cursor, &[], 1.5);
+        let mut node_shape = node_cursor_surface(&mut draw_state, &terminal, &cursor, &[], 1.5);
+        parity::assert_exact(
+            &mut cairo_shape,
+            &mut node_shape,
+            "block cursor shape at scale 1.5",
+        );
+
+        let mut cairo_glyph = cairo_cursor(&mut draw_state, &terminal, &cursor, b"X", 1.5);
+        let mut node_glyph = node_cursor_surface(&mut draw_state, &terminal, &cursor, b"X", 1.5);
+        parity::assert_exact(
+            &mut cairo_glyph,
+            &mut node_glyph,
+            "block cursor glyph at scale 1.5",
+        );
     }
 
     /// Full-frame parity per DECSCUSR-reachable style: the cursor rides the

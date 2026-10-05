@@ -276,18 +276,15 @@ impl DrawState {
             if cell.flags.contains(StyleFlags::UNDERLINE)
                 || cell.flags.contains(StyleFlags::STRIKETHROUGH)
             {
-                // The same rectangles the node emitter fills
-                // (node_cursor::underline_rect/strikethrough_rect), stroked
-                // as their centre lines — identical geometry, so the two
-                // painters cannot drift.
-                cr.set_line_width(1.0);
+                // The same snapped rectangles the node emitter fills
+                // (node_cursor::underline_rect/strikethrough_rect), filled
+                // unantialiased like them (`snap-grid-edges` D6) — identical
+                // geometry, so the two painters cannot drift.
                 for (x, y, w, h) in node_cursor::underline_rect(&cell, &cell_metrics)
                     .into_iter()
                     .chain(node_cursor::strikethrough_rect(&cell, &cell_metrics))
                 {
-                    cr.move_to(x, y + h / 2.0);
-                    cr.line_to(x + w, y + h / 2.0);
-                    let _ = cr.stroke();
+                    sprites::fill_rect(cr, x, y, w, h);
                 }
             }
 
@@ -350,13 +347,12 @@ impl DrawState {
 
         match node_cursor::cursor_shape(cursor, &cell_metrics) {
             node_cursor::CursorShape::Fill((x, y, w, h)) => {
-                cr.rectangle(x, y, w, h);
-                let _ = cr.fill();
+                sprites::fill_rect(cr, x, y, w, h);
             }
-            node_cursor::CursorShape::Hollow((x, y, w, h)) => {
-                cr.set_line_width(1.0);
-                cr.rectangle(x, y, w, h);
-                let _ = cr.stroke();
+            node_cursor::CursorShape::Hollow(bands) => {
+                for (x, y, w, h) in bands {
+                    sprites::fill_rect(cr, x, y, w, h);
+                }
             }
         }
 

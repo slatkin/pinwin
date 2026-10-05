@@ -15,8 +15,10 @@ use super::snap::OutputScale;
 /// edges of adjacent same-colour blocks fall between device pixels, and two
 /// antialiased partial-coverage edges composite to a faint seam instead of a
 /// solid fill. Without antialiasing they snap to device pixels and tile
-/// exactly (`fill_rect`).
-fn fill_rect(cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64) {
+/// exactly (`fill_rect`). Shared with the cairo painter's decoration and
+/// cursor fills, which fill the same snapped bands instead of stroking them
+/// (`snap-grid-edges` D6).
+pub(crate) fn fill_rect(cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64) {
     let saved = cr.antialias();
     cr.set_antialias(cairo::Antialias::None);
     cr.rectangle(x, y, w, h);
