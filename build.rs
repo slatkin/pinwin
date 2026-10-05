@@ -30,6 +30,15 @@ const GHOSTTY_COMMIT: &str = "3a3047f6b62a791fd8b12d9f07a85b3d2160370b";
 /// Zig optimise mode for libghostty-vt. ghostty's build defaults to Debug, which makes kitty
 /// graphics (image decode and storage) slow; ReleaseSafe matches the pre-Rust build.
 const GHOSTTY_OPTIMIZE: &str = "ReleaseSafe";
+
+/// Explicit CPU model for libghostty-vt. Without `-Dcpu`, zig targets the
+/// build host's native CPU, and ghostty's bundled vectorized memset
+/// (`src/quirks_memset.zig`, which overrides compiler_rt for everything in
+/// the archive, including mimalloc) picks the host's vector width with no
+/// runtime guard: a CI runner with AVX-512 shipped binaries that SIGILL at
+/// the first allocation on every CPU without AVX-512. x86_64_v2
+/// (SSE4.2/POPCNT, ~2009+) is the distributed floor.
+const GHOSTTY_CPU: &str = "x86_64_v2";
 const GHOSTTY_REPO: &str = "https://github.com/ghostty-org/ghostty.git";
 
 fn main() {
@@ -52,10 +61,11 @@ fn main() {
         .unwrap_or_else(|| out_dir.join("ghostty-src"));
     let stamp = prefix.join("source-stamp");
     let identity = format!(
-        "{}\n{}\n{}\n",
+        "{}\n{}\n{}\n{}\n",
         source_dir.display(),
         GHOSTTY_COMMIT,
-        GHOSTTY_OPTIMIZE
+        GHOSTTY_OPTIMIZE,
+        GHOSTTY_CPU
     );
 
     let stale = !archive.is_file()
@@ -151,6 +161,7 @@ fn build_ghostty(source: &Path, prefix: &Path, out_dir: &Path) {
     let status = Command::new("zig")
         .args(["build", "-Demit-lib-vt"])
         .arg(format!("-Doptimize={GHOSTTY_OPTIMIZE}"))
+        .arg(format!("-Dcpu={GHOSTTY_CPU}"))
         .arg("--prefix")
         .arg(prefix)
         .arg("--cache-dir")
