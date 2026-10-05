@@ -17,8 +17,8 @@
 - [x] 3.3 Add the socket path from `$XDG_RUNTIME_DIR/pinwin/$WAYLAND_DISPLAY-<name>.sock`, with the directory at mode 0700. Add the duplicate check (a successful connect exits 2), stale-file removal, and bind, all before any surface opens. Verify: tests that a stale file is replaced and that a live listener on the path makes the start fail.
 - [x] 3.4 Run the listener on a scoped thread that answers `focus\n` with `ok\n` or `error\n` from `request_focus`. Remove the socket file after the child exits. Verify: a test drives the protocol over a socket pair against a stub, and the socket file is gone after `pinwin true` exits.
 - [x] 3.5 Implement the client: connect, write `focus\n`, read the reply with a bounded wait, exit 0 on `ok`, and exit 1 with a message otherwise. Verify: `pinwin --focus notes` with no host prints a message and exits 1.
-- [ ] 3.6 Add `PINWIN_NAME` and `--focus [name]` to the usage block at the top of `src/main.rs` and to the README. Add the niri bind example `Mod+P { spawn "pinwin" "--focus"; }`. Verify: the docs name both forms.
-- [ ] 3.7 Test the spec scenarios on niri: focus the default instance, focus one of two named instances, the duplicate name, and a SIGKILL-ed instance followed by a new start. Verify: each scenario in `specs/pinwin-panel/spec.md` under "Focus request from the command line" behaves as written.
+- [x] 3.6 Add `PINWIN_NAME` and `--focus [name]` to the usage block at the top of `src/main.rs` and to the README. Add the niri bind example `Mod+P { spawn "pinwin" "--focus"; }`. Verify: the docs name both forms.
+- [x] 3.7 Test the spec scenarios on niri: focus the default instance, focus one of two named instances, the duplicate name, and a SIGKILL-ed instance followed by a new start. Verify: each scenario in `specs/pinwin-panel/spec.md` under "Focus request from the command line" behaves as written.
 
 ## 4. Follow-up for downstream hosts
 
