@@ -25,7 +25,6 @@ use std::rc::{Rc, Weak};
 
 use crate::guard::{Poisoned, guard};
 
-use gtk4::cairo;
 use gtk4::gdk;
 use gtk4::prelude::*;
 use gtk4_layer_shell as layer_shell;
@@ -39,68 +38,12 @@ use crate::render::OutputScale;
 
 mod area;
 mod gap;
+mod hooks;
 
 pub use area::GridArea;
+pub use hooks::{DrawFn, GridSnapshotFn, MeasureFn, SurfaceHooks};
 
 use gap::{HeldGap, gap_tween_decision, reserve_gap, staged_publish, start_held_gap};
-
-/// A drawing-area draw function body (`render.c`'s `on_draw`).
-pub type DrawFn = dyn Fn(&cairo::Context, i32, i32);
-
-/// The grid frame's GSK snapshot emission (poc-gsk-texture-grid task 2.1,
-/// gsk-render-nodes row 4.1): emit the frame — the theme background, the
-/// grid (the retained node translated while a tween runs, rebuilt on every
-/// non-tween draw) and the focus accent — into `snapshot` and report `true`;
-/// `false` falls back to the ordinary cairo draw path. The extents are the
-/// drawing area's width and height. The hook body reads the tween state off
-/// the surfaces handle, builds or reuses the grid node on the renderer, and
-/// draws nothing when the panel's D5 latch is set.
-pub type GridSnapshotFn = dyn Fn(&gtk4::Snapshot, i32, i32) -> bool;
-
-/// A cell measurement against a widget (`render.c`'s
-/// `cell_metrics_update`), reporting the cell size in pixels.
-pub type MeasureFn = dyn Fn(&gtk4::Widget) -> (i32, i32);
-
-/// The hooks rows 3.6 and 4.1 fill in. Every hook is an `Rc` closure so the
-/// surfaces can call it from `&self`; hook bodies must not call back into
-/// [`Surfaces`] methods synchronously, since those share the same glue state.
-pub struct SurfaceHooks {
-    /// `render.c`'s `on_draw` (row 3.6): the drawing area's draw function,
-    /// receiving the cairo context and the pixel extents.
-    pub draw: Rc<DrawFn>,
-    /// `pty.c`'s `apply_size` (rows 3.6/4.1): recompute the grid from the
-    /// drawing area's allocation and push it through the terminal and the pty.
-    /// `false` reports a terminal that could not be allocated; the previous
-    /// grid stays (`glue_publish_layout`'s `GLUE_ERR_TERMINAL` path).
-    pub apply_size: Rc<dyn Fn() -> bool>,
-    /// `render.c`'s `cell_metrics_update` (rows 3.6/4.1): measure the font on
-    /// the window and report the cell size in pixels.
-    pub measure: Rc<MeasureFn>,
-    /// `render.c`'s `render_grid_cache_drop` (row 3.6): drop the tween's
-    /// retained grid node (gsk-render-nodes row 4.1) so the next tween
-    /// rebuilds it.
-    pub tween_cache_drop: Rc<dyn Fn()>,
-    /// The grid frame's GSK snapshot emission (poc-gsk-texture-grid task
-    /// 2.1, gsk-render-nodes row 4.1), called by the drawing area subclass's
-    /// `snapshot` override before it chains to the cairo draw path.
-    pub grid_snapshot: Rc<GridSnapshotFn>,
-    /// `pinwin_api.c`'s start handshake (row 4.1): `true` once the panel is on
-    /// screen with live metrics, `false` when the GTK side failed. Only the
-    /// first result counts.
-    pub start_result: Rc<dyn Fn(bool)>,
-    /// The pty tween-flag relay (row 4.1): `Pty::set_tween_active`, called on
-    /// every tween start and stop so the pty read drain bounds itself.
-    pub set_tween_active: Rc<dyn Fn(bool)>,
-    /// The terminal's live grid width in pixels: its current cols times the
-    /// cell width. While a width tween runs the grid resize is deferred to the
-    /// tween's end (`publish`'s `deferred_grid`), so the live grid lags the
-    /// applied [`Surfaces::cols`] — and the draw shift that keeps the grid
-    /// against the docked edge must be computed against the grid that is
-    /// actually drawn. A shift computed from the applied cols walks the old
-    /// grid off the docked edge and draws nothing but background for the whole
-    /// tween.
-    pub live_grid_px: Rc<dyn Fn() -> i32>,
-}
 
 /// The outcome of publishing a layout (`glue_publish_layout`'s return codes).
 /// The `panel` row (4.1) maps these onto `PinwinError`: `NotLive` is
@@ -255,6 +198,28 @@ pub struct Surfaces {
     poisoned: Poisoned,
 }
 
+impl std::fmt::Debug for Surfaces {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The GTK handles, hooks, tween and image state have no `Debug`
+        // impl; the applied layout and its flags are what a test failure
+        // needs to identify the panel.
+        f.debug_struct("Surfaces")
+            .field("layout", &self.layout.get())
+            .field("cols", &self.cols.get())
+            .field("held_gap", &self.held_gap.get())
+            .field("gap_tweening", &self.gap_tweening.get())
+            .field("accent", &self.accent)
+            .field("cell_w", &self.cell_w.get())
+            .field("cell_h", &self.cell_h.get())
+            .field("latch", &self.latch.get())
+            .field("deferred_grid", &self.deferred_grid.get())
+            .field("stale_grid_px", &self.stale_grid_px.get())
+            .field("closed", &self.closed.get())
+            .field("poisoned", &self.poisoned)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The tween stop's deferred-grid gate ([`Surfaces::fire_deferred_grid_resize`]):
 /// apply when an animated apply left the resize pending and the panel is
 /// still open. Split out so the gate is unit testable without a display.
@@ -286,6 +251,7 @@ impl Surfaces {
     /// separately through [`Surfaces::attach_input`], once the caller has
     /// composed their links; the draw function comes from
     /// [`SurfaceHooks::draw`].
+    #[must_use]
     pub fn build(
         app: &gtk4::Application,
         layout: Layout,
@@ -300,16 +266,14 @@ impl Surfaces {
         win.set_layer(Layer::Overlay);
         win.set_keyboard_mode(keyboard_mode(keyboard));
 
-        let area = GridArea::new(poisoned.clone(), hooks.grid_snapshot.clone());
-        {
-            let draw = hooks.draw.clone();
-            let draw_poisoned = poisoned.clone();
-            area.set_draw_func(move |_area, cr, width, height| {
-                let _ = guard(&draw_poisoned, || draw(cr, width, height));
-            });
-        }
+        let area = GridArea::new(poisoned.clone(), Rc::clone(&hooks.grid_snapshot));
+        let draw = Rc::clone(&hooks.draw);
+        let draw_poisoned = poisoned.clone();
+        area.set_draw_func(move |_area, cr, width, height| {
+            let _ = guard(&draw_poisoned, || draw(cr, width, height));
+        });
         // pty.c's on_area_resize: every allocation change runs apply_size.
-        let resize_hook = hooks.apply_size.clone();
+        let resize_hook = Rc::clone(&hooks.apply_size);
         let resize_poisoned = poisoned.clone();
         area.connect_resize(move |_area, _width, _height| {
             let _ = guard(&resize_poisoned, || {
@@ -376,9 +340,9 @@ impl Surfaces {
     /// The tween hooks, wired from a weak self reference so the surfaces and
     /// the anim do not keep each other alive.
     fn anim_hooks(weak: &Weak<Surfaces>) -> AnimHooks {
-        let frame = weak.clone();
-        let stop = weak.clone();
-        let finish = weak.clone();
+        let frame = Weak::clone(weak);
+        let stop = Weak::clone(weak);
+        let finish = Weak::clone(weak);
         AnimHooks {
             on_frame: Box::new(move |px| {
                 if let Some(surfaces) = frame.upgrade() {
@@ -400,7 +364,7 @@ impl Surfaces {
 
     /// Attach the input controllers (`attach_controllers`). Call once after
     /// [`Surfaces::build`], with the links the panel composed.
-    pub fn attach_input(&self, links: input::InputLinks) {
+    pub fn attach_input(&self, links: &input::InputLinks) {
         input::attach(self.area.upcast_ref(), links);
     }
 
@@ -423,7 +387,7 @@ impl Surfaces {
 
     /// The applied width in pixels (`g_cols * g_cell_w`).
     fn grid_px(&self) -> i32 {
-        self.cols.get() as i32 * self.cell_w.get()
+        i32::from(self.cols.get()) * self.cell_w.get()
     }
 
     /// The panel's current pixel width: the animated width while a tween runs,
@@ -437,12 +401,7 @@ impl Surfaces {
     /// surface — before map, or after close — and a value that is not
     /// positive and finite both give 1.
     pub(crate) fn scale(&self) -> OutputScale {
-        OutputScale::new(
-            self.win
-                .surface()
-                .map(|surface| surface.scale())
-                .unwrap_or(1.0),
-        )
+        OutputScale::new(self.win.surface().map_or(1.0, |surface| surface.scale()))
     }
 
     /// The drawing shift input x coordinates subtract (`glue_anim_draw_offset`).
@@ -459,6 +418,7 @@ impl Surfaces {
     /// controllers all use this one snapped value, so the drawn cell and the
     /// cell under the pointer agree and a moving frame cannot put a cell
     /// edge between two device pixels.
+    #[must_use]
     pub fn draw_offset(&self) -> f64 {
         self.draw_offset_at(self.scale())
     }
@@ -524,8 +484,8 @@ impl Surfaces {
     }
 
     /// Apply the panel width to the drawing area and the window default size
-    /// (`apply_panel_width`). GTK4 has no gtk_window_resize and
-    /// gtk_window_set_default_size does not move a mapped window, so the
+    /// (`apply_panel_width`). GTK4 has no `gtk_window_resize` and
+    /// `gtk_window_set_default_size` does not move a mapped window, so the
     /// drawing area's natural width is the mechanism; the default size is a
     /// size floor, so leaving the launch value there would pin the panel at
     /// its launch width once it shrinks.

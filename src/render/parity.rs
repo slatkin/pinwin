@@ -6,7 +6,7 @@
 //! display, so the node emitter is testable exactly like the cairo painter.
 //! The one API that cannot run headless is `gtk4::Snapshot::new()`: it
 //! asserts GTK initialization, which needs a display. A `GtkSnapshot` is a
-//! plain GObject though, so the tests build it with `glib::Object::new` —
+//! plain `GObject` though, so the tests build it with `glib::Object::new` —
 //! the same type the production emitter writes into.
 
 use gtk4::gsk;
@@ -68,10 +68,8 @@ pub(super) fn cairo_frame(
 ) -> cairo::ImageSurface {
     draw_state.set_scale(OutputScale::new(scale));
     let surface = backed_surface(width, height, scale, BACKDROP);
-    {
-        let cr = cairo::Context::new(&surface).expect("context");
-        draw_state.draw(&cr, terminal, width, height, 0.0);
-    }
+    let cr = cairo::Context::new(&surface).expect("context");
+    draw_state.draw(&cr, terminal, width, height, 0.0);
     surface
 }
 
@@ -163,14 +161,14 @@ pub(super) fn diff(a: &mut cairo::ImageSurface, b: &mut cairo::ImageSurface) -> 
     b.flush();
     let (width, height) = (a.width(), a.height());
     assert_eq!((width, height), (b.width(), b.height()), "same dimensions");
-    let stride = a.stride() as usize;
+    let stride = a.stride().cast_unsigned() as usize;
     let a_data = a.data().expect("surface data");
     let b_data = b.data().expect("surface data");
     let mut result = Diff {
         differing: 0,
         max_delta: 0,
     };
-    for y in 0..height as usize {
+    for y in 0..height.cast_unsigned() as usize {
         let a_row = &a_data[y * stride..y * stride + usize::try_from(width).unwrap() * 4];
         let b_row = &b_data[y * stride..y * stride + usize::try_from(width).unwrap() * 4];
         for (a_px, b_px) in a_row

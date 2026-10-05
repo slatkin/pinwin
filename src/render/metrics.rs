@@ -58,7 +58,7 @@ impl Fonts {
 /// The Nerd Font constraints are expressed against Ghostty's grid metrics
 /// (`g_nerd_*` in `glue_internal.h`): the face box is the unrounded line box,
 /// the baseline is rounded to the pixel grid, and the "icon height" is the
-/// font_patcher heuristic (2*cap + line height) / 3 for one-cell constraints.
+/// `font_patcher` heuristic (2*cap + line height) / 3 for one-cell constraints.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct NerdMetrics {
     pub face_w: f64,
@@ -94,7 +94,6 @@ pub(crate) struct CellMetrics {
 /// `pango::Context` works, so tests can build one from a pangocairo font map
 /// (`cell_metrics_update` in `render.c`).
 pub(crate) fn measure(context: &pango::Context, font: &FontDescription) -> CellMetrics {
-    // SAFETY: none; `metrics` is a safe pango call.
     let metrics = context.metrics(Some(font), None);
     let ascent = metrics.ascent();
     let descent = metrics.descent();
@@ -118,7 +117,7 @@ pub(crate) fn measure(context: &pango::Context, font: &FontDescription) -> CellM
     // Round the baseline away from zero to the pixel grid, as the C does with
     // `(int32_t)(cell_baseline + 0.5 * (cell_baseline < 0 ? -1 : 1))`.
     cell_baseline =
-        (cell_baseline + 0.5 * if cell_baseline < 0.0 { -1.0 } else { 1.0 }) as i32 as f64;
+        f64::from((cell_baseline + 0.5 * if cell_baseline < 0.0 { -1.0 } else { 1.0 }) as i32);
 
     CellMetrics {
         cell_w,

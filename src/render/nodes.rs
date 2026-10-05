@@ -41,7 +41,7 @@ use crate::term::cells::{Cell, Rgb, StyleFlags, Wide, first_codepoint};
 /// An [`Rgb`] as a GDK colour. GDK stores the channels as `f32`; the cairo
 /// path divides in `f64`. Both quantize to the same 16-bit colour when
 /// drawn, which is what the scale-1 parity test asserts.
-pub(super) fn rgba(color: &Rgb) -> gdk::RGBA {
+pub(super) fn rgba(color: Rgb) -> gdk::RGBA {
     gdk::RGBA::new(
         f32::from(color.r) / 255.0,
         f32::from(color.g) / 255.0,
@@ -87,7 +87,7 @@ impl DrawState {
     /// itself translated to the docked edge (gsk-render-nodes design, Post-task decisions: C52).
     pub fn emit_theme_background(&self, snapshot: &gtk4::Snapshot, width: i32, height: i32) {
         snapshot.append_color(
-            &rgba(&self.theme_background),
+            &rgba(self.theme_background),
             &graphene::Rect::new(0.0, 0.0, width as f32, height as f32),
         );
     }
@@ -116,7 +116,7 @@ impl DrawState {
         while let Some(cell) = terminal.cell_next() {
             if let Some((x, y, w, h)) = cell_background_rect(&cell, metrics, height) {
                 snapshot.append_color(
-                    &rgba(&cell.bg),
+                    &rgba(cell.bg),
                     &graphene::Rect::new(x as f32, y as f32, w as f32, h as f32),
                 );
             }
@@ -186,9 +186,9 @@ impl DrawState {
                 continue;
             }
             let fg = if cell.has_fg {
-                &cell.fg
+                cell.fg
             } else {
-                &self.theme_foreground
+                self.theme_foreground
             };
             let colour = rgba(fg);
             let cp = first_codepoint(cell.text_bytes());
@@ -235,7 +235,7 @@ pub(super) fn emit_cell_text(
     cell: &Cell,
     fonts: &FontsRef<'_>,
     cell_metrics: &CellMetrics,
-    fg: &Rgb,
+    fg: Rgb,
 ) {
     let desc = fonts.for_flags(
         cell.flags.contains(StyleFlags::BOLD),
@@ -265,8 +265,16 @@ pub(super) fn emit_cell_text(
                     - (f64::from(ink.y() + ink.height()) - f64::from(baseline)),
             };
 
-            let constrained =
-                constrain(&c, &m, glyph, if cell.cw >= 1 { cell.cw as u32 } else { 1 });
+            let constrained = constrain(
+                &c,
+                &m,
+                glyph,
+                if cell.cw >= 1 {
+                    cell.cw.cast_unsigned()
+                } else {
+                    1
+                },
+            );
 
             snapshot.save();
             snapshot.translate(&graphene::Point::new(
@@ -334,15 +342,13 @@ mod tests {
     ) -> cairo::ImageSurface {
         draw_state.set_scale(super::super::OutputScale::new(scale));
         let surface = parity::backed_surface(width, height, scale, BACKDROP);
-        {
-            let cr = cairo::Context::new(&surface).expect("context");
-            set_rgb(&cr, &draw_state.theme_background);
-            cr.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
-            let _ = cr.fill();
-            assert!(terminal.frame_begin(), "frame began");
-            super::super::paint_backgrounds(&cr, terminal, draw_state.cell_metrics, height);
-            terminal.frame_end();
-        }
+        let cr = cairo::Context::new(&surface).expect("context");
+        set_rgb(&cr, draw_state.theme_background);
+        cr.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
+        let _ = cr.fill();
+        assert!(terminal.frame_begin(), "frame began");
+        super::super::paint_backgrounds(&cr, terminal, draw_state.cell_metrics, height);
+        terminal.frame_end();
         surface
     }
 

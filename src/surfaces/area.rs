@@ -36,6 +36,14 @@ pub struct GridAreaImp {
     state: OnceCell<(Rc<GridSnapshotFn>, Poisoned)>,
 }
 
+impl std::fmt::Debug for GridAreaImp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The hook closure has no `Debug` impl; the latch is set-once
+        // construction state, not per-frame data.
+        f.debug_struct("GridAreaImp").finish_non_exhaustive()
+    }
+}
+
 #[glib::object_subclass]
 impl ObjectSubclass for GridAreaImp {
     const NAME: &'static str = "PinwinGridArea";

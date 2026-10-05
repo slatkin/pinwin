@@ -50,7 +50,7 @@ pub(crate) fn emit_cell_sprite(
 
 /// A corner or powerline triangle as a per-cell cairo node: the same
 /// `move_to`/`line_to`/fill-or-stroke sequence [`sprites::draw_sprite`]
-/// (super::sprites::draw_sprite) runs, recorded into the snapshot. The
+/// (`super::sprites::draw_sprite`) runs, recorded into the snapshot. The
 /// node's bounds are the cell plus [`PAD`] on every side — the bounds clip,
 /// and the hollow powerline's 2 px stroke spills up to 1 px past the cell,
 /// which the cairo painter draws unclipped.
