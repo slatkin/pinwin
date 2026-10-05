@@ -21,7 +21,8 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use pinwin::layout::{Layout, Side};
 use pinwin::panel::{Panel, PinwinError, Startup};
@@ -31,7 +32,7 @@ mod ipc;
 mod settings;
 
 use cli::{Mode, default_command, parse_args};
-use ipc::{BindError, InstanceName};
+use ipc::{BindError, FocusError, InstanceName};
 use settings::read_settings;
 
 /// The child's process id, read by the signal handler; zero means "no child
@@ -160,6 +161,45 @@ fn child_exec(child: &ChildCommand) -> ! {
     unsafe { libc::_exit(127) }
 }
 
+/// The `--focus` client side (keyboard-focus-request row 3.5): ask the host
+/// that owns the name's socket for focus and report the reply. `ok` exits 0,
+/// a missing or failing host exits 1, and an environment error — an unusable
+/// socket path — exits 2 like the other environment errors.
+fn run_focus_client(name: Option<InstanceName>) -> i32 {
+    let name = name.unwrap_or_else(InstanceName::default_instance);
+    let runtime_dir = env::var_os("XDG_RUNTIME_DIR");
+    let display = env::var_os("WAYLAND_DISPLAY");
+    match ipc::request_focus_from_host(runtime_dir.as_deref(), display.as_deref(), &name) {
+        Ok(()) => 0,
+        Err(FocusError::Environment(message)) => {
+            eprintln!("{message}");
+            2
+        }
+        Err(FocusError::NotAnswered(message)) => {
+            eprintln!("{message}");
+            1
+        }
+    }
+}
+
+/// Forward SIGINT and SIGTERM to the child as SIGHUP: install [`on_term`]
+/// for both signals. The handlers are installed in the parent only, after
+/// the fork, like the C.
+fn install_term_forwarding() {
+    // SAFETY: `on_term` is async-signal-safe and the libc signal handler
+    // signature matches.
+    unsafe {
+        libc::signal(
+            libc::SIGINT,
+            on_term as extern "C" fn(i32) as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            on_term as extern "C" fn(i32) as libc::sighandler_t,
+        );
+    }
+}
+
 /// The whole program; returns the exit status.
 fn run() -> i32 {
     let args: Vec<OsString> = env::args_os().skip(1).collect();
@@ -179,11 +219,11 @@ fn run() -> i32 {
             return 2;
         }
     };
-    // The focus client is a later row of keyboard-focus-request; the parsed
-    // and validated mode is already the contract of rows 3.1 and 3.2.
-    let Mode::Host { command } = mode else {
-        eprintln!("pinwin: --focus is not implemented yet");
-        return 1;
+    // The focus client asks the host that owns the name's socket for focus
+    // and reports the reply (keyboard-focus-request row 3.5).
+    let command = match mode {
+        Mode::Focus { name } => return run_focus_client(name),
+        Mode::Host { command } => command,
     };
     let command = if command.is_empty() {
         default_command()
@@ -194,7 +234,7 @@ fn run() -> i32 {
     // The focus socket must be ours before any surface opens: a live host
     // with the same name on this display makes this start exit 2 instead
     // (keyboard-focus-request design).
-    let listener = match bind_focus_socket(&settings.name) {
+    let (listener, socket_file) = match bind_focus_socket(&settings.name) {
         Ok(listener) => listener,
         Err(message) => {
             eprintln!("{message}");
@@ -240,6 +280,8 @@ fn run() -> i32 {
     };
     if pid < 0 {
         eprintln!("pinwin: forkpty: {}", io::Error::last_os_error());
+        drop(listener);
+        ipc::remove_socket_file(&socket_file);
         return 1;
     }
     if pid == 0 {
@@ -249,18 +291,7 @@ fn run() -> i32 {
 
     // Forward SIGINT/SIGTERM to the child as SIGHUP (installed in the parent
     // only, after the fork, like the C).
-    // SAFETY: `on_term` is async-signal-safe and the libc signal handler
-    // signature matches.
-    unsafe {
-        libc::signal(
-            libc::SIGINT,
-            on_term as extern "C" fn(i32) as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGTERM,
-            on_term as extern "C" fn(i32) as libc::sighandler_t,
-        );
-    }
+    install_term_forwarding();
 
     // Start the panel on the pty master. On failure the child is hung up and
     // reaped and the host exits 1.
@@ -278,14 +309,28 @@ fn run() -> i32 {
             };
             eprintln!("pinwin: cannot start the panel ({reason})");
             hang_up_child_and_wait(pid);
+            drop(listener);
+            ipc::remove_socket_file(&socket_file);
             return 1;
         }
     };
 
-    let status = wait_for_child(pid);
-    // Dropping the handle closes the panel (the C's `pinwin_stop`); the
-    // focus socket stays bound until the listener row of the change wires
-    // the accept loop and the cleanup around it.
+    // The listener answers focus requests while the child runs (row 3.4):
+    // a scoped thread borrows the panel — the request posts to the GTK
+    // thread exactly like `Panel::apply_layout` — and ends within one accept
+    // poll of the shutdown flag the main thread sets once the child exits.
+    // The socket file goes with it: the host removes the file it created.
+    let shutdown = AtomicBool::new(false);
+    let status = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            ipc::serve_focus_requests(&listener, &|| panel.request_focus(), &shutdown);
+        });
+        let status = wait_for_child(pid);
+        shutdown.store(true, Ordering::Relaxed);
+        ipc::remove_socket_file(&socket_file);
+        status
+    });
+    // Dropping the handle closes the panel (the C's `pinwin_stop`).
     drop(listener);
     drop(panel);
     child_exit_status(status)
@@ -293,23 +338,28 @@ fn run() -> i32 {
 
 /// Bind the focus socket for this instance, before any surface opens: a live
 /// host with the same name on this display makes the start exit 2 instead
-/// (keyboard-focus-request design). Errors carry the full `pinwin:` message.
-fn bind_focus_socket(name: &InstanceName) -> Result<net::UnixListener, String> {
+/// (keyboard-focus-request design). Returns the listener together with the
+/// socket file's path, which the host removes after its child exits. Errors
+/// carry the full `pinwin:` message.
+fn bind_focus_socket(name: &InstanceName) -> Result<(net::UnixListener, PathBuf), String> {
     // No lossy conversion: the runtime directory goes into the path as the
     // environment provided it, and the display is validated in
     // [`ipc::socket_path`].
     let runtime_dir = env::var_os("XDG_RUNTIME_DIR");
     let display = env::var_os("WAYLAND_DISPLAY");
     let socket_path = ipc::socket_path(runtime_dir.as_deref(), display.as_deref(), name)?;
-    ipc::bind_instance_socket(&socket_path).map_err(|error| match error {
-        BindError::Duplicate => {
-            format!(
-                "pinwin: another pinwin already owns {}",
-                socket_path.display()
-            )
-        }
-        BindError::Failed(error) => format!("pinwin: {}: {error}", socket_path.display()),
-    })
+    match ipc::bind_instance_socket(&socket_path) {
+        Ok(listener) => Ok((listener, socket_path)),
+        Err(error) => Err(match error {
+            BindError::Duplicate => {
+                format!(
+                    "pinwin: another pinwin already owns {}",
+                    socket_path.display()
+                )
+            }
+            BindError::Failed(error) => format!("pinwin: {}: {error}", socket_path.display()),
+        }),
+    }
 }
 
 fn main() {
