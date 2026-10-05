@@ -77,6 +77,15 @@ impl FrameLog {
     /// `(frame count, mean, p95, max)` gap in ms over the recorded ticks;
     /// `None` with fewer than two ticks, where no gap exists. The p95 is the
     /// nearest-rank order statistic over the sorted gaps.
+    // Approved per-instance (#13): microsecond gaps and sample counts are
+    // tiny against f64's 52-bit mantissa, and the rank index is
+    // ceil-clamped to at least 1, so no truncation or sign loss can occur.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "tween timings/counts are small by construction; rank is ceil-clamped"
+    )]
     fn summary(&self) -> Option<(usize, f64, f64, f64)> {
         if self.times.len() < 2 {
             return None;
@@ -141,6 +150,12 @@ impl Tween {
 
     /// Advance to `now_us`. The first call stamps the tween's start time, so
     /// the first frame is exactly `from_px`.
+    // Approved per-instance (#13): microsecond timestamps are tiny against
+    // f64's 52-bit mantissa; the ratio is clamped to [0, 1] below.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "tween microsecond timestamps are small by construction"
+    )]
     pub fn advance(&mut self, now_us: i64) -> Advance {
         let t0 = *self.t0_us.get_or_insert(now_us);
         let t = (now_us - t0) as f64 / self.dur_us as f64;
