@@ -8,9 +8,9 @@
 
 ## 2. Held-gap surfaces
 
-- [ ] 2.1 Store the held (side, zone) gap in `Surfaces`, update it only on pushing publishes and side switches, and draw the reserve surface from it while the panel follows the current layout, and verify `cargo test surfaces` passes.
-- [ ] 2.2 Admit push/cover-only differences in the animate eligibility and tween the gap only for pushing targets with a differing strip (panel always tweens), keeping snap rules, and verify the animation unit tests pass.
-- [ ] 2.3 Validate the staged layout in `publish` before mutating applied layout or held gap, default a covering start to an empty held strip, and verify `cargo test surfaces panel` passes.
+- [x] 2.1 Store the held (side, zone) gap in `Surfaces`, update it only on pushing publishes and side switches, and draw the reserve surface from it while the panel follows the current layout, and verify `cargo test surfaces` passes.
+- [x] 2.2 Admit push/cover-only differences in the animate eligibility and tween the gap only for pushing targets with a differing strip (panel always tweens), keeping snap rules, and verify the animation unit tests pass.
+- [x] 2.3 Validate the staged layout in `publish` before mutating applied layout or held gap, default a covering start to an empty held strip, and verify `cargo test surfaces panel` passes.
 
 ## 3. API docs and demo exercise
 
