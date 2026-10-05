@@ -69,6 +69,7 @@ impl Layout {
     /// Build a layout. `cols` is the panel width in terminal columns; the
     /// gutters are in logical pixels. The layout pushes tiles aside; opt in
     /// to covering with [`Layout::covering`].
+    #[must_use]
     pub const fn new(
         side: Side,
         cols: NonZeroU16,
@@ -91,36 +92,44 @@ impl Layout {
     /// Opt this layout in to covering: the panel draws over the tiled
     /// windows and the compositor gap stays at the last pushing layout's
     /// strip. A side switch is never a covering move.
+    #[must_use]
     pub const fn covering(mut self) -> Self {
         self.coverage = Coverage::Cover;
         self
     }
 
+    #[must_use]
     pub const fn side(&self) -> Side {
         self.side
     }
 
+    #[must_use]
     pub const fn cols(&self) -> NonZeroU16 {
         self.cols
     }
 
+    #[must_use]
     pub const fn top(&self) -> i32 {
         self.top
     }
 
+    #[must_use]
     pub const fn bottom(&self) -> i32 {
         self.bottom
     }
 
+    #[must_use]
     pub const fn left(&self) -> i32 {
         self.left
     }
 
+    #[must_use]
     pub const fn right(&self) -> i32 {
         self.right
     }
 
     /// The layout's push/cover choice.
+    #[must_use]
     pub const fn coverage(&self) -> Coverage {
         self.coverage
     }
@@ -132,11 +141,13 @@ impl Layout {
     /// when docked left, Right when docked right); `reservation` is
     /// `left + panel_width + right`, the strip reserved at that edge.
     pub fn side_geometry(&self, panel_width: i64) -> Result<SideGeometry, InvalidLayout> {
-        if !(0..=i32::MAX as i64).contains(&panel_width) {
+        if !(0..=i64::from(i32::MAX)).contains(&panel_width) {
             return Err(InvalidLayout::Overflow);
         }
-        let sum = self.left as i64 + panel_width + self.right as i64;
-        let reservation = i32::try_from(sum).map_err(|_| InvalidLayout::Overflow)?;
+        let sum = i64::from(self.left) + panel_width + i64::from(self.right);
+        let Ok(reservation) = i32::try_from(sum) else {
+            return Err(InvalidLayout::Overflow);
+        };
         let edge_margin = match self.side {
             Side::Left => self.left,
             Side::Right => self.right,
@@ -160,7 +171,7 @@ impl Layout {
     /// Covering never checks the untouched gap: it only rejects a visible
     /// panel wider than the output.
     pub fn validate(&self, cell: CellSize, output: OutputSize) -> Result<(), InvalidLayout> {
-        let panel_width = self.cols.get() as i64 * cell.width().get() as i64;
+        let panel_width = i64::from(self.cols.get()) * i64::from(cell.width().get());
         // Both choices place the visible panel by its own edge gutter, so
         // both reject the same checked-arithmetic overflow.
         let geometry = self.side_geometry(panel_width)?;
@@ -176,13 +187,13 @@ impl Layout {
             Coverage::Cover => {
                 // The held gap is not this layout's business; only the
                 // visible panel must fit the output.
-                if panel_width > output.width().get() as i64 {
+                if panel_width > i64::from(output.width().get()) {
                     return Err(InvalidLayout::NoWidth);
                 }
             }
         }
-        let vertical = self.top as i64 + self.bottom as i64;
-        if vertical > output.height().get() as i64 - cell.height().get() as i64 {
+        let vertical = i64::from(self.top) + i64::from(self.bottom);
+        if vertical > i64::from(output.height().get()) - i64::from(cell.height().get()) {
             return Err(InvalidLayout::NoRow);
         }
         Ok(())
@@ -197,10 +208,12 @@ pub struct SideGeometry {
 }
 
 impl SideGeometry {
+    #[must_use]
     pub const fn edge_margin(&self) -> i32 {
         self.edge_margin
     }
 
+    #[must_use]
     pub const fn reservation(&self) -> i32 {
         self.reservation
     }
@@ -214,6 +227,7 @@ pub struct CellSize {
 }
 
 impl CellSize {
+    #[must_use]
     pub const fn new(width: i32, height: i32) -> Option<Self> {
         match (NonZeroI32::new(width), NonZeroI32::new(height)) {
             (Some(width), Some(height)) => Some(Self { width, height }),
@@ -221,10 +235,12 @@ impl CellSize {
         }
     }
 
+    #[must_use]
     pub const fn width(&self) -> NonZeroI32 {
         self.width
     }
 
+    #[must_use]
     pub const fn height(&self) -> NonZeroI32 {
         self.height
     }
@@ -238,6 +254,7 @@ pub struct OutputSize {
 }
 
 impl OutputSize {
+    #[must_use]
     pub const fn new(width: i32, height: i32) -> Option<Self> {
         match (NonZeroI32::new(width), NonZeroI32::new(height)) {
             (Some(width), Some(height)) => Some(Self { width, height }),
@@ -245,10 +262,12 @@ impl OutputSize {
         }
     }
 
+    #[must_use]
     pub const fn width(&self) -> NonZeroI32 {
         self.width
     }
 
+    #[must_use]
     pub const fn height(&self) -> NonZeroI32 {
         self.height
     }
@@ -300,14 +319,17 @@ pub struct Accent {
 }
 
 impl Accent {
+    #[must_use]
     pub const fn new(rgb: [u8; 3], width: NonZeroU16) -> Self {
         Self { rgb, width }
     }
 
+    #[must_use]
     pub const fn rgb(&self) -> [u8; 3] {
         self.rgb
     }
 
+    #[must_use]
     pub const fn width(&self) -> NonZeroU16 {
         self.width
     }
@@ -323,6 +345,7 @@ pub enum Keyboard {
 
 impl Keyboard {
     /// The mode named by `on-demand`, `exclusive` or `none`.
+    #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "on-demand" => Some(Self::OnDemand),
@@ -339,6 +362,7 @@ impl Keyboard {
 /// yield. Otherwise yield once the dispatch has consumed `budget_us` of wall
 /// time since `started_us`, so an image burst cannot starve the frame clock
 /// mid-tween. Ports `pinwin_pty_yield` from `options.c`.
+#[must_use]
 pub const fn pty_yield(started_us: i64, now_us: i64, budget_us: i64) -> bool {
     budget_us > 0 && now_us.saturating_sub(started_us) >= budget_us
 }
@@ -397,7 +421,7 @@ mod tests {
         let base = layout(60, 0, 0, 0, 0);
         assert_eq!(base.side_geometry(-1), Err(InvalidLayout::Overflow));
         assert_eq!(
-            base.side_geometry(i32::MAX as i64 + 1),
+            base.side_geometry(i64::from(i32::MAX) + 1),
             Err(InvalidLayout::Overflow)
         );
 
