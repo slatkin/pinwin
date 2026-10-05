@@ -965,7 +965,11 @@ mod tests {
     }
 
     fn build_probe_output() -> HashMap<String, i64> {
-        let out_dir = PathBuf::from(env!("OUT_DIR")).join("ghostty-layout-probe");
+        // Unique per test process: concurrent runners share OUT_DIR, and
+        // compiling and executing one probe path from two of them fails
+        // with ETXTBSY ("Text file busy").
+        let out_dir = PathBuf::from(env!("OUT_DIR"))
+            .join(format!("ghostty-layout-probe-{}", std::process::id()));
         std::fs::create_dir_all(&out_dir).expect("create probe dir");
         let source = out_dir.join("layout_probe.c");
         let mut id_lines = String::new();
