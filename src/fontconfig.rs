@@ -68,6 +68,7 @@ impl Default for ThemeColours {
 
 /// Parse a Ghostty config's font settings. This is `font_config_load`'s loop;
 /// the initial values are [`FontConfig::default`].
+#[allow(clippy::must_use_candidate, reason = "approved #13: pure loader")]
 pub fn parse_font_config(contents: &str) -> FontConfig {
     let mut config = FontConfig::default();
 
@@ -148,6 +149,7 @@ pub fn load_font_config() -> FontConfig {
 /// Load the theme colours from the Ghostty config and, when it names a
 /// `theme`, the matching theme file (user themes first, then
 /// `/usr/share/ghostty/themes`); a missing config leaves the defaults.
+#[allow(clippy::must_use_candidate, reason = "approved #13: pure loader")]
 pub fn load_theme_colours() -> ThemeColours {
     load_theme_colours_at(&user_config_dir())
 }
@@ -217,6 +219,11 @@ fn apply_theme_colour_line(line: &str, colours: &mut ThemeColours) {
         return;
     };
 
+    // Hex pairs are range-checked to 0-255 at parse, so no truncation.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "approved #13: hex pair range-checked to 0-255"
+    )]
     let rgb = [r as u8, g as u8, b as u8];
     if key == "background" {
         colours.background = rgb;

@@ -96,6 +96,12 @@ impl Panel {
     /// while another handle is alive fails with `AlreadyRunning` and leaves
     /// the running panel unchanged. `NoDisplay` when GTK or wlr-layer-shell
     /// is unavailable — nothing opened.
+    // Approved per-instance (#13): the guard-Poisoned latch discards the
+    // panic payload by design; the public entry maps it onto `Internal`.
+    #[allow(
+        clippy::map_err_ignore,
+        reason = "approved #13: guard-Poisoned latch discards the panic payload by design"
+    )]
     pub fn start(startup: Startup) -> Result<Panel, PinwinError> {
         // D5 boundary: the start itself is a public entry point. The shared
         // latch does not exist until the start succeeds, so the start's own
@@ -214,6 +220,12 @@ impl Panel {
 /// An apply through the display-free inner handle (D10): the poisoned check
 /// comes first (D5 — a panic reports `Internal`, never `NotRunning`), then
 /// the ended check, then the bounded posted apply.
+// Approved per-instance (#13): the guard-Poisoned latch discards the panic
+// payload by design; the entry maps it onto `Internal`.
+#[allow(
+    clippy::map_err_ignore,
+    reason = "approved #13: guard-Poisoned latch discards the panic payload by design"
+)]
 pub(crate) fn apply_via_inner(
     inner: &Inner,
     layout: Layout,
@@ -425,6 +437,13 @@ mod tests {
     /// `Internal`: the poisoned check comes first, so the still-live handle
     /// never leaks `NotRunning` past a caught panic.
     #[test]
+    // Approved per-instance (#13): the test maps the caught panic onto
+    // `Internal` to assert the boundary's mapping; the payload is the
+    // point, not discarded detail.
+    #[allow(
+        clippy::map_err_ignore,
+        reason = "approved #13: test asserts the panic-to-Internal mapping"
+    )]
     fn a_panic_in_a_guarded_closure_is_internal_and_stays_internal() {
         let inner = Inner {
             id: 0,

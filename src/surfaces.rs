@@ -125,6 +125,12 @@ fn keyboard_mode(keyboard: Keyboard) -> LayerKeyboardMode {
 /// `GtkApplication` with a distinct id); `NON_UNIQUE` keeps the id off the
 /// session bus so consecutive panels cannot collide.
 pub fn init(app_id: Option<&str>) -> Result<gtk4::Application, InitFailure> {
+    // Approved per-instance (#13): the gtk init error carries no actionable
+    // detail; it maps onto `InitFailure::GtkInit`.
+    #[allow(
+        clippy::map_err_ignore,
+        reason = "approved #13: gtk init error carries no actionable detail"
+    )]
     gtk4::init().map_err(|_| InitFailure::GtkInit)?;
     if !layer_shell::is_supported() {
         return Err(InitFailure::LayerShell);

@@ -59,6 +59,14 @@ impl DrawState {
     /// — during a tween and in the frames around its stop before the
     /// deferred resize lands (gsk-render-nodes design, Post-task decisions:
     /// C52) — and both arms translate by it.
+    // Approved per-instance (#13): widget extents are tiny against f32's
+    // mantissa; the snapped docked-edge offset is screen-bounded for the
+    // f32 translate.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "approved #13: GSK/graphene take f32, screen-bounded pixels"
+    )]
     pub fn snapshot_grid(
         &mut self,
         snapshot: &gtk4::Snapshot,
@@ -537,6 +545,12 @@ mod tests {
     /// The offset is an odd logical value, snapped to the device pixel grid
     /// first — the real snap runs in `Surfaces::draw_offset()`, which this
     /// test does not call (snap-grid-edges D7).
+    // Approved per-instance (#13): test pixel quantization, rounded and
+    // screen-bounded.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "approved #13: test pixel quantization, rounded and screen-bounded"
+    )]
     #[test]
     fn a_docked_edge_offset_leaves_no_seam_in_a_region_of_one_colour() {
         let _font = font_lock::guard();

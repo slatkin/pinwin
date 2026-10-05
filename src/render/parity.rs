@@ -116,6 +116,12 @@ pub(super) fn backed_surface(
     scale: f64,
     backdrop: [u8; 3],
 ) -> cairo::ImageSurface {
+    // Approved per-instance (#13): pixel quantization, ceiled and
+    // screen-bounded.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "approved #13: pixel quantization, ceiled and screen-bounded"
+    )]
     let surface = cairo::ImageSurface::create(
         cairo::Format::ARgb32,
         (f64::from(width) * scale).ceil() as i32,

@@ -64,6 +64,13 @@ pub fn set_non_blocking(fd: RawFd) -> io::Result<()> {
 /// reaches the host's handler from any thread, and a host without a handler
 /// ignores the signal (`src/pty.c`).
 pub fn apply_winsize(fd: RawFd, cols: i32, rows: i32, cell_w: u32, cell_h: u32) -> io::Result<()> {
+    // Approved per-instance (#13): the grid geometry is screen-bounded and
+    // the ioctl winsize fields are u16 by ABI.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "approved #13: screen-bounded geometry into u16 ioctl fields"
+    )]
     let ws = libc::winsize {
         ws_col: cols as u16,
         ws_row: rows as u16,

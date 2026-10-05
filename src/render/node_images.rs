@@ -49,6 +49,12 @@ impl ImageCache {
 /// source offset in the scaled space — cairo's `set_source_surface` offset
 /// is in the scaled user space, and the texture's bounds are the image's
 /// own pixel size, so the two agree point for point.
+// Approved per-instance (#13): GSK/graphene take f32; the image geometry
+// is screen-bounded.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "approved #13: GSK/graphene take f32, screen-bounded pixels"
+)]
 pub(super) fn emit_placement(snapshot: &gtk4::Snapshot, texture: &gdk::MemoryTexture, img: &Image) {
     snapshot.save();
     snapshot.push_clip(&graphene::Rect::new(

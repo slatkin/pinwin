@@ -122,6 +122,12 @@ pub(crate) fn emit_decorations(
         .into_iter()
         .chain(strikethrough_rect(cell, cell_metrics))
     {
+        // Approved per-instance (#13): GSK/graphene take f32;
+        // screen-bounded pixels.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "approved #13: GSK/graphene take f32, screen-bounded pixels"
+        )]
         snapshot.append_color(
             colour,
             &graphene::Rect::new(x as f32, y as f32, w as f32, h as f32),
@@ -149,6 +155,12 @@ pub(crate) fn emit_cursor(
         colour: &gtk4::gdk::RGBA,
         (x, y, w, h): (f64, f64, f64, f64),
     ) {
+        // Approved per-instance (#13): GSK/graphene take f32;
+        // screen-bounded pixels.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "approved #13: GSK/graphene take f32, screen-bounded pixels"
+        )]
         snapshot.append_color(
             colour,
             &graphene::Rect::new(x as f32, y as f32, w as f32, h as f32),

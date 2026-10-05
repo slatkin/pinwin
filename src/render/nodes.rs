@@ -86,6 +86,12 @@ impl DrawState {
     /// a frame can paint the background unshifted and still emit the grid
     /// itself translated to the docked edge (gsk-render-nodes design, Post-task decisions: C52).
     pub fn emit_theme_background(&self, snapshot: &gtk4::Snapshot, width: i32, height: i32) {
+        // Approved per-instance (#13): screen pixel extents are tiny
+        // against f32's mantissa.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "approved #13: screen pixel extents are tiny against f32's mantissa"
+        )]
         snapshot.append_color(
             &rgba(self.theme_background),
             &graphene::Rect::new(0.0, 0.0, width as f32, height as f32),
@@ -115,6 +121,12 @@ impl DrawState {
         let metrics = self.cell_metrics;
         while let Some(cell) = terminal.cell_next() {
             if let Some((x, y, w, h)) = cell_background_rect(&cell, metrics, height) {
+                // Approved per-instance (#13): GSK/graphene take f32;
+                // screen-bounded pixels.
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "approved #13: GSK/graphene take f32, screen-bounded pixels"
+                )]
                 snapshot.append_color(
                     &rgba(cell.bg),
                     &graphene::Rect::new(x as f32, y as f32, w as f32, h as f32),
@@ -229,6 +241,12 @@ impl DrawState {
 /// the ink is empty. The layout's top-left lands where `pango_cairo_show`
 /// would put it — a layout node draws at the snapshot's current transform,
 /// so each `move_to` becomes a `translate`.
+// Approved per-instance (#13): GSK/graphene take f32; the cell geometry is
+// screen-bounded.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "approved #13: GSK/graphene take f32, screen-bounded pixels"
+)]
 pub(super) fn emit_cell_text(
     snapshot: &gtk4::Snapshot,
     layout: &pango::Layout,

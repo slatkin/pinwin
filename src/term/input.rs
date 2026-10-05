@@ -390,6 +390,12 @@ impl Terminal {
                 ghostty_mouse_event_set_button(event, button.raw());
             }
             ghostty_mouse_event_set_mods(event, mods.bits());
+            // Approved per-instance (#13): event coordinates are
+            // screen-bounded; the encoder takes f32.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "approved #13: screen-bounded event coordinates into the f32 encoder ABI"
+            )]
             ghostty_mouse_event_set_position(
                 event,
                 GhosttyMousePosition {

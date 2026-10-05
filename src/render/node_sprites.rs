@@ -30,6 +30,12 @@ pub(crate) fn emit_cell_sprite(
         SpriteShape::None => false,
         SpriteShape::Rects(rects) => {
             for (x, y, w, h) in rects {
+                // Approved per-instance (#13): GSK/graphene take f32;
+                // screen-bounded pixels.
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "approved #13: GSK/graphene take f32, screen-bounded pixels"
+                )]
                 snapshot.append_color(
                     colour,
                     &graphene::Rect::new(x as f32, y as f32, w as f32, h as f32),
@@ -64,6 +70,12 @@ fn triangle_node(
 ) {
     const PAD: f64 = 2.0;
     let cell_w = f64::from(cell_metrics.cell_w) * if cell.wide == Wide::Wide { 2.0 } else { 1.0 };
+    // Approved per-instance (#13): GSK/graphene take f32;
+    // screen-bounded pixels.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "approved #13: GSK/graphene take f32, screen-bounded pixels"
+    )]
     let bounds = graphene::Rect::new(
         (f64::from(cell.x) * f64::from(cell_metrics.cell_w) - PAD) as f32,
         (f64::from(cell.y) * f64::from(cell_metrics.cell_h) - PAD) as f32,

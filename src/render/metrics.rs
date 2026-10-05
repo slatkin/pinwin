@@ -24,6 +24,12 @@ pub(crate) struct Fonts {
 impl Fonts {
     /// Load the font from the Ghostty config (`font_config_load` plus the
     /// description setup at the top of `cell_metrics_update`).
+    // Approved per-instance (#13): the font size in Pango units is a small
+    // positive value; the Pango setter takes i32.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "approved #13: small positive font size into Pango i32 units"
+    )]
     pub fn load() -> Fonts {
         let config = fontconfig::load_font_config();
         let mut regular = FontDescription::new();
@@ -93,6 +99,12 @@ pub(crate) struct CellMetrics {
 /// Measure the font on `context` and derive the cell metrics. GTK-free: any
 /// `pango::Context` works, so tests can build one from a pangocairo font map
 /// (`cell_metrics_update` in `render.c`).
+// Approved per-instance (#13): pixel quantization, rounded (half-up) and
+// screen-bounded; the narrowing steps cannot lose real content.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "approved #13: pixel quantization, rounded and screen-bounded"
+)]
 pub(crate) fn measure(context: &pango::Context, font: &FontDescription) -> CellMetrics {
     let metrics = context.metrics(Some(font), None);
     let ascent = metrics.ascent();

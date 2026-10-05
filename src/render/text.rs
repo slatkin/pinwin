@@ -111,6 +111,13 @@ pub(crate) fn constrain(
         }
     }
 
+    // Approved per-instance (#13): the constraint width is a small
+    // non-negative grid count.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "approved #13: constraint width is a small non-negative grid count"
+    )]
     let min_w: u32 = if cc.size == Size::Stretch && m.face_w > 0.9 * m.face_h {
         1
     } else {

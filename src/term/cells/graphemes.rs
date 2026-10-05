@@ -40,6 +40,12 @@ fn ends_with_zwj(text: &[u8]) -> bool {
     text.ends_with("\u{200D}".as_bytes())
 }
 
+// Approved per-instance (#13): a regional-indicator run inside one
+// cell's text is a small count.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "approved #13: regional-indicator run in one cell is a small count"
+)]
 fn count_regionals(text: &[u8]) -> u32 {
     let Ok(string) = std::str::from_utf8(text) else {
         return 0;
