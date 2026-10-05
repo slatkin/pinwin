@@ -98,11 +98,10 @@ fn accent_color(raw: Option<&str>) -> Result<[u8; 3], String> {
 }
 
 /// `PINWIN_NAME`: the instance name the focus socket is published under.
-/// Unset or empty is the default name, like every other variable here; a
-/// non-empty value must be a valid [`InstanceName`], or the host exits 2
-/// before any surface opens.
+/// Unset is the default name; a set value — the empty one included — must be
+/// a valid [`InstanceName`], or the host exits 2 before any surface opens.
 fn instance_name(raw: Option<&str>) -> Result<InstanceName, String> {
-    match raw.filter(|raw| !raw.is_empty()) {
+    match raw {
         None => Ok(InstanceName::default_instance()),
         Some(raw) => InstanceName::parse("PINWIN_NAME", raw),
     }
@@ -293,20 +292,15 @@ mod tests {
         assert!(call(&map).is_err());
     }
 
-    /// `PINWIN_NAME` parses into the validated instance name: unset or empty
-    /// is the default, a valid name passes, and a bad name is an exit-2
-    /// error naming the variable.
+    /// `PINWIN_NAME` parses into the validated instance name: unset is the
+    /// default, a valid name passes, and a bad name — the empty one
+    /// included — is an exit-2 error naming the variable.
     #[test]
     fn read_settings_parses_the_instance_name() {
-        // Unset and empty are the default instance.
+        // Unset is the default instance.
         let empty: HashMap<String, String> = HashMap::new();
         assert_eq!(
             call(&empty).expect("defaults").name,
-            InstanceName::default_instance()
-        );
-        let map = HashMap::from([("PINWIN_NAME".to_owned(), String::new())]);
-        assert_eq!(
-            call(&map).expect("empty is the default").name,
             InstanceName::default_instance()
         );
 
@@ -323,8 +317,9 @@ mod tests {
             InstanceName::parse("PINWIN_NAME", &long).expect("valid")
         );
 
-        // A bad name is an exit-2 error before any surface opens.
-        for raw in ["a/b", &"a".repeat(65), "a b"] {
+        // A bad name is an exit-2 error before any surface opens; an empty
+        // value is bad too, not the default.
+        for raw in ["", "a/b", &"a".repeat(65), "a b"] {
             let map = HashMap::from([("PINWIN_NAME".to_owned(), raw.to_owned())]);
             let error = call(&map).expect_err(raw);
             assert_eq!(

@@ -295,9 +295,11 @@ fn run() -> i32 {
 /// host with the same name on this display makes the start exit 2 instead
 /// (keyboard-focus-request design). Errors carry the full `pinwin:` message.
 fn bind_focus_socket(name: &InstanceName) -> Result<net::UnixListener, String> {
-    let runtime_dir =
-        env::var_os("XDG_RUNTIME_DIR").map(|value| value.to_string_lossy().into_owned());
-    let display = env::var_os("WAYLAND_DISPLAY").map(|value| value.to_string_lossy().into_owned());
+    // No lossy conversion: the runtime directory goes into the path as the
+    // environment provided it, and the display is validated in
+    // [`ipc::socket_path`].
+    let runtime_dir = env::var_os("XDG_RUNTIME_DIR");
+    let display = env::var_os("WAYLAND_DISPLAY");
     let socket_path = ipc::socket_path(runtime_dir.as_deref(), display.as_deref(), name)?;
     ipc::bind_instance_socket(&socket_path).map_err(|error| match error {
         BindError::Duplicate => {

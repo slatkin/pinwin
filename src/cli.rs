@@ -132,15 +132,18 @@ mod tests {
             })
         );
 
-        // The same name check as `PINWIN_NAME`, under the `--focus` label.
-        assert_eq!(
-            parse_args(&os(&["--focus", "a/b"])),
-            Err(
-                "pinwin: --focus: expected a name of 1..=64 characters from \
-                 [A-Za-z0-9_-], got 'a/b'"
-                    .to_owned()
-            )
-        );
+        // The same name check as `PINWIN_NAME`, under the `--focus` label:
+        // a bad name, the empty one included, is an exit-2 error.
+        for raw in ["", "a/b"] {
+            assert_eq!(
+                parse_args(&os(&["--focus", raw])),
+                Err(format!(
+                    "pinwin: --focus: expected a name of 1..=64 characters from \
+                     [A-Za-z0-9_-], got '{raw}'"
+                )),
+                "raw = {raw:?}"
+            );
+        }
 
         // `--` ends option parsing: a command literally named `--focus` runs.
         assert_eq!(

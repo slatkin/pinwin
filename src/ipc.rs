@@ -7,10 +7,12 @@
 //! the transport is the standard library's Unix sockets only, no new
 //! dependencies.
 
+use std::ffi::OsStr;
 use std::fmt;
 use std::io;
 use std::ops::Deref;
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::{fs, os::unix::net};
@@ -71,23 +73,40 @@ pub enum BindError {
 }
 
 /// The socket path for the instance: `$XDG_RUNTIME_DIR/pinwin/
-/// $WAYLAND_DISPLAY-<name>.sock`. A missing or empty `XDG_RUNTIME_DIR` is an
-/// exit-2 error. `WAYLAND_DISPLAY` falls back to `wayland-0`, the same
-/// default the Wayland client library connects with.
+/// $WAYLAND_DISPLAY-<name>.sock`. The runtime directory is used as given,
+/// with no lossy conversion; a missing or empty `XDG_RUNTIME_DIR` is an
+/// exit-2 error. `WAYLAND_DISPLAY` unset falls back to `wayland-0`, the
+/// same default the Wayland client library connects with; a set value must
+/// be valid UTF-8 and hold no `/`, so the path cannot escape
+/// `$XDG_RUNTIME_DIR/pinwin` and distinct displays cannot collapse onto one
+/// socket.
 pub fn socket_path(
-    runtime_dir: Option<&str>,
-    display: Option<&str>,
+    runtime_dir: Option<&OsStr>,
+    display: Option<&OsStr>,
     name: &InstanceName,
 ) -> Result<PathBuf, String> {
-    let Some(runtime_dir) = runtime_dir.filter(|dir| !dir.is_empty()) else {
+    let Some(runtime_dir) = runtime_dir.filter(|dir| !dir.as_bytes().is_empty()) else {
         return Err(
             "pinwin: XDG_RUNTIME_DIR: expected the runtime directory of the Wayland session"
                 .to_owned(),
         );
     };
-    let display = display
-        .filter(|display| !display.is_empty())
-        .unwrap_or("wayland-0");
+    let display = match display {
+        None => "wayland-0".to_owned(),
+        Some(raw) => {
+            let valid = raw
+                .to_str()
+                .filter(|text| !text.is_empty() && !text.contains('/'));
+            let Some(display) = valid else {
+                return Err(format!(
+                    "pinwin: WAYLAND_DISPLAY: expected a UTF-8 display name without '/', \
+                     got '{}'",
+                    raw.to_string_lossy()
+                ));
+            };
+            display.to_owned()
+        }
+    };
     Ok(Path::new(runtime_dir)
         .join("pinwin")
         .join(format!("{display}-{name}.sock")))
@@ -95,17 +114,17 @@ pub fn socket_path(
 
 /// Take the socket at `path` for this instance, before any surface opens:
 ///
-/// 1. A successful connect means a live host owns the name: [`BindError::Duplicate`].
-/// 2. Otherwise the parent directory is created with mode 0700.
-/// 3. Any file still on the path is stale (a SIGKILL-ed host leaves its
-///    socket file, a regular file is stale too) and is removed.
-/// 4. The bind is the final duplicate check: two hosts starting in the same
-///    instant can both pass the connect, and one of the two binds then fails
-///    (keyboard-focus-request design).
+/// 1. The parent directory is created with mode 0700.
+/// 2. Bind first: whoever wins the bind owns the name. Connecting first and
+///    unlinking on a failed connect would let a racing second host unlink
+///    the first host's live socket.
+/// 3. On `EADDRINUSE` the path's owner is probed with a connect. A live
+///    owner answers, and the caller exits 2 ([`BindError::Duplicate`]).
+///    Only a dead owner — connection refused, or the file already gone —
+///    is unlinked and bound again, once. Any other connect error stands
+///    ([`BindError::Failed`]), so a permission or resource failure never
+///    gets something else's path deleted.
 pub fn bind_instance_socket(path: &Path) -> Result<net::UnixListener, BindError> {
-    if net::UnixStream::connect(path).is_ok() {
-        return Err(BindError::Duplicate);
-    }
     let dir = path.parent().expect("the socket path has a parent");
     if let Err(error) = fs::create_dir(dir)
         && error.kind() != io::ErrorKind::AlreadyExists
@@ -113,12 +132,38 @@ pub fn bind_instance_socket(path: &Path) -> Result<net::UnixListener, BindError>
         return Err(BindError::Failed(error));
     }
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(BindError::Failed)?;
-    if let Err(error) = fs::remove_file(path)
-        && error.kind() != io::ErrorKind::NotFound
-    {
-        return Err(BindError::Failed(error));
+    match bind_fresh(path) {
+        Ok(listener) => return Ok(listener),
+        // The path is taken; find out whether its owner is still alive.
+        Err(error) if error.raw_os_error() == Some(libc::EADDRINUSE) => {}
+        Err(error) => return Err(BindError::Failed(error)),
     }
-    let listener = net::UnixListener::bind(path).map_err(BindError::Failed)?;
+    match net::UnixStream::connect(path) {
+        Ok(_live) => Err(BindError::Duplicate),
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::ECONNREFUSED | libc::ENOENT)
+            ) =>
+        {
+            // A dead owner left the file (or it vanished between the bind
+            // and the probe); replace it once. The rebind failing with
+            // EADDRINUSE again is the final duplicate check
+            // (keyboard-focus-request design).
+            if let Err(error) = fs::remove_file(path)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                return Err(BindError::Failed(error));
+            }
+            bind_fresh(path).map_err(BindError::Failed)
+        }
+        Err(error) => Err(BindError::Failed(error)),
+    }
+}
+
+/// Bind the socket and keep the exec'd command from inheriting it.
+fn bind_fresh(path: &Path) -> Result<net::UnixListener, io::Error> {
+    let listener = net::UnixListener::bind(path)?;
     // The forked child execs the host's command, and the command must never
     // inherit the listener; set the close-on-exec flag explicitly instead of
     // relying on the socket type std happens to create.
@@ -181,30 +226,55 @@ mod tests {
     }
 
     /// The socket path is `$XDG_RUNTIME_DIR/pinwin/$WAYLAND_DISPLAY-<name>.sock`,
-    /// with the `wayland-0` fallback for an unset display.
+    /// with the `wayland-0` fallback for an unset display, and a set display
+    /// that is valid UTF-8 and holds no `/`. The runtime directory is passed
+    /// through as an `OsStr`, with no lossy conversion.
     #[test]
     fn socket_path_composes_the_runtime_path() {
         let name = InstanceName::parse("x", "notes").expect("valid");
+        let os = OsStr::new;
         assert_eq!(
-            socket_path(Some("/run/user/1000"), Some("wayland-1"), &name),
+            socket_path(Some(os("/run/user/1000")), Some(os("wayland-1")), &name),
             Ok(PathBuf::from("/run/user/1000/pinwin/wayland-1-notes.sock"))
         );
         assert_eq!(
-            socket_path(Some("/run/user/1000"), None, &name),
+            socket_path(Some(os("/run/user/1000")), None, &name),
             Ok(PathBuf::from("/run/user/1000/pinwin/wayland-0-notes.sock"))
         );
-        assert_eq!(
-            socket_path(Some("/run/user/1000"), Some(""), &name),
-            Ok(PathBuf::from("/run/user/1000/pinwin/wayland-0-notes.sock"))
-        );
-        // A missing runtime directory is an exit-2 error.
-        socket_path(None, Some("wayland-0"), &name).expect_err("no runtime directory");
-        socket_path(Some(""), Some("wayland-0"), &name).expect_err("empty runtime directory");
+
+        // An empty display, a display with a separator, and a non-UTF-8
+        // display are all exit-2 errors: the path must stay inside
+        // `$XDG_RUNTIME_DIR/pinwin` and distinct displays must stay distinct.
+        for raw in [
+            os(""),
+            os("way/land"),
+            os("/abs/path"),
+            OsStr::from_bytes(&[b'w', 0xff]),
+        ] {
+            let error =
+                socket_path(Some(os("/run/user/1000")), Some(raw), &name).expect_err("bad display");
+            assert_eq!(
+                error,
+                format!(
+                    "pinwin: WAYLAND_DISPLAY: expected a UTF-8 display name without '/', \
+                     got '{}'",
+                    raw.to_string_lossy()
+                ),
+                "raw = {:?}",
+                raw
+            );
+        }
+
+        // A missing or empty runtime directory is an exit-2 error.
+        socket_path(None, Some(os("wayland-0")), &name).expect_err("no runtime directory");
+        socket_path(Some(os("")), Some(os("wayland-0")), &name)
+            .expect_err("empty runtime directory");
     }
 
-    /// A stale file on the socket path — the socket file of a SIGKILL-ed
-    /// host, or any regular file — is removed and bound again, and the new
-    /// listener answers connects.
+    /// A stale file on the socket path is removed and bound again, and the
+    /// new listener answers connects. On Linux both a SIGKILL-ed host's
+    /// socket file and a plain regular file refuse the connect
+    /// (`ECONNREFUSED`), so both count as a dead owner and are replaced.
     #[test]
     fn a_stale_file_on_the_socket_path_is_replaced() {
         let dir = temp_dir("stale");
@@ -219,7 +289,7 @@ mod tests {
         net::UnixStream::connect(&path).expect("the bind is live");
         drop(listener);
 
-        // Also a plain regular file on the path is stale, not fatal.
+        // A plain regular file refuses the connect the same way.
         fs::remove_file(&path).expect("drop the leftover socket file");
         fs::write(&path, b"not a socket").expect("regular file");
         net::UnixStream::connect(&path).expect_err("a regular file is not a socket");
@@ -266,6 +336,25 @@ mod tests {
         // After the first listener is gone the name is free again (its file
         // is now stale): a fresh host binds instead of failing.
         bind_instance_socket(&path).expect("the name is free again");
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// The bind-first order: a second host must not unlink the first host's
+    /// live socket, even though both of their binds race on the same path.
+    #[test]
+    fn a_racing_second_host_leaves_the_live_socket_in_place() {
+        let dir = temp_dir("race");
+        let path = dir.join("wayland-0-default.sock");
+
+        let first = bind_instance_socket(&path).expect("first bind");
+        // The second host reports the duplicate without touching the file...
+        assert!(matches!(
+            bind_instance_socket(&path),
+            Err(BindError::Duplicate)
+        ));
+        // ...and the first owner's socket still answers.
+        net::UnixStream::connect(&path).expect("the live socket survived");
+        drop(first);
         fs::remove_dir_all(&dir).expect("cleanup");
     }
 }
