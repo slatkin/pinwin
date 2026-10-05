@@ -1,0 +1,9 @@
+# Pinned toolchain for CI reproducibility and local/CI parity.
+# CI (build.yml) installs this via rustup instead of the floating Arch `rust`
+# package, so a cache-rebuild happens only when this pin is bumped
+# deliberately, not whenever Arch pushes a package rebuild.
+# Bump together with the version recorded in the cache key comment there.
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

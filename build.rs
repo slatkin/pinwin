@@ -27,17 +27,17 @@ use std::process::Command;
 /// The one ghostty commit pinwin's FFI targets (D2).
 const GHOSTTY_COMMIT: &str = "3a3047f6b62a791fd8b12d9f07a85b3d2160370b";
 
-/// Zig optimise mode for libghostty-vt. ghostty's build defaults to Debug, which makes kitty
-/// graphics (image decode and storage) slow; ReleaseSafe matches the pre-Rust build.
+/// Zig optimise mode for libghostty-vt. ghostty's build defaults to `Debug`, which makes kitty
+/// graphics (image decode and storage) slow; `ReleaseSafe` matches the pre-Rust build.
 const GHOSTTY_OPTIMIZE: &str = "ReleaseSafe";
 
 /// Explicit CPU model for libghostty-vt. Without `-Dcpu`, zig targets the
 /// build host's native CPU, and ghostty's bundled vectorized memset
-/// (`src/quirks_memset.zig`, which overrides compiler_rt for everything in
+/// (`src/quirks_memset.zig`, which overrides `compiler_rt` for everything in
 /// the archive, including mimalloc) picks the host's vector width with no
-/// runtime guard: a CI runner with AVX-512 shipped binaries that SIGILL at
-/// the first allocation on every CPU without AVX-512. x86_64_v2
-/// (SSE4.2/POPCNT, ~2009+) is the distributed floor.
+/// runtime guard: a CI runner with `AVX-512` shipped binaries that `SIGILL` at
+/// the first allocation on every CPU without `AVX-512`. `x86_64_v2`
+/// (`SSE4.2`/`POPCNT`, ~2009+) is the distributed floor.
 const GHOSTTY_CPU: &str = "x86_64_v2";
 const GHOSTTY_REPO: &str = "https://github.com/ghostty-org/ghostty.git";
 
@@ -70,8 +70,7 @@ fn main() {
 
     let stale = !archive.is_file()
         || fs::read_to_string(&stamp)
-            .map(|recorded| recorded != identity)
-            .unwrap_or(true);
+            .map_or(true, |recorded| recorded != identity);
 
     if stale {
         let source = match &override_dir {

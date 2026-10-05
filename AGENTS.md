@@ -58,9 +58,20 @@ behaviour, architecture and known caveats.
 ## Build, Test, and Development Commands
 
 `cargo build` builds the library and the `pinwin` binary; `cargo build
---examples` builds the dev-only demo; `cargo test` runs the tests; `cargo
-clippy --all-targets -- -D warnings` and `cargo fmt --check` are the lint and
-formatting gates. The build needs Zig 0.16 on PATH: `build.rs` fetches the
+--examples` builds the dev-only demo. The gates, same as mbv: `cargo fmt
+--all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo
+audit`, `cargo nextest run` (prefer nextest locally; plain `cargo test` also
+works) and `make check-code-file-lines`. CI (`.github/workflows/build.yml`)
+runs all of them on the pinned Arch container plus a build. The toolchain is
+pinned in `rust-toolchain.toml`; bump it together with the cache-key comment
+in `build.yml`. Lint thresholds live in `clippy.toml`. Use no lint
+suppression without per-instance user approval: no `allow` or `expect`
+attribute in any form, no loosening `[lints]`, never edit `clippy.toml`
+unless explicitly asked. Fix the cause instead (params struct, delete dead
+code and its tests, drop the unused import). Run `cargo fmt` for each Rust
+change (stock edition-2024 defaults) and accept all reflow. Run `make
+check-code-file-lines` just before pushing; `src/nerd_font.rs` is the only
+exception (generated table). The build needs Zig 0.16 on PATH: `build.rs` fetches the
 pinned libghostty-vt commit and builds ghostty's own static VT library with
 `zig build`, so a cold cache also needs `git` and network access. Set
 `PINWIN_GHOSTTY_SRC=<dir>` to build against an existing git checkout instead of
@@ -73,8 +84,11 @@ touching the legacy `pinwin.sh`, check it with `bash -n pinwin.sh`.
 Rust only, `rustfmt` clean. Keep modules small and split them by
 responsibility: the port maps one Rust module to one former C/Zig file
 (`openspec/changes/port-to-rust/design.md` D3), and a file should stay at or
-under 800 lines. The documented exception is `src/nerd_font.rs`, a generated
-glyph table whose regeneration is described in its module comment. Public
+under 800 lines. The documented exceptions are `src/nerd_font.rs`, a generated
+glyph table whose regeneration is described in its module comment, and
+`src/ghostty_sys/`, the hand-written `extern` declarations mirroring the
+pinned C headers (mechanical FFI, no responsibility seam to split along).
+Both are excluded in `scripts/check-code-file-lines.sh`. Public
 types keep their fields private and expose constructors and accessors, so the
 invariant lives in the field type rather than a runtime check (`port-to-rust`
 D6). Panics must never cross the library's API: run any body that can panic —

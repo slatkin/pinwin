@@ -1,0 +1,112 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'openspec/**'
+  workflow_dispatch:
+
+# One commit means one build. Keying on the commit SHA makes a tag run
+# supersede the branch run for the same commit instead of building twice.
+#
+# The asymmetry matters: only an incoming *tag* run cancels (it is the last
+# and authoritative ref). An incoming branch run waits its turn, so if the
+# two pushes were ever received out of order the release still runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Pin a dated snapshot of the Arch base-devel builder image instead of the
+    # floating `base-devel` tag. Arch is rolling, so bump this periodically
+    # (dated archlinux tags are retained ~18 months on Docker Hub) and keep the
+    # base-devel-... literal in the cargo cache key below in sync.
+    container: archlinux/archlinux:base-devel-20260818.0.575430
+    permissions:
+      contents: read
+
+    steps:
+      # The pinned archlinux base-devel image ships no git, and
+      # actions/checkout falls back to a REST API archive download when git is
+      # missing from the PATH. That yields no .git directory. Install makedeps
+      # (including git) first so checkout performs a real git clone.
+      - name: Update system and install makedeps
+        run: |
+          pacman_retry() {
+            for attempt in 1 2 3; do
+              "$@" && return 0
+              pacman -Syy --noconfirm
+              sleep $((attempt * 10))
+            done
+            "$@"
+          }
+          pacman_retry pacman -Syu --noconfirm
+          # `rustup` instead of `rust`: the Arch `rust` package is rebuilt for
+          # every upstream point release and package revision, and each bump
+          # invalidates the cargo cache below (full rebuild). The toolchain
+          # comes from the pinned rust-toolchain.toml instead, so it changes
+          # only when that pin is bumped deliberately. clang stays a system
+          # package (native build-script tooling, not a cache-keyed compiler).
+          pacman_retry pacman -S --noconfirm --needed rustup clang zig \
+            gtk4 gtk4-layer-shell git
+
+      - uses: actions/checkout@v7
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Record Rust toolchain version
+        run: echo "RUSTC_VER=$(rustc --version | tr ' ' '_')" >> "$GITHUB_ENV"
+
+      - name: Cache Rust build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.rustup/toolchains
+            target
+          # Key covers: pinned builder image + pinned rustc toolchain (build
+          # environment), the dependency lockfile, and all manifests.
+          # The base-devel-... literal must match the `container:` image above;
+          # bump it with rust-toolchain.toml.
+          key: ${{ format('{0}-cargo-{1}-base-devel-20260818.0.575430-{2}',
+            runner.os, env.RUSTC_VER,
+            hashFiles('rust-toolchain.toml', '**/Cargo.lock',
+            '**/Cargo.toml')) }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Audit dependencies
+        run: cargo audit
+
+      - name: Build and test
+        run: cargo nextest run && cargo build
+
+      - name: Check code file lines
+        run: ./scripts/check-code-file-lines.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: pinwin-linux-x86_64
+          path: |
+            target/debug/pinwin
+          if-no-files-found: error
