@@ -173,6 +173,10 @@ pub struct Surfaces {
     gap_tweening: Cell<bool>,
     /// The focus accent from the startup (`g_accent`); render consumes it.
     pub accent: Option<Accent>,
+    /// The keyboard interactivity mode, fixed at start time (`g_keyboard`).
+    /// The focus remap reads it: only an `on-demand` panel can gain focus
+    /// from a remap.
+    keyboard: Keyboard,
     /// The cell metrics from the last measurement (`g_cell_w`/`g_cell_h`).
     cell_w: Cell<i32>,
     cell_h: Cell<i32>,
@@ -315,6 +319,7 @@ impl Surfaces {
                 held_gap: Cell::new(held_gap),
                 gap_tweening: Cell::new(false),
                 accent,
+                keyboard,
                 cell_w: Cell::new(cell_w),
                 cell_h: Cell::new(cell_h),
                 latch: Cell::new(false),
@@ -487,6 +492,24 @@ impl Surfaces {
         if !self.closed.get() {
             self.area.queue_draw();
         }
+    }
+
+    /// Re-map the panel window so the compositor gives it keyboard focus
+    /// (keyboard-focus-request): hide the panel window, then present it
+    /// again. The compositor sees an unmap and a new map, and it focuses a
+    /// newly mapped `on-demand` surface the way it focused the first map;
+    /// in the `none` and `exclusive` modes a remap cannot gain focus, so it
+    /// does nothing. The reserve window stays mapped throughout, so the
+    /// exclusive zone — and with it the tiled windows — does not move, and
+    /// the second [`Self::on_map`] returns early before it could re-arm the
+    /// start handshake (1.1). The terminal state and the render cache
+    /// survive the hide, so the panel comes back with its content intact.
+    pub fn remap_for_focus(&self) {
+        if self.closed.get() || self.keyboard != Keyboard::OnDemand {
+            return;
+        }
+        self.win.set_visible(false);
+        self.win.present();
     }
 
     /// Apply the panel width to the drawing area and the window default size
