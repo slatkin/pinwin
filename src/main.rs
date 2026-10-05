@@ -5,7 +5,9 @@
 //! pinwin [--] [command...]
 //! COLS=60 GUTTER=8 PINWIN_KEYBOARD=on-demand|exclusive|none
 //! PINWIN_ACCENT=on|off PINWIN_ACCENT_COLOR=#RRGGBB PINWIN_ACCENT_WIDTH=2
+//! PINWIN_NAME=default
 //! pinwin htop
+//! pinwin --focus [name]
 //! ```
 //!
 //! A thin host over the library API ([`pinwin::panel`]), the port of

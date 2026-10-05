@@ -112,6 +112,7 @@ width outside 1..=65535 cannot be expressed (pass `None` for "no accent").
 
 ```text
 pinwin [--] [command...]    # default command: $SHELL, else /bin/sh; needs niri
+pinwin --focus [name]       # ask the named running panel for focus, then exit
 ```
 
 The binary owns the pty and the child: it sets `TERM=xterm-256color` and
@@ -130,9 +131,31 @@ Environment:
 | `PINWIN_ACCENT` | `on`, `off` | `on` |
 | `PINWIN_ACCENT_COLOR` | `#RRGGBB` or `RRGGBB` | `#dabc7f` |
 | `PINWIN_ACCENT_WIDTH` | 1..=65535 (read only when the accent is on) | 1 |
+| `PINWIN_NAME` | 1..=64 characters from `A-Za-z0-9_-` | `default` |
 
 An invalid value exits 2 with a message on stderr before any surface opens.
 Only the binary reads these; the library reads no pinwin-owned configuration.
+
+## Focus request
+
+Every instance reads `PINWIN_NAME`. The default name is `default`. A name has
+1..=64 characters from `A-Za-z0-9_-`. While its command runs, the instance
+listens on a Unix socket under `$XDG_RUNTIME_DIR/pinwin/`, named for the
+Wayland display and the name. A second instance with a name that a live
+instance already uses prints a message, exits 2 and opens nothing. A socket
+file left by a killed instance does not block a new host.
+
+`pinwin --focus [name]` asks the instance with that name for keyboard focus
+and exits. The name defaults to `default`. The client exits 0 when the named
+instance accepts the request. With no instance on that name it prints a
+message and exits 1. A bad name prints a message and exits 2 in both places:
+in `PINWIN_NAME`, where the host opens nothing, and after `--focus`.
+
+In niri, bind a key to the client:
+
+```kdl
+Mod+P { spawn "pinwin" "--focus"; }
+```
 
 ## Behaviour
 
