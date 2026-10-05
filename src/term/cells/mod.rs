@@ -552,7 +552,7 @@ fn fill_colors(
     };
     // SAFETY: each out pointer is writable storage of the expected type and
     // the row cells handle is live.
-    let mut has_fg = unsafe {
+    let mut foreground_present = unsafe {
         ghostty_render_state_row_cells_get(
             cells,
             GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR,
@@ -561,7 +561,7 @@ fn fill_colors(
     } == GHOSTTY_SUCCESS;
     // SAFETY: `bg` is writable storage of the expected type and the row
     // cells handle is live.
-    let mut has_bg = unsafe {
+    let mut background_present = unsafe {
         ghostty_render_state_row_cells_get(
             cells,
             GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
@@ -571,10 +571,10 @@ fn fill_colors(
 
     if style.inverse {
         mem::swap(&mut fg, &mut bg);
-        mem::swap(&mut has_fg, &mut has_bg);
+        mem::swap(&mut foreground_present, &mut background_present);
         // Both sides are "explicit" under inverse: one of them is the default.
-        has_fg = true;
-        has_bg = true;
+        foreground_present = true;
+        background_present = true;
     }
 
     if is_placeholder {
@@ -585,11 +585,11 @@ fn fill_colors(
                 .placeholders
                 .note(image_id, frame.cell_y, frame.cell_x);
         }
-    } else if has_fg {
+    } else if foreground_present {
         cell.has_fg = true;
         cell.fg = fg.into();
     }
-    if has_bg {
+    if background_present {
         cell.has_bg = true;
         cell.bg = bg.into();
     }
