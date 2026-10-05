@@ -1,6 +1,6 @@
-//! pinwin's layout core: the docking side, the applied column count and the
-//! four directional gutters, plus checked geometry validation and the pty read
-//! loop's yield decision.
+//! pinwin's layout core: the docking side, the applied column count, the
+//! four directional gutters and the per-layout push/cover choice, plus
+//! checked geometry validation and the pty read loop's yield decision.
 //!
 //! This is the Rust port of `options.c` (port-to-rust D3). It is GTK-free and
 //! depends on nothing but `std`, so a layout can be validated with no display
@@ -18,12 +18,42 @@ pub enum Side {
     Right,
 }
 
+/// Whether a layout pushes tiled windows aside or covers them in place
+/// (overlay-expand D1).
+///
+/// The choice travels with the layout, so a host describes its small size as
+/// pushing and its big size as covering. Pushing is the default, so callers
+/// that never opt in keep today's behaviour.
+///
+/// The reservation rules, stated once here:
+///
+/// * Pushing moves the compositor gap to the layout's own strip,
+///   `left + panel width + right`, so tiled windows reflow beside the panel.
+/// * Covering leaves the gap exactly where the last pushing layout put it —
+///   an empty strip when no pushing layout has ever applied — and draws the
+///   panel over the tiled windows, so a same-side expand or shrink moves no
+///   windows.
+/// * A side switch always moves the gap to the new side at the last pushing
+///   width, covering or not: the shuffle belongs to whoever moved the panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Coverage {
+    /// Push: move the compositor gap to this layout's own strip.
+    Push,
+    /// Cover: draw the panel over the tiled windows and leave the gap alone.
+    Cover,
+}
+
 /// A full layout: where the panel docks, how many terminal columns it is
-/// wide, and its four directional gutters in logical pixels.
+/// wide, its four directional gutters in logical pixels, and whether it
+/// pushes tiles aside or covers them in place.
 ///
 /// The gutters may be negative (they move the panel edge past its output
 /// edge). Fields are private so the invariant lives in the field types and
 /// only [`Layout::new`] builds a value.
+///
+/// [`Layout::new`] builds a pushing layout, the backward-compatible default.
+/// Covering is opt-in per layout via [`Layout::covering`]; see [`Coverage`]
+/// for what each choice does to the compositor gap and the reservation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Layout {
     side: Side,
@@ -32,11 +62,13 @@ pub struct Layout {
     bottom: i32,
     left: i32,
     right: i32,
+    coverage: Coverage,
 }
 
 impl Layout {
     /// Build a layout. `cols` is the panel width in terminal columns; the
-    /// gutters are in logical pixels.
+    /// gutters are in logical pixels. The layout pushes tiles aside; opt in
+    /// to covering with [`Layout::covering`].
     pub const fn new(
         side: Side,
         cols: NonZeroU16,
@@ -52,7 +84,16 @@ impl Layout {
             bottom,
             left,
             right,
+            coverage: Coverage::Push,
         }
+    }
+
+    /// Opt this layout in to covering: the panel draws over the tiled
+    /// windows and the compositor gap stays at the last pushing layout's
+    /// strip. A side switch is never a covering move.
+    pub const fn covering(mut self) -> Self {
+        self.coverage = Coverage::Cover;
+        self
     }
 
     pub const fn side(&self) -> Side {
@@ -79,6 +120,11 @@ impl Layout {
         self.right
     }
 
+    /// The layout's push/cover choice.
+    pub const fn coverage(&self) -> Coverage {
+        self.coverage
+    }
+
     /// Horizontal placement for the docking side, with checked arithmetic.
     ///
     /// `panel_width` is the applied column count times the cell width.
@@ -102,18 +148,38 @@ impl Layout {
     }
 
     /// Validate the layout against the output and font metrics, all in
-    /// logical pixels. Rejects checked-arithmetic overflow, a reservation sum
-    /// below zero (`left + panel_width + right`), a reservation that leaves
-    /// no output width for other windows and vertical space below one complete
-    /// terminal row (`output_height - top - bottom < cell_height`).
+    /// logical pixels. Both choices reject checked-arithmetic overflow and
+    /// vertical space below one complete terminal row
+    /// (`output_height - top - bottom < cell_height`); the rest splits by
+    /// choice (overlay-expand D4):
+    ///
+    /// Pushing keeps today's checks: a reservation sum below zero
+    /// (`left + panel_width + right`) and a reservation that leaves no output
+    /// width for other windows.
+    ///
+    /// Covering never checks the untouched gap: it only rejects a visible
+    /// panel wider than the output.
     pub fn validate(&self, cell: CellSize, output: OutputSize) -> Result<(), InvalidLayout> {
         let panel_width = self.cols.get() as i64 * cell.width().get() as i64;
+        // Both choices place the visible panel by its own edge gutter, so
+        // both reject the same checked-arithmetic overflow.
         let geometry = self.side_geometry(panel_width)?;
-        if geometry.reservation() < 0 {
-            return Err(InvalidLayout::NoReserve);
-        }
-        if geometry.reservation() >= output.width().get() {
-            return Err(InvalidLayout::NoWidth);
+        match self.coverage {
+            Coverage::Push => {
+                if geometry.reservation() < 0 {
+                    return Err(InvalidLayout::NoReserve);
+                }
+                if geometry.reservation() >= output.width().get() {
+                    return Err(InvalidLayout::NoWidth);
+                }
+            }
+            Coverage::Cover => {
+                // The held gap is not this layout's business; only the
+                // visible panel must fit the output.
+                if panel_width > output.width().get() as i64 {
+                    return Err(InvalidLayout::NoWidth);
+                }
+            }
         }
         let vertical = self.top as i64 + self.bottom as i64;
         if vertical > output.height().get() as i64 - cell.height().get() as i64 {
@@ -200,7 +266,8 @@ pub enum InvalidLayout {
     Overflow,
     /// `left + panel_width + right` is below zero.
     NoReserve,
-    /// The reservation leaves no output width for other windows.
+    /// Pushing: the reservation leaves no output width for other windows.
+    /// Covering: the visible panel is wider than the output.
     NoWidth,
     /// Vertical space is below one complete terminal row.
     NoRow,
@@ -211,7 +278,7 @@ impl fmt::Display for InvalidLayout {
         match self {
             Self::Overflow => f.write_str("layout geometry overflows"),
             Self::NoReserve => f.write_str("layout reservation is negative"),
-            Self::NoWidth => f.write_str("layout leaves no output width"),
+            Self::NoWidth => f.write_str("layout leaves no output width beside the panel"),
             Self::NoRow => f.write_str("layout leaves no complete terminal row"),
         }
     }
@@ -300,6 +367,10 @@ mod tests {
         )
     }
 
+    fn covering(cols: u16, top: i32, bottom: i32, left: i32, right: i32) -> Layout {
+        layout(cols, top, bottom, left, right).covering()
+    }
+
     fn cell(width: i32, height: i32) -> CellSize {
         CellSize::new(width, height).expect("test cell size is non-zero")
     }
@@ -347,6 +418,7 @@ mod tests {
         struct Case {
             what: &'static str,
             layout: Layout,
+            covering: bool,
             cell: CellSize,
             output: OutputSize,
             expected: InvalidLayout,
@@ -356,6 +428,15 @@ mod tests {
             Case {
                 what: "column width overflows i32",
                 layout: layout(65535, 0, 0, 0, 0),
+                covering: false,
+                cell: cell(65536, 16),
+                output: output(1920, 1080),
+                expected: InvalidLayout::Overflow,
+            },
+            Case {
+                what: "column width overflows i32, covering",
+                layout: layout(65535, 0, 0, 0, 0),
+                covering: true,
                 cell: cell(65536, 16),
                 output: output(1920, 1080),
                 expected: InvalidLayout::Overflow,
@@ -363,6 +444,15 @@ mod tests {
             Case {
                 what: "gutter sum overflows i32",
                 layout: layout(1, 0, 0, i32::MAX, i32::MAX),
+                covering: false,
+                cell: cell(1, 16),
+                output: output(1920, 1080),
+                expected: InvalidLayout::Overflow,
+            },
+            Case {
+                what: "gutter sum overflows i32, covering",
+                layout: layout(1, 0, 0, i32::MAX, i32::MAX),
+                covering: true,
                 cell: cell(1, 16),
                 output: output(1920, 1080),
                 expected: InvalidLayout::Overflow,
@@ -370,6 +460,7 @@ mod tests {
             Case {
                 what: "reservation is below zero",
                 layout: layout(1, 0, 0, -100, -100),
+                covering: false,
                 cell: cell(1, 16),
                 output: output(1920, 1080),
                 expected: InvalidLayout::NoReserve,
@@ -377,6 +468,7 @@ mod tests {
             Case {
                 what: "reservation leaves no output width",
                 layout: layout(600, 0, 0, 0, 0),
+                covering: false,
                 cell: cell(1, 16),
                 output: output(600, 1080),
                 expected: InvalidLayout::NoWidth,
@@ -384,6 +476,15 @@ mod tests {
             Case {
                 what: "vertical space below one row",
                 layout: layout(1, 1000, 1000, 0, 0),
+                covering: false,
+                cell: cell(1, 16),
+                output: output(1920, 1080),
+                expected: InvalidLayout::NoRow,
+            },
+            Case {
+                what: "vertical space below one row, covering",
+                layout: layout(1, 1000, 1000, 0, 0),
+                covering: true,
                 cell: cell(1, 16),
                 output: output(1920, 1080),
                 expected: InvalidLayout::NoRow,
@@ -391,13 +492,51 @@ mod tests {
         ];
 
         for case in cases {
+            let layout = if case.covering {
+                case.layout.covering()
+            } else {
+                case.layout
+            };
             assert_eq!(
-                case.layout.validate(case.cell, case.output),
+                layout.validate(case.cell, case.output),
                 Err(case.expected),
                 "{}",
                 case.what
             );
         }
+    }
+
+    #[test]
+    fn new_builds_a_pushing_layout_and_covering_opts_in() {
+        let base = layout(60, 0, 0, 0, 12);
+        assert_eq!(base.coverage(), Coverage::Push);
+        assert_eq!(base.covering().coverage(), Coverage::Cover);
+    }
+
+    #[test]
+    fn covering_validation_rejects_a_panel_wider_than_the_output() {
+        // The 600-column panel is exactly the output width: still visible,
+        // so covering accepts it where pushing would reject the reservation.
+        assert_eq!(
+            covering(600, 0, 0, 0, 0).validate(cell(1, 16), output(600, 1080)),
+            Ok(())
+        );
+        // One column wider than the output is rejected.
+        assert_eq!(
+            covering(601, 0, 0, 0, 0).validate(cell(1, 16), output(600, 1080)),
+            Err(InvalidLayout::NoWidth)
+        );
+    }
+
+    #[test]
+    fn covering_validation_never_checks_the_gap() {
+        // A negative reservation sum is only a pushing failure (the table's
+        // NoReserve row): a covering layout leaves the held gap untouched, so
+        // it must validate.
+        assert_eq!(
+            covering(1, 0, 0, -100, -100).validate(cell(1, 16), output(1920, 1080)),
+            Ok(())
+        );
     }
 
     #[test]

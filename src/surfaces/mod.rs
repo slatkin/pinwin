@@ -38,8 +38,11 @@ use crate::layout::{Accent, Keyboard, Layout, Side};
 use crate::render::OutputScale;
 
 mod area;
+mod gap;
 
 pub use area::GridArea;
+
+use gap::{HeldGap, gap_tween_decision, reserve_gap, staged_publish, start_held_gap};
 
 /// A drawing-area draw function body (`render.c`'s `on_draw`).
 pub type DrawFn = dyn Fn(&cairo::Context, i32, i32);
@@ -128,10 +131,12 @@ pub enum InitFailure {
     LayerShell,
 }
 
-/// Whether a layout apply animates (`glue_publish_layout`'s decision): only a
-/// column change animates — the side and the left and right gutters move the
-/// reservation, so a layout touching them snaps. The duration clamp to 1000 ms
-/// happens upstream (`pinwin_api.c`), as in the C.
+/// Whether a layout apply animates (`glue_publish_layout`'s decision): a
+/// layout differing only in its column count and/or push/cover choice animates
+/// — the side and the left and right gutters move the reservation's side, so a
+/// layout touching them snaps. A covering-only change animates so a pushing
+/// retarget at the same width can ease its gap back (overlay-expand D3). The
+/// duration clamp to 1000 ms happens upstream (`pinwin_api.c`), as in the C.
 fn should_animate(
     duration_ms: u32,
     animations_enabled: bool,
@@ -208,6 +213,15 @@ pub struct Surfaces {
     layout: Cell<Layout>,
     /// The applied column count (`g_cols`).
     cols: Cell<u16>,
+    /// The gap the reserve surface draws (overlay-expand D2): the last
+    /// pushing layout's side and strip, updated only by validated publishes;
+    /// a covering start holds a zero strip (D5).
+    held_gap: Cell<HeldGap>,
+    /// Set by a publish whose animated target pushes with a strip differing
+    /// from the one the gap rests at (overlay-expand D3): with the tween
+    /// live, [`reserve_gap`] moves the gap with the panel. Read only with
+    /// [`Anim::active`], so a stopped tween falls back to the held strip.
+    gap_tweening: Cell<bool>,
     /// The focus accent from the startup (`g_accent`); render consumes it.
     pub accent: Option<Accent>,
     /// The cell metrics from the last measurement (`g_cell_w`/`g_cell_h`).
@@ -313,6 +327,11 @@ impl Surfaces {
         // Ignore Noctalia's top zone.
         win.set_exclusive_zone(-1);
 
+        // The held gap starts at the startup layout's own choice: a pushing
+        // start reserves its own strip, a covering start reserves nothing
+        // (overlay-expand D5).
+        let held_gap = start_held_gap(layout, cell_w);
+
         let surfaces = Rc::new_cyclic(|weak: &Weak<Surfaces>| {
             let anim = Anim::new(poisoned.clone(), Self::anim_hooks(weak));
             Surfaces {
@@ -323,6 +342,8 @@ impl Surfaces {
                 monitor: RefCell::new(None),
                 layout: Cell::new(layout),
                 cols: Cell::new(layout.cols().get()),
+                held_gap: Cell::new(held_gap),
+                gap_tweening: Cell::new(false),
                 accent,
                 cell_w: Cell::new(cell_w),
                 cell_h: Cell::new(cell_h),
@@ -516,20 +537,35 @@ impl Surfaces {
         self.win.set_default_size(px, -1);
     }
 
+    /// The gap the reserve surface draws right now (overlay-expand D2, D3):
+    /// the held strip, except while a flagged gap tween runs and the applied
+    /// layout pushes, when the strip moves with the panel. One rule for both
+    /// the per-frame apply and the tween decision, so they cannot disagree.
+    fn drawn_gap(&self, layout: Layout, panel_px: i32) -> (Side, i32) {
+        reserve_gap(
+            self.held_gap.get(),
+            self.gap_tweening.get() && self.anim.active(),
+            layout,
+            panel_px,
+        )
+    }
+
     /// Push the applied layout onto both surfaces in one main-loop turn
     /// (`apply_layout_surfaces`): the visible panel gets its side anchor and
-    /// directional margins, the transparent reservation keeps zero margins and
-    /// full height on the same side with an explicit exclusive zone of
-    /// `left + panel + right`. Never leaves both horizontal anchors set.
+    /// margins from the applied layout, the reservation its side and strip
+    /// from the held gap (overlay-expand D2), except while a flagged gap
+    /// tween moves the strip with the panel (D3). Never leaves both
+    /// horizontal anchors set.
     fn apply_layout_surfaces(&self) {
         if self.closed.get() {
             return;
         }
+        let layout = self.layout.get();
         // Callers validate first; this is belt and braces.
-        let Ok(geometry) = self.layout.get().side_geometry(i64::from(self.panel_px())) else {
+        let Ok(geometry) = layout.side_geometry(i64::from(self.panel_px())) else {
             return;
         };
-        let left = self.layout.get().side() == Side::Left;
+        let left = layout.side() == Side::Left;
         let win = &self.win;
         win.set_anchor(Edge::Left, left);
         win.set_anchor(Edge::Right, !left);
@@ -537,19 +573,23 @@ impl Surfaces {
         win.set_anchor(Edge::Bottom, true);
         win.set_margin(Edge::Left, if left { geometry.edge_margin() } else { 0 });
         win.set_margin(Edge::Right, if left { 0 } else { geometry.edge_margin() });
-        win.set_margin(Edge::Top, self.layout.get().top());
-        win.set_margin(Edge::Bottom, self.layout.get().bottom());
+        win.set_margin(Edge::Top, layout.top());
+        win.set_margin(Edge::Bottom, layout.bottom());
 
+        // The reservation follows the drawn gap, not the applied layout (D2):
+        // a covering layout cannot move it.
+        let (reserve_side, reserve_zone) = self.drawn_gap(layout, self.panel_px());
+        let reserve_left = reserve_side == Side::Left;
         if let Some(reserve) = self.reserve.borrow().as_ref() {
-            reserve.set_anchor(Edge::Left, left);
-            reserve.set_anchor(Edge::Right, !left);
+            reserve.set_anchor(Edge::Left, reserve_left);
+            reserve.set_anchor(Edge::Right, !reserve_left);
             reserve.set_anchor(Edge::Top, true);
             reserve.set_anchor(Edge::Bottom, true);
             reserve.set_margin(Edge::Left, 0);
             reserve.set_margin(Edge::Right, 0);
             reserve.set_margin(Edge::Top, 0);
             reserve.set_margin(Edge::Bottom, 0);
-            reserve.set_exclusive_zone(geometry.reservation());
+            reserve.set_exclusive_zone(reserve_zone);
             if let Some(monitor) = self.monitor.borrow().as_ref() {
                 reserve.set_monitor(Some(monitor));
             }
@@ -607,41 +647,54 @@ impl Surfaces {
     /// Validate the layout against the live metrics and publish it
     /// (`glue_publish_layout`).
     pub fn publish(&self, layout: Layout, duration_ms: u32) -> PublishOutcome {
-        if self.closed.get() || self.monitor.borrow().is_none() {
-            // A panel without live metrics is a lifecycle state, not a layout
-            // verdict (`GLUE_NOT_LIVE`).
+        if self.closed.get() {
             return PublishOutcome::NotLive;
         }
-        // Validate the staged column count, not the one already applied: a
-        // rejected Apply must leave the live layout untouched.
-        let geometry = self.monitor.borrow().as_ref().map(gdk::Monitor::geometry);
-        let Some(geometry) = geometry else {
+        // A panel without live metrics is a lifecycle state, not a layout
+        // verdict (`GLUE_NOT_LIVE`).
+        let Some(geometry) = self.monitor.borrow().as_ref().map(gdk::Monitor::geometry) else {
             return PublishOutcome::NotLive;
         };
-        if !metrics_valid(
-            layout,
-            self.cell_w.get(),
-            self.cell_h.get(),
+        let applied = self.layout.get();
+        // Validate before staging (overlay-expand D4): a rejected apply
+        // leaves the applied layout and the held gap untouched.
+        let Some((layout, cols, held_gap)) = staged_publish(
             geometry.width(),
             geometry.height(),
-        ) {
+            self.cell_w.get(),
+            self.cell_h.get(),
+            self.held_gap.get(),
+            layout,
+        ) else {
             return PublishOutcome::InvalidLayout;
-        }
+        };
 
-        // Only a column change animates: the side and the left and right
-        // gutters must match, since they move the reservation. A tween already
-        // heading for these columns just keeps going.
-        let applied = self.layout.get();
+        // A layout differing only in its column count and/or push/cover
+        // choice animates (overlay-expand D3); the side and gutters must
+        // match. A tween already heading for these columns keeps going.
         let animate = should_animate(duration_ms, Anim::allowed(), &applied, &layout);
         let from_px = self.panel_px();
         let cols_changed = layout.cols().get() != self.cols.get();
+        let coverage_changed = layout.coverage() != applied.coverage();
 
+        // The strip the gap rests at right now, before this apply mutates (D3).
+        let (_, gap_zone) = self.drawn_gap(applied, from_px);
+        let target_px = i32::from(layout.cols().get()) * self.cell_w.get();
+        let gap_tweens = gap_tween_decision(gap_zone, animate, layout, target_px);
+
+        // The staged layout is validated, so it may now mutate the applied
+        // layout and held gap as one operation (overlay-expand D4).
         self.layout.set(layout);
-        self.cols.set(layout.cols().get());
+        self.cols.set(cols);
+        self.held_gap.set(held_gap);
         self.deferred_grid.set(false);
         if !animate {
+            self.gap_tweening.set(false);
             self.anim.cancel();
-        } else if cols_changed {
+        } else if cols_changed || coverage_changed {
+            // A coverage-only apply still tweens: the panel eases in place
+            // while a pushing target's strip tweens back (overlay-expand D3).
+            self.gap_tweening.set(gap_tweens);
             self.anim
                 .begin(&self.win, from_px, self.grid_px(), duration_ms);
             (self.hooks.set_tween_active)(true);

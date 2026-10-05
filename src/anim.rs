@@ -1,8 +1,11 @@
 //! The animated width transition (port-to-rust D3): one frame-clock tick
-//! callback eases the visible panel's width and the reservation's exclusive
-//! zone together, and a watchdog snaps to the final layout if frames stop.
-//! Ported from `src/glue_anim.c` (the add-animated-width design D2, D4-D6 it
-//! cites is archived under `openspec/changes/archive/`).
+//! callback eases the visible panel's width, and a watchdog snaps to the
+//! final layout if frames stop. Ported from `src/glue_anim.c` (the
+//! add-animated-width design D2, D4-D6 it cites is archived under
+//! `openspec/changes/archive/`). The reservation's exclusive zone is driven
+//! from [`crate::surfaces`]'s per-frame gap choice, not from here: the panel
+//! width always tweens, while the gap moves with it only for a pushing
+//! target whose strip differs from the held one (overlay-expand D3).
 //!
 //! Everything runs on the GTK thread; the state is one struct, so a frame
 //! allocates nothing. The easing and the per-tick step are pure and unit

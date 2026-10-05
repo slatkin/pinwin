@@ -174,18 +174,30 @@ impl Panel {
     }
 
     /// Apply a layout without animation: update the applied column count,
-    /// gutters and docking side as one operation, resize the reservation and
+    /// gutters, docking side and push/cover choice as one operation, resize
     /// the panel width, and resize the terminal grid and pty winsize when
     /// necessary.
+    ///
+    /// The reservation follows the layout's push/cover choice; the exact
+    /// rules are stated once on [`Coverage`](crate::layout::Coverage), and
+    /// the checks each choice gets on
+    /// [`Layout::validate`](crate::layout::Layout::validate). A rejected
+    /// apply (`InvalidLayout`) leaves the applied layout and the held strip
+    /// untouched.
     pub fn apply_layout(&self, layout: Layout) -> Result<(), PinwinError> {
         self.apply_common(layout, 0)
     }
 
-    /// Apply a layout animated: when the layout differs only in its column
-    /// count and GTK animations are enabled, the width changes continuously
-    /// over `duration_ms` (clamped to [`ANIMATION_MAX_MS`]); anything else
-    /// snaps exactly like [`Panel::apply_layout`]. `Ok(())` means the layout
-    /// was validated and accepted, not that the animation finished.
+    /// Apply a layout animated: when the layout differs from the applied
+    /// one only in its column count and/or push/cover choice (same side,
+    /// same left and right gutters) and GTK animations are enabled, the
+    /// width changes continuously over `duration_ms` (clamped to
+    /// [`ANIMATION_MAX_MS`]); anything else snaps exactly like
+    /// [`Panel::apply_layout`]. The reservation moves with the panel only
+    /// while the target pushes with a strip that differs from the held one;
+    /// a covering target leaves the held strip alone in every frame.
+    /// `Ok(())` means the layout was validated and accepted, not that the
+    /// animation finished.
     pub fn apply_layout_animated(
         &self,
         layout: Layout,
