@@ -15,6 +15,13 @@
 //! `max_xy_ratio = null` to `None`. Keep `constraint()` and the invariants
 //! in the tests intact.
 
+// Approved per-instance: the table mirrors ghostty's source verbatim and digit
+// separators would add diff noise against upstream with no value change.
+#![allow(
+    clippy::unreadable_literal,
+    reason = "generated table mirrors upstream ghostty values verbatim"
+)]
+
 /// Sizing rule for a constrained glyph (`Constraint.Size`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Size {
@@ -95,6 +102,7 @@ impl Constraint {
 
     /// True when the constraint neither sizes nor positions the glyph
     /// (`Constraint.doesAnything`).
+    #[must_use]
     pub fn does_anything(&self) -> bool {
         self.size != Size::None
             || self.align_horizontal != Align::None
@@ -4994,6 +5002,7 @@ static STAGE3: [Option<Constraint>; 277] = [
 ];
 
 /// The Nerd Font constraint for `cp`, or `None` when it has none.
+#[must_use]
 pub fn constraint(cp: u32) -> Option<Constraint> {
     if cp > 0x10FFFF {
         return None;
@@ -5070,14 +5079,14 @@ mod tests {
     /// stage1 tables describe.
     #[test]
     fn lookup_matches_table_for_all_pages() {
-        for (high, &page) in STAGE1.iter().enumerate() {
-            for low in 0..256usize {
-                let cp = (high as u32) << 8 | low as u32;
+        for (&page, high) in STAGE1.iter().zip(0u32..) {
+            for low in 0u32..256 {
+                let cp = high << 8 | low;
                 let got = constraint(cp);
                 if page == 0 {
                     assert_eq!(got, None, "cp {cp:#x}");
                 } else {
-                    let want = STAGE3[STAGE2[page as usize + low] as usize];
+                    let want = STAGE3[STAGE2[page as usize + low as usize] as usize];
                     assert_eq!(got, want, "cp {cp:#x}");
                 }
             }
