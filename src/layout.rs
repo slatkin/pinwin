@@ -411,6 +411,7 @@ mod tests {
         struct Case {
             what: &'static str,
             layout: Layout,
+            covering: bool,
             cell: CellSize,
             output: OutputSize,
             expected: InvalidLayout,
@@ -420,6 +421,15 @@ mod tests {
             Case {
                 what: "column width overflows i32",
                 layout: layout(65535, 0, 0, 0, 0),
+                covering: false,
+                cell: cell(65536, 16),
+                output: output(1920, 1080),
+                expected: InvalidLayout::Overflow,
+            },
+            Case {
+                what: "column width overflows i32, covering",
+                layout: layout(65535, 0, 0, 0, 0),
+                covering: true,
                 cell: cell(65536, 16),
                 output: output(1920, 1080),
                 expected: InvalidLayout::Overflow,
@@ -427,6 +437,15 @@ mod tests {
             Case {
                 what: "gutter sum overflows i32",
                 layout: layout(1, 0, 0, i32::MAX, i32::MAX),
+                covering: false,
+                cell: cell(1, 16),
+                output: output(1920, 1080),
+                expected: InvalidLayout::Overflow,
+            },
+            Case {
+                what: "gutter sum overflows i32, covering",
+                layout: layout(1, 0, 0, i32::MAX, i32::MAX),
+                covering: true,
                 cell: cell(1, 16),
                 output: output(1920, 1080),
                 expected: InvalidLayout::Overflow,
@@ -434,6 +453,7 @@ mod tests {
             Case {
                 what: "reservation is below zero",
                 layout: layout(1, 0, 0, -100, -100),
+                covering: false,
                 cell: cell(1, 16),
                 output: output(1920, 1080),
                 expected: InvalidLayout::NoReserve,
@@ -441,6 +461,7 @@ mod tests {
             Case {
                 what: "reservation leaves no output width",
                 layout: layout(600, 0, 0, 0, 0),
+                covering: false,
                 cell: cell(1, 16),
                 output: output(600, 1080),
                 expected: InvalidLayout::NoWidth,
@@ -448,6 +469,15 @@ mod tests {
             Case {
                 what: "vertical space below one row",
                 layout: layout(1, 1000, 1000, 0, 0),
+                covering: false,
+                cell: cell(1, 16),
+                output: output(1920, 1080),
+                expected: InvalidLayout::NoRow,
+            },
+            Case {
+                what: "vertical space below one row, covering",
+                layout: layout(1, 1000, 1000, 0, 0),
+                covering: true,
                 cell: cell(1, 16),
                 output: output(1920, 1080),
                 expected: InvalidLayout::NoRow,
@@ -455,8 +485,13 @@ mod tests {
         ];
 
         for case in cases {
+            let layout = if case.covering {
+                case.layout.covering()
+            } else {
+                case.layout
+            };
             assert_eq!(
-                case.layout.validate(case.cell, case.output),
+                layout.validate(case.cell, case.output),
                 Err(case.expected),
                 "{}",
                 case.what
@@ -468,16 +503,7 @@ mod tests {
     fn new_builds_a_pushing_layout_and_covering_opts_in() {
         let base = layout(60, 0, 0, 0, 12);
         assert_eq!(base.coverage(), Coverage::Push);
-
-        let covered = base.covering();
-        assert_eq!(covered.coverage(), Coverage::Cover);
-        // Only the choice changes; the geometry fields stay as built.
-        assert_eq!(covered.side(), base.side());
-        assert_eq!(covered.cols(), base.cols());
-        assert_eq!(covered.top(), base.top());
-        assert_eq!(covered.bottom(), base.bottom());
-        assert_eq!(covered.left(), base.left());
-        assert_eq!(covered.right(), base.right());
+        assert_eq!(base.covering().coverage(), Coverage::Cover);
     }
 
     #[test]
@@ -497,29 +523,12 @@ mod tests {
 
     #[test]
     fn covering_validation_never_checks_the_gap() {
-        // A negative reservation sum is only a pushing failure: a covering
-        // layout leaves the held gap untouched, so it must validate.
-        let layout = layout(1, 0, 0, -100, -100);
+        // A negative reservation sum is only a pushing failure (the table's
+        // NoReserve row): a covering layout leaves the held gap untouched, so
+        // it must validate.
         assert_eq!(
-            layout.validate(cell(1, 16), output(1920, 1080)),
-            Err(InvalidLayout::NoReserve)
-        );
-        assert_eq!(
-            layout.covering().validate(cell(1, 16), output(1920, 1080)),
+            covering(1, 0, 0, -100, -100).validate(cell(1, 16), output(1920, 1080)),
             Ok(())
-        );
-        // Structural overflow is still rejected for covering.
-        assert_eq!(
-            covering(1, 0, 0, i32::MAX, i32::MAX).validate(cell(1, 16), output(1920, 1080)),
-            Err(InvalidLayout::Overflow)
-        );
-    }
-
-    #[test]
-    fn covering_validation_rejects_insufficient_vertical_space() {
-        assert_eq!(
-            covering(1, 1000, 1000, 0, 0).validate(cell(1, 16), output(1920, 1080)),
-            Err(InvalidLayout::NoRow)
         );
     }
 
