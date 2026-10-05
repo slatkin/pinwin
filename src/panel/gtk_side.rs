@@ -44,7 +44,7 @@ use gtk4::glib::ControlFlow;
 use gtk4::prelude::*;
 
 use super::Inner;
-use super::handshake::{Handshake, StartOutcome};
+use super::handshake::{FocusOutcome, Handshake, StartOutcome};
 
 /// The startup arguments one panel runs with (D6, D7): the host-owned pty
 /// master fd, the full layout, the keyboard mode and the optional focus
@@ -303,6 +303,33 @@ pub(crate) fn dispatch_teardown(id: u64, reply: &mpsc::SyncSender<()>) {
     });
 }
 
+/// The focus-remap command, posted from the host thread with
+/// `MainContext::invoke` (keyboard-focus-request 2.1, the apply pattern):
+/// hide and re-present the panel window so the compositor focuses the new
+/// map. Answers `NotLive` when this command's panel is no longer the one
+/// running, and `Failed` when the remap panicked or the shared latch was
+/// already set (D5: a panic reports `Internal`, never `NotRunning`).
+/// [`Surfaces::remap_for_focus`] itself no-ops outside `on-demand` mode; the
+/// host thread short-circuits those modes before posting, so this is defence
+/// in depth, and the reply is `Done` either way.
+pub(crate) fn dispatch_focus_remap(id: u64, reply: &mpsc::SyncSender<FocusOutcome>) {
+    GLUE.with(|cell| {
+        // The plumbing around the remap is itself a boundary closure (D5):
+        // a panic here still reports through the reply instead of unwinding
+        // into glib's dispatch.
+        let scratch = Poisoned::new();
+        let outcome = guard_always(&scratch, || match cell.borrow().as_ref() {
+            Some(live) if live.id == id => {
+                guard(&live.poisoned, || live.surfaces.remap_for_focus())
+                    .map_or(FocusOutcome::Failed, |()| FocusOutcome::Done)
+            }
+            _ => FocusOutcome::NotLive,
+        })
+        .unwrap_or(FocusOutcome::Failed);
+        let _ = reply.send(outcome);
+    });
+}
+
 /// Build one panel's glue (`on_activate`): the terminal, the pty, the draw
 /// state and the surfaces, wired together through the [`SurfaceHooks`] slots
 /// with the panel's one shared poisoned latch. Returns the surfaces; the rest
@@ -369,29 +396,7 @@ fn build_glue(
     });
     // The late-bound handles are live from here on.
     link.set(Rc::downgrade(&surfaces));
-    debug_remap_trigger(&link, poisoned);
     surfaces
-}
-
-/// TEMPORARY debug trigger for the focus remap (keyboard-focus-request 1.2,
-/// removed by 2.1 when `Panel::request_focus` posts the remap itself):
-/// `PINWIN_DEBUG_REMAP_MS=<ms>` remaps the panel window once, `<ms>` after
-/// the glue builds, so the remap can be exercised on niri before a host-side
-/// request path exists. Set the value past the start handshake (a few
-/// seconds); anything unparseable leaves the panel alone. Like every closure
-/// registered here, the timeout runs its body through the shared [`guard`]
-/// (D5); the one-shot never keeps a closed panel's glue alive past its fire.
-fn debug_remap_trigger(link: &SurfacesLink, poisoned: &Poisoned) {
-    if let Some(raw) = std::env::var_os("PINWIN_DEBUG_REMAP_MS")
-        && let Ok(ms) = raw.to_string_lossy().parse::<u64>()
-    {
-        let link = link.clone();
-        let poisoned = poisoned.clone();
-        glib::timeout_add_local(Duration::from_millis(ms), move || {
-            let _ = guard(&poisoned, || link.with(Surfaces::remap_for_focus));
-            ControlFlow::Break
-        });
-    }
 }
 
 /// One panel's [`SurfaceHooks`] slots over its shared terminal, pty, draw

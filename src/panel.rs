@@ -6,9 +6,10 @@
 //! any GTK work, then hands the startup to the GTK thread and waits for a
 //! handshake that completes when the panel is on screen with live metrics.
 //! Applies post a command with `MainContext::invoke` and wait up to five
-//! seconds for the reply (a wedged loop is `Internal`, never a hang). Drop
-//! posts a teardown, waits for its reply, and never joins the parked thread
-//! (D4), so a later start may succeed.
+//! seconds for the reply (a wedged loop is `Internal`, never a hang); a
+//! focus request posts the same way. Drop posts a teardown, waits for its
+//! reply, and never joins the parked thread (D4), so a later start may
+//! succeed.
 //!
 //! Panics never cross the API (D5): every public entry point runs under the
 //! shared [`crate::guard`], and the poisoned check comes before the
@@ -33,10 +34,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 
 use crate::guard::{Poisoned, guard, guard_always};
-use crate::layout::Layout;
+use crate::layout::{Keyboard, Layout};
 
-use gtk_side::{StartCommand, dispatch_apply, dispatch_teardown, gtk_thread_main};
-use handshake::{APPLY_WAIT, Handshake, wait_for_apply, wait_for_start};
+use gtk_side::{
+    StartCommand, dispatch_apply, dispatch_focus_remap, dispatch_teardown, gtk_thread_main,
+};
+use handshake::{APPLY_WAIT, Handshake, wait_for_apply, wait_for_focus, wait_for_start};
 
 /// The longest animated apply duration, clamped like `pinwin_api.c`'s
 /// `PINWIN_ANIM_MAX_MS` (`pinwin.h`: "the duration SHALL be clamped").
@@ -69,17 +72,27 @@ static INSTANCE: Mutex<Instance> = Mutex::new(Instance {
 
 /// The display-free handle state (D10): the panel's id, its one shared D5
 /// latch — the same flag every glue closure of this panel guards against —
-/// and whether the GTK side is still live. The GTK thread holds a clone of
-/// the `Arc` and clears `live` when the panel ends on its own, so an apply on
-/// a dead panel reports `NotRunning` without posting anything.
+/// whether the GTK side is still live, and the keyboard mode fixed at start
+/// time (a focus request short-circuits on it before posting, D10). The GTK
+/// thread holds a clone of the `Arc` and clears `live` when the panel ends
+/// on its own, so an apply or a focus request on a dead panel reports
+/// `NotRunning` without posting anything.
 #[derive(Debug)]
 pub(crate) struct Inner {
     pub(crate) id: u64,
     pub(crate) poisoned: Poisoned,
     pub(crate) live: AtomicBool,
+    /// The startup keyboard mode; `request_focus` is a no-op outside
+    /// `on-demand`.
+    pub(crate) keyboard: Keyboard,
 }
 
 /// A running panel, the host's handle. Dropping it closes the panel.
+///
+/// Besides applies, the handle offers a focus request
+/// ([`Panel::request_focus`]): in `on-demand` mode the panel window is
+/// remapped so the compositor gives it keyboard focus, the other modes are a
+/// no-op `Ok`.
 ///
 /// Not `Clone`: one handle per panel, so the single-instance rule is
 /// ownership, not bookkeeping.
@@ -126,6 +139,7 @@ impl Panel {
             id,
             poisoned: poisoned.clone(),
             live: AtomicBool::new(true),
+            keyboard: startup.keyboard,
         });
 
         // Claim the single-instance slot before touching GTK, so two
@@ -215,6 +229,25 @@ impl Panel {
     fn apply_common(&self, layout: Layout, duration_ms: u32) -> Result<(), PinwinError> {
         apply_via_inner(&self.inner, layout, duration_ms)
     }
+
+    /// Ask the compositor to give the panel keyboard focus (issue #15's
+    /// focus on request). In `on-demand` mode the panel window is hidden and
+    /// presented again, so the compositor sees a new map and focuses it the
+    /// way it focused the first map; the reserved gap does not change, so
+    /// tiled windows keep their position and size. In the `none` and
+    /// `exclusive` modes the call returns `Ok(())` and changes nothing — the
+    /// host chose the mode, and a remap could not gain focus there anyway.
+    /// The keyboard mode itself is fixed at start time; the request never
+    /// changes it.
+    ///
+    /// Safe to call from any thread, like [`Panel::apply_layout`]: the remap
+    /// is posted to the GTK thread and waited for, bounded — a wedged loop is
+    /// `Internal`, never a hang. A panel that is no longer live reports
+    /// `NotRunning` without posting, and a panic anywhere in the panel
+    /// reports `Internal` (the poisoned check comes first, D5).
+    pub fn request_focus(&self) -> Result<(), PinwinError> {
+        request_focus_via_inner(&self.inner)
+    }
 }
 
 /// An apply through the display-free inner handle (D10): the poisoned check
@@ -250,6 +283,43 @@ fn post_apply(inner: &Inner, layout: Layout, duration_ms: u32) -> Result<(), Pin
     gtk4::glib::MainContext::default()
         .invoke(move || dispatch_apply(id, layout, duration_ms, &reply_tx));
     wait_for_apply(&reply_rx, APPLY_WAIT)
+}
+
+/// A focus request through the display-free inner handle (D10): the same
+/// order as [`apply_via_inner`] — the poisoned check first (D5: a panic
+/// reports `Internal`, never `NotRunning`), then the ended check — then the
+/// mode short-circuit and the bounded posted remap.
+// Approved per-instance (#13): the guard-Poisoned latch discards the panic
+// payload by design; the entry maps it onto `Internal`.
+#[allow(
+    clippy::map_err_ignore,
+    reason = "approved #13: guard-Poisoned latch discards the panic payload by design"
+)]
+pub(crate) fn request_focus_via_inner(inner: &Inner) -> Result<(), PinwinError> {
+    guard(&inner.poisoned, || post_focus(inner))
+        .map_err(|_| PinwinError::Internal)
+        .and_then(std::convert::identity)
+}
+
+/// The unguarded body of [`request_focus_via_inner`].
+fn post_focus(inner: &Inner) -> Result<(), PinwinError> {
+    // Not running → `NotRunning` without blocking, unconditionally (the
+    // spec's dead-panel scenario; pinwin_api.c's order).
+    if !inner.live.load(Ordering::Relaxed) {
+        return Err(PinwinError::NotRunning);
+    }
+    // The mode is fixed at start time and recorded on the handle: a remap
+    // cannot gain focus outside `on-demand`, so the request is `Ok` and
+    // posts nothing.
+    if inner.keyboard != Keyboard::OnDemand {
+        return Ok(());
+    }
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    let id = inner.id;
+    // The surfaces live on the GTK thread, so the remap must run there (D4):
+    // post the command and wait for the synchronous result, bounded (D5).
+    gtk4::glib::MainContext::default().invoke(move || dispatch_focus_remap(id, &reply_tx));
+    wait_for_focus(&reply_rx, APPLY_WAIT)
 }
 
 impl Drop for Panel {
@@ -315,7 +385,7 @@ fn fd_is_open(fd: RawFd) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{Keyboard, Side};
+    use crate::layout::Side;
     use std::num::NonZeroU16;
     use std::os::fd::AsRawFd;
     use std::time::Duration;
@@ -401,11 +471,15 @@ mod tests {
             id: 0,
             poisoned: Poisoned::latched(),
             live: AtomicBool::new(false),
+            keyboard: Keyboard::OnDemand,
         };
         assert_eq!(
             apply_via_inner(&inner, layout(), 0),
             Err(PinwinError::Internal)
         );
+        // The focus request follows the same precedence: a latched handle
+        // reports `Internal`, never `NotRunning`.
+        assert_eq!(request_focus_via_inner(&inner), Err(PinwinError::Internal));
     }
 
     /// An apply on a handle whose panel is no longer live reports
@@ -418,6 +492,7 @@ mod tests {
             id: 0,
             poisoned: Poisoned::new(),
             live: AtomicBool::new(false),
+            keyboard: Keyboard::OnDemand,
         };
         let started = std::time::Instant::now();
         assert_eq!(
@@ -427,6 +502,62 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "the dead-panel apply does not wait"
+        );
+    }
+
+    /// A focus request on a handle whose panel is no longer live reports
+    /// `NotRunning` without blocking: the post is skipped, the reply path is
+    /// not entered (keyboard-focus-request's dead-panel scenario).
+    #[test]
+    fn a_focus_request_on_a_dead_panel_is_not_running_without_blocking() {
+        let inner = Inner {
+            id: 0,
+            poisoned: Poisoned::new(),
+            live: AtomicBool::new(false),
+            keyboard: Keyboard::OnDemand,
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(
+            request_focus_via_inner(&inner),
+            Err(PinwinError::NotRunning)
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the dead-panel focus request does not wait"
+        );
+    }
+
+    /// In the `none` and `exclusive` modes a focus request is `Ok(())` and
+    /// posts nothing: `Ok` itself is the proof, because a posted command on
+    /// this thread would run inline with no glue and reply `NotLive`
+    /// (`NotRunning`), never `Ok`.
+    #[test]
+    fn a_focus_request_outside_on_demand_is_ok_and_posts_nothing() {
+        for keyboard in [Keyboard::None, Keyboard::Exclusive] {
+            let inner = Inner {
+                id: 0,
+                poisoned: Poisoned::new(),
+                live: AtomicBool::new(true),
+                keyboard,
+            };
+            assert_eq!(request_focus_via_inner(&inner), Ok(()));
+        }
+    }
+
+    /// A posted focus remap whose command finds no glue (the invoke runs
+    /// inline here, like the publish test above) maps `NotLive` onto
+    /// `NotRunning` — the mapping the GTK side's reply reaches through.
+    #[test]
+    fn a_not_live_focus_reply_is_not_running() {
+        let inner = Inner {
+            id: u64::MAX, // no panel this test could collide with
+            poisoned: Poisoned::new(),
+            live: AtomicBool::new(true),
+            keyboard: Keyboard::OnDemand,
+        };
+        assert_eq!(
+            request_focus_via_inner(&inner),
+            Err(PinwinError::NotRunning)
         );
     }
 
@@ -449,6 +580,7 @@ mod tests {
             id: 0,
             poisoned: Poisoned::new(),
             live: AtomicBool::new(true),
+            keyboard: Keyboard::OnDemand,
         };
 
         // The boundary's own expression: `guard` catches the panic, latches
@@ -487,6 +619,7 @@ mod tests {
             id: u64::MAX, // no panel this test could collide with
             poisoned: Poisoned::new(),
             live: AtomicBool::new(true),
+            keyboard: Keyboard::OnDemand,
         };
         assert_eq!(
             apply_via_inner(&inner, layout(), 0),
@@ -506,6 +639,7 @@ mod tests {
             id: 0,
             poisoned: Poisoned::new(),
             live: AtomicBool::new(false),
+            keyboard: Keyboard::OnDemand,
         };
         let started = std::time::Instant::now();
         let _ = guard_always(&inner.poisoned, || teardown_inner(&inner));
