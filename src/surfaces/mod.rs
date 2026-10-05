@@ -665,10 +665,11 @@ impl Surfaces {
 
         if let Some(surface) = self.win.surface() {
             let area = self.area.clone();
+            let scale_poisoned = self.poisoned.clone();
             // `_local`: the closure holds GTK-thread handles (Rc), like every
             // other closure registered here; it runs on the GTK thread only.
             surface.connect_notify_local(Some("scale"), move |_, _| {
-                area.queue_draw();
+                let _ = guard(&scale_poisoned, || area.queue_draw());
             });
         }
 
