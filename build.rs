@@ -69,8 +69,7 @@ fn main() {
     );
 
     let stale = !archive.is_file()
-        || fs::read_to_string(&stamp)
-            .map_or(true, |recorded| recorded != identity);
+        || fs::read_to_string(&stamp).map_or(true, |recorded| recorded != identity);
 
     if stale {
         let source = match &override_dir {
