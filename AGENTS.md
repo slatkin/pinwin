@@ -20,21 +20,21 @@ binary; the build is Cargo only. The pre-port C and Zig sources (`src/*.c`,
 
 - `src/lib.rs` — the crate root: the module tree and the `Panel`/`PinwinError`
   re-exports.
-- `src/panel/` — the public API and the GTK-thread lifecycle (`mod.rs`,
-  `error.rs`, `gtk_side.rs`, `handshake.rs`): the `Panel` handle, `Startup`,
+- `src/panel.rs` + `src/panel/` — the public API and the GTK-thread lifecycle (`error.rs`,
+  `gtk_side.rs`, `handshake.rs`): the `Panel` handle, `Startup`,
   the parked `pinwin-gtk` thread and the start handshake.
 - `src/layout.rs` — the GTK-free layout core: `Layout`/`Side`, `CellSize`,
   `OutputSize`, `Accent`, `Keyboard`, checked geometry validation and the pty
   yield decision.
 - `src/term/` — the pinned libghostty-vt terminal wrapper and its parts:
   `cells/`, `keys.rs`, `input.rs`, `callbacks.rs`.
-- `src/render/` — cairo/pangocairo drawing and the GSK render-node snapshot
+- `src/render.rs` + `src/render/` — cairo/pangocairo drawing and the GSK render-node snapshot
   path with a cairo fallback, the retained tween grid node, the focus accent
-  and the kitty image surfaces (`mod.rs`, `text.rs`, `nodes.rs`,
+  and the kitty image surfaces (`text.rs`, `nodes.rs`,
   `snapshot.rs`, `sprites.rs`, `metrics.rs`, `images.rs`, `snap.rs`).
-- `src/surfaces/` — the layer-shell panel and reservation surfaces and layout
-  application.
-- `src/input/` — the GDK controllers and their translation into terminal
+- `src/surfaces.rs` + `src/surfaces/` — the layer-shell panel and reservation surfaces and layout
+  application (`area.rs`, `gap.rs`, `hooks.rs`, `tests.rs`).
+- `src/input.rs` — the GDK controllers and their translation into terminal
   encoders.
 - `src/anim.rs` — the animated width transition.
 - `src/pty.rs` — the host-supplied pty fd, winsize and `SIGWINCH`.
