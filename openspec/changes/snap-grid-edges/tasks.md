@@ -2,13 +2,13 @@
 
 ## 1. Snapping helper
 
-- [ ] 1.1 Add `src/render/snap.rs` with `OutputScale` and the edge and rectangle snap (design D2, D4). Register the module in `src/render/mod.rs`. Add one unit test and make sure that it passes. The test checks three facts. At scale 1, an edge on a whole pixel does not change and an edge on a half pixel rounds up (4.5 becomes 5). Two cells that share an edge get the same snapped edge at scales 1.5 and 1.25. A rectangle with a positive size never collapses below one device pixel.
+- [x] 1.1 Add `src/render/snap.rs` with `OutputScale` and the edge and rectangle snap (design D2, D4). Register the module in `src/render/mod.rs`. Add one unit test and make sure that it passes. The test checks three facts. At scale 1, an edge on a whole pixel does not change and an edge on a half pixel rounds up (4.5 becomes 5). Two cells that share an edge get the same snapped edge at scales 1.5 and 1.25. A rectangle with a positive size never collapses below one device pixel.
 
 ## 2. Scale plumbing
 
-- [ ] 2.1 Raise the `gtk4` and `gdk4` features to `v4_12` in `Cargo.toml`. Keep the comment about `ScrollUnit` and add the `Surface::scale()` reason. Make sure that `cargo build` succeeds.
-- [ ] 2.2 Add the `scale` field to `CellMetrics` and `DrawState::set_scale` (design D2, D7). The hooks call `set_scale` on every draw. If the scale differs from the stored one, `set_scale` drops the retained grid node. Otherwise it keeps the node, so the tween does not rebuild it each frame. Make `cell_metrics_update` keep the scale. Add an assertion to the existing `dropping_the_cache_invalidates_the_tween_node` test in `src/render/snapshot.rs`: a changed scale drops the node and an unchanged scale keeps it. Make sure that the test passes.
-- [ ] 2.3 Add `Surfaces::scale()` and connect `notify::scale` to a redraw in `on_map` (design D3). Call `DrawState::set_scale` from `draw_hook` and `grid_snapshot_hook` in `src/panel/gtk_side.rs` before they draw. Make sure that `cargo build` succeeds. Task 5.2 checks the live behavior.
+- [x] 2.1 Raise the `gtk4` and `gdk4` features to `v4_12` in `Cargo.toml`. Keep the comment about `ScrollUnit` and add the `Surface::scale()` reason. Make sure that `cargo build` succeeds.
+- [x] 2.2 Add the `scale` field to `CellMetrics` and `DrawState::set_scale` (design D2, D7). The hooks call `set_scale` on every draw. If the scale differs from the stored one, `set_scale` drops the retained grid node. Otherwise it keeps the node, so the tween does not rebuild it each frame. Make `cell_metrics_update` keep the scale. Add an assertion to the existing `dropping_the_cache_invalidates_the_tween_node` test in `src/render/snapshot.rs`: a changed scale drops the node and an unchanged scale keeps it. Make sure that the test passes.
+- [x] 2.3 Add `Surfaces::scale()` and connect `notify::scale` to a redraw in `on_map` (design D3). Call `DrawState::set_scale` from `draw_hook` and `grid_snapshot_hook` in `src/panel/gtk_side.rs` before they draw. Make sure that `cargo build` succeeds. Task 5.2 checks the live behavior.
 
 ## 3. Snap the shared geometry
 
