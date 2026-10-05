@@ -1,7 +1,7 @@
 //! The kitty-graphics side of the render row (port-to-rust D3): the cairo
-//! surfaces built from the terminal's image placements and their per-frame
-//! cache, plus the gdk-pixbuf PNG decoder the terminal calls back into.
-//! Ported from `src/images.c` (design D4 there).
+//! surfaces and [`gdk::MemoryTexture`]s built from the terminal's image
+//! placements and their per-frame cache, plus the gdk-pixbuf PNG decoder the
+//! terminal calls back into. Ported from `src/images.c` (design D4 there).
 //!
 //! The placements arrive through [`Terminal::image_next`]; their `pixels`
 //! pointer is ghostty-owned and only valid for the synchronous read that
@@ -11,12 +11,18 @@ use std::slice;
 
 use gdk_pixbuf::prelude::*;
 
+use gtk4::gdk;
+
+use super::texture;
 use crate::term::cells::Image;
 use crate::term::{DecodedPng, PngDecoder, Terminal};
 
-/// One cairo surface per kitty image, rebuilt when the image is retransmitted
-/// and dropped as soon as a frame draws no placement for it, so a long
-/// session cannot accumulate surfaces (`struct image_cache`).
+/// One cairo surface and one memory texture per kitty image, rebuilt when the
+/// image is retransmitted and dropped as soon as a frame draws no placement
+/// for it, so a long session cannot accumulate entries (`struct image_cache`).
+/// The texture wraps the same pixels as the surface (gsk-render-nodes task
+/// 3.1): the node emitter appends the texture, the cairo painter blits the
+/// surface.
 #[derive(Default)]
 pub(crate) struct ImageCache {
     entries: Vec<ImageEntry>,
@@ -27,6 +33,7 @@ struct ImageEntry {
     image_id: u32,
     generation: i64,
     surface: cairo::ImageSurface,
+    texture: gdk::MemoryTexture,
     last_frame: u64,
 }
 
@@ -76,48 +83,85 @@ fn image_surface(img: &Image) -> Option<cairo::ImageSurface> {
     Some(surface)
 }
 
-impl ImageCache {
-    /// The surface for this frame's placement: the cached one when the image
-    /// is unchanged, a rebuilt one when it was retransmitted, or a new entry
-    /// (`image_surface` in `images.c`).
-    fn surface_for(&mut self, img: &Image) -> Option<cairo::ImageSurface> {
-        let frame = self.frame;
-        let found = self.entries.iter_mut().find(|e| e.image_id == img.image_id);
+/// Build a placement's cairo surface and memory texture from its pixels —
+/// the texture wraps the surface's premultiplied bytes, so both painters
+/// composite the same pixels (gsk-render-nodes task 3.1). Returns `None`
+/// when the image has no usable pixels.
+fn image_assets(img: &Image) -> Option<(cairo::ImageSurface, gdk::MemoryTexture)> {
+    let mut surface = image_surface(img)?;
+    let texture = texture::surface_texture(&mut surface)?;
+    Some((surface, texture))
+}
 
-        if let Some(e) = found {
+impl ImageCache {
+    /// The entry for this frame's placement: the cached one when the image
+    /// is unchanged, a rebuilt one when it was retransmitted, or a new one
+    /// (`image_surface` in `images.c`). Both painters' passes go through
+    /// here, so the keys and the eviction stay shared.
+    fn entry_for(&mut self, img: &Image) -> Option<&mut ImageEntry> {
+        let frame = self.frame;
+        if let Some(pos) = self.entries.iter().position(|e| e.image_id == img.image_id) {
+            let e = &mut self.entries[pos];
             if e.generation == img.generation {
                 e.last_frame = frame;
-                return Some(e.surface.clone());
+                return Some(e);
             }
             // Retransmitted: replace below.
-            if let Some(surface) = image_surface(img) {
-                e.surface = surface.clone();
+            if let Some((surface, texture)) = image_assets(img) {
+                e.surface = surface;
+                e.texture = texture;
                 e.generation = img.generation;
                 e.last_frame = frame;
-                return Some(surface);
+                return Some(e);
             }
             return None;
         }
 
-        let surface = image_surface(img)?;
+        let (surface, texture) = image_assets(img)?;
         self.entries.push(ImageEntry {
             image_id: img.image_id,
             generation: img.generation,
-            surface: surface.clone(),
+            surface,
+            texture,
             last_frame: frame,
         });
-        Some(surface)
+        self.entries.last_mut()
+    }
+
+    /// The surface for this frame's placement (`image_surface` in
+    /// `images.c`).
+    pub(crate) fn surface_for(&mut self, img: &Image) -> Option<cairo::ImageSurface> {
+        self.entry_for(img).map(|e| e.surface.clone())
+    }
+
+    /// The texture for this frame's placement (gsk-render-nodes task 3.1),
+    /// wrapping the same pixels as [`Self::surface_for`] returns.
+    pub(crate) fn texture_for(&mut self, img: &Image) -> Option<gdk::MemoryTexture> {
+        self.entry_for(img).map(|e| e.texture.clone())
+    }
+
+    /// Start one frame of placement drawing — the counter bump `draw` and
+    /// `draw_nodes` share, which eviction keys on (`draw`'s `frame += 1`).
+    pub(crate) fn begin_frame(&mut self) {
+        self.frame += 1;
     }
 
     /// Drop every entry no placement touched this frame (`image_cache_evict`).
-    fn evict(&mut self) {
+    pub(crate) fn evict(&mut self) {
         let frame = self.frame;
         self.entries.retain(|e| e.last_frame == frame);
     }
 
+    /// How many entries the cache holds (the sibling node emitter's tests
+    /// assert the eviction contract through it).
+    #[cfg(test)]
+    pub(crate) fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
     /// Draw the frame's kitty image placements (`draw_images`).
     pub(crate) fn draw(&mut self, cr: &cairo::Context, terminal: &mut Terminal) {
-        self.frame += 1;
+        self.begin_frame();
 
         while let Some(img) = terminal.image_next() {
             let Some(surface) = self.surface_for(&img) else {
@@ -126,28 +170,37 @@ impl ImageCache {
             if img.sw <= 0 || img.sh <= 0 || img.w <= 0 || img.h <= 0 {
                 continue;
             }
-            let _ = cr.save();
-            cr.rectangle(
-                f64::from(img.x),
-                f64::from(img.y),
-                f64::from(img.w),
-                f64::from(img.h),
-            );
-            cr.clip();
-            cr.scale(
-                f64::from(img.w) / f64::from(img.sw),
-                f64::from(img.h) / f64::from(img.sh),
-            );
-            let _ = cr.set_source_surface(
-                &surface,
-                f64::from(img.x - img.sx),
-                f64::from(img.y - img.sy),
-            );
-            let _ = cr.paint();
-            let _ = cr.restore();
+            draw_placement(cr, &surface, &img);
         }
         self.evict();
     }
+}
+
+/// Draw one placement's surface with [`ImageCache::draw`]'s geometry: clip
+/// to the destination rectangle, scale the source rectangle into it and
+/// paint at the source offset. Split from `draw` so the node emitter's
+/// parity tests drive the cairo painter's exact per-placement maths
+/// (gsk-render-nodes task 3.1). `img.sw`/`sh` must be positive.
+pub(crate) fn draw_placement(cr: &cairo::Context, surface: &cairo::ImageSurface, img: &Image) {
+    let _ = cr.save();
+    cr.rectangle(
+        f64::from(img.x),
+        f64::from(img.y),
+        f64::from(img.w),
+        f64::from(img.h),
+    );
+    cr.clip();
+    cr.scale(
+        f64::from(img.w) / f64::from(img.sw),
+        f64::from(img.h) / f64::from(img.sh),
+    );
+    let _ = cr.set_source_surface(
+        surface,
+        f64::from(img.x - img.sx),
+        f64::from(img.y - img.sy),
+    );
+    let _ = cr.paint();
+    let _ = cr.restore();
 }
 
 /// The gdk-pixbuf PNG decoder (`glue_decode_png`): the [`PngDecoder`] the

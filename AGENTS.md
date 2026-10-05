@@ -28,9 +28,10 @@ binary; the build is Cargo only. The pre-port C and Zig sources (`src/*.c`,
   yield decision.
 - `src/term/` — the pinned libghostty-vt terminal wrapper and its parts:
   `cells/`, `keys.rs`, `input.rs`, `callbacks.rs`.
-- `src/render/` — cairo/pangocairo drawing, the tween frame cache, the focus
-  accent and the kitty image surfaces (`mod.rs`, `text.rs`, `sprites.rs`,
-  `metrics.rs`, `images.rs`).
+- `src/render/` — cairo/pangocairo drawing and the GSK render-node snapshot
+  path with a cairo fallback, the retained tween grid node, the focus accent
+  and the kitty image surfaces (`mod.rs`, `text.rs`, `nodes.rs`,
+  `snapshot.rs`, `sprites.rs`, `metrics.rs`, `images.rs`).
 - `src/surfaces/` — the layer-shell panel and reservation surfaces and layout
   application.
 - `src/input/` — the GDK controllers and their translation into terminal

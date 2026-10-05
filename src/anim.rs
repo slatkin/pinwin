@@ -256,15 +256,24 @@ impl Anim {
         }
     }
 
-    /// Horizontal shift that keeps the grid against the docked edge while the
-    /// surface is wider or narrower than the grid; zero when not animating
-    /// (`glue_anim_draw_offset`). `area_width` is the drawing area's width,
-    /// `None` when the glue has no live area; `grid_px` is `cols * cell_w`.
+    /// Horizontal shift that keeps the grid against the docked edge whenever
+    /// the surface is wider or narrower than the grid; zero otherwise and
+    /// for a left-docked panel (`glue_anim_draw_offset`). `area_width` is the
+    /// drawing area's width, `None` when the glue has no live area; `grid_px`
+    /// is the terminal's LIVE grid width — its current cols times the cell
+    /// width.
+    ///
+    /// The shift is not tied to a running tween (gsk-render-nodes design, Post-task decisions: C52): the
+    /// terminal's grid resize lags the applied width at every transient the
+    /// glue drives — while a width tween runs (the resize is deferred to the
+    /// tween's end), and in the frames around a tween's stop or a snap apply
+    /// before the resize lands. Keying the shift to the live grid instead of
+    /// to the tween alone keeps the drawn grid glued to the docked edge in
+    /// all of them; a shift computed from the applied cols would walk the old
+    /// grid off the docked edge and draw nothing but background.
     pub fn draw_offset(&self, side: Side, area_width: Option<i32>, grid_px: i32) -> i32 {
         match area_width {
-            Some(width) if self.inner.tween.borrow().is_active() && side == Side::Right => {
-                width - grid_px
-            }
+            Some(width) if side == Side::Right => width - grid_px,
             _ => 0,
         }
     }
@@ -493,15 +502,45 @@ mod tests {
         assert!(!tween.is_active());
     }
 
-    /// An idle tween reports the applied width, no offset and no activity.
+    /// An idle tween reports the applied width, and its draw offset follows
+    /// the live grid even with no tween running: the offset is a property of
+    /// the surface's width versus the terminal's live grid, not of the tween
+    /// (gsk-render-nodes design, Post-task decisions: C52) — the frames around a tween's stop, where the
+    /// resize has not landed yet, must keep the grid glued to the docked
+    /// edge too.
     #[test]
-    fn idle_anim_reports_the_applied_width() {
+    fn idle_anim_reports_the_applied_width_and_still_glues_the_grid() {
         let anim = Anim::new(Poisoned::new(), Recording::hooks(&Recording::new()));
         assert!(!anim.active());
         assert!(!anim.poisoned());
         assert_eq!(anim.current_px(320), 320);
-        assert_eq!(anim.draw_offset(Side::Right, Some(400), 320), 0);
+        // Right-docked, live grid narrower than the surface: glue right.
+        assert_eq!(anim.draw_offset(Side::Right, Some(400), 320), 80);
+        // Matching widths: no shift.
+        assert_eq!(anim.draw_offset(Side::Right, Some(320), 320), 0);
+        // Left-docked keeps the grid at the widget's left edge, which is the
+        // docked edge there.
         assert_eq!(anim.draw_offset(Side::Left, Some(400), 320), 0);
+        assert_eq!(anim.draw_offset(Side::Right, None, 320), 0);
+    }
+
+    /// The offset survives the tween's stop: after the tween is gone, a live
+    /// grid still narrower than the surface draws glued to the docked edge,
+    /// not at the widget's left edge (gsk-render-nodes design, Post-task decisions: C52).
+    #[test]
+    fn the_offset_glues_the_grid_after_the_tween_stops() {
+        let recording = Recording::new();
+        let anim = Anim::new(Poisoned::new(), Recording::hooks(&recording));
+        anim.begin_state(360, 1080, 1000);
+        assert!(anim.active());
+        anim.cancel();
+        assert!(!anim.active());
+        // The terminal still has the old 40 cols (360px); the 700px surface
+        // keeps the grid against the docked edge.
+        assert_eq!(anim.draw_offset(Side::Right, Some(700), 360), 340);
+        // Once the deferred resize lands (grid matches the surface), the
+        // shift is zero again.
+        assert_eq!(anim.draw_offset(Side::Right, Some(1080), 1080), 0);
     }
 
     /// A started tween drives the eased width and the draw offset, without
@@ -524,6 +563,31 @@ mod tests {
         let mut tween = Tween::begin(320, 480, 1000);
         let _ = tween.advance(0);
         assert_eq!(tween.advance(500_000), Advance::Frame(460));
+    }
+
+    /// The shift is computed against the grid that is actually drawn — the
+    /// terminal's live grid, which lags the applied cols while a tween defers
+    /// its resize. Expanding a right-docked panel from 40 to 120 cols at a
+    /// 9px cell keeps the 360px live grid glued to the docked edge
+    /// (`width - 360`, positive and shrinking as the surface grows to meet
+    /// it); the 1080px target width would give a negative shift that draws
+    /// the old grid off the widget's left edge, leaving background only.
+    #[test]
+    fn the_tween_offset_follows_the_live_grid_not_the_target() {
+        let anim = Anim::new(Poisoned::new(), Recording::hooks(&Recording::new()));
+        anim.begin_state(360, 1080, 1000);
+        assert!(anim.active());
+
+        // Mid-expansion: the surface is 700px wide, the terminal still has
+        // the old 40 cols (360px), the applied cols are already 120 (1080px).
+        assert_eq!(anim.draw_offset(Side::Right, Some(700), 360), 340);
+        assert_eq!(anim.draw_offset(Side::Right, Some(700), 1080), -380);
+
+        // Collapse is the same contract the other way: the live grid is wider
+        // than the surface, so the shift is negative and clips the grid's
+        // left edge against the docked side.
+        anim.begin_state(1080, 360, 1000);
+        assert_eq!(anim.draw_offset(Side::Right, Some(700), 1080), -380);
     }
 
     /// Cancel stops the tween and fires the stop hook even when nothing ran,

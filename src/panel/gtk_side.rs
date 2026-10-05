@@ -31,12 +31,12 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::guard::{Poisoned, guard, guard_always};
+use crate::guard::{Poisoned, guard, guard_always, guard_default};
 use crate::input::InputLinks;
 use crate::layout::Layout;
 use crate::pty::Pty;
 use crate::render::DrawState;
-use crate::surfaces::{DrawFn, MeasureFn, PublishOutcome, SurfaceHooks, Surfaces, TweenSnapshotFn};
+use crate::surfaces::{DrawFn, GridSnapshotFn, MeasureFn, PublishOutcome, SurfaceHooks, Surfaces};
 use crate::term::Terminal;
 
 use gtk4::cairo;
@@ -339,7 +339,11 @@ fn build_glue(
         {
             let link = link.clone();
             move || {
-                link.with(|surfaces| surfaces.queue_draw());
+                // The terminal produced output (the host's post-resize
+                // repaint, or any other bytes): the stale pre-resize grid is
+                // done drawing (gsk-render-nodes design, Post-task decisions: C52), and the frame asks
+                // for a redraw as before.
+                link.with(|surfaces| surfaces.note_terminal_output());
             }
         },
     )));
@@ -366,14 +370,15 @@ fn build_glue(
             Rc::new(move || {
                 // A stop relay, not ordinary glue (D5): `Anim` fires `on_stop`
                 // under `guard_always` precisely so a latched panel still
-                // relays — skipping this would strand the tween frame cache
-                // forever.
-                let _ = guard_always(&poisoned, || draw.borrow_mut().drop_grid_cache());
+                // relays — skipping this would strand the tween's retained
+                // grid node forever.
+                let _ = guard_always(&poisoned, || draw.borrow_mut().drop_grid_node());
             })
         },
-        tween_snapshot: tween_snapshot_hook(
+        grid_snapshot: grid_snapshot_hook(
             link.clone(),
             draw.clone(),
+            terminal.clone(),
             focused.clone(),
             poisoned.clone(),
         ),
@@ -395,6 +400,25 @@ fn build_glue(
                 // panel must still clear the pty's tween flag, or the read
                 // drain stays throttled forever.
                 let _ = guard_always(&poisoned, || pty.borrow().set_tween_active(active));
+            })
+        },
+        live_grid_px: {
+            let terminal = terminal.clone();
+            let poisoned = poisoned.clone();
+            let link = link.clone();
+            Rc::new(move || {
+                // The terminal's current grid, not the applied cols: a tween
+                // defers the grid resize to its end, so mid-tween the two
+                // differ and the draw shift must follow the terminal. The
+                // borrow runs under the D5 guard like the other terminal
+                // relays; a latched or panicked hook reports no live grid,
+                // which glues the shift to zero.
+                link.with(|surfaces| {
+                    guard_default(&poisoned, 0, || {
+                        i32::from(terminal.borrow().cols()) * surfaces.cell_w()
+                    })
+                })
+                .unwrap_or(0)
             })
         },
     };
@@ -440,26 +464,13 @@ fn draw_hook(
 ) -> Rc<DrawFn> {
     Rc::new(move |cr: &cairo::Context, width: i32, height: i32| {
         let outcome = guard(&poisoned, || {
-            // The first draw is the first point where the surface has entered
-            // its output, so the monitor reported here is the panel's real
-            // one (glue.c's resolve_layout_monitor via g_layout_latch).
-            link.with(|surfaces| {
-                if surfaces.latch.get() {
-                    surfaces.resolve_monitor();
-                }
-            });
-            let (offset, animating) = link
-                .with(|surfaces| (surfaces.draw_offset() as i32, surfaces.anim.active()))
-                .unwrap_or((0, false));
+            resolve_first_draw_monitor(&link);
+            let offset = link
+                .with(|surfaces| surfaces.draw_offset() as i32)
+                .unwrap_or(0);
             draw.borrow_mut().set_focused(focused.get());
-            draw.borrow_mut().draw(
-                cr,
-                &mut terminal.borrow_mut(),
-                width,
-                height,
-                offset,
-                animating,
-            );
+            draw.borrow_mut()
+                .draw(cr, &mut terminal.borrow_mut(), width, height, offset);
         });
         if outcome.is_err() {
             handshake.report(StartOutcome::Internal);
@@ -468,27 +479,58 @@ fn draw_hook(
     })
 }
 
-/// The tween frame's GSK snapshot emission (poc-gsk-texture-grid task 2.1):
-/// read the tween state off the surfaces handle and the cache off the
-/// renderer, then emit the background, translated texture and focus accent
-/// into the snapshot; `false` falls back to the cairo draw path. The focus
-/// flag is copied into the draw state here just as [`draw_hook`] does, since
-/// a tween frame bypasses the draw func. A panic here latches the shared
-/// flag (D5) and falls back the same way.
-fn tween_snapshot_hook(
+/// The first paint's monitor resolution (`g_layout_latch`), shared by the
+/// cairo draw hook and the GSK snapshot hook (gsk-render-nodes design, Post-task decisions: C5): a
+/// snapshot frame bypasses the draw func entirely, so the snapshot hook must
+/// consume the same one-shot before emitting — otherwise the start handshake
+/// never completes, `Panel::start` blocks in `wait_for_start` forever and
+/// the reservation is never anchored to the resolved monitor. The surface
+/// has entered its output by the first paint, so the monitor reported here
+/// is the panel's real one (glue.c's resolve_layout_monitor); the failure
+/// path (no monitor) reports through the start-result hook and quits, the
+/// same from either caller.
+fn resolve_first_draw_monitor(link: &SurfacesLink) {
+    link.with(|surfaces| {
+        if surfaces.latch.get() {
+            surfaces.resolve_monitor();
+        }
+    });
+}
+
+/// The grid frame's GSK snapshot emission (poc-gsk-texture-grid task 2.1,
+/// gsk-render-nodes row 4.1): read the tween state off the surfaces handle,
+/// then present the frame — the retained grid node translated while a tween
+/// runs, a fresh node build on every non-tween draw — and the focus accent
+/// as GSK nodes; `false` falls back to the cairo draw path. The terminal is
+/// passed in for the node builds, and the focus flag is copied into the draw
+/// state here just as [`draw_hook`] does, since a snapshot frame bypasses
+/// the draw func. The first frame after map also resolves the layout
+/// monitor through the same shared one-shot as [`draw_hook`] (gsk-render-nodes
+/// design, Post-task decisions: C5), before the emission, or the start
+/// handshake never completes. A panic
+/// here latches the shared flag (D5) and falls back the same way.
+fn grid_snapshot_hook(
     link: SurfacesLink,
     draw: Rc<RefCell<DrawState>>,
+    terminal: Rc<RefCell<Terminal>>,
     focused: Rc<Cell<bool>>,
     poisoned: Poisoned,
-) -> Rc<TweenSnapshotFn> {
+) -> Rc<GridSnapshotFn> {
     Rc::new(move |snapshot: &gtk4::Snapshot, width: i32, height: i32| {
         guard(&poisoned, || {
+            resolve_first_draw_monitor(&link);
             let (offset, animating) = link
                 .with(|surfaces| (surfaces.draw_offset() as i32, surfaces.anim.active()))
                 .unwrap_or((0, false));
             draw.borrow_mut().set_focused(focused.get());
-            draw.borrow()
-                .snapshot_tween(snapshot, width, height, offset, animating)
+            draw.borrow_mut().snapshot_grid(
+                snapshot,
+                &mut terminal.borrow_mut(),
+                width,
+                height,
+                offset,
+                animating,
+            )
         })
         .unwrap_or(false)
     })
@@ -562,6 +604,7 @@ fn apply_size_to(
             // Push the grid first: a terminal that cannot be allocated leaves
             // the previous grid and pty winsize in place (the library never
             // exits, port-to-rust D3).
+            let previous_cols = terminal.borrow().cols();
             let ok = terminal
                 .borrow_mut()
                 .push_size(cols, rows, surfaces.cell_w(), cell_h);
@@ -570,6 +613,14 @@ fn apply_size_to(
             }
             pushed.set((rows, cols));
             pty.borrow().resize(cols, rows);
+            // A wider grid leaves the host's old content in the terminal's
+            // leftmost columns until the host repaints (the vt does not
+            // rewrap): keep that content glued to the docked edge until the
+            // terminal produces output for the new width (gsk-render-nodes
+            // design, Post-task decisions: C52).
+            if cols > i32::from(previous_cols) {
+                surfaces.note_grid_widened(i32::from(previous_cols) * surfaces.cell_w());
+            }
         }
     }
     if !pty.borrow().attached() {

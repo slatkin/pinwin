@@ -34,8 +34,11 @@ use super::{FrameState, Image};
 pub(super) const PLACEHOLDER_ID_MASK: u32 = 0xFF_FFFF;
 
 /// Origins are keyed by the masked image id and capped so a frame cannot grow
-/// without bound; beyond the cap the oldest-kept entries win.
-const MAX_PLACEHOLDERS: usize = 8;
+/// without bound; beyond the cap new entries are dropped. The bound has to
+/// clear a real grid's worth of distinct images (a media browser shows more
+/// than a handful of covers at once), so it is generous; the map itself is a
+/// dozen bytes per entry.
+const MAX_PLACEHOLDERS: usize = 64;
 
 /// Where a virtual placement's placeholder cells first appeared.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -301,9 +304,45 @@ pub(super) fn image_next(
     None
 }
 
+/// The image id the captured mbv 0.22.5 bytes carry (see
+/// [`mbv_replay_bytes`]).
+#[cfg(test)]
+pub(crate) const IMAGE_ID: u32 = 536687111;
+
+/// The captured mbv 0.22.5 image transmission (see the `tests` module):
+/// a chunked `a=T` transmission with raw `f=32` pixels and `U=1`
+/// (unicode placeholders), then the placeholder cell the program prints —
+/// its foreground colour carries the image id's low 24 bits. Shared with
+/// the render painters' tests.
+#[cfg(test)]
+pub(crate) fn mbv_replay_bytes() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    // 8x16 RGBA pixels (one 8x16 cell), chunked like mbv's `m=1`/`m=0`.
+    bytes.extend_from_slice(b"\x1b_Gi=536687111,a=T,U=1,f=32,t=d,s=8,v=16,q=2,m=1;");
+    bytes.extend_from_slice(b"AACA/yAAgP9AAID/YACA/4AAgP+gAID/wACA/+AAgP8AEID/IBCA/0AQgP9gEID/gBCA/6AQgP/AEID/4BCA/wAggP8gIID/QCCA/2AggP+AIID/oCCA/8AggP/gIID/ADCA/yAwgP9AMID/YDCA/4AwgP+gMID/wDCA/+AwgP8AQID/IECA/0BAgP9gQID/gECA/6BAgP/AQID/4ECA/wBQgP8gUID/QFCA/2BQgP+AUID/oFCA/8BQgP/gUID/AGCA/yBggP9AYID/YGCA/4BggP+gYID/wGCA/+BggP8AcID/IHCA/0BwgP9gcID/gHCA/6BwgP/AcID/4HCA/wCA");
+    bytes.extend_from_slice(b"\x1b_Gq=2,m=0;gP8ggID/QICA/2CAgP+AgID/oICA/8CAgP/ggID/AJCA/yCQgP9AkID/YJCA/4CQgP+gkID/wJCA/+CQgP8AoID/IKCA/0CggP9goID/gKCA/6CggP/AoID/4KCA/wCwgP8gsID/QLCA/2CwgP+AsID/oLCA/8CwgP/gsID/AMCA/yDAgP9AwID/YMCA/4DAgP+gwID/wMCA/+DAgP8A0ID/INCA/0DQgP9g0ID/gNCA/6DQgP/A0ID/4NCA/wDggP8g4ID/QOCA/2DggP+A4ID/oOCA/8DggP/g4ID/APCA/yDwgP9A8ID/YPCA/4DwgP+g8ID/wPCA/+DwgP8=\x1b\\");
+    // The placeholder cell the program prints for the image: the cell's
+    // foreground colour carries the image id's low 24 bits (the captured
+    // mbv stream sets `38;2;253;50;7` = 0xFD3207 well before the run, and
+    // SGR state persists across the APCs).
+    bytes.extend_from_slice(b"\x1b[3;5H\x1b[38;2;253;50;7m");
+    bytes.extend_from_slice("\u{10EEEE}\u{305}\u{305}\u{484}".as_bytes());
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::term::{DecodedPng, PngDecoder, PtySink, Terminal};
+
+    /// Rejects every image; these tests do not exercise PNG decoding.
+    struct NoDecoder;
+
+    impl PngDecoder for NoDecoder {
+        fn decode_png(&mut self, _data: &[u8]) -> Option<DecodedPng> {
+            None
+        }
+    }
 
     #[test]
     fn placeholder_ids_are_masked_and_merge_top_left() {
@@ -329,14 +368,14 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_map_caps_at_eight_origins() {
+    fn placeholder_map_caps_at_max_placeholders() {
         let mut map = PlaceholderMap::default();
-        for id in 0..12u32 {
+        for id in 0..70u32 {
             map.note(id, 0, 0);
         }
         assert_eq!(map.origins.len(), MAX_PLACEHOLDERS);
-        assert!(map.origin(7).is_some());
-        assert!(map.origin(8).is_none());
+        assert!(map.origin(63).is_some());
+        assert!(map.origin(64).is_none());
     }
 
     #[test]
@@ -383,5 +422,74 @@ mod tests {
         assert_eq!(rect.y, 16);
         assert_eq!((rect.w, rect.h), (40, 20));
         assert_eq!((rect.sx, rect.sy, rect.sw, rect.sh), (2, 3, 40, 20));
+    }
+
+    struct ReplaySink;
+
+    impl PtySink for ReplaySink {
+        fn write_pty(&mut self, _data: &[u8]) {}
+    }
+
+    fn replay_terminal() -> Terminal {
+        let mut terminal =
+            Terminal::new(crate::guard::Poisoned::new(), ReplaySink, NoDecoder, || {});
+        assert!(terminal.push_size(40, 24, 8, 16));
+        terminal
+    }
+
+    fn collect(terminal: &mut Terminal) {
+        while terminal.cell_next().is_some() {}
+    }
+
+    /// The cairo painter's order: the cell pass and the image pass share one
+    /// frame, so the placeholder origins the cell pass recorded are still
+    /// there when the virtual placement is resolved.
+    #[test]
+    fn replayed_mbv_image_is_placed_when_the_passes_share_a_frame() {
+        let mut terminal = replay_terminal();
+        terminal.push_pty_data(&mbv_replay_bytes());
+
+        assert!(terminal.frame_begin());
+        collect(&mut terminal);
+        let img = terminal
+            .image_next()
+            .expect("the raw U=1 image is stored and placed in the same frame");
+        terminal.frame_end();
+
+        assert_eq!(img.image_id, IMAGE_ID);
+        assert_eq!((img.image_w, img.image_h), (8, 16), "raw pixels kept");
+        assert_eq!(
+            (img.x, img.y, img.w, img.h),
+            (4 * 8, 2 * 16, 8, 16),
+            "drawn at the placeholder origin at the image's own size"
+        );
+    }
+
+    /// The node painter's order: `emit_images` opens its own frame after the
+    /// cell pass has ended (`node_images.rs`), and that `frame_begin` must
+    /// not throw away the placeholder origins the cell pass recorded, or
+    /// every unicode-placeholder image is silently dropped (the mbv bug).
+    #[test]
+    fn replayed_mbv_image_survives_the_node_image_pass_fresh_frame() {
+        let mut terminal = replay_terminal();
+        terminal.push_pty_data(&mbv_replay_bytes());
+
+        assert!(terminal.frame_begin());
+        collect(&mut terminal);
+        terminal.frame_end();
+
+        assert!(terminal.frame_begin_images());
+        let img = terminal
+            .image_next()
+            .expect("the placeholder origins survive into the image pass");
+        terminal.frame_end();
+        assert_eq!(img.image_id, IMAGE_ID);
+        assert_eq!((img.x, img.y, img.w, img.h), (4 * 8, 2 * 16, 8, 16));
+
+        // A plain frame_begin is still a fresh frame: without a cell pass it
+        // has no placeholder origins, so the image is not drawn again.
+        assert!(terminal.frame_begin());
+        assert!(terminal.image_next().is_none(), "stale origins are cleared");
+        terminal.frame_end();
     }
 }

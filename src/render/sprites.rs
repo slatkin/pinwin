@@ -88,14 +88,26 @@ const DOT_ROW: [usize; 8] = [0, 1, 2, 0, 1, 2, 3, 3];
 /// bit2 lower left, bit3 lower right.
 const QUADRANTS: [u8; 10] = [0x4, 0x8, 0x1, 0xD, 0x9, 0x7, 0xB, 0x2, 0x6, 0xE];
 
-/// Draw the sprite for `cp` in `cell` with the already-set source colour.
-/// Returns true when `cp` was drawn (`draw_sprite`).
-pub(crate) fn draw_sprite(
-    cr: &cairo::Context,
-    cell: &Cell,
-    cp: u32,
-    cell_metrics: &CellMetrics,
-) -> bool {
+/// One sprite's geometry, shared by the cairo painter ([`draw_sprite`]) and
+/// the node emitter ([`super::node_sprites`]) so the two cannot drift
+/// (gsk-render-nodes task 2.2). Blocks, quadrants and braille dots are
+/// integer-ish rectangles; the corner and powerline triangles need a cairo
+/// path on both sides (a per-cell cairo node on the node side).
+pub(crate) enum SpriteShape {
+    /// Axis-aligned rectangles to fill with the sprite colour.
+    Rects(Vec<(f64, f64, f64, f64)>),
+    /// A closed triangle to fill with the sprite colour.
+    FillTriangle([f64; 6]),
+    /// An open triangle to stroke with a 2 px line.
+    StrokeTriangle([f64; 6]),
+    /// Not a sprite: the shades (0x2591–0x2593) and every text codepoint.
+    None,
+}
+
+/// The geometry [`draw_sprite`] paints `cp` with, or [`SpriteShape::None`]
+/// when `cp` is left to the text pass. Pure geometry — no drawing — so both
+/// painters consume the same numbers.
+pub(crate) fn sprite_shape(cell: &Cell, cp: u32, cell_metrics: &CellMetrics) -> SpriteShape {
     let cw = f64::from(cell_metrics.cell_w);
     let ch = f64::from(cell_metrics.cell_h);
     let x = f64::from(cell.x) * cw;
@@ -108,110 +120,77 @@ pub(crate) fn draw_sprite(
 
     if (0x25E2..=0x25E5).contains(&cp) {
         // Ghostty draws the four corner triangles as full-cell sprites.
-        match cp {
-            0x25E2 => {
-                cr.move_to(x, y + ch);
-                cr.line_to(x + w, y + ch);
-                cr.line_to(x + w, y);
-            }
-            0x25E3 => {
-                cr.move_to(x, y);
-                cr.line_to(x, y + ch);
-                cr.line_to(x + w, y + ch);
-            }
-            0x25E4 => {
-                cr.move_to(x, y);
-                cr.line_to(x, y + ch);
-                cr.line_to(x + w, y);
-            }
-            0x25E5 => {
-                cr.move_to(x, y);
-                cr.line_to(x + w, y + ch);
-                cr.line_to(x + w, y);
-            }
-            _ => {}
-        }
-        cr.close_path();
-        let _ = cr.fill();
-        return true;
+        let points = match cp {
+            0x25E2 => [x, y + ch, x + w, y + ch, x + w, y],
+            0x25E3 => [x, y, x, y + ch, x + w, y + ch],
+            0x25E4 => [x, y, x, y + ch, x + w, y],
+            0x25E5 => [x, y, x + w, y + ch, x + w, y],
+            _ => return SpriteShape::None,
+        };
+        return SpriteShape::FillTriangle(points);
     }
 
     if (0x2580..=0x259F).contains(&cp) {
-        match cp {
+        let rects: Vec<(f64, f64, f64, f64)> = match cp {
             // Upper half.
-            0x2580 => {
-                fill_rect(cr, x, y, w, ch / 2.0);
-                return true;
-            }
+            0x2580 => vec![(x, y, w, ch / 2.0)],
             // Lower 1/8..8/8.
             0x2581..=0x2588 => {
                 let h = ch * f64::from(cp - 0x2580) / 8.0;
-                fill_rect(cr, x, y + ch - h, w, h);
-                return true;
+                vec![(x, y + ch - h, w, h)]
             }
             // Left 7/8..1/8.
-            0x2589..=0x258F => {
-                fill_rect(cr, x, y, w * f64::from(0x2590 - cp) / 8.0, ch);
-                return true;
-            }
+            0x2589..=0x258F => vec![(x, y, w * f64::from(0x2590 - cp) / 8.0, ch)],
             // Right half.
-            0x2590 => {
-                fill_rect(cr, x + w / 2.0, y, w / 2.0, ch);
-                return true;
-            }
+            0x2590 => vec![(x + w / 2.0, y, w / 2.0, ch)],
             // Shades: the font has them.
-            0x2591..=0x2593 => return false,
+            0x2591..=0x2593 => return SpriteShape::None,
             // Upper 1/8: whole pixels, 3 px at our 19 px cell height.
-            0x2594 => {
-                fill_rect(cr, x, y, w, f64::from((cell_metrics.cell_h + 7) / 8));
-                return true;
-            }
+            0x2594 => vec![(x, y, w, f64::from((cell_metrics.cell_h + 7) / 8))],
             // Right 1/8.
-            0x2595 => {
-                fill_rect(cr, x + w * 7.0 / 8.0, y, w / 8.0, ch);
-                return true;
-            }
+            0x2595 => vec![(x + w * 7.0 / 8.0, y, w / 8.0, ch)],
             // Quadrants.
             _ => {
                 let q = QUADRANTS[(cp - 0x2596) as usize];
+                let mut rects = Vec::with_capacity(4);
                 if q & 0x1 != 0 {
-                    fill_rect(cr, x, y, w / 2.0, ch / 2.0);
+                    rects.push((x, y, w / 2.0, ch / 2.0));
                 }
                 if q & 0x2 != 0 {
-                    fill_rect(cr, x + w / 2.0, y, w / 2.0, ch / 2.0);
+                    rects.push((x + w / 2.0, y, w / 2.0, ch / 2.0));
                 }
                 if q & 0x4 != 0 {
-                    fill_rect(cr, x, y + ch / 2.0, w / 2.0, ch / 2.0);
+                    rects.push((x, y + ch / 2.0, w / 2.0, ch / 2.0));
                 }
                 if q & 0x8 != 0 {
-                    fill_rect(cr, x + w / 2.0, y + ch / 2.0, w / 2.0, ch / 2.0);
+                    rects.push((x + w / 2.0, y + ch / 2.0, w / 2.0, ch / 2.0));
                 }
-                return true;
+                rects
             }
-        }
+        };
+        return SpriteShape::Rects(rects);
     }
 
     if (0x2800..=0x28FF).contains(&cp) {
         // Braille: a 2x4 dot grid.
         let pattern = cp & 0xFF;
         let (dot, dx, dy) = braille_geometry(cell_metrics.cell_w, cell_metrics.cell_h);
+        let mut rects = Vec::new();
         for (i, &col) in DOT_COL.iter().enumerate() {
             if pattern & (1u32 << i) != 0 {
-                fill_rect(
-                    cr,
+                rects.push((
                     x + f64::from(dx[col]),
                     y + f64::from(dy[DOT_ROW[i]]),
                     f64::from(dot),
                     f64::from(dot),
-                );
+                ));
             }
         }
-        return true;
+        return SpriteShape::Rects(rects);
     }
 
     if cp == 0xE0B0 || cp == 0xE0B1 || cp == 0xE0B2 || cp == 0xE0B3 {
         // Powerline separators: solid right/left triangle, or its outline.
-        let solid = cp == 0xE0B0 || cp == 0xE0B2;
         let ax = if cp == 0xE0B0 || cp == 0xE0B1 {
             x
         } else {
@@ -222,25 +201,60 @@ pub(crate) fn draw_sprite(
         } else {
             x
         };
-        cr.move_to(ax, y);
-        cr.line_to(bx, y + ch / 2.0);
-        cr.line_to(ax, y + ch);
-        if solid {
-            cr.close_path();
-            let _ = cr.fill();
+        let points = [ax, y, bx, y + ch / 2.0, ax, y + ch];
+        return if cp == 0xE0B0 || cp == 0xE0B2 {
+            SpriteShape::FillTriangle(points)
         } else {
-            cr.set_line_width(2.0);
-            let _ = cr.stroke();
-        }
-        return true;
+            SpriteShape::StrokeTriangle(points)
+        };
     }
 
-    false
+    SpriteShape::None
+}
+
+/// Draw the sprite for `cp` in `cell` with the already-set source colour.
+/// Returns true when `cp` was drawn (`draw_sprite`). The geometry is
+/// [`sprite_shape`]'s, shared with the node emitter.
+pub(crate) fn draw_sprite(
+    cr: &cairo::Context,
+    cell: &Cell,
+    cp: u32,
+    cell_metrics: &CellMetrics,
+) -> bool {
+    match sprite_shape(cell, cp, cell_metrics) {
+        SpriteShape::None => false,
+        SpriteShape::Rects(rects) => {
+            for (x, y, w, h) in rects {
+                fill_rect(cr, x, y, w, h);
+            }
+            true
+        }
+        SpriteShape::FillTriangle([ax, ay, bx, by, cx, cy]) => {
+            cr.move_to(ax, ay);
+            cr.line_to(bx, by);
+            cr.line_to(cx, cy);
+            cr.close_path();
+            let _ = cr.fill();
+            true
+        }
+        SpriteShape::StrokeTriangle([ax, ay, bx, by, cx, cy]) => {
+            cr.move_to(ax, ay);
+            cr.line_to(bx, by);
+            cr.line_to(cx, cy);
+            cr.set_line_width(2.0);
+            let _ = cr.stroke();
+            true
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::parity;
+
+    use gtk4::gdk;
+    use gtk4::prelude::SnapshotExt as _;
 
     fn metrics() -> CellMetrics {
         CellMetrics {
@@ -258,65 +272,154 @@ mod tests {
         }
     }
 
+    /// The two painters the sprite tests run over (gsk-render-nodes task
+    /// 2.2): the cairo painter and the node emitter through the parity
+    /// harness, so every sprite assertion holds for both.
+    #[derive(Clone, Copy, Debug)]
+    enum Painter {
+        Cairo,
+        Nodes,
+    }
+
+    const PAINTERS: [Painter; 2] = [Painter::Cairo, Painter::Nodes];
+
+    /// The white source both painters draw the test sprites with.
+    fn node_colour() -> gdk::RGBA {
+        gdk::RGBA::new(1.0, 1.0, 1.0, 1.0)
+    }
+
     /// The filled (non-zero-alpha) pixel count of a sprite drawn at 0,0 on a
-    /// fresh surface, using a white source.
-    fn filled_pixels(cp: u32) -> usize {
-        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
-        {
-            let cr = cairo::Context::new(&surface).unwrap();
-            cr.set_source_rgb(1.0, 1.0, 1.0);
-            assert!(draw_sprite(&cr, &cell(0, 0), cp, &metrics()));
+    /// fresh surface with a white source, on `painter`.
+    fn filled_pixels(painter: Painter, cp: u32) -> usize {
+        match painter {
+            Painter::Cairo => {
+                let mut surface =
+                    cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
+                {
+                    let cr = cairo::Context::new(&surface).unwrap();
+                    cr.set_source_rgb(1.0, 1.0, 1.0);
+                    assert!(draw_sprite(&cr, &cell(0, 0), cp, &metrics()));
+                }
+                surface.flush();
+                count_filled(&mut surface)
+            }
+            Painter::Nodes => {
+                let snapshot = parity::snapshot();
+                assert!(
+                    super::super::node_sprites::emit_cell_sprite(
+                        &snapshot,
+                        &cell(0, 0),
+                        cp,
+                        &metrics(),
+                        &node_colour()
+                    ),
+                    "0x{cp:04X} was emitted"
+                );
+                let node = snapshot.to_node().expect("snapshot produced a node");
+                let mut surface =
+                    cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
+                parity::draw_node(&node, &surface);
+                count_filled(&mut surface)
+            }
         }
+    }
+
+    /// Whether `cp` is painted as a sprite on `painter` (the shades and text
+    /// codepoints are not).
+    fn paints(painter: Painter, cp: u32) -> bool {
+        match painter {
+            Painter::Cairo => {
+                let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
+                let cr = cairo::Context::new(&surface).unwrap();
+                draw_sprite(&cr, &cell(0, 0), cp, &metrics())
+            }
+            Painter::Nodes => {
+                let snapshot = parity::snapshot();
+                super::super::node_sprites::emit_cell_sprite(
+                    &snapshot,
+                    &cell(0, 0),
+                    cp,
+                    &metrics(),
+                    &node_colour(),
+                )
+            }
+        }
+    }
+
+    /// Non-zero-alpha pixel count of a finished ARGB32 surface.
+    fn count_filled(surface: &mut cairo::ImageSurface) -> usize {
         surface.flush();
-        let data = surface.data().unwrap();
-        data.as_chunks::<4>()
+        surface
+            .data()
+            .unwrap()
+            .as_chunks::<4>()
             .0
             .iter()
             .filter(|px| px[3] != 0)
             .count()
     }
 
+    fn assert_filled(painter: Painter, cp: u32, expected: usize) {
+        assert_eq!(
+            filled_pixels(painter, cp),
+            expected,
+            "{painter:?} 0x{cp:04X}"
+        );
+    }
+
     #[test]
     fn upper_half_block_fills_the_top_half() {
-        assert_eq!(filled_pixels(0x2580), 8 * 8);
+        for painter in PAINTERS {
+            assert_filled(painter, 0x2580, 8 * 8);
+        }
     }
 
     #[test]
     fn lower_full_block_fills_the_whole_cell() {
-        assert_eq!(filled_pixels(0x2588), 8 * 16);
+        for painter in PAINTERS {
+            assert_filled(painter, 0x2588, 8 * 16);
+        }
     }
 
     #[test]
     fn left_one_eighth_fills_one_column() {
-        // 0x258F is left 1/8: one of the eight columns.
-        assert_eq!(filled_pixels(0x258F), 16);
+        for painter in PAINTERS {
+            // 0x258F is left 1/8: one of the eight columns.
+            assert_filled(painter, 0x258F, 16);
+        }
     }
 
     #[test]
     fn right_one_eighth_fills_one_column() {
-        assert_eq!(filled_pixels(0x2595), 16);
+        for painter in PAINTERS {
+            assert_filled(painter, 0x2595, 16);
+        }
     }
 
     #[test]
     fn upper_one_eighth_fills_whole_pixel_rows() {
-        // (16 + 7) / 8 = 2 whole pixel rows at a 16px cell height.
-        assert_eq!(filled_pixels(0x2594), 8 * 2);
+        for painter in PAINTERS {
+            // (16 + 7) / 8 = 2 whole pixel rows at a 16px cell height.
+            assert_filled(painter, 0x2594, 8 * 2);
+        }
     }
 
     #[test]
     fn quadrants_fill_their_named_quarters() {
-        // 0x2596 is the lower-left quadrant (bit2).
-        assert_eq!(filled_pixels(0x2596), 4 * 8);
-        // 0x2599 is lower-left + upper-left (bits 0x5? table says 0x9:
-        // upper right + lower left ... the table's own layout).
-        assert_eq!(filled_pixels(0x259F), 4 * 8 * 3);
+        for painter in PAINTERS {
+            // 0x2596 is the lower-left quadrant (bit2).
+            assert_filled(painter, 0x2596, 4 * 8);
+            // 0x2599 is lower-left + upper-left (bits 0x5? table says 0x9:
+            // upper right + lower left ... the table's own layout).
+            assert_filled(painter, 0x259F, 4 * 8 * 3);
+        }
     }
 
     #[test]
     fn shades_are_left_to_the_font() {
-        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
-        let cr = cairo::Context::new(&surface).unwrap();
-        assert!(!draw_sprite(&cr, &cell(0, 0), 0x2591, &metrics()));
+        for painter in PAINTERS {
+            assert!(!paints(painter, 0x2591), "{painter:?} draws no shade");
+        }
     }
 
     #[test]
@@ -330,22 +433,10 @@ mod tests {
 
     #[test]
     fn braille_dot_grid_lands_on_the_eight_positions() {
-        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
-        {
-            let cr = cairo::Context::new(&surface).unwrap();
-            cr.set_source_rgb(1.0, 1.0, 1.0);
+        for painter in PAINTERS {
             // All eight dots set.
-            assert!(draw_sprite(&cr, &cell(0, 0), 0x28FF, &metrics()));
+            assert_filled(painter, 0x28FF, 8 * dot_count(8, 16));
         }
-        surface.flush();
-        let data = surface.data().unwrap();
-        let filled: usize = data
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|px| px[3] != 0)
-            .count();
-        assert_eq!(filled, 8 * dot_count(8, 16));
     }
 
     fn dot_count(cell_w: i32, cell_h: i32) -> usize {
@@ -355,24 +446,51 @@ mod tests {
 
     #[test]
     fn powerline_right_triangle_fills_half_the_cell() {
-        // 0xE0B0: a right-pointing solid triangle filling the cell.
-        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
-        {
-            let cr = cairo::Context::new(&surface).unwrap();
-            cr.set_source_rgb(1.0, 1.0, 1.0);
-            assert!(draw_sprite(&cr, &cell(0, 0), 0xE0B0, &metrics()));
+        for painter in PAINTERS {
+            // 0xE0B0: a right-pointing solid triangle filling the cell.
+            let filled = filled_pixels(painter, 0xE0B0);
+            // A solid triangle through the full cell: roughly the half-box,
+            // plus or minus the antialiased edge pixels.
+            assert!(filled > 8 * 16 / 4, "{painter:?} filled {filled}");
+            assert!(filled < 8 * 8 + 16, "{painter:?} filled {filled}");
         }
-        surface.flush();
-        let data = surface.data().unwrap();
-        let filled: usize = data
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|px| px[3] != 0)
-            .count();
-        // A solid triangle through the full cell: roughly the half-box,
-        // plus or minus the antialiased edge pixels.
-        assert!(filled > 8 * 16 / 4, "filled {filled}");
-        assert!(filled < 8 * 8 + 16, "filled {filled}");
+    }
+
+    /// The two painters agree everywhere the sprite ranges and their
+    /// neighbours live — both route every cell through [`sprite_shape`], so
+    /// a drift would show here — and known codepoints keep their routing:
+    /// blocks are sprites, the shades and text stay text (gsk-render-nodes
+    /// task 2.2).
+    #[test]
+    fn both_painters_agree_across_the_ranges() {
+        let mut checked = 0usize;
+        let mut sweep = |cps: std::ops::RangeInclusive<u32>| {
+            for cp in cps {
+                assert_eq!(
+                    paints(Painter::Cairo, cp),
+                    paints(Painter::Nodes, cp),
+                    "0x{cp:04X}"
+                );
+                checked += 1;
+            }
+        };
+        // Box drawing and neighbours: blocks, shades, quadrants, triangles.
+        sweep(0x2570..=0x2600);
+        // Braille and its neighbours.
+        sweep(0x2800..=0x2900);
+        // Powerline separators and neighbours.
+        sweep(0xE0B0..=0xE0C0);
+        checked += 4;
+        assert!(!paints(Painter::Cairo, u32::from('A')));
+        assert!(!paints(Painter::Nodes, u32::from('A')));
+        assert!(!paints(Painter::Cairo, 0x2630));
+        assert!(!paints(Painter::Nodes, 0x2630));
+        assert!(!paints(Painter::Cairo, 0x6F22));
+        assert!(!paints(Painter::Nodes, 0x6F22));
+        assert!(!paints(Painter::Cairo, 0x1F600));
+        assert!(!paints(Painter::Nodes, 0x1F600));
+        assert!(paints(Painter::Cairo, 0x2588), "a block is a sprite");
+        assert!(paints(Painter::Nodes, 0x2588), "a block is a sprite");
+        assert!(checked > 420, "sweep covered {checked} codepoints");
     }
 }

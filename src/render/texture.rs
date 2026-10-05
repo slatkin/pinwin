@@ -1,8 +1,9 @@
-//! The tween cache's texture conversion (poc-gsk-texture-grid task 1.1):
-//! wrapping the finished cairo cache surface as a [`gdk::MemoryTexture`] so
-//! the snapshot path can upload the grid once per tween and render each frame
-//! as a transform, instead of re-rasterising the surface through Cairo every
-//! frame.
+//! Texture conversion for cairo image surfaces (poc-gsk-texture-grid task
+//! 1.1): wrapping a finished surface's pixels as a [`gdk::MemoryTexture`] so
+//! a snapshot can upload it and render it as a texture node instead of
+//! re-rasterising the surface through Cairo every frame. The stage-1 grid
+//! cache that first used this went away with gsk-render-nodes row 4.2; the
+//! per-image textures in [`super::images`] are the remaining user.
 
 use gtk4::gdk;
 
@@ -18,7 +19,7 @@ const CACHE_MEMORY_FORMAT: gdk::MemoryFormat = gdk::MemoryFormat::A8r8g8b8Premul
 /// `None` when the pixels cannot be read or the surface is empty. cairo's
 /// `ARgb32` is premultiplied like the memory texture formats, so the copy is a
 /// straight upload with no re-encode.
-pub(super) fn grid_cache_texture(surface: &mut cairo::ImageSurface) -> Option<gdk::MemoryTexture> {
+pub(super) fn surface_texture(surface: &mut cairo::ImageSurface) -> Option<gdk::MemoryTexture> {
     let (width, height, stride) = (surface.width(), surface.height(), surface.stride());
     if width <= 0 || height <= 0 {
         return None;
