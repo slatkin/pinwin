@@ -42,6 +42,7 @@ impl Default for FontConfig {
 
 impl FontConfig {
     /// The family to draw with: the configured one, else `monospace`.
+    #[must_use]
     pub fn effective_family(&self) -> &str {
         self.family.as_deref().unwrap_or(DEFAULT_FONT_FAMILY)
     }
@@ -108,6 +109,7 @@ pub fn parse_font_config(contents: &str) -> FontConfig {
 /// `None` means no `theme` key was present. Any inline `background` /
 /// `foreground` line is parsed too, but since the C outer `sscanf` excludes
 /// '#', such lines never yield a colour there; the behaviour is kept.
+#[must_use]
 pub fn parse_theme_config(contents: &str, colours: &mut ThemeColours) -> Option<String> {
     let mut theme: Option<String> = None;
 
@@ -137,7 +139,8 @@ pub fn parse_theme_file(contents: &str, colours: &mut ThemeColours) {
 
 /// Load the font from `$XDG_CONFIG_HOME/ghostty/config` (default
 /// `~/.config/ghostty/config`); a missing or unreadable file falls back to
-/// [`FontConfig::default`] (`monospace 11`).
+/// [`FontConfig::default`] (``monospace 11``).
+#[must_use]
 pub fn load_font_config() -> FontConfig {
     load_font_config_at(&user_config_dir())
 }
@@ -179,7 +182,7 @@ fn load_theme_colours_at(config_dir: &Path) -> ThemeColours {
     colours
 }
 
-/// `g_get_user_config_dir`: `$XDG_CONFIG_HOME` when set and non-empty (GLib
+/// `g_get_user_config_dir`: `$XDG_CONFIG_HOME` when set and non-empty (`GLib`
 /// uses it verbatim, even when relative), else `$HOME/.config`, falling back
 /// to the passwd entry when `$HOME` is unset. Delegating keeps the fallback
 /// identical to the C code; the parsing functions stay pure.

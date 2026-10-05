@@ -40,6 +40,7 @@ use crate::layout::Side;
 
 /// Ease-out cubic: close to niri's critically damped window-resize spring
 /// (`glue_anim.c`).
+#[must_use]
 pub fn ease(t: f64) -> f64 {
     let u = 1.0 - t;
     1.0 - u * u * u
@@ -57,7 +58,7 @@ pub enum Advance {
 /// The env-gated frame-clock log for one tween: records the tick's frame
 /// times and prints one gap summary at the tween's stop. Off unless
 /// `PINWIN_FRAMELOG=1`, so the per-frame cost when off is one `Option` check.
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct FrameLog {
     /// The ticks' frame-clock timestamps, in microseconds.
     times: Vec<i64>,
@@ -85,7 +86,7 @@ impl FrameLog {
             .windows(2)
             .map(|w| (w[1] - w[0]).max(0) as f64 / 1000.0)
             .collect();
-        gaps.sort_by(|a, b| a.total_cmp(b));
+        gaps.sort_by(f64::total_cmp);
         let mean = gaps.iter().sum::<f64>() / gaps.len() as f64;
         let rank = (gaps.len() as f64 * 0.95).ceil().max(1.0) as usize - 1;
         Some((self.times.len(), mean, gaps[rank], gaps[gaps.len() - 1]))
@@ -97,11 +98,7 @@ impl FrameLog {
         if let Some((frames, mean, p95, max)) = self.summary() {
             let _ = writeln!(
                 std::io::stderr(),
-                "pinwin: tween frame log: frames={} mean={:.2}ms p95={:.2}ms max={:.2}ms",
-                frames,
-                mean,
-                p95,
-                max
+                "pinwin: tween frame log: frames={frames} mean={mean:.2}ms p95={p95:.2}ms max={max:.2}ms",
             );
         }
     }
@@ -124,6 +121,7 @@ impl Tween {
     /// Start, or retarget, a tween from `from_px` to `to_px` over
     /// `duration_ms`. The caller clamps the duration (`pinwin_api.c` clamps
     /// to 1000 ms before the apply reaches the glue).
+    #[must_use]
     pub fn begin(from_px: i32, to_px: i32, duration_ms: u32) -> Self {
         Tween {
             active: true,
@@ -136,6 +134,7 @@ impl Tween {
     }
 
     /// Whether the tween is running (`a.active`).
+    #[must_use]
     pub fn is_active(&self) -> bool {
         self.active
     }
@@ -149,7 +148,8 @@ impl Tween {
             return Advance::Finished;
         }
         let t = t.max(0.0);
-        self.cur_px = self.from_px + ((self.to_px - self.from_px) as f64 * ease(t)).round() as i32;
+        self.cur_px =
+            self.from_px + (f64::from(self.to_px - self.from_px) * ease(t)).round() as i32;
         Advance::Frame(self.cur_px)
     }
 
@@ -163,6 +163,17 @@ impl Tween {
 /// into [`Anim`] methods synchronously: the frame/finish paths hand the glue
 /// everything it needs (`on_frame` carries the eased width, `on_finish` runs
 /// after the tween state is already reset), so no re-entrant borrow happens.
+///
+/// The hooks are closures, so `Debug` names the slots without their bodies.
+impl std::fmt::Debug for AnimHooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnimHooks")
+            .field("on_frame", &"<closure>")
+            .field("on_stop", &"<closure>")
+            .field("on_finish", &"<closure>")
+            .finish_non_exhaustive()
+    }
+}
 pub struct AnimHooks {
     /// One eased frame at `px`: apply the panel width and both surfaces for
     /// that width (`glue_apply_geometry` from the tick).
@@ -206,6 +217,19 @@ fn set_tween_flag(inner: &AnimInner, active: bool) {
 }
 
 /// The animated width transition for one panel. Lives on the GTK thread (D4).
+///
+/// The GTK source ids are omitted: they identify registered callbacks, not
+/// tween state.
+impl std::fmt::Debug for Anim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Anim")
+            .field("tween", &self.inner.tween)
+            .field("frame_log", &self.inner.frame_log)
+            .field("tween_flag", &self.inner.tween_flag)
+            .field("poisoned", &self.inner.poisoned)
+            .finish_non_exhaustive()
+    }
+}
 pub struct Anim {
     inner: Rc<AnimInner>,
 }
@@ -216,6 +240,7 @@ impl Anim {
     /// watchdog and hook bodies guard against the same flag the rest of the
     /// panel's glue guards against, so one panic anywhere stops the panel's
     /// glue code everywhere.
+    #[must_use]
     pub fn new(poisoned: Poisoned, hooks: AnimHooks) -> Self {
         Anim {
             inner: Rc::new(AnimInner {
@@ -231,6 +256,7 @@ impl Anim {
     }
 
     /// Whether a tween is running (`glue_anim_active`).
+    #[must_use]
     pub fn active(&self) -> bool {
         self.inner.tween_flag.load(Ordering::Relaxed)
     }
@@ -239,17 +265,20 @@ impl Anim {
     /// this instead of the GTK tween state (D4), and the glue relays the same
     /// values to `Pty::set_tween_active` through its `set_tween_active` hook
     /// at every state change.
+    #[must_use]
     pub fn tween_flag(&self) -> Arc<AtomicBool> {
-        self.inner.tween_flag.clone()
+        Arc::clone(&self.inner.tween_flag)
     }
 
     /// Whether a tick or watchdog body panicked (D5).
+    #[must_use]
     pub fn poisoned(&self) -> bool {
         self.inner.poisoned.is_poisoned()
     }
 
     /// The panel's current pixel width: the animated width while a tween runs,
     /// else the applied width (`panel_px`); the glue passes `cols * cell_w`.
+    #[must_use]
     pub fn current_px(&self, applied_px: i32) -> i32 {
         let tween = self.inner.tween.borrow();
         if tween.is_active() {
@@ -274,6 +303,7 @@ impl Anim {
     /// to the tween alone keeps the drawn grid glued to the docked edge in
     /// all of them; a shift computed from the applied cols would walk the old
     /// grid off the docked edge and draw nothing but background.
+    #[must_use]
     pub fn draw_offset(&self, side: Side, area_width: Option<i32>, grid_px: i32) -> i32 {
         match area_width {
             Some(width) if side == Side::Right => width - grid_px,
@@ -282,6 +312,7 @@ impl Anim {
     }
 
     /// False when the `gtk-enable-animations` setting is off (`glue_anim_allowed`).
+    #[must_use]
     pub fn allowed() -> bool {
         gtk4::Settings::default().is_some_and(|settings| settings.is_gtk_enable_animations())
     }
@@ -302,7 +333,7 @@ impl Anim {
         // costs one `Option` check per tick.
         *self.inner.frame_log.borrow_mut() = FrameLog::enabled().then(FrameLog::default);
 
-        let inner = self.inner.clone();
+        let inner = Rc::clone(&self.inner);
         let tick = widget.add_tick_callback(move |_widget, clock| {
             let now = clock.frame_time();
             if let Some(log) = inner.frame_log.borrow_mut().as_mut() {
@@ -331,7 +362,7 @@ impl Anim {
 
         // The watchdog snaps to the final layout if frames stop; the C allows
         // 100 ms of slack past the duration.
-        let inner = self.inner.clone();
+        let inner = Rc::clone(&self.inner);
         let watchdog = glib::timeout_add_local(
             std::time::Duration::from_millis(u64::from(duration_ms) + 100),
             move || {
@@ -367,19 +398,15 @@ impl Anim {
     /// The shared-state half of [`Anim::stop`], callable from the closures
     /// that hold only `inner`.
     fn stop_inner(inner: &AnimInner, in_tick: bool, in_watchdog: bool) {
-        if !in_tick {
-            if let Some(tick) = inner.tick.take() {
-                tick.remove();
-            }
-        } else {
+        if in_tick {
             inner.tick.set(None);
+        } else if let Some(tick) = inner.tick.take() {
+            tick.remove();
         }
-        if !in_watchdog {
-            if let Some(watchdog) = inner.watchdog.take() {
-                watchdog.remove();
-            }
-        } else {
+        if in_watchdog {
             inner.watchdog.set(None);
+        } else if let Some(watchdog) = inner.watchdog.take() {
+            watchdog.remove();
         }
         inner.tween.borrow_mut().stop();
         // The flag mirrors the tween state, so the reset clears it here — not
@@ -440,9 +467,9 @@ mod tests {
         }
 
         fn hooks(recording: &Rc<RefCell<Self>>) -> AnimHooks {
-            let frames = recording.clone();
-            let stops = recording.clone();
-            let finishes = recording.clone();
+            let frames = Rc::clone(recording);
+            let stops = Rc::clone(recording);
+            let finishes = Rc::clone(recording);
             AnimHooks {
                 on_frame: Box::new(move |px| frames.borrow_mut().frames.push(px)),
                 on_stop: Box::new(move || stops.borrow_mut().stops += 1),
@@ -604,7 +631,7 @@ mod tests {
         let recording = recording.borrow();
         assert_eq!(recording.stops, 1);
         assert_eq!(recording.finishes, 0);
-        assert!(recording.frames.is_empty());
+        assert_eq!(recording.frames, Vec::<i32>::new());
     }
 
     /// The mirror flag follows the tween state through every stop path: a
