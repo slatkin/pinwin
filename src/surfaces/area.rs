@@ -25,7 +25,7 @@ use super::GridSnapshotFn;
 use crate::guard::{Poisoned, guard_default};
 
 glib::wrapper! {
-    pub struct GridArea(ObjectSubclass<GridAreaImp>) @extends gtk4::DrawingArea, gtk4::Widget, @implements gtk4::Buildable, gtk4::ConstraintTarget;
+    pub struct GridArea(ObjectSubclass<GridAreaImp>) @extends gtk4::DrawingArea, gtk4::Widget, @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget;
 }
 
 /// The subclass state (poc-gsk-texture-grid design): the grid snapshot

@@ -35,6 +35,7 @@ use gtk4_layer_shell::{Edge, KeyboardMode as LayerKeyboardMode, Layer};
 use crate::anim::{Anim, AnimHooks};
 use crate::input;
 use crate::layout::{Accent, Keyboard, Layout, Side};
+use crate::render::OutputScale;
 
 mod area;
 
@@ -410,6 +411,19 @@ impl Surfaces {
         self.anim.current_px(self.grid_px())
     }
 
+    /// The output scale the panel's surface is drawn at (`snap-grid-edges`
+    /// D3): `gdk::Surface::scale()`, read fresh at each draw. A missing
+    /// surface — before map, or after close — and a value that is not
+    /// positive and finite both give 1.
+    pub(crate) fn scale(&self) -> OutputScale {
+        OutputScale::new(
+            self.win
+                .surface()
+                .map(|surface| surface.scale())
+                .unwrap_or(1.0),
+        )
+    }
+
     /// The drawing shift input x coordinates subtract (`glue_anim_draw_offset`).
     /// Computed against the width of the grid that is actually on screen
     /// ([`Self::drawn_grid_px`]): the terminal's live grid, or — while a
@@ -417,16 +431,30 @@ impl Surfaces {
     /// terminal still shows in its leftmost columns. The shift keeps that
     /// grid glued to the docked edge whenever it does not fill the widget,
     /// tween or not (gsk-render-nodes design, Post-task decisions: C52).
+    ///
+    /// The integer logical offset snaps once, here, to a whole device pixel
+    /// at the surface's current scale (`snap-grid-edges` D7): the draw hooks,
+    /// `DrawState::draw`, `DrawState::snapshot_grid` and the input
+    /// controllers all use this one snapped value, so the drawn cell and the
+    /// cell under the pointer agree and a moving frame cannot put a cell
+    /// edge between two device pixels.
     pub fn draw_offset(&self) -> f64 {
+        self.draw_offset_at(self.scale())
+    }
+
+    /// [`Self::draw_offset`] at a scale the caller already read, so a draw
+    /// hook resolves the surface scale once.
+    pub(crate) fn draw_offset_at(&self, scale: OutputScale) -> f64 {
         let width = if self.closed.get() {
             None
         } else {
             Some(self.area.width())
         };
-        f64::from(
-            self.anim
-                .draw_offset(self.layout.get().side(), width, self.drawn_grid_px()),
-        )
+        scale.snap_edge(f64::from(self.anim.draw_offset(
+            self.layout.get().side(),
+            width,
+            self.drawn_grid_px(),
+        )))
     }
 
     /// The width of the grid the next draw will show: the terminal's live
@@ -641,9 +669,23 @@ impl Surfaces {
 
     /// The visible panel mapped (`on_win_map`): mark the first-draw monitor
     /// resolution pending, create and present the reservation, then size the
-    /// terminal.
+    /// terminal. Also connects `notify::scale` (snap-grid-edges D3): when
+    /// the panel moves to an output with a different scale, the grid must
+    /// redraw at the new scale. The handler only queues a redraw — the draw
+    /// hooks read the scale fresh at each draw, so a stored copy could go
+    /// stale between the notify and the draw.
     fn on_map(&self) {
         self.latch.set(true);
+
+        if let Some(surface) = self.win.surface() {
+            let area = self.area.clone();
+            let scale_poisoned = self.poisoned.clone();
+            // `_local`: the closure holds GTK-thread handles (Rc), like every
+            // other closure registered here; it runs on the GTK thread only.
+            surface.connect_notify_local(Some("scale"), move |_, _| {
+                let _ = guard(&scale_poisoned, || area.queue_draw());
+            });
+        }
 
         // The reservation is created and presented only after the visible
         // panel is mapped; the first draw then pins it to the resolved monitor.

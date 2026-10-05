@@ -6,6 +6,7 @@
 
 use pango::FontDescription;
 
+use super::snap::OutputScale;
 use crate::fontconfig;
 
 /// The four font variants a cell's style bits can select (`g_font`,
@@ -83,6 +84,10 @@ pub(crate) struct CellMetrics {
     /// Pixels from the cell's bottom to the baseline (`g_cell_baseline`).
     pub baseline: i32,
     pub nerd: NerdMetrics,
+    /// The output scale the next draw runs at (snap-grid-edges D2): the
+    /// shared geometry functions snap their rectangles through it. Draw
+    /// state, not a font measurement: `cell_metrics_update` keeps it.
+    pub scale: OutputScale,
 }
 
 /// Measure the font on `context` and derive the cell metrics. GTK-free: any
@@ -129,6 +134,9 @@ pub(crate) fn measure(context: &pango::Context, font: &FontDescription) -> CellM
             cell_w: f64::from(cell_w),
             cell_h: f64::from(cell_h),
         },
+        // Internal surfaces and the test renderers draw at scale 1 until
+        // `set_scale` records the surface's real one.
+        scale: OutputScale::default(),
     }
 }
 

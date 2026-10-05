@@ -12,6 +12,8 @@
 use gtk4::gsk;
 use gtk4::prelude::SnapshotExt as _;
 
+use super::OutputScale;
+
 /// A `gtk4::Snapshot` for a display-free test (see the module docs).
 pub(super) fn snapshot() -> gtk4::Snapshot {
     super::snapshot::new_snapshot()
@@ -54,7 +56,9 @@ pub(super) fn terminal_raw(data: &[u8]) -> crate::term::Terminal {
 /// The cairo oracle for the frame parity tests: the full
 /// [`DrawState::draw`](super::DrawState::draw) path into a backed surface at
 /// `scale`. With the cursor hidden and no images in the test data, that is
-/// exactly the theme fill, the background pass and the cell pass.
+/// exactly the theme fill, the background pass and the cell pass. The
+/// drawing scale is recorded on the draw state first (`set_scale`,
+/// `snap-grid-edges` D2), so both painters snap at `scale`.
 pub(super) fn cairo_frame(
     draw_state: &mut super::DrawState,
     terminal: &mut crate::term::Terminal,
@@ -62,10 +66,11 @@ pub(super) fn cairo_frame(
     height: i32,
     scale: f64,
 ) -> cairo::ImageSurface {
+    draw_state.set_scale(OutputScale::new(scale));
     let surface = backed_surface(width, height, scale, BACKDROP);
     {
         let cr = cairo::Context::new(&surface).expect("context");
-        draw_state.draw(&cr, terminal, width, height, 0);
+        draw_state.draw(&cr, terminal, width, height, 0.0);
     }
     surface
 }
@@ -75,14 +80,17 @@ pub(super) fn cairo_frame(
 /// [`emit_cells`](super::DrawState::emit_cells) into a snapshot, drawn to a
 /// backed surface at `scale`. The background tests pass `cells: false` so
 /// the cell pass cannot add pixels the [`cairo_frame`] oracle does not draw.
+/// The drawing scale is recorded on the draw state first (`set_scale`,
+/// `snap-grid-edges` D2), so both painters snap at `scale`.
 pub(super) fn node_frame(
-    draw_state: &super::DrawState,
+    draw_state: &mut super::DrawState,
     terminal: &mut crate::term::Terminal,
     width: i32,
     height: i32,
     scale: f64,
     cells: bool,
 ) -> cairo::ImageSurface {
+    draw_state.set_scale(OutputScale::new(scale));
     let snapshot = snapshot();
     assert!(
         draw_state.emit_backgrounds(&snapshot, terminal, width, height),

@@ -1,6 +1,6 @@
 [package]
 name = "pinwin"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 # The pinned libghostty-vt archive is built by build.rs from the commit in
 # build.rs (port-to-rust D2); it is deliberately not a Cargo dependency.
@@ -20,17 +20,19 @@ path = "src/main.rs"
 # already in the lock as a transitive dependency.
 libc = "0.2"
 
-# The v4_8 features on gtk4/gdk4 enable `ScrollUnit` (the scroll controller's
-# unit), which the scroll translation needs (port-to-rust row 3.7); both are
-# otherwise plain transitive dependencies.
-gtk4 = { version = "0.11", features = ["v4_8"] }
+# The v4_12 features on gtk4/gdk4 enable `ScrollUnit` (the scroll
+# controller's unit, which the scroll translation needs — port-to-rust row
+# 3.7) and `Surface::scale()` (the fractional output scale the grid snapping
+# reads — snap-grid-edges D3); both are otherwise plain transitive
+# dependencies.
+gtk4 = { version = "0.11", features = ["v4_12"] }
 gtk4-layer-shell = "0.8"
 pango = "0.22"
 pangocairo = "0.22"
 cairo-rs = "0.22"
 gdk-pixbuf = "0.22"
 
-gdk4 = { version = "0.11", features = ["v4_8"] }
+gdk4 = { version = "0.11", features = ["v4_12"] }
 
 # port-to-rust D5: panics must never cross the public API, so the unwind
 # runtime is required for the catch_unwind guards at every boundary. Setting

@@ -53,7 +53,10 @@ pub(super) fn rgba(color: &Rgb) -> gdk::RGBA {
 /// The background rectangle of `cell` in logical pixels, or `None` when the
 /// cell has no explicit background. The frame's last row — `height / cell_h`
 /// minus one, exactly what `render_grid` tests — fills down to `height`,
-/// which need not be a multiple of the cell pitch.
+/// which need not be a multiple of the cell pitch. Each edge is snapped to
+/// the device pixel grid (`snap-grid-edges` D1, D4): neighbouring cells
+/// pass the same shared-edge value to the snap, so both compute the same
+/// edge and no blended seam appears at a fractional scale.
 pub(super) fn cell_background_rect(
     cell: &Cell,
     metrics: CellMetrics,
@@ -67,7 +70,7 @@ pub(super) fn cell_background_rect(
     } else {
         metrics.cell_h
     };
-    Some((
+    Some(metrics.scale.snap_rect(
         f64::from(cell.x) * f64::from(metrics.cell_w),
         f64::from(cell.y) * f64::from(metrics.cell_h),
         f64::from(metrics.cell_w),
@@ -320,14 +323,16 @@ mod tests {
 
     /// The cairo oracle for the background parity tests: `draw_inner`'s theme
     /// fill plus `render_grid`'s background pass, into a backed surface at
-    /// `scale`.
+    /// `scale`. The drawing scale is recorded on the draw state first
+    /// (`set_scale`, `snap-grid-edges` D2), so both painters snap at `scale`.
     fn cairo_backgrounds(
-        draw_state: &DrawState,
+        draw_state: &mut DrawState,
         terminal: &mut Terminal,
         width: i32,
         height: i32,
         scale: f64,
     ) -> cairo::ImageSurface {
+        draw_state.set_scale(super::super::OutputScale::new(scale));
         let surface = parity::backed_surface(width, height, scale, BACKDROP);
         {
             let cr = cairo::Context::new(&surface).expect("context");
@@ -375,32 +380,28 @@ mod tests {
     #[test]
     fn backgrounds_match_the_cairo_painter_exactly_at_scale_1() {
         let _font = font_lock::guard();
-        let draw_state = state();
+        let mut draw_state = state();
         let mut terminal = terminal_with_backgrounds();
         let (width, height) = (65, 71);
-        let mut cairo_side = cairo_backgrounds(&draw_state, &mut terminal, width, height, 1.0);
-        let mut node_side = node_frame(&draw_state, &mut terminal, width, height, 1.0, false);
+        let mut cairo_side = cairo_backgrounds(&mut draw_state, &mut terminal, width, height, 1.0);
+        let mut node_side = node_frame(&mut draw_state, &mut terminal, width, height, 1.0, false);
         parity::assert_exact(&mut cairo_side, &mut node_side, "backgrounds at scale 1");
     }
 
-    /// At scale 1.5 fractional cell edges land between device pixels: the
-    /// cairo path snaps them (`Antialias::None`), the node path blends. The
-    /// stated tolerance is the blend bound — half the channel distance
-    /// between the colours an edge separates, rounded up.
+    /// At scale 1.5 fractional cell edges land between device pixels. Both
+    /// painters snap them the same way now — the shared geometry snaps each
+    /// edge to the device pixel grid (`snap-grid-edges` D1, D4) and the
+    /// cairo path's `Antialias::None` then has nothing left to round — so
+    /// the two agree pixel for pixel.
     #[test]
-    fn backgrounds_match_the_cairo_painter_within_tolerance_at_scale_1_5() {
+    fn backgrounds_match_the_cairo_painter_exactly_at_scale_1_5() {
         let _font = font_lock::guard();
-        let draw_state = state();
+        let mut draw_state = state();
         let mut terminal = terminal_with_backgrounds();
         let (width, height) = (65, 71);
-        let mut cairo_side = cairo_backgrounds(&draw_state, &mut terminal, width, height, 1.5);
-        let mut node_side = node_frame(&draw_state, &mut terminal, width, height, 1.5, false);
-        parity::assert_within(
-            &mut cairo_side,
-            &mut node_side,
-            128,
-            "backgrounds at scale 1.5",
-        );
+        let mut cairo_side = cairo_backgrounds(&mut draw_state, &mut terminal, width, height, 1.5);
+        let mut node_side = node_frame(&mut draw_state, &mut terminal, width, height, 1.5, false);
+        parity::assert_exact(&mut cairo_side, &mut node_side, "backgrounds at scale 1.5");
     }
 
     #[test]
@@ -410,7 +411,7 @@ mod tests {
         let mut cairo_terminal = terminal_with_styled_text();
         let mut node_terminal = terminal_with_styled_text();
         let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.0);
-        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.0, true);
+        let mut node_side = node_frame(&mut draw_state, &mut node_terminal, 65, 71, 1.0, true);
         parity::assert_exact(&mut cairo_side, &mut node_side, "styled ASCII at scale 1");
     }
 
@@ -421,7 +422,7 @@ mod tests {
         let mut cairo_terminal = terminal_with_wide_text();
         let mut node_terminal = terminal_with_wide_text();
         let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.0);
-        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.0, true);
+        let mut node_side = node_frame(&mut draw_state, &mut node_terminal, 65, 71, 1.0, true);
         parity::assert_exact(&mut cairo_side, &mut node_side, "wide text at scale 1");
     }
 
@@ -455,7 +456,7 @@ mod tests {
         let mut cairo_terminal = terminal_with_constrained_text();
         let mut node_terminal = terminal_with_constrained_text();
         let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.0);
-        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.0, true);
+        let mut node_side = node_frame(&mut draw_state, &mut node_terminal, 65, 71, 1.0, true);
         parity::assert_within(
             &mut cairo_side,
             &mut node_side,
@@ -476,7 +477,7 @@ mod tests {
         let mut cairo_terminal = terminal_with_styled_text();
         let mut node_terminal = terminal_with_styled_text();
         let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.5);
-        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.5, true);
+        let mut node_side = node_frame(&mut draw_state, &mut node_terminal, 65, 71, 1.5, true);
         parity::assert_within(
             &mut cairo_side,
             &mut node_side,
@@ -487,7 +488,7 @@ mod tests {
         let mut cairo_terminal = terminal_with_wide_text();
         let mut node_terminal = terminal_with_wide_text();
         let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.5);
-        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.5, true);
+        let mut node_side = node_frame(&mut draw_state, &mut node_terminal, 65, 71, 1.5, true);
         parity::assert_within(
             &mut cairo_side,
             &mut node_side,
@@ -498,7 +499,7 @@ mod tests {
         let mut cairo_terminal = terminal_with_constrained_text();
         let mut node_terminal = terminal_with_constrained_text();
         let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.5);
-        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.5, true);
+        let mut node_side = node_frame(&mut draw_state, &mut node_terminal, 65, 71, 1.5, true);
         parity::assert_within(
             &mut cairo_side,
             &mut node_side,

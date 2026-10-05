@@ -52,18 +52,20 @@ impl DrawState {
     /// — asks the widget to chain to the parent snapshot, which runs the
     /// ordinary cairo draw path.
     ///
-    /// `draw_offset` is the docked-edge offset in pixels
-    /// (`glue_anim_draw_offset`): nonzero whenever the terminal's live grid
-    /// does not fill the widget on a right-docked panel — during a tween and
-    /// in the frames around its stop before the deferred resize lands
-    /// (gsk-render-nodes design, Post-task decisions: C52) — and both arms translate by it.
+    /// `draw_offset` is the snapped docked-edge offset in pixels
+    /// (`glue_anim_draw_offset`, snapped to the device pixel grid by
+    /// `Surfaces::draw_offset()`, snap-grid-edges D7): nonzero whenever the
+    /// terminal's live grid does not fill the widget on a right-docked panel
+    /// — during a tween and in the frames around its stop before the
+    /// deferred resize lands (gsk-render-nodes design, Post-task decisions:
+    /// C52) — and both arms translate by it.
     pub fn snapshot_grid(
         &mut self,
         snapshot: &gtk4::Snapshot,
         terminal: &mut Terminal,
         width: i32,
         height: i32,
-        draw_offset: i32,
+        draw_offset: f64,
         animating: bool,
     ) -> bool {
         let bounds = graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
@@ -90,12 +92,12 @@ impl DrawState {
             // terminal's resize lands (gsk-render-nodes design, Post-task decisions: C52). At offset zero
             // the translate is skipped so the common frame stays flat.
             snapshot.append_color(&rgba(&self.theme_background), &bounds);
-            if draw_offset != 0 {
+            if draw_offset != 0.0 {
                 snapshot.save();
                 snapshot.translate(&graphene::Point::new(draw_offset as f32, 0.0));
             }
             let emitted = self.emit_grid_contents(snapshot, terminal, height);
-            if draw_offset != 0 {
+            if draw_offset != 0.0 {
                 snapshot.restore();
             }
             if !emitted {
@@ -207,6 +209,7 @@ mod tests {
     use crate::render::parity;
 
     use crate::render::DrawState;
+    use crate::render::OutputScale;
 
     /// Run one `snapshot_grid` call and render its output to a backed
     /// surface, so the frame's pixels are inspectable.
@@ -215,8 +218,23 @@ mod tests {
         terminal: &mut Terminal,
         width: i32,
         height: i32,
-        draw_offset: i32,
+        draw_offset: f64,
         animating: bool,
+    ) -> cairo::ImageSurface {
+        drawn_frame_at_scale(state, terminal, width, height, draw_offset, animating, 1.0)
+    }
+
+    /// [`drawn_frame`] rendered onto a backed surface whose device scale is
+    /// `scale`, the way the real panel presents it, so the device pixels are
+    /// what a compositor would show.
+    fn drawn_frame_at_scale(
+        state: &mut DrawState,
+        terminal: &mut Terminal,
+        width: i32,
+        height: i32,
+        draw_offset: f64,
+        animating: bool,
+        scale: f64,
     ) -> cairo::ImageSurface {
         let snapshot = parity::snapshot();
         assert!(
@@ -224,7 +242,7 @@ mod tests {
             "the frame was emitted as nodes"
         );
         let node = snapshot.to_node().expect("snapshot produced a node");
-        let surface = parity::backed_surface(width, height, 1.0, parity::BACKDROP);
+        let surface = parity::backed_surface(width, height, scale, parity::BACKDROP);
         parity::draw_node(&node, &surface);
         surface
     }
@@ -238,7 +256,7 @@ mod tests {
         terminal.push_pty_data(b"hello");
         let snapshot = parity::snapshot();
         assert!(
-            draw_state.snapshot_grid(&snapshot, &mut terminal, 64, 64, 0, true),
+            draw_state.snapshot_grid(&snapshot, &mut terminal, 64, 64, 0.0, true),
             "the tween frame was emitted"
         );
         assert!(
@@ -264,12 +282,12 @@ mod tests {
         let mut draw_state = state();
         let mut terminal = terminal();
         terminal.push_pty_data(b"first");
-        let mut first = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
+        let mut first = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, true);
 
         // New content, same cols and height: the tween keeps drawing the
         // frame it cached on its first frame.
         terminal.push_pty_data(b"\x1b[1;1H\x1b[41msecond\x1b[0m");
-        let mut second = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
+        let mut second = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, true);
         parity::assert_exact(
             &mut first,
             &mut second,
@@ -278,7 +296,7 @@ mod tests {
 
         // The non-tween draw rebuilds from the same terminal: it shows the
         // new content.
-        let mut rebuilt = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, false);
+        let mut rebuilt = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, false);
         assert!(
             parity::diff(&mut rebuilt, &mut second).differing > 0,
             "the non-tween draw rebuilt the grid from the new content"
@@ -293,9 +311,9 @@ mod tests {
         let mut draw_state = state();
         let mut terminal = terminal();
         terminal.push_pty_data(b"aaa");
-        let mut first = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, false);
+        let mut first = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, false);
         terminal.push_pty_data(b"\x1b[1;1H\x1b[41mbbb");
-        let mut second = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, false);
+        let mut second = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, false);
         assert!(
             parity::diff(&mut first, &mut second).differing > 0,
             "the second non-tween draw rebuilt the grid"
@@ -318,8 +336,8 @@ mod tests {
         // The same terminal, the same widget size, two offsets: zero draws
         // the grid at the widget's left edge; the docked-edge shift (the
         // surface is wider than the live grid) moves it right.
-        let mut at_zero = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 0, false);
-        let mut shifted = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 136, false);
+        let mut at_zero = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 0.0, false);
+        let mut shifted = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 136.0, false);
         assert!(
             parity::diff(&mut at_zero, &mut shifted).differing > 0,
             "the non-tween frame translated the grid by the offset"
@@ -358,18 +376,32 @@ mod tests {
 
     /// The tween's stop relay drops the retained node
     /// ([`Self::drop_grid_node`]): the next tween frame rebuilds from the
-    /// terminal's current content.
+    /// terminal's current content. The scale plumbing rides the same rule
+    /// (snap-grid-edges D2/D7): an unchanged scale keeps the node — a tween
+    /// must not rebuild it every frame — and a changed scale drops it, since
+    /// the node holds snapped geometry for the scale it was built at.
     #[test]
     fn dropping_the_cache_invalidates_the_tween_node() {
         let _font = font_lock::guard();
         let mut draw_state = state();
         let mut terminal = terminal();
         terminal.push_pty_data(b"aaa");
-        let mut cached = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
+        let mut cached = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, true);
+
+        draw_state.set_scale(OutputScale::new(1.0));
+        assert!(
+            draw_state.grid_node.is_some(),
+            "an unchanged scale kept the node"
+        );
+        draw_state.set_scale(OutputScale::new(1.5));
+        assert!(
+            draw_state.grid_node.is_none(),
+            "a changed scale dropped the node"
+        );
 
         state_drop(&mut draw_state);
         terminal.push_pty_data(b"\x1b[1;1H\x1b[41mbbb");
-        let mut rebuilt = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
+        let mut rebuilt = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, true);
         assert!(
             draw_state.grid_node.is_some(),
             "the next tween frame rebuilt the node"
@@ -395,8 +427,8 @@ mod tests {
         let mut draw_state = state();
         let mut terminal = terminal();
         terminal.push_pty_data(b"hello");
-        let mut unmoved = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
-        let mut moved = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 16, true);
+        let mut unmoved = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, true);
+        let mut moved = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 16.0, true);
         assert!(
             parity::diff(&mut unmoved, &mut moved).differing > 0,
             "the dock offset translated the cached grid"
@@ -417,11 +449,11 @@ mod tests {
 
         // The node is built on the tween's first frame, at the then-current
         // (narrow) widget width.
-        let _ = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
+        let _ = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, true);
 
         // The widget has since grown; the cached node is drawn glued to the
         // docked edge (`offset = width - grid_px`), so [0, 136) is exposed.
-        let mut frame = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 136, true);
+        let mut frame = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 136.0, true);
 
         // Every exposed pixel is the theme background (black here), not the
         // surfaces' (40, 40, 40) backdrop an unpainted region would show.
@@ -454,6 +486,104 @@ mod tests {
         );
     }
 
+    /// Every pixel of an opaque surface region is the block colour — white
+    /// here, the theme foreground the test sprites draw with. cairo's ARGB32
+    /// byte order is B, G, R, A; white is opaque in every channel, so the
+    /// assertion holds however a renderer premultiplies.
+    fn assert_region_is_block_colour(
+        surface: &mut cairo::ImageSurface,
+        x0: i32,
+        x1: i32,
+        y0: i32,
+        y1: i32,
+        what: &str,
+    ) {
+        let stride = surface.stride();
+        let data = surface.data().expect("surface data");
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let px = &data[(y * stride + x * 4) as usize..][..4];
+                assert_eq!(
+                    (px[0], px[1], px[2], px[3]),
+                    (255, 255, 255, 255),
+                    "{what}: pixel ({x}, {y}) is not the block colour"
+                );
+            }
+        }
+    }
+
+    /// A region of one colour holds one colour at a fractional scale, with
+    /// the grid shifted by a docked-edge offset (`snap-grid-edges` spec:
+    /// "Fractional scale has no seams", "Half blocks meet without a seam").
+    /// The offset is an odd logical value, snapped to the device pixel grid
+    /// first — the real snap runs in `Surfaces::draw_offset()`, which this
+    /// test does not call (snap-grid-edges D7).
+    #[test]
+    fn a_docked_edge_offset_leaves_no_seam_in_a_region_of_one_colour() {
+        let _font = font_lock::guard();
+        for scale in [1.25, 1.5] {
+            let scale_s = OutputScale::new(scale);
+            let off = scale_s.snap_edge(135.0);
+            // The snapped offset is a whole number of device pixels.
+            let off_dev = (off * scale).round() as i32;
+            assert_eq!(f64::from(off_dev), off * scale);
+
+            // A row of full blocks: eight cells of an 8 px pitch, one
+            // colour. The snapped cell edges tile with no blended pixel
+            // between them.
+            {
+                let mut draw_state = state();
+                draw_state.set_scale(scale_s);
+                let mut terminal = terminal();
+                terminal
+                    .push_pty_data(b"\x1b[?25l\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88");
+                let mut frame = drawn_frame_at_scale(
+                    &mut draw_state,
+                    &mut terminal,
+                    200,
+                    64,
+                    off,
+                    false,
+                    scale,
+                );
+                // The block row spans device x [off_dev, off_dev + 64*scale]
+                // and device y [0, 16*scale]; sample one pixel inside every
+                // boundary.
+                let (x0, x1) = (off_dev + 1, off_dev + (64.0 * scale) as i32 - 1);
+                let (y0, y1) = (1, (16.0 * scale) as i32 - 1);
+                assert_region_is_block_colour(&mut frame, x0, x1, y0, y1, "full blocks");
+            }
+
+            // A right-half block beside a left-half block of the same
+            // colour: the shared edge snaps to the same value on both
+            // sides, so the two halves show one uniform colour.
+            {
+                let mut draw_state = state();
+                draw_state.set_scale(scale_s);
+                let mut terminal = terminal();
+                terminal.push_pty_data(b"\x1b[?25l\xe2\x96\x90\xe2\x96\x8c");
+                let mut frame = drawn_frame_at_scale(
+                    &mut draw_state,
+                    &mut terminal,
+                    200,
+                    64,
+                    off,
+                    false,
+                    scale,
+                );
+                // The two halves together span device x
+                // [off_dev + 4*scale, off_dev + 12*scale] — the right half
+                // of cell 0 and the left half of cell 1.
+                let (x0, x1) = (
+                    off_dev + (4.0 * scale) as i32 + 1,
+                    off_dev + (12.0 * scale) as i32 - 1,
+                );
+                let (y0, y1) = (1, (16.0 * scale) as i32 - 1);
+                assert_region_is_block_colour(&mut frame, x0, x1, y0, y1, "half blocks");
+            }
+        }
+    }
+
     /// A frame before the first `cell_metrics_update` has no fonts and a
     /// zero cell pitch: node emission reports `false` — tween and non-tween
     /// alike — and the cairo draw path draws the frame instead.
@@ -464,11 +594,11 @@ mod tests {
         let mut terminal = terminal();
         let snapshot = parity::snapshot();
         assert!(
-            !draw_state.snapshot_grid(&snapshot, &mut terminal, 64, 64, 0, false),
+            !draw_state.snapshot_grid(&snapshot, &mut terminal, 64, 64, 0.0, false),
             "no metrics yet: the non-tween frame falls back"
         );
         assert!(
-            !draw_state.snapshot_grid(&snapshot, &mut terminal, 64, 64, 0, true),
+            !draw_state.snapshot_grid(&snapshot, &mut terminal, 64, 64, 0.0, true),
             "no metrics yet: the tween frame falls back"
         );
         assert!(
