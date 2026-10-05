@@ -32,8 +32,11 @@ cargo build --examples          # build the dev-only demo example
 
 `cargo run --example demo` builds and runs the demo, a dev-only driver that
 creates its own pty pair and never gets installed. In a running niri session
-it toggles the side and width; `DEMO_DENSE=1` gives it a full, busy grid with
-kitty images and resize traffic to test animation against.
+it toggles the side and width (`<enter>`, `e`, `p`) and the push/cover choice
+(`c` animates pushing 40 columns vs covering 120 on the same side, so the
+reservation and the tiles stay still through the excursion); `DEMO_DENSE=1`
+gives it a full, busy grid with kitty images and resize traffic to test
+animation against.
 
 ## Use as a Cargo dependency
 
@@ -46,7 +49,10 @@ pinwin = { path = "../pinwin" }
 
 The library exposes a `Panel` handle. `Panel::start` takes a host-owned pty
 master fd, a full `Layout` and a `Keyboard` mode, plus an optional `Accent`,
-and returns once the panel is on screen or has failed. `apply_layout` and
+and returns once the panel is on screen or has failed. Layouts push by
+default; `Layout::covering` opts a layout into covering the tiled windows
+while the reservation stays where the last pushing layout put it.
+`apply_layout` and
 `apply_layout_animated` are methods on the handle; `apply_layout_animated`
 clamps its duration to 1000 ms. Dropping the handle closes the panel and
 cancels any running animation. The library never closes the fd and never
@@ -89,8 +95,9 @@ fn run(fd: RawFd) -> Result<(), PinwinError> {
 
 `PinwinError` is `#[non_exhaustive]` and implements `std::error::Error`:
 
-- `InvalidLayout` — the monitor cannot hold the layout (overflow, negative
-  reservation, no output width, no complete row). The applied layout is
+- `InvalidLayout` — the monitor cannot hold the layout (overflow, a
+  negative or too-wide pushing reservation, a covering panel wider than the
+  output, no complete row). The applied layout is
   unchanged.
 - `InvalidFd` — the pty fd is not an open descriptor; nothing opened.
 - `NoDisplay` — no GTK display, or the compositor lacks wlr-layer-shell.
@@ -135,20 +142,30 @@ Only the binary reads these; the library reads no pinwin-owned configuration.
   top and bottom edges of its monitor and spanning its full height. It docks
   left or right and stays on its original monitor across workspace switches,
   focus moves and side changes.
-- It reserves a strip at its docking edge of `left + panel width + right`
-  pixels, so the compositor tiles windows beside it. Gutters are directional
-  and may be negative; the reservation sum may not be, and must leave some
-  output width for other windows.
+- A pushing layout reserves a strip at its docking edge of
+  `left + panel width + right` pixels, so the compositor tiles windows
+  beside it. Gutters are directional and may be negative; the reservation
+  sum may not be, and must leave some output width for other windows.
+- Each layout is either pushing or covering: `Layout::new` pushes and
+  `Layout::covering` opts in, per size. A covering layout leaves the
+  reservation exactly where the last pushing layout put it — or reserves
+  nothing when no pushing layout has ever applied — and draws the panel over
+  the tiled windows, so expanding and shrinking on the same side while
+  covering moves no windows. Moving the panel to the other side always moves
+  the gap with it, covering or not.
 - Keyboard interactivity is fixed at start: `on-demand` (the default) takes
   focus only after a click, `exclusive` takes it immediately, `none` never
   does. While focused, the panel draws its own focus accent in the configured
   colour and width, because the compositor draws no focus ring on layer
   surfaces.
-- Applying a layout updates the columns, all four gutters and the docking side
-  as one operation, grows the reservation and resizes the existing terminal
-  grid and pty winsize without recreating the terminal or touching the child.
-  An animated apply changes the width continuously when only the column count
+- Applying a layout updates the columns, all four gutters, the docking side
+  and the push/cover choice as one operation, follows the reservation rules
+  above, and resizes the existing terminal grid and pty winsize without
+  recreating the terminal or touching the child. An animated apply changes
+  the width continuously when only the column count or the push/cover choice
   differs; any other change, a zero duration or disabled GTK animations snap.
+  During a covering animation the reservation holds still while the panel
+  width tweens.
 - The font and theme follow the user's Ghostty config (font family and size,
   default background/foreground); with no config the panel falls back to
   `monospace 11`. A missing or unreadable config never prevents opening.
