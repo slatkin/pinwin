@@ -14,7 +14,10 @@ are removed with the port.
 Building needs Zig 0.16 on PATH: `build.rs` fetches the pinned libghostty-vt
 commit and builds ghostty's own static VT library with `zig build` (a cold
 cache also needs `git` and network access). The system GTK4,
-gtk4-layer-shell-0 and pangocairo are required. Set `PINWIN_GHOSTTY_SRC=<dir>`
+gtk4-layer-shell-0 and pangocairo are required. GTK 4.12 is the API floor;
+fractional output scale with the default renderer needs GTK 4.14 (before
+4.13.6 the default GL renderer reports an integer scale on Wayland). Set
+`PINWIN_GHOSTTY_SRC=<dir>`
 to build against an existing ghostty checkout at the pinned commit instead of
 fetching; a checkout at any other commit is rejected.
 
