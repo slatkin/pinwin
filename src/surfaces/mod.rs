@@ -431,16 +431,24 @@ impl Surfaces {
     /// terminal still shows in its leftmost columns. The shift keeps that
     /// grid glued to the docked edge whenever it does not fill the widget,
     /// tween or not (gsk-render-nodes design, Post-task decisions: C52).
+    ///
+    /// The integer logical offset snaps once, here, to a whole device pixel
+    /// at the surface's current scale (`snap-grid-edges` D7): the draw hooks,
+    /// `DrawState::draw`, `DrawState::snapshot_grid` and the input
+    /// controllers all use this one snapped value, so the drawn cell and the
+    /// cell under the pointer agree and a moving frame cannot put a cell
+    /// edge between two device pixels.
     pub fn draw_offset(&self) -> f64 {
         let width = if self.closed.get() {
             None
         } else {
             Some(self.area.width())
         };
-        f64::from(
-            self.anim
-                .draw_offset(self.layout.get().side(), width, self.drawn_grid_px()),
-        )
+        self.scale().snap_edge(f64::from(self.anim.draw_offset(
+            self.layout.get().side(),
+            width,
+            self.drawn_grid_px(),
+        )))
     }
 
     /// The width of the grid the next draw will show: the terminal's live

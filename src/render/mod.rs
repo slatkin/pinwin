@@ -177,9 +177,11 @@ impl DrawState {
     /// Render a frame into `cr` (`on_draw`): the theme background, the full
     /// grid and the focus accent.
     ///
-    /// `draw_offset` is the tween's docked-edge offset in pixels
-    /// (`glue_anim_draw_offset`); the caller has already resolved the layout
-    /// monitor on the first draw when it needs to (row 3.7).
+    /// `draw_offset` is the tween's snapped docked-edge offset in pixels
+    /// (`glue_anim_draw_offset`, snapped to the device pixel grid by
+    /// `Surfaces::draw_offset()`, snap-grid-edges D7); the caller has already
+    /// resolved the layout monitor on the first draw when it needs to (row
+    /// 3.7).
     ///
     /// A panic anywhere in the draw path is caught (D5): it latches
     /// `poisoned` and later calls draw nothing.
@@ -189,7 +191,7 @@ impl DrawState {
         terminal: &mut Terminal,
         width: i32,
         height: i32,
-        draw_offset: i32,
+        draw_offset: f64,
     ) {
         // A poisoned guard short-circuits (the body never runs), so a
         // poisoned state draws nothing (D5).
@@ -205,7 +207,7 @@ impl DrawState {
         terminal: &mut Terminal,
         width: i32,
         height: i32,
-        draw_offset: i32,
+        draw_offset: f64,
     ) {
         set_rgb(cr, &self.theme_background);
         cr.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
@@ -226,7 +228,7 @@ impl DrawState {
         // This is the fallback a tween frame lands on when the GSK snapshot
         // could not emit nodes: it renders the full grid every frame — slow,
         // but correct (gsk-render-nodes row 4.2).
-        let offset = f64::from(draw_offset);
+        let offset = draw_offset;
         cr.translate(offset, 0.0);
         self.render_grid(cr, terminal, height);
         cr.translate(-offset, 0.0);
@@ -511,7 +513,7 @@ mod tests {
         terminal: &mut Terminal,
         width: i32,
         height: i32,
-        draw_offset: i32,
+        draw_offset: f64,
     ) -> cairo::ImageSurface {
         let surface = surface(width, height);
         {
@@ -535,7 +537,7 @@ mod tests {
         let context = pangocairo::FontMap::default().create_context();
         state.cell_metrics_update(&context);
         let mut terminal = terminal();
-        let mut drawn = drawn_after(state, &mut terminal, 64, 64, 0);
+        let mut drawn = drawn_after(state, &mut terminal, 64, 64, 0.0);
         drawn.flush();
         let data = drawn.data().unwrap();
         // cairo's ARGB32 byte order is B, G, R, A. Sample away from the
@@ -551,7 +553,7 @@ mod tests {
         let _font = font();
         let mut terminal = terminal();
         terminal.push_pty_data(b"\x1b[41mhi\x1b[0m");
-        let drawn = drawn_after(state(), &mut terminal, 64, 64, 0);
+        let drawn = drawn_after(state(), &mut terminal, 64, 64, 0.0);
         assert!(opaque_pixels(drawn) > 0, "something was drawn");
     }
 
@@ -562,8 +564,8 @@ mod tests {
         terminal.push_pty_data(b"abc");
         // Each draw is a fresh state over the same frame data: the second
         // draw must reproduce the first.
-        let first = opaque_pixels(drawn_after(state(), &mut terminal, 64, 64, 0));
-        let second = opaque_pixels(drawn_after(state(), &mut terminal, 64, 64, 0));
+        let first = opaque_pixels(drawn_after(state(), &mut terminal, 64, 64, 0.0));
+        let second = opaque_pixels(drawn_after(state(), &mut terminal, 64, 64, 0.0));
         assert_eq!(second, first, "the second draw matches");
         assert!(first > 0);
     }
@@ -578,7 +580,7 @@ mod tests {
         let mut terminal = terminal();
 
         // Not focused: nothing but the background.
-        let mut plain = drawn_after(state, &mut terminal, 32, 32, 0);
+        let mut plain = drawn_after(state, &mut terminal, 32, 32, 0.0);
         plain.flush();
         let data = plain.data().unwrap();
         // Sample the border away from the block cursor parked at cell (0,0).
@@ -598,7 +600,7 @@ mod tests {
         let context = pangocairo::FontMap::default().create_context();
         focused_state.cell_metrics_update(&context);
         focused_state.set_focused(true);
-        let mut focused_surface = drawn_after(focused_state, &mut terminal, 32, 32, 0);
+        let mut focused_surface = drawn_after(focused_state, &mut terminal, 32, 32, 0.0);
         focused_surface.flush();
         let data = focused_surface.data().unwrap();
         assert_eq!(
@@ -622,7 +624,7 @@ mod tests {
         // Drive the poisoned path directly: a poisoned state draws nothing,
         // so the surface stays empty.
         state.poisoned = Poisoned::latched();
-        let drawn = drawn_after(state, &mut terminal, 64, 64, 0);
+        let drawn = drawn_after(state, &mut terminal, 64, 64, 0.0);
         assert_eq!(opaque_pixels(drawn), 0, "poisoned draw is a no-op");
     }
 
@@ -633,7 +635,7 @@ mod tests {
         // must run to `height`, not stop at the cell boundary.
         let mut terminal = terminal();
         terminal.push_pty_data(b"\x1b[44mfull\x1b[0m");
-        let mut drawn = drawn_after(state(), &mut terminal, 64, 20, 0);
+        let mut drawn = drawn_after(state(), &mut terminal, 64, 20, 0.0);
         drawn.flush();
         let data = drawn.data().unwrap();
         // The bottom row of pixels is the cell's background, not the theme.
@@ -664,7 +666,7 @@ mod tests {
         // foreground; with the theme's green the cursor area must not be
         // black.
         terminal.push_pty_data(b"\x1b[1;1H");
-        let drawn = drawn_after(state, &mut terminal, 64, 64, 0);
+        let drawn = drawn_after(state, &mut terminal, 64, 64, 0.0);
         assert!(opaque_pixels(drawn) > 0);
     }
 
@@ -673,7 +675,7 @@ mod tests {
     fn draw_without_a_terminal_is_a_background_only() {
         let _font = font();
         let mut terminal = Terminal::new(crate::guard::Poisoned::new(), NullSink, NoDecoder, || {});
-        let mut plain = drawn_after(state(), &mut terminal, 32, 32, 0);
+        let mut plain = drawn_after(state(), &mut terminal, 32, 32, 0.0);
         plain.flush();
         let data = plain.data().unwrap();
         assert_eq!(&data[0..4], &[0, 0, 0, 255], "background only");

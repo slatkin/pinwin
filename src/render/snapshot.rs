@@ -52,18 +52,20 @@ impl DrawState {
     /// — asks the widget to chain to the parent snapshot, which runs the
     /// ordinary cairo draw path.
     ///
-    /// `draw_offset` is the docked-edge offset in pixels
-    /// (`glue_anim_draw_offset`): nonzero whenever the terminal's live grid
-    /// does not fill the widget on a right-docked panel — during a tween and
-    /// in the frames around its stop before the deferred resize lands
-    /// (gsk-render-nodes design, Post-task decisions: C52) — and both arms translate by it.
+    /// `draw_offset` is the snapped docked-edge offset in pixels
+    /// (`glue_anim_draw_offset`, snapped to the device pixel grid by
+    /// `Surfaces::draw_offset()`, snap-grid-edges D7): nonzero whenever the
+    /// terminal's live grid does not fill the widget on a right-docked panel
+    /// — during a tween and in the frames around its stop before the
+    /// deferred resize lands (gsk-render-nodes design, Post-task decisions:
+    /// C52) — and both arms translate by it.
     pub fn snapshot_grid(
         &mut self,
         snapshot: &gtk4::Snapshot,
         terminal: &mut Terminal,
         width: i32,
         height: i32,
-        draw_offset: i32,
+        draw_offset: f64,
         animating: bool,
     ) -> bool {
         let bounds = graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
@@ -90,12 +92,12 @@ impl DrawState {
             // terminal's resize lands (gsk-render-nodes design, Post-task decisions: C52). At offset zero
             // the translate is skipped so the common frame stays flat.
             snapshot.append_color(&rgba(&self.theme_background), &bounds);
-            if draw_offset != 0 {
+            if draw_offset != 0.0 {
                 snapshot.save();
                 snapshot.translate(&graphene::Point::new(draw_offset as f32, 0.0));
             }
             let emitted = self.emit_grid_contents(snapshot, terminal, height);
-            if draw_offset != 0 {
+            if draw_offset != 0.0 {
                 snapshot.restore();
             }
             if !emitted {
@@ -216,7 +218,7 @@ mod tests {
         terminal: &mut Terminal,
         width: i32,
         height: i32,
-        draw_offset: i32,
+        draw_offset: f64,
         animating: bool,
     ) -> cairo::ImageSurface {
         let snapshot = parity::snapshot();
@@ -239,7 +241,7 @@ mod tests {
         terminal.push_pty_data(b"hello");
         let snapshot = parity::snapshot();
         assert!(
-            draw_state.snapshot_grid(&snapshot, &mut terminal, 64, 64, 0, true),
+            draw_state.snapshot_grid(&snapshot, &mut terminal, 64, 64, 0.0, true),
             "the tween frame was emitted"
         );
         assert!(
@@ -265,12 +267,12 @@ mod tests {
         let mut draw_state = state();
         let mut terminal = terminal();
         terminal.push_pty_data(b"first");
-        let mut first = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
+        let mut first = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, true);
 
         // New content, same cols and height: the tween keeps drawing the
         // frame it cached on its first frame.
         terminal.push_pty_data(b"\x1b[1;1H\x1b[41msecond\x1b[0m");
-        let mut second = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
+        let mut second = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, true);
         parity::assert_exact(
             &mut first,
             &mut second,
@@ -279,7 +281,7 @@ mod tests {
 
         // The non-tween draw rebuilds from the same terminal: it shows the
         // new content.
-        let mut rebuilt = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, false);
+        let mut rebuilt = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, false);
         assert!(
             parity::diff(&mut rebuilt, &mut second).differing > 0,
             "the non-tween draw rebuilt the grid from the new content"
@@ -294,9 +296,9 @@ mod tests {
         let mut draw_state = state();
         let mut terminal = terminal();
         terminal.push_pty_data(b"aaa");
-        let mut first = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, false);
+        let mut first = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, false);
         terminal.push_pty_data(b"\x1b[1;1H\x1b[41mbbb");
-        let mut second = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, false);
+        let mut second = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, false);
         assert!(
             parity::diff(&mut first, &mut second).differing > 0,
             "the second non-tween draw rebuilt the grid"
@@ -319,8 +321,8 @@ mod tests {
         // The same terminal, the same widget size, two offsets: zero draws
         // the grid at the widget's left edge; the docked-edge shift (the
         // surface is wider than the live grid) moves it right.
-        let mut at_zero = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 0, false);
-        let mut shifted = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 136, false);
+        let mut at_zero = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 0.0, false);
+        let mut shifted = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 136.0, false);
         assert!(
             parity::diff(&mut at_zero, &mut shifted).differing > 0,
             "the non-tween frame translated the grid by the offset"
@@ -369,7 +371,7 @@ mod tests {
         let mut draw_state = state();
         let mut terminal = terminal();
         terminal.push_pty_data(b"aaa");
-        let mut cached = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
+        let mut cached = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, true);
 
         draw_state.set_scale(OutputScale::new(1.0));
         assert!(
@@ -384,7 +386,7 @@ mod tests {
 
         state_drop(&mut draw_state);
         terminal.push_pty_data(b"\x1b[1;1H\x1b[41mbbb");
-        let mut rebuilt = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
+        let mut rebuilt = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, true);
         assert!(
             draw_state.grid_node.is_some(),
             "the next tween frame rebuilt the node"
@@ -410,8 +412,8 @@ mod tests {
         let mut draw_state = state();
         let mut terminal = terminal();
         terminal.push_pty_data(b"hello");
-        let mut unmoved = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
-        let mut moved = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 16, true);
+        let mut unmoved = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, true);
+        let mut moved = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 16.0, true);
         assert!(
             parity::diff(&mut unmoved, &mut moved).differing > 0,
             "the dock offset translated the cached grid"
@@ -432,11 +434,11 @@ mod tests {
 
         // The node is built on the tween's first frame, at the then-current
         // (narrow) widget width.
-        let _ = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0, true);
+        let _ = drawn_frame(&mut draw_state, &mut terminal, 64, 64, 0.0, true);
 
         // The widget has since grown; the cached node is drawn glued to the
         // docked edge (`offset = width - grid_px`), so [0, 136) is exposed.
-        let mut frame = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 136, true);
+        let mut frame = drawn_frame(&mut draw_state, &mut terminal, 200, 64, 136.0, true);
 
         // Every exposed pixel is the theme background (black here), not the
         // surfaces' (40, 40, 40) backdrop an unpainted region would show.
@@ -479,11 +481,11 @@ mod tests {
         let mut terminal = terminal();
         let snapshot = parity::snapshot();
         assert!(
-            !draw_state.snapshot_grid(&snapshot, &mut terminal, 64, 64, 0, false),
+            !draw_state.snapshot_grid(&snapshot, &mut terminal, 64, 64, 0.0, false),
             "no metrics yet: the non-tween frame falls back"
         );
         assert!(
-            !draw_state.snapshot_grid(&snapshot, &mut terminal, 64, 64, 0, true),
+            !draw_state.snapshot_grid(&snapshot, &mut terminal, 64, 64, 0.0, true),
             "no metrics yet: the tween frame falls back"
         );
         assert!(
