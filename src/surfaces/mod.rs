@@ -42,7 +42,7 @@ mod gap;
 
 pub use area::GridArea;
 
-use gap::{HeldGap, gap_tween_decision, held_gap_after_publish, reserve_gap, start_held_gap};
+use gap::{HeldGap, gap_tween_decision, reserve_gap, staged_publish, start_held_gap};
 
 /// A drawing-area draw function body (`render.c`'s `on_draw`).
 pub type DrawFn = dyn Fn(&cairo::Context, i32, i32);
@@ -647,31 +647,31 @@ impl Surfaces {
     /// Validate the layout against the live metrics and publish it
     /// (`glue_publish_layout`).
     pub fn publish(&self, layout: Layout, duration_ms: u32) -> PublishOutcome {
-        if self.closed.get() || self.monitor.borrow().is_none() {
-            // A panel without live metrics is a lifecycle state, not a layout
-            // verdict (`GLUE_NOT_LIVE`).
+        if self.closed.get() {
             return PublishOutcome::NotLive;
         }
-        // Validate the staged column count, not the one already applied: a
-        // rejected Apply must leave the live layout untouched.
-        let geometry = self.monitor.borrow().as_ref().map(gdk::Monitor::geometry);
-        let Some(geometry) = geometry else {
+        // A panel without live metrics is a lifecycle state, not a layout
+        // verdict (`GLUE_NOT_LIVE`).
+        let Some(geometry) = self.monitor.borrow().as_ref().map(gdk::Monitor::geometry) else {
             return PublishOutcome::NotLive;
         };
-        if !metrics_valid(
-            layout,
-            self.cell_w.get(),
-            self.cell_h.get(),
+        let applied = self.layout.get();
+        // Validate before staging (overlay-expand D4): a rejected apply
+        // leaves the applied layout and the held gap untouched.
+        let Some((layout, cols, held_gap)) = staged_publish(
             geometry.width(),
             geometry.height(),
-        ) {
+            self.cell_w.get(),
+            self.cell_h.get(),
+            self.held_gap.get(),
+            layout,
+        ) else {
             return PublishOutcome::InvalidLayout;
-        }
+        };
 
         // A layout differing only in its column count and/or push/cover
         // choice animates (overlay-expand D3); the side and gutters must
         // match. A tween already heading for these columns keeps going.
-        let applied = self.layout.get();
         let animate = should_animate(duration_ms, Anim::allowed(), &applied, &layout);
         let from_px = self.panel_px();
         let cols_changed = layout.cols().get() != self.cols.get();
@@ -685,12 +685,8 @@ impl Surfaces {
         // The staged layout is validated, so it may now mutate the applied
         // layout and held gap as one operation (overlay-expand D4).
         self.layout.set(layout);
-        self.cols.set(layout.cols().get());
-        self.held_gap.set(held_gap_after_publish(
-            self.held_gap.get(),
-            layout,
-            self.cell_w.get(),
-        ));
+        self.cols.set(cols);
+        self.held_gap.set(held_gap);
         self.deferred_grid.set(false);
         if !animate {
             self.gap_tweening.set(false);
