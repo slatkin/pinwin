@@ -52,11 +52,10 @@ master fd, a full `Layout` and a `Keyboard` mode, plus an optional `Accent`,
 and returns once the panel is on screen or has failed. Layouts push by
 default; `Layout::covering` opts a layout into covering the tiled windows
 while the reservation stays where the last pushing layout put it.
-`apply_layout` and
-`apply_layout_animated` are methods on the handle; `apply_layout_animated`
-clamps its duration to 1000 ms. Dropping the handle closes the panel and
-cancels any running animation. The library never closes the fd and never
-exits the host.
+`apply_layout` and `apply_layout_animated` are methods on the handle;
+`apply_layout_animated` clamps its duration to 1000 ms. Dropping the handle
+closes the panel and cancels any running animation. The library never closes
+the fd and never exits the host.
 
 ```rust
 use std::num::NonZeroU16;
@@ -97,8 +96,7 @@ fn run(fd: RawFd) -> Result<(), PinwinError> {
 
 - `InvalidLayout` — the monitor cannot hold the layout (overflow, a
   negative or too-wide pushing reservation, a covering panel wider than the
-  output, no complete row). The applied layout is
-  unchanged.
+  output, no complete row). The applied layout is unchanged.
 - `InvalidFd` — the pty fd is not an open descriptor; nothing opened.
 - `NoDisplay` — no GTK display, or the compositor lacks wlr-layer-shell.
 - `AlreadyRunning` — at most one panel exists per process.
@@ -147,12 +145,9 @@ Only the binary reads these; the library reads no pinwin-owned configuration.
   beside it. Gutters are directional and may be negative; the reservation
   sum may not be, and must leave some output width for other windows.
 - Each layout is either pushing or covering: `Layout::new` pushes and
-  `Layout::covering` opts in, per size. A covering layout leaves the
-  reservation exactly where the last pushing layout put it — or reserves
-  nothing when no pushing layout has ever applied — and draws the panel over
-  the tiled windows, so expanding and shrinking on the same side while
-  covering moves no windows. Moving the panel to the other side always moves
-  the gap with it, covering or not.
+  `Layout::covering` opts in, per size. The reservation rules for both
+  choices — where the strip sits, what a side switch does — are stated once
+  on `pinwin::layout::Coverage` in the library docs.
 - Keyboard interactivity is fixed at start: `on-demand` (the default) takes
   focus only after a click, `exclusive` takes it immediately, `none` never
   does. While focused, the panel draws its own focus accent in the configured

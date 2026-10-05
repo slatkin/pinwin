@@ -24,13 +24,22 @@ pub enum Side {
 /// The choice travels with the layout, so a host describes its small size as
 /// pushing and its big size as covering. Pushing is the default, so callers
 /// that never opt in keep today's behaviour.
+///
+/// The reservation rules, stated once here:
+///
+/// * Pushing moves the compositor gap to the layout's own strip,
+///   `left + panel width + right`, so tiled windows reflow beside the panel.
+/// * Covering leaves the gap exactly where the last pushing layout put it —
+///   an empty strip when no pushing layout has ever applied — and draws the
+///   panel over the tiled windows, so a same-side expand or shrink moves no
+///   windows.
+/// * A side switch always moves the gap to the new side at the last pushing
+///   width, covering or not: the shuffle belongs to whoever moved the panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coverage {
-    /// Move the compositor gap to this layout's own geometry: tiled windows
-    /// reflow beside the panel.
+    /// Push: move the compositor gap to this layout's own strip.
     Push,
-    /// Leave the gap exactly where the last pushing layout put it and draw
-    /// the panel over the tiled windows. Side switches are never covering.
+    /// Cover: draw the panel over the tiled windows and leave the gap alone.
     Cover,
 }
 
@@ -42,11 +51,9 @@ pub enum Coverage {
 /// edge). Fields are private so the invariant lives in the field types and
 /// only [`Layout::new`] builds a value.
 ///
-/// [`Layout::new`] builds a pushing layout, the backward-compatible default:
-/// the panel moves the compositor gap to its own geometry and tiles reflow.
-/// Covering is opt-in per layout via [`Layout::covering`]: the panel draws
-/// over the tiles and the gap stays at the last pushing layout's strip, so a
-/// same-side expand or shrink moves no windows.
+/// [`Layout::new`] builds a pushing layout, the backward-compatible default.
+/// Covering is opt-in per layout via [`Layout::covering`]; see [`Coverage`]
+/// for what each choice does to the compositor gap and the reservation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Layout {
     side: Side,

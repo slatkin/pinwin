@@ -178,22 +178,12 @@ impl Panel {
     /// the panel width, and resize the terminal grid and pty winsize when
     /// necessary.
     ///
-    /// The reservation follows the layout's push/cover choice
-    /// ([`Coverage`](crate::layout::Coverage)):
-    /// a pushing layout moves the strip to its own
-    /// `left + panel width + right` geometry; a covering layout leaves the
-    /// strip exactly where the last pushing layout put it — an empty strip
-    /// when no pushing layout has ever applied — and draws the panel over
-    /// the tiled windows, so a same-side expand or shrink moves no windows;
-    /// a side switch always moves the strip to the new side at the last
-    /// pushing width, covering or not. A rejected apply (`InvalidLayout`)
-    /// leaves the applied layout and the held strip untouched.
-    ///
-    /// Validation differs by choice: a pushing layout keeps the gap checks
-    /// (a non-negative reservation sum that leaves output width for other
-    /// windows); a covering layout never checks the untouched strip and only
-    /// rejects a visible panel wider than the output, besides the checks
-    /// both choices share (arithmetic overflow, one complete terminal row).
+    /// The reservation follows the layout's push/cover choice; the exact
+    /// rules are stated once on [`Coverage`](crate::layout::Coverage), and
+    /// the checks each choice gets on
+    /// [`Layout::validate`](crate::layout::Layout::validate). A rejected
+    /// apply (`InvalidLayout`) leaves the applied layout and the held strip
+    /// untouched.
     pub fn apply_layout(&self, layout: Layout) -> Result<(), PinwinError> {
         self.apply_common(layout, 0)
     }
