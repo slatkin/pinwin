@@ -24,11 +24,6 @@ impl OutputScale {
     /// The scale from a raw `Surface::scale()` value (`snap-grid-edges` D3):
     /// a value that is not positive and finite falls back to 1, the scale
     /// every internal test surface renders at.
-    ///
-    /// The snapping methods stay unused until the shared geometry rows
-    /// (3.x) and the docked-edge row (4.1) route their rectangles and the
-    /// draw offset through them.
-    #[allow(dead_code)]
     pub(crate) fn new(value: f64) -> OutputScale {
         if value.is_finite() && value > 0.0 {
             OutputScale(value)
@@ -37,7 +32,8 @@ impl OutputScale {
         }
     }
 
-    /// The scale factor itself (device pixels per logical pixel).
+    /// The scale factor itself (device pixels per logical pixel). Used by
+    /// the snapping tests only.
     #[allow(dead_code)]
     pub(crate) fn get(self) -> f64 {
         self.0
@@ -55,7 +51,6 @@ impl OutputScale {
     /// Two cells that share an edge pass the same number to this — the
     /// shared edge is an exact integer or an exact half of the cell pitch —
     /// so both get the same snapped value and no gap or overlap appears.
-    #[allow(dead_code)]
     pub(crate) fn snap_edge(self, edge: f64) -> f64 {
         (edge * self.0).round() / self.0
     }
@@ -66,7 +61,6 @@ impl OutputScale {
     /// each direction — when both snapped edges land on the same pixel the
     /// far edge is pushed out by one device pixel — and a rectangle with no
     /// size stays empty.
-    #[allow(dead_code)]
     pub(crate) fn snap_rect(self, x: f64, y: f64, w: f64, h: f64) -> (f64, f64, f64, f64) {
         let x0 = self.snap_edge(x);
         let y0 = self.snap_edge(y);
