@@ -2,9 +2,9 @@
 
 ## 1. Layout push/cover choice
 
-- [ ] 1.1 Add the push/cover flag to `Layout` in `src/layout.rs` with a builder-style opt-in, keeping `Layout::new` pushing, and verify `cargo test layout` passes.
-- [ ] 1.2 Split `Layout::validate` by choice (pushing keeps today's gap checks; covering checks panel fits plus the vertical row, never the gap) with unit cases for covering-too-wide, covering vertical, and rejected-covering-leaves-held-gap-untouched, and verify `cargo test layout` passes.
-- [ ] 1.3 Document the choice on `Layout` (pushing default, covering opt-in) and verify `cargo doc --no-deps` builds without warnings.
+- [x] 1.1 Add the push/cover flag to `Layout` in `src/layout.rs` with a builder-style opt-in, keeping `Layout::new` pushing, and verify `cargo test layout` passes.
+- [x] 1.2 Split `Layout::validate` by choice (pushing keeps today's gap checks; covering checks panel fits plus the vertical row, never the gap) with unit cases for covering-too-wide, covering vertical, and rejected-covering-leaves-held-gap-untouched, and verify `cargo test layout` passes.
+- [x] 1.3 Document the choice on `Layout` (pushing default, covering opt-in) and verify `cargo doc --no-deps` builds without warnings.
 
 ## 2. Held-gap surfaces
 
