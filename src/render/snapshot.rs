@@ -471,6 +471,113 @@ mod tests {
         );
     }
 
+    /// Every pixel of an opaque surface region is the block colour — white
+    /// here, the theme foreground the test sprites draw with. cairo's ARGB32
+    /// byte order is B, G, R, A; white is opaque in every channel, so the
+    /// assertion holds however a renderer premultiplies.
+    fn assert_region_is_block_colour(
+        surface: &mut cairo::ImageSurface,
+        x0: i32,
+        x1: i32,
+        y0: i32,
+        y1: i32,
+        what: &str,
+    ) {
+        let stride = surface.stride();
+        let data = surface.data().expect("surface data");
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let px = &data[(y * stride + x * 4) as usize..][..4];
+                assert_eq!(
+                    (px[0], px[1], px[2], px[3]),
+                    (255, 255, 255, 255),
+                    "{what}: pixel ({x}, {y}) is not the block colour"
+                );
+            }
+        }
+    }
+
+    /// One `snapshot_grid` frame rendered at a fractional device scale, the
+    /// way the real panel presents it: the node is drawn onto a backed
+    /// surface whose device scale is `scale`, so the device pixels are what
+    /// a compositor would show.
+    fn drawn_frame_at_scale(
+        state: &mut DrawState,
+        terminal: &mut Terminal,
+        width: i32,
+        height: i32,
+        draw_offset: f64,
+        scale: f64,
+    ) -> cairo::ImageSurface {
+        let snapshot = parity::snapshot();
+        assert!(
+            state.snapshot_grid(&snapshot, terminal, width, height, draw_offset, false),
+            "the frame was emitted as nodes"
+        );
+        let node = snapshot.to_node().expect("snapshot produced a node");
+        let surface = parity::backed_surface(width, height, scale, parity::BACKDROP);
+        parity::draw_node(&node, &surface);
+        surface
+    }
+
+    /// A region of one colour holds one colour at a fractional scale, with
+    /// the grid shifted by a docked-edge offset (`snap-grid-edges` spec:
+    /// "Fractional scale has no seams", "Half blocks meet without a seam").
+    /// The offset is an odd logical value, snapped to the device pixel grid
+    /// first — the real snap runs in `Surfaces::draw_offset()`, which this
+    /// test does not call (snap-grid-edges D7).
+    #[test]
+    fn a_docked_edge_offset_leaves_no_seam_in_a_region_of_one_colour() {
+        let _font = font_lock::guard();
+        for scale in [1.25, 1.5] {
+            let scale_s = OutputScale::new(scale);
+            let off = scale_s.snap_edge(135.0);
+            // The snapped offset is a whole number of device pixels.
+            let off_dev = (off * scale).round() as i32;
+            assert_eq!(f64::from(off_dev), off * scale);
+
+            // A row of full blocks: eight cells of an 8 px pitch, one
+            // colour. The snapped cell edges tile with no blended pixel
+            // between them.
+            {
+                let mut draw_state = state();
+                draw_state.set_scale(scale_s);
+                let mut terminal = terminal();
+                terminal
+                    .push_pty_data(b"\x1b[?25l\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88");
+                let mut frame =
+                    drawn_frame_at_scale(&mut draw_state, &mut terminal, 200, 64, off, scale);
+                // The block row spans device x [off_dev, off_dev + 64*scale]
+                // and device y [0, 16*scale]; sample one pixel inside every
+                // boundary.
+                let (x0, x1) = (off_dev + 1, off_dev + (64.0 * scale) as i32 - 1);
+                let (y0, y1) = (1, (16.0 * scale) as i32 - 1);
+                assert_region_is_block_colour(&mut frame, x0, x1, y0, y1, "full blocks");
+            }
+
+            // A right-half block beside a left-half block of the same
+            // colour: the shared edge snaps to the same value on both
+            // sides, so the two halves show one uniform colour.
+            {
+                let mut draw_state = state();
+                draw_state.set_scale(scale_s);
+                let mut terminal = terminal();
+                terminal.push_pty_data(b"\x1b[?25l\xe2\x96\x90\xe2\x96\x8c");
+                let mut frame =
+                    drawn_frame_at_scale(&mut draw_state, &mut terminal, 200, 64, off, scale);
+                // The two halves together span device x
+                // [off_dev + 4*scale, off_dev + 12*scale] — the right half
+                // of cell 0 and the left half of cell 1.
+                let (x0, x1) = (
+                    off_dev + (4.0 * scale) as i32 + 1,
+                    off_dev + (12.0 * scale) as i32 - 1,
+                );
+                let (y0, y1) = (1, (16.0 * scale) as i32 - 1);
+                assert_region_is_block_colour(&mut frame, x0, x1, y0, y1, "half blocks");
+            }
+        }
+    }
+
     /// A frame before the first `cell_metrics_update` has no fonts and a
     /// zero cell pitch: node emission reports `false` — tween and non-tween
     /// alike — and the cairo draw path draws the frame instead.
