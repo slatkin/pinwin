@@ -693,7 +693,18 @@ impl Surfaces {
     /// redraw at the new scale. The handler only queues a redraw — the draw
     /// hooks read the scale fresh at each draw, so a stored copy could go
     /// stale between the notify and the draw.
+    ///
+    /// The setup runs once per panel, not once per map (keyboard-focus-request
+    /// 1.1): the focus remap maps the panel a second time, and a second run
+    /// here would set `latch` again — after [`Self::resolve_monitor`] cleared
+    /// it, so the start handshake hook would fire a second time — create a
+    /// second reserve window and connect a second scale handler. The reserve
+    /// records the first map: it stays mapped across the remap, while `latch`
+    /// cannot (the first draw clears it), so its presence is the once-guard.
     fn on_map(&self) {
+        if self.reserve.borrow().is_some() {
+            return;
+        }
         self.latch.set(true);
 
         if let Some(surface) = self.win.surface() {
