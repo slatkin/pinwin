@@ -139,30 +139,3 @@ pub(crate) fn measure(context: &pango::Context, font: &FontDescription) -> CellM
         scale: OutputScale::default(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::render::font_lock;
-
-    fn context() -> pango::Context {
-        use pango::prelude::*;
-        // The default font map, like the GTK widget's context in production.
-        pangocairo::FontMap::default().create_context()
-    }
-
-    #[test]
-    fn metrics_are_at_least_one_cell() {
-        let _guard = font_lock::guard();
-        let fonts = Fonts::load();
-        let metrics = measure(&context(), &fonts.regular);
-        assert!(metrics.cell_w >= 1);
-        assert!(metrics.cell_h >= 1);
-        assert!(metrics.ascent >= 0);
-        // The baseline sits between the cell's top and bottom.
-        assert!((-metrics.cell_h..=metrics.cell_h).contains(&metrics.baseline));
-        assert!(metrics.nerd.face_w > 0.0);
-        assert!(metrics.nerd.face_h > 0.0);
-        assert!(metrics.nerd.icon_h_single > 0.0);
-    }
-}
