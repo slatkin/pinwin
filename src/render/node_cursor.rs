@@ -331,7 +331,7 @@ mod tests {
             let mut cairo_side =
                 parity::cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.0);
             let mut node_side =
-                parity::node_frame(&draw_state, &mut node_terminal, 65, 71, 1.0, true);
+                parity::node_frame(&mut draw_state, &mut node_terminal, 65, 71, 1.0, true);
             parity::assert_exact(
                 &mut cairo_side,
                 &mut node_side,
@@ -351,7 +351,8 @@ mod tests {
         let mut cairo_terminal = parity::terminal_with(data);
         let mut node_terminal = parity::terminal_with(data);
         let mut cairo_side = parity::cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.0);
-        let mut node_side = parity::node_frame(&draw_state, &mut node_terminal, 65, 71, 1.0, true);
+        let mut node_side =
+            parity::node_frame(&mut draw_state, &mut node_terminal, 65, 71, 1.0, true);
         parity::assert_exact(&mut cairo_side, &mut node_side, "decorations at scale 1");
     }
 }

@@ -9,6 +9,7 @@
 use crate::term::cells::{Cell, Wide};
 
 use super::metrics::CellMetrics;
+use super::snap::OutputScale;
 
 /// Unantialiased, like the cell backgrounds: at a fractional output scale the
 /// edges of adjacent same-colour blocks fall between device pixels, and two
@@ -104,9 +105,35 @@ pub(crate) enum SpriteShape {
     None,
 }
 
+/// Snap each rectangle of a sprite to the device pixel grid
+/// (`snap-grid-edges` D1, D4): neighbouring cells pass the same shared-edge
+/// value, so both compute the same snapped edge and no seam appears.
+fn snap_rects(scale: OutputScale, rects: Vec<(f64, f64, f64, f64)>) -> Vec<(f64, f64, f64, f64)> {
+    rects
+        .into_iter()
+        .map(|(x, y, w, h)| scale.snap_rect(x, y, w, h))
+        .collect()
+}
+
+/// Snap each triangle vertex coordinate (`snap-grid-edges` D5): the
+/// straight sides of a corner triangle lie on the cell boundary, and an
+/// unsnapped side blends with the neighbour. Each vertex moves by at most
+/// half a device pixel.
+fn snap_vertices(scale: OutputScale, [ax, ay, bx, by, cx, cy]: [f64; 6]) -> [f64; 6] {
+    [
+        scale.snap_edge(ax),
+        scale.snap_edge(ay),
+        scale.snap_edge(bx),
+        scale.snap_edge(by),
+        scale.snap_edge(cx),
+        scale.snap_edge(cy),
+    ]
+}
+
 /// The geometry [`draw_sprite`] paints `cp` with, or [`SpriteShape::None`]
 /// when `cp` is left to the text pass. Pure geometry — no drawing — so both
-/// painters consume the same numbers.
+/// painters consume the same numbers. Rectangles and triangle vertices are
+/// snapped to the device pixel grid (`snap-grid-edges` D1, D4, D5).
 pub(crate) fn sprite_shape(cell: &Cell, cp: u32, cell_metrics: &CellMetrics) -> SpriteShape {
     let cw = f64::from(cell_metrics.cell_w);
     let ch = f64::from(cell_metrics.cell_h);
@@ -127,7 +154,7 @@ pub(crate) fn sprite_shape(cell: &Cell, cp: u32, cell_metrics: &CellMetrics) -> 
             0x25E5 => [x, y, x + w, y + ch, x + w, y],
             _ => return SpriteShape::None,
         };
-        return SpriteShape::FillTriangle(points);
+        return SpriteShape::FillTriangle(snap_vertices(cell_metrics.scale, points));
     }
 
     if (0x2580..=0x259F).contains(&cp) {
@@ -168,7 +195,7 @@ pub(crate) fn sprite_shape(cell: &Cell, cp: u32, cell_metrics: &CellMetrics) -> 
                 rects
             }
         };
-        return SpriteShape::Rects(rects);
+        return SpriteShape::Rects(snap_rects(cell_metrics.scale, rects));
     }
 
     if (0x2800..=0x28FF).contains(&cp) {
@@ -186,7 +213,7 @@ pub(crate) fn sprite_shape(cell: &Cell, cp: u32, cell_metrics: &CellMetrics) -> 
                 ));
             }
         }
-        return SpriteShape::Rects(rects);
+        return SpriteShape::Rects(snap_rects(cell_metrics.scale, rects));
     }
 
     if cp == 0xE0B0 || cp == 0xE0B1 || cp == 0xE0B2 || cp == 0xE0B3 {
@@ -203,9 +230,9 @@ pub(crate) fn sprite_shape(cell: &Cell, cp: u32, cell_metrics: &CellMetrics) -> 
         };
         let points = [ax, y, bx, y + ch / 2.0, ax, y + ch];
         return if cp == 0xE0B0 || cp == 0xE0B2 {
-            SpriteShape::FillTriangle(points)
+            SpriteShape::FillTriangle(snap_vertices(cell_metrics.scale, points))
         } else {
-            SpriteShape::StrokeTriangle(points)
+            SpriteShape::StrokeTriangle(snap_vertices(cell_metrics.scale, points))
         };
     }
 

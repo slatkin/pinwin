@@ -96,10 +96,26 @@ mod tests {
     use crate::render::parity::{self, cairo_frame, node_frame, terminal_with};
     use crate::render::tests::state;
 
-    /// Blocks (full, upper half, left 1/8), quadrants, braille, the four
-    /// corner triangles, all four powerline separators, and a shade left to
-    /// the font — plus an underlined block, so a sprite cell carrying a
-    /// decoration paints both. The cursor is hidden; there are no images.
+    /// A terminal whose cells carry only rectangle sprites — blocks,
+    /// quadrants, braille — plus an underlined block, so a sprite cell
+    /// carrying a decoration paints both.
+    fn terminal_with_rect_sprites() -> crate::term::Terminal {
+        terminal_with(
+            "\u{2588}\u{2580}\u{258f}\u{2596}\u{259f}\u{28ff}\u{283e} \x1b[4m\u{2588}\x1b[24m\u{2584}"
+                .as_bytes(),
+        )
+    }
+
+    /// A terminal whose cells carry the triangle sprites: the four corner
+    /// triangles and all four powerline separators.
+    fn terminal_with_triangle_sprites() -> crate::term::Terminal {
+        terminal_with(
+            "\u{25e2}\u{25e3}\u{25e4}\u{25e5} \u{e0b0}\u{e0b1}\u{e0b2}\u{e0b3}".as_bytes(),
+        )
+    }
+
+    /// The full sprite set of the original scale-1 test: rect sprites,
+    /// triangle sprites, and a shade left to the font.
     fn terminal_with_sprites() -> crate::term::Terminal {
         terminal_with(
             "\u{2588}\u{2580}\u{258f}\u{2596}\u{259f}\u{28ff}\u{283e} \u{25e2}\u{25e3}\u{25e4}\u{25e5} \u{e0b0}\u{e0b1}\u{e0b2}\u{e0b3} \u{2591} \x1b[4m\u{2588}\x1b[24m\u{2584}"
@@ -107,13 +123,29 @@ mod tests {
         )
     }
 
+    /// The full frame — backgrounds plus the cell pass with sprites routed
+    /// to the node emitter — matches the cairo painter exactly at scale 1
+    /// when the sprite geometry is integral (8x16 cells), triangles
+    /// included: the recorded triangle path replays bit for bit at integer
+    /// device coordinates.
+    #[test]
+    fn sprites_match_the_cairo_painter_exactly_at_scale_1() {
+        let _font = crate::render::font_lock::guard();
+        let mut draw_state = state_with_8x16_metrics();
+        let mut cairo_terminal = terminal_with_sprites();
+        let mut node_terminal = terminal_with_sprites();
+        let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.0);
+        let mut node_side = node_frame(&mut draw_state, &mut node_terminal, 65, 71, 1.0, true);
+        parity::assert_exact(&mut cairo_side, &mut node_side, "sprites at scale 1");
+    }
+
     /// A draw state whose cell pitch is 8x16, the geometry the sprite tests
     /// pin: every block, quadrant and braille rectangle is then integral, so
     /// a colour node fills it exactly like the cairo painter's
     /// `Antialias::None` fill. The tests below need this because a sprite's
     /// eighths and quadrants are fractional at an odd pitch (the measured
-    /// test font's 9x20), where the two painters differ by the snap
-    /// [`fractional_pitch_matches_within_tolerance`] states.
+    /// test font's 9x20), where the snap [`fractional_pitch_matches_exactly`]
+    /// pins the shared snapped geometry.
     fn state_with_8x16_metrics() -> crate::render::DrawState {
         let mut draw_state = state();
         draw_state.cell_metrics = CellMetrics {
@@ -127,68 +159,71 @@ mod tests {
         draw_state
     }
 
-    /// The full frame — backgrounds plus the cell pass with sprites routed
-    /// to the node emitter — matches the cairo painter exactly at scale 1
-    /// when the sprite geometry is integral (8x16 cells).
-    #[test]
-    fn sprites_match_the_cairo_painter_exactly_at_scale_1() {
-        let _font = crate::render::font_lock::guard();
-        let mut draw_state = state_with_8x16_metrics();
-        let mut cairo_terminal = terminal_with_sprites();
-        let mut node_terminal = terminal_with_sprites();
-        let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.0);
-        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.0, true);
-        parity::assert_exact(&mut cairo_side, &mut node_side, "sprites at scale 1");
-    }
-
     /// At the real measured pitch (9x20 in this suite) the eighths and
-    /// quadrants have fractional edges: the cairo painter snaps them with
-    /// `Antialias::None`, the colour nodes blend. The design states this
-    /// tolerance (gsk-render-nodes design, risks): the difference is a
-    /// half-coverage edge pixel at most, bounded by half the channel
-    /// distance between the sprite colour and the theme background — the
-    /// same blend bound as everywhere else. The measured max on this suite
-    /// is exactly that bound (the quadrant's half-covered edge pixel).
+    /// quadrants have fractional edges: the shared geometry snaps every
+    /// rectangle to the device pixel grid (`snap-grid-edges` D1, D4), so
+    /// both painters receive the same snapped rectangles and agree pixel
+    /// for pixel.
     #[test]
-    fn fractional_pitch_matches_within_tolerance() {
+    fn fractional_pitch_matches_exactly() {
         let _font = crate::render::font_lock::guard();
         let mut draw_state = state();
         let mut cairo_terminal = terminal_with_sprites();
         let mut node_terminal = terminal_with_sprites();
         let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.0);
-        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.0, true);
-        parity::assert_within(
+        let mut node_side = node_frame(&mut draw_state, &mut node_terminal, 65, 71, 1.0, true);
+        parity::assert_exact(
             &mut cairo_side,
             &mut node_side,
-            parity::BLEND_TOLERANCE,
             "sprites at a fractional pitch",
         );
     }
 
-    /// At scale 1.5 the rects' device edges can land on half-pixels: the
-    /// cairo painter snaps them (`Antialias::None`), the colour nodes blend,
-    /// and for the small features this geometry produces — 2 px braille
-    /// dots, 1 px eighth blocks — the snapped and blended coverages of one
-    /// pixel can differ by up to the full channel distance between the
-    /// sprite colour and the backdrop. The stated tolerance is that full
-    /// distance; the measured max on this suite is 191 (a braille dot edge).
-    /// The meaningful pixel-level gate is the scale-1 exactness above; the
-    /// visible result at fractional scales is checked on the renderers
-    /// (gsk-render-nodes task 5.1).
+    /// At scale 1.5 the rectangles' device edges would land on half-pixels,
+    /// but the shared geometry snaps every rectangle to the device pixel
+    /// grid first (`snap-grid-edges` D1, D4), so both painters fill the
+    /// same snapped rectangles and agree pixel for pixel.
     #[test]
-    fn sprites_match_the_cairo_painter_within_tolerance_at_scale_1_5() {
-        const SPRITE_SCALE_1_5_TOLERANCE: u8 = 255 - parity::BACKDROP[0];
+    fn rect_sprites_match_the_cairo_painter_exactly_at_scale_1_5() {
         let _font = crate::render::font_lock::guard();
         let mut draw_state = state_with_8x16_metrics();
-        let mut cairo_terminal = terminal_with_sprites();
-        let mut node_terminal = terminal_with_sprites();
+        let mut cairo_terminal = terminal_with_rect_sprites();
+        let mut node_terminal = terminal_with_rect_sprites();
         let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.5);
-        let mut node_side = node_frame(&draw_state, &mut node_terminal, 65, 71, 1.5, true);
+        let mut node_side = node_frame(&mut draw_state, &mut node_terminal, 65, 71, 1.5, true);
+        parity::assert_exact(&mut cairo_side, &mut node_side, "rect sprites at scale 1.5");
+    }
+
+    /// At scale 1.5 the snapped triangle vertices sit on the device pixel
+    /// grid, but the node emitter records them into a per-cell cairo node
+    /// whose bounds origin is not (0, 0), and GSK replays that recording
+    /// through a translate: the replayed fill rasterises the same path with
+    /// antialiased coverages up to a few quantisation steps off the direct
+    /// fill along the diagonal edges. Origin-anchored node bounds would
+    /// remove the translate, but they would also grow every triangle cell's
+    /// GPU texture with its column position, so the design's rectangle
+    /// exactness goal (snap-grid-edges Goals) is met and the diagonals keep
+    /// their stated blend allowance (snap-grid-edges D5) at this measured
+    /// bound. Rectangles are held exact by the test above.
+    #[test]
+    fn triangle_sprites_match_the_cairo_painter_within_replay_tolerance_at_scale_1_5() {
+        let _font = crate::render::font_lock::guard();
+        let mut draw_state = state_with_8x16_metrics();
+        let mut cairo_terminal = terminal_with_triangle_sprites();
+        let mut node_terminal = terminal_with_triangle_sprites();
+        let mut cairo_side = cairo_frame(&mut draw_state, &mut cairo_terminal, 65, 71, 1.5);
+        let mut node_side = node_frame(&mut draw_state, &mut node_terminal, 65, 71, 1.5, true);
         parity::assert_within(
             &mut cairo_side,
             &mut node_side,
-            SPRITE_SCALE_1_5_TOLERANCE,
-            "sprites at scale 1.5",
+            TRIANGLE_REPLAY_TOLERANCE,
+            "triangle sprites at scale 1.5",
         );
     }
+
+    /// The replay artifact's measured bound on this suite: a few coverage
+    /// quantisation steps on diagonal AA edge pixels, at fractional scales
+    /// only (integer scales replay bit for bit). See the triangle test for
+    /// the mechanism.
+    const TRIANGLE_REPLAY_TOLERANCE: u8 = 16;
 }
