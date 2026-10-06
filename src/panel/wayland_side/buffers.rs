@@ -17,7 +17,12 @@
 //!
 //! The pool itself is queue-bound, so like the surfaces it is exercised
 //! only in a live session; the row 4.3 pixel tests draw into the canvases
-//! that this pool sizes.
+//! that this pool sizes. The hand-out's slot decisions are pure functions
+//! here, tested without a display (`port-to-rust` D10).
+//!
+//! Row 4.3 switches the attach call site in `surfaces` to the device size,
+//! so the drawn frames match the viewport destination; until then the
+//! placeholder buffers stay at the logical size.
 
 use smithay_client_toolkit::globals::GlobalData;
 use smithay_client_toolkit::shm::slot::{Buffer, Slot, SlotPool};
@@ -117,6 +122,20 @@ pub fn device_size(logical: (u32, u32), scale: FractionalScale) -> Option<(u32, 
     ))
 }
 
+/// The destination a configure may set on a surface's viewport, as the
+/// `set_destination` arguments: only a size with both dimensions greater
+/// than zero, each fitting `i32`. A zero dimension raises the viewport
+/// protocol's fatal `bad_value` error — a compositor's zero-sized configure
+/// must leave the viewport alone instead — and so does a dimension that
+/// does not fit the protocol's `int`.
+#[must_use]
+pub(crate) fn viewport_destination(width: u32, height: u32) -> Option<(i32, i32)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some((i32::try_from(width).ok()?, i32::try_from(height).ok()?))
+}
+
 /// The per-surface fractional-scale and viewport objects. Both are `None`
 /// when their global is absent or failed to bind: optional (D1).
 #[derive(Debug, Default)]
@@ -178,11 +197,24 @@ impl Scale {
 
     /// Set the viewporter destination of one surface to its logical size
     /// (D5): the compositor scales the device-size buffer down to this
-    /// rectangle on screen. Without a viewport the call is a no-op.
+    /// rectangle on screen. Without a viewport the call is a no-op. The
+    /// caller passes only sizes [`viewport_destination`] accepted — a zero
+    /// or negative dimension is the protocol's fatal `bad_value`.
     pub(crate) fn set_destination(&mut self, id: SurfaceId, width: i32, height: i32) {
         if let Some(viewport) = &self.surface_mut(id).viewport {
             viewport.set_destination(width, height);
         }
+    }
+
+    /// Destroy the per-surface fractional-scale and viewport objects of one
+    /// surface, before the surface that owns them goes away: both protocol
+    /// objects are destructors, so dropping them sends their `destroy`
+    /// requests, and the caller orders this ahead of the surface's own
+    /// destruction (the panel at teardown, the reserve when the compositor
+    /// closes it and when the surfaces drop). Reserve churn would otherwise
+    /// leak one viewport and one fractional-scale object per cycle.
+    pub(crate) fn detach(&mut self, id: SurfaceId) {
+        *self.surface_mut(id) = SurfaceScale::default();
     }
 
     /// Note a `wp_fractional_scale_v1` preferred scale, in 1/120 units.
@@ -222,11 +254,91 @@ pub(crate) enum BufferPoolError {
     /// A zero size has no buffer; a size that does not fit the buffer API's
     /// `i32` bounds cannot be allocated.
     InvalidSize,
-    /// Both ping-pong buffers are still held by the compositor and a spare
-    /// slot could not be grown.
+    /// Both ping-pong buffers and every bounded spare slot are still held
+    /// by the compositor.
     Busy,
     /// The shared memory could not be provided.
     Pool,
+}
+
+/// How many spare slots the pool may grow beyond its two ping-pong ones.
+/// Two cover the bursts a real compositor produces while it animates or
+/// resizes, and the bound is what keeps a compositor that never releases a
+/// buffer from growing the pool one full frame per frame.
+const MAX_SPARES: usize = 2;
+
+/// Which ping-pong slot serves a hand-out, decided purely over the
+/// bookkeeping so it is testable without a display (`port-to-rust` D10):
+/// a free slot at the requested size wins — scanned from `next` so the two
+/// buffers alternate — then a free slot at a stale size, and with both held
+/// the spare path decides.
+#[derive(Debug, PartialEq, Eq)]
+enum SlotDecision {
+    /// The slot is free at the requested size: hand the buffer out.
+    Free(usize),
+    /// The slot is free at a stale size, or not yet allocated: allocate the
+    /// requested size into it before the buffer is created.
+    Stale(usize),
+}
+
+#[must_use]
+fn pick_slot(
+    sizes: [Option<(u32, u32)>; 2],
+    free: [bool; 2],
+    next: usize,
+    want: (u32, u32),
+) -> Option<SlotDecision> {
+    for i in 0..2 {
+        let idx = (next + i) % 2;
+        if free[idx] && sizes[idx] == Some(want) {
+            return Some(SlotDecision::Free(idx));
+        }
+    }
+    for i in 0..2 {
+        let idx = (next + i) % 2;
+        if free[idx] {
+            return Some(SlotDecision::Stale(idx));
+        }
+    }
+    None
+}
+
+/// What the spare slots can do for a hand-out when both ping-pong slots are
+/// held, decided purely over the bookkeeping so it is testable without a
+/// display (`port-to-rust` D10): a released spare at the requested size
+/// serves it, a released spare at a stale size is reallocated first, and
+/// with no spare free one is grown — but only while fewer than
+/// [`MAX_SPARES`] exist, past which the hand-out is refused.
+#[derive(Debug, PartialEq, Eq)]
+enum SpareDecision {
+    /// Spare `idx` is free at the requested size: hand the buffer out.
+    Free(usize),
+    /// Spare `idx` is free at a stale size: allocate the requested size
+    /// into it before the buffer is created.
+    Stale(usize),
+    /// No spare can serve the frame and the pool still has room for one.
+    Grow,
+    /// No spare can serve the frame and the bound is reached.
+    Busy,
+}
+
+#[must_use]
+fn pick_spare(sizes: &[(u32, u32)], free: &[bool], want: (u32, u32)) -> SpareDecision {
+    for (idx, size) in sizes.iter().enumerate() {
+        if free[idx] && *size == want {
+            return SpareDecision::Free(idx);
+        }
+    }
+    for (idx, _size) in sizes.iter().enumerate() {
+        if free[idx] {
+            return SpareDecision::Stale(idx);
+        }
+    }
+    if sizes.len() < MAX_SPARES {
+        SpareDecision::Grow
+    } else {
+        SpareDecision::Busy
+    }
 }
 
 /// The pool of two `wl_shm` buffers (D5): the painter draws the next frame
@@ -235,6 +347,9 @@ pub(crate) enum BufferPoolError {
 /// reused at the same size and reallocated at a new one. The compositor's
 /// hold on a buffer is tracked through sctk's release handling
 /// ([`Slot::has_active_buffers`]), so a busy buffer is never handed out.
+/// While both ping-pong buffers are held, a bounded number of spare slots
+/// ([`MAX_SPARES`]) serves the extra frames, so a compositor that stops
+/// releasing buffers cannot grow the pool a frame at a time.
 pub(crate) struct BufferPool {
     pool: SlotPool,
     /// The two ping-pong slots, `None` until the first hand-out sizes them.
@@ -243,6 +358,11 @@ pub(crate) struct BufferPool {
     slots: [Option<Slot>; 2],
     /// The buffer size each slot was last allocated at.
     sizes: [Option<(u32, u32)>; 2],
+    /// The spare slots beyond the ping-pong pair, each with the size it was
+    /// last allocated at. Grown one at a time while both ping-pong buffers
+    /// are held, bounded at [`MAX_SPARES`]; a released spare is reused at
+    /// its size or reallocated at a new one, like a ping-pong slot.
+    spares: Vec<(Slot, (u32, u32))>,
     /// The slot the next hand-out prefers, so the two buffers alternate.
     next: usize,
 }
@@ -259,6 +379,7 @@ impl BufferPool {
             pool: SlotPool::new(1, shm)?,
             slots: [None, None],
             sizes: [None, None],
+            spares: Vec::new(),
             next: 0,
         })
     }
@@ -293,29 +414,29 @@ impl BufferPool {
             return Err(BufferPoolError::InvalidSize);
         };
 
-        // A free slot already at this size: the steady-state hand-out.
-        for i in 0..2 {
-            let idx = (self.next + i) % 2;
-            if self.sizes[idx] == Some((width, height))
-                && self.slots[idx]
-                    .as_ref()
-                    .is_some_and(|slot| !slot.has_active_buffers())
-            {
+        // Which ping-pong slot serves the hand-out, decided purely and
+        // executed here: a free slot at the requested size is the
+        // steady-state hand-out, a free slot at a stale size is
+        // reallocated, and both held falls through to the spares.
+        let free = [self.slot_free(0), self.slot_free(1)];
+        match pick_slot(self.sizes, free, self.next, (width, height)) {
+            Some(SlotDecision::Free(idx)) => {
                 self.next = (idx + 1) % 2;
-                return self.buffer_in(idx, width_i, height_i, stride, bytes);
+                let slot = self.slots[idx]
+                    .as_ref()
+                    .ok_or(BufferPoolError::Pool)?
+                    .clone();
+                self.buffer_in(&slot, width_i, height_i, stride, bytes)
             }
-        }
-        // A free slot at a stale size: reallocate it. Dropping the old
-        // handle is safe while the compositor still reads its buffers — the
-        // slot's memory only returns to the pool's free list once the last
-        // buffer referencing it is released.
-        for i in 0..2 {
-            let idx = (self.next + i) % 2;
-            if self.slots[idx]
-                .as_ref()
-                .is_none_or(|slot| !slot.has_active_buffers())
-            {
-                self.slots[idx] = None;
+            // Reallocate the free slot at its stale size. The allocation
+            // runs first and the handle and its size are replaced together
+            // only on success, so a failed allocation leaves the old slot
+            // intact and reusable instead of losing it while `sizes` keeps
+            // the stale entry. Dropping the old handle is safe while the
+            // compositor still reads its buffers — the slot's memory only
+            // returns to the pool's free list once the last buffer
+            // referencing it is released.
+            Some(SlotDecision::Stale(idx)) => {
                 let slot = self
                     .pool
                     .new_slot(bytes)
@@ -323,32 +444,70 @@ impl BufferPool {
                 self.sizes[idx] = Some((width, height));
                 self.slots[idx] = Some(slot.clone());
                 self.next = (idx + 1) % 2;
-                return self.buffer_in(idx, width_i, height_i, stride, bytes);
+                self.buffer_in(&slot, width_i, height_i, stride, bytes)
+            }
+            // Both ping-pong buffers are still held. A spare slot serves
+            // the frame, but the spares are bounded: past [`MAX_SPARES`]
+            // the hand-out is refused, so a compositor that stops releasing
+            // buffers cannot grow the pool one frame at a time. A first map
+            // never reaches this path — a fresh pool has both ping-pong
+            // slots free — so the reserve placeholder's first map still gets
+            // its buffer in the normal case.
+            None => {
+                let sizes: Vec<(u32, u32)> = self.spares.iter().map(|&(_, size)| size).collect();
+                let free: Vec<bool> = self
+                    .spares
+                    .iter()
+                    .map(|(slot, _)| !slot.has_active_buffers())
+                    .collect();
+                match pick_spare(&sizes, &free, (width, height)) {
+                    SpareDecision::Free(idx) => {
+                        let (slot, _) = self.spares[idx].clone();
+                        self.buffer_in(&slot, width_i, height_i, stride, bytes)
+                    }
+                    // A released spare at a stale size, or a new spare:
+                    // allocate first, adopt only on success, like the
+                    // ping-pong path above.
+                    SpareDecision::Stale(idx) => {
+                        let slot = self
+                            .pool
+                            .new_slot(bytes)
+                            .map_err(|_io| BufferPoolError::Pool)?;
+                        self.spares[idx] = (slot.clone(), (width, height));
+                        self.buffer_in(&slot, width_i, height_i, stride, bytes)
+                    }
+                    SpareDecision::Grow => {
+                        let slot = self
+                            .pool
+                            .new_slot(bytes)
+                            .map_err(|_io| BufferPoolError::Pool)?;
+                        self.spares.push((slot.clone(), (width, height)));
+                        self.buffer_in(&slot, width_i, height_i, stride, bytes)
+                    }
+                    SpareDecision::Busy => Err(BufferPoolError::Busy),
+                }
             }
         }
-        // Both ping-pong buffers are still held: grow a spare slot so a
-        // frame is skipped only when the compositor genuinely holds more
-        // than two buffers. The spare's memory returns to the free list on
-        // release, so the steady state stays at two slots. A spare the
-        // pool could not grow leaves both buffers busy.
-        let (buffer, canvas) = self
-            .pool
-            .create_buffer(width_i, height_i, stride, wl_shm::Format::Argb8888)
-            .map_err(|_pool| BufferPoolError::Busy)?;
-        Ok((buffer, &mut canvas[..bytes]))
     }
 
-    /// Create the frame buffer in slot `idx` and return its exact-sized
-    /// canvas.
+    /// Whether the ping-pong slot `idx` can serve a hand-out: an unallocated
+    /// slot can (the first hand-outs size the pair), and so can one whose
+    /// buffers the compositor has all released.
+    fn slot_free(&self, idx: usize) -> bool {
+        self.slots[idx]
+            .as_ref()
+            .is_none_or(|slot| !slot.has_active_buffers())
+    }
+
+    /// Create the frame buffer in `slot` and return its exact-sized canvas.
     fn buffer_in(
         &mut self,
-        idx: usize,
+        slot: &Slot,
         width: i32,
         height: i32,
         stride: i32,
         bytes: usize,
     ) -> Result<(Buffer, &mut [u8]), BufferPoolError> {
-        let slot = self.slots[idx].as_ref().ok_or(BufferPoolError::Pool)?;
         let buffer = self
             .pool
             .create_buffer_in(slot, width, height, stride, wl_shm::Format::Argb8888)
@@ -506,5 +665,114 @@ mod tests {
             FractionalScale::from_120ths(120)
         );
         assert_eq!(resolve_scale(None, None), FractionalScale::from_120ths(120));
+    }
+
+    /// The viewport destination a configure may set: a size with both
+    /// dimensions greater than zero, each fitting `i32`. A zero dimension
+    /// is refused — `set_destination` with one raises the viewport
+    /// protocol's fatal `bad_value` — and so is one past `i32::MAX`.
+    #[test]
+    fn a_zero_or_oversized_dimension_is_no_viewport_destination() {
+        assert_eq!(viewport_destination(0, 100), None);
+        assert_eq!(viewport_destination(100, 0), None);
+        assert_eq!(viewport_destination(0, 0), None);
+        assert_eq!(viewport_destination(100, 50), Some((100, 50)));
+        assert_eq!(
+            viewport_destination(i32::MAX as u32, 50),
+            Some((i32::MAX, 50))
+        );
+        assert_eq!(viewport_destination(u32::MAX, 50), None);
+        assert_eq!(viewport_destination(50, u32::MAX), None);
+    }
+
+    /// The ping-pong slot decision: a free slot at the requested size wins
+    /// from the rotation start, an exact fit on the other slot beats a
+    /// stale fit on the preferred one, a free stale slot is reallocated,
+    /// and a fresh pool's first hand-out always lands — the spare path and
+    /// its bound are never reached by a first map, so a surface's first
+    /// placeholder buffer maps in the normal case.
+    #[test]
+    fn the_ping_pong_slot_decision_follows_the_rotation_and_the_size() {
+        let fresh = [None, None];
+        assert_eq!(
+            pick_slot(fresh, [true, true], 0, (100, 50)),
+            Some(SlotDecision::Stale(0)),
+            "a fresh pool's first hand-out sizes the preferred slot"
+        );
+        assert_eq!(
+            pick_slot(fresh, [true, true], 1, (100, 50)),
+            Some(SlotDecision::Stale(1)),
+            "the rotation picks the preferred slot even unallocated"
+        );
+
+        let sized = [Some((100, 50)), Some((200, 100))];
+        assert_eq!(
+            pick_slot(sized, [true, true], 0, (100, 50)),
+            Some(SlotDecision::Free(0)),
+            "an exact fit at the rotation start wins"
+        );
+        assert_eq!(
+            pick_slot(sized, [true, true], 1, (200, 100)),
+            Some(SlotDecision::Free(1))
+        );
+        assert_eq!(
+            pick_slot(sized, [true, true], 0, (200, 100)),
+            Some(SlotDecision::Free(1)),
+            "an exact fit on the other slot beats a stale fit on the preferred one"
+        );
+        assert_eq!(
+            pick_slot(sized, [true, true], 0, (300, 150)),
+            Some(SlotDecision::Stale(0)),
+            "a new size reallocates the first free slot"
+        );
+        assert_eq!(
+            pick_slot(sized, [false, false], 0, (100, 50)),
+            None,
+            "both slots held falls through to the spares"
+        );
+        assert_eq!(
+            pick_slot(sized, [false, true], 0, (100, 50)),
+            Some(SlotDecision::Stale(1)),
+            "a held slot is skipped even at the requested size"
+        );
+    }
+
+    /// The spare decision: a released spare serves the frame at its size
+    /// or is reallocated at a new one, and with every spare held the pool
+    /// grows while the bound allows and refuses past [`MAX_SPARES`] — the
+    /// bound that keeps a compositor which stops releasing buffers from
+    /// growing the pool one full frame per frame.
+    #[test]
+    fn the_spare_decision_reuses_then_grows_then_refuses() {
+        assert_eq!(
+            pick_spare(&[], &[], (100, 50)),
+            SpareDecision::Grow,
+            "no spares yet: the first spare is grown"
+        );
+        assert_eq!(
+            pick_spare(&[(100, 50)], &[true], (100, 50)),
+            SpareDecision::Free(0),
+            "a released spare at the requested size is reused"
+        );
+        assert_eq!(
+            pick_spare(&[(100, 50)], &[true], (200, 100)),
+            SpareDecision::Stale(0),
+            "a released spare at a stale size is reallocated"
+        );
+        assert_eq!(
+            pick_spare(&[(100, 50)], &[false], (100, 50)),
+            SpareDecision::Grow,
+            "one held spare still leaves room to grow"
+        );
+        assert_eq!(
+            pick_spare(&[(100, 50), (200, 100)], &[false, false], (100, 50)),
+            SpareDecision::Busy,
+            "the spare bound refuses a further hand-out"
+        );
+        assert_eq!(
+            pick_spare(&[(100, 50), (200, 100)], &[true, false], (100, 50)),
+            SpareDecision::Free(0),
+            "a released spare serves the frame within the bound"
+        );
     }
 }

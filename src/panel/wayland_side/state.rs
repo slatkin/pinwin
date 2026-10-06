@@ -45,7 +45,7 @@ use crate::surfaces::gap::{HeldGap, start_held_gap};
 
 use super::super::handshake::{Handshake, StartOutcome};
 use super::Startup;
-use super::buffers::Scale;
+use super::buffers::{Scale, viewport_destination};
 use super::sizing::{Grid, Sizing};
 use super::surfaces::{PanelSurfaces, SurfaceId};
 
@@ -58,6 +58,12 @@ pub(crate) struct Session {
     compositor: CompositorState,
     shell: LayerShell,
     shm: Shm,
+    /// The output-scale state (D5): the optional fractional/viewporter
+    /// globals, the per-surface objects and the preferred-scale sources.
+    /// Declared before the surfaces so an implicit drop — a thread whose
+    /// loop ends without a teardown — destroys the per-surface scale
+    /// objects before the surfaces they belong to, the protocol's order.
+    pub(crate) scale: Scale,
     /// The two layer surfaces, `None` once the panel is torn down: the
     /// teardown drops them — the panel leaves the screen at once — and with
     /// them every configure and pty push path, while the connection and the
@@ -70,9 +76,6 @@ pub(crate) struct Session {
     /// The resolved output and its xdg-output logical size (D3). `None` until
     /// both the enter and the logical size have arrived.
     pub(crate) resolved: Option<OutputSize>,
-    /// The output-scale state (D5): the optional fractional/viewporter
-    /// globals, the per-surface objects and the preferred-scale sources.
-    pub(crate) scale: Scale,
 }
 
 /// The wayland panel thread's dispatch state: the display-free core every
@@ -197,6 +200,13 @@ impl PanelState {
     /// and the loop still ends on a latched flag.
     pub(crate) fn tear_down(&mut self) {
         if let Some(session) = self.session.as_mut() {
+            // The per-surface scale objects die with their surfaces, and
+            // before them: dropping the objects sends their `destroy`
+            // requests, so the viewport and fractional-scale objects of the
+            // panel and of a still-live reserve cannot outlive the surfaces
+            // they are attached to.
+            session.scale.detach(SurfaceId::Panel);
+            session.scale.detach(SurfaceId::Reserve);
             session.surfaces = None;
         }
         self.done = true;
@@ -296,8 +306,12 @@ impl PanelState {
         let (width, height) = configure.new_size;
         if surfaces.is_panel(layer) {
             // The viewporter destination is the logical size (D5): set
-            // before the buffer commit the configure handler makes.
-            if let (Ok(width_i), Ok(height_i)) = (i32::try_from(width), i32::try_from(height)) {
+            // before the buffer commit the configure handler makes. A
+            // zero-sized configure sets no destination — the viewport
+            // protocol's fatal `bad_value` covers a zero or negative
+            // dimension — and the panel simply stays unmapped until a real
+            // configure arrives.
+            if let Some((width_i, height_i)) = viewport_destination(width, height) {
                 session
                     .scale
                     .set_destination(SurfaceId::Panel, width_i, height_i);
@@ -305,7 +319,7 @@ impl PanelState {
             surfaces.panel_configured(width, height);
             self.configure_grid(height, &mut |grid| apply_pty_size(fd, grid));
         } else if surfaces.is_reserve(layer) {
-            if let (Ok(width_i), Ok(height_i)) = (i32::try_from(width), i32::try_from(height)) {
+            if let Some((width_i, height_i)) = viewport_destination(width, height) {
                 session
                     .scale
                     .set_destination(SurfaceId::Reserve, width_i, height_i);
@@ -362,6 +376,11 @@ impl PanelState {
             self.handshake.report(StartOutcome::NoDisplay);
             self.done = true;
         } else if surfaces.is_reserve(layer) {
+            // The compositor closed the reserve: its viewport and
+            // fractional-scale objects die with it, before the surface the
+            // drop inside `reserve_closed` destroys, so reserve churn leaks
+            // neither.
+            session.scale.detach(SurfaceId::Reserve);
             surfaces.reserve_closed();
         }
     }
