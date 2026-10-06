@@ -56,6 +56,10 @@ use crate::surfaces::gap::reserve_gap_parts;
 use super::buffers::FractionalScale;
 use super::surfaces::panel_margins;
 
+mod draw;
+
+pub use draw::{CropCopyError, copy_crop, draw_wide, upload_wide};
+
 /// The tween's crop geometry, decided once at the tween's start: the docking
 /// side and the wide buffer's logical width — the larger of the start and
 /// end widths. Constructed only through [`TweenCrop::new`], so the width is
