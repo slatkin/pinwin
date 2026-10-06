@@ -2,6 +2,10 @@
 //! real system fonts, so the font-dependent tests skip with a message when
 //! the pinned family is not installed.
 
+use std::path::Path;
+use std::sync::Arc;
+
+use super::fallback::{CACHE_CAP, FallbackCache};
 use super::family::{MatchedFace, family_name_matches, style_matches};
 use super::*;
 use crate::fontconfig::{DEFAULT_FONT_SIZE, FontConfig};
@@ -174,6 +178,109 @@ fn book_primary_path(book: &FontBook) -> std::path::PathBuf {
 }
 
 #[test]
+fn the_fallback_cache_clears_when_it_overflows() {
+    let mut cache = FallbackCache::new();
+    assert_eq!(cache.len(), 0);
+
+    // Fill from the supplementary plane, away from the ASCII probes below.
+    for i in 0..CACHE_CAP {
+        let codepoint = char::from_u32(u32::try_from(i).unwrap() + 0x1_0000).unwrap();
+        assert!(!cache.insert(codepoint, None), "no clear before the cap");
+    }
+    assert_eq!(cache.len(), CACHE_CAP);
+    assert!(cache.get('a').is_none());
+
+    // The insert onto a full cache clears it and starts over, so the cache
+    // never holds more than the cap.
+    assert!(cache.insert('a', None), "the overflowing insert clears");
+    assert_eq!(cache.len(), 1);
+    assert!(cache.get('a').is_some());
+    assert!(cache.get('b').is_none(), "the cleared answers are gone");
+}
+
+#[test]
+fn a_repeated_failing_lookup_runs_the_real_lookup_once() {
+    let Some(mut book) = book() else { return };
+    book.fail_all_loads();
+
+    // 'A' is covered by many installed fonts, so candidates claim it and
+    // every one of those loads fails; the walk ends not-found, and that
+    // answer is cached like any other.
+    assert!(
+        book.fallback_face('A').unwrap().is_none(),
+        "every load fails"
+    );
+    assert_eq!(book.fallback_lookups(), 1);
+
+    assert!(book.fallback_face('A').unwrap().is_none());
+    assert_eq!(book.fallback_lookups(), 1, "the failed walk is cached too");
+}
+
+#[test]
+fn codepoints_on_one_font_share_one_allocation() {
+    let Some(mut book) = book() else { return };
+    let fire = '\u{1F525}';
+    let balloon = '\u{1F388}';
+    let Some(fire_face) = book.fallback_face(fire).unwrap() else {
+        eprintln!("skipping: no emoji font is installed");
+        return;
+    };
+    let Some(balloon_face) = book.fallback_face(balloon).unwrap() else {
+        eprintln!("skipping: no emoji font is installed");
+        return;
+    };
+    // Both code points resolve into the same face file, and the byte map
+    // hands both faces the same allocation.
+    assert_eq!(fire_face.path(), balloon_face.path());
+    assert!(
+        Arc::ptr_eq(&fire_face.bytes(), &balloon_face.bytes()),
+        "one shared allocation for one font file"
+    );
+}
+
+/// A family whose styles live in shared files: the Noto CJK families are
+/// regional faces of two .ttc collections, so several of the four style
+/// matches name the same file.
+const TEST_TTC_FAMILY: &str = "Noto Sans CJK JP";
+
+#[test]
+fn a_family_whose_styles_share_a_file_reads_each_file_once() {
+    let Some(book) = book() else { return };
+    if !skip_unless_family(&book, TEST_TTC_FAMILY) {
+        return;
+    }
+    let config = FontConfig {
+        family: Some(TEST_TTC_FAMILY.to_owned()),
+        size: 11.0,
+    };
+    let faces = book.family_faces(&config).unwrap();
+    let all = [
+        Some(faces.regular().clone()),
+        faces.bold().cloned(),
+        faces.italic().cloned(),
+        faces.bold_italic().cloned(),
+    ];
+    let faces: Vec<&Face> = all.iter().flatten().collect();
+    let mut files: Vec<&Path> = faces.iter().map(|face| face.path()).collect();
+    files.sort_unstable();
+    files.dedup();
+    // One read per distinct file, not one per style face; on a system with
+    // the split .ttc collections this is two reads for four styles.
+    assert_eq!(book.byte_reads(), files.len(), "one read per distinct file");
+    // Two faces from the same file share its allocation.
+    for (i, a) in faces.iter().enumerate() {
+        for b in faces.iter().take(i) {
+            if a.path() == b.path() {
+                assert!(
+                    Arc::ptr_eq(&a.bytes(), &b.bytes()),
+                    "faces of one file share its bytes"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_second_fallback_lookup_hits_the_cache() {
     let Some(mut book) = book() else { return };
     if !skip_unless_family(&book, TEST_FAMILY) {
@@ -249,4 +356,3 @@ fn font_error_displays_and_implements_error() {
     };
     assert!(std::error::Error::source(&read).is_some());
 }
-

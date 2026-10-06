@@ -4,13 +4,14 @@
 //! point is read and parsed; a code point no candidate covers costs one
 //! fontconfig sort (milliseconds) and no file reads at all.
 
+use std::collections::HashMap;
 use std::ptr;
 
 use ::fontconfig::{CharSet, Fontconfig, Pattern, UnicodeCoverage};
 use fontconfig_sys as sys;
 
 use super::error::FontError;
-use super::face::{Face, load_face};
+use super::face::{ByteMap, Face};
 
 /// How many ranked candidates the walk examines. fontconfig ranks the
 /// candidates that cover the pattern's charset first, so a covering face
@@ -22,13 +23,74 @@ use super::face::{Face, load_face};
 /// reads the walk did before it consulted the charsets.
 const MAX_CANDIDATES: usize = 256;
 
+/// The cap on the code-point cache (see [`FallbackCache`]).
+pub(crate) const CACHE_CAP: usize = 8192;
+
+/// The bounded per-code-point fallback cache. Terminal-controlled code
+/// points key it, so it never grows past [`CACHE_CAP`] entries: an insert
+/// onto a full cache clears it and starts over. Clearing (instead of an
+/// LRU) keeps every hit O(1), costs no per-entry bookkeeping, and suits
+/// answers whose repeat chance does not depend on age. Memory ceiling:
+/// at most `CACHE_CAP` entries of one `char` key and one [`Cached`]
+/// answer — a few hundred kilobytes — plus, through the byte map the
+/// cached faces share, at most one allocation per font file loaded since
+/// the last clear.
+pub(crate) struct FallbackCache {
+    map: HashMap<char, Cached>,
+}
+
+/// The cached answer for a code point: the face that covers it, or the
+/// knowledge that no candidate does.
+#[derive(Clone)]
+pub(crate) enum Cached {
+    Found(Face),
+    NotFound,
+}
+
+impl FallbackCache {
+    /// An empty cache.
+    pub(crate) fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+        }
+    }
+
+    /// The cached answer for `codepoint`, if one is cached.
+    pub(crate) fn get(&self, codepoint: char) -> Option<Cached> {
+        self.map.get(&codepoint).cloned()
+    }
+
+    /// Cache the answer (`None` for not found). Returns whether the insert
+    /// overflowed the cap and cleared the cache, so the caller can drop the
+    /// byte map with it.
+    pub(crate) fn insert(&mut self, codepoint: char, face: Option<Face>) -> bool {
+        let answer = face.map_or(Cached::NotFound, Cached::Found);
+        if self.map.len() >= CACHE_CAP {
+            self.map.clear();
+            self.map.insert(codepoint, answer);
+            return true;
+        }
+        self.map.insert(codepoint, answer);
+        false
+    }
+
+    /// How many answers the cache holds.
+    pub(crate) fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
 /// One uncached fallback lookup: the first candidate in fontconfig's ranking
 /// that fontconfig itself claims covers the code point, confirmed with the
 /// swash charmap on the loaded bytes. Candidates that cannot be read or
 /// parsed are skipped — a broken font file elsewhere on the system must not
 /// fail the panel — and an exhausted walk is a not-found answer for the
 /// caller to cache.
-pub(crate) fn lookup(fc: &Fontconfig, codepoint: char) -> Result<Option<Face>, FontError> {
+pub(crate) fn lookup(
+    fc: &Fontconfig,
+    codepoint: char,
+    files: &ByteMap,
+) -> Result<Option<Face>, FontError> {
     let mut charset = CharSet::new(fc)?;
     charset.add_char(codepoint)?;
     let mut pattern = Pattern::new(fc)?;
@@ -43,7 +105,7 @@ pub(crate) fn lookup(fc: &Fontconfig, codepoint: char) -> Result<Option<Face>, F
         };
         // Only candidates fontconfig itself claims cover the code point are
         // read; the swash charmap has the last word on the loaded bytes.
-        if let Ok(face) = load_face(file, index)
+        if let Ok(face) = files.face(file, index)
             && face.covers(codepoint)
         {
             return Ok(Some(face));
