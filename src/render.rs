@@ -29,6 +29,9 @@ pub use images::PixbufDecoder;
 
 pub(crate) use snap::OutputScale;
 
+mod accent;
+mod bands;
+mod bg;
 /// The canvas the grid painter draws a frame into, from row 4.3 on (D5):
 /// GTK-free, pixel tests without a display.
 pub mod canvas;
@@ -42,6 +45,11 @@ mod node_cursor;
 mod node_images;
 mod node_sprites;
 mod nodes;
+/// The grid painter for the canvas (row 4.3): the theme background, the
+/// cell backgrounds, the underline and strikethrough bands and the focus
+/// accent, with the text, sprite, cursor and image passes to come. GTK-free,
+/// like the canvas.
+pub mod painter;
 #[cfg(test)]
 mod parity;
 mod snap;
