@@ -2,7 +2,10 @@
 //! select, the fontconfig match of one style, and the checks that decide
 //! whether a match really realises the requested family and style.
 
-use ::fontconfig::{FC_SLANT_ITALIC, FC_SLANT_ROMAN, FC_WEIGHT_BOLD, FC_WEIGHT_REGULAR};
+use ::fontconfig::{
+    FC_SLANT_ITALIC, FC_SLANT_ROMAN, FC_WEIGHT_BLACK, FC_WEIGHT_BOLD, FC_WEIGHT_DEMIBOLD,
+    FC_WEIGHT_MEDIUM, FC_WEIGHT_REGULAR,
+};
 
 use super::face::Face;
 
@@ -148,7 +151,21 @@ pub(crate) fn family_name_matches(requested: &str, matched: &str) -> bool {
 /// Whether fontconfig's match really realises the requested style. The match
 /// always succeeds, so a family without the style comes back with the closest
 /// face instead (weight or slant off) — that is the "missing" row 4.5
-/// synthesizes.
+/// synthesizes. Bold accepts the weights from demibold (180) through black
+/// (210), so a family whose boldest face is extrabold or black still gets a
+/// real bold face; italic accepts oblique, the slant fontconfig reports for
+/// slanted roman faces, so an oblique-only family is not synthesized on top
+/// of a real face.
 pub(crate) fn style_matches(style: Style, matched: &MatchedFace) -> bool {
-    matched.weight == style.weight() && matched.slant == style.slant()
+    let weight_ok = match style {
+        Style::Regular | Style::Italic => matched.weight <= FC_WEIGHT_MEDIUM,
+        Style::Bold | Style::BoldItalic => {
+            (FC_WEIGHT_DEMIBOLD..=FC_WEIGHT_BLACK).contains(&matched.weight)
+        }
+    };
+    let slant_ok = match style {
+        Style::Regular | Style::Bold => matched.slant == FC_SLANT_ROMAN,
+        Style::Italic | Style::BoldItalic => matched.slant >= FC_SLANT_ITALIC,
+    };
+    weight_ok && slant_ok
 }

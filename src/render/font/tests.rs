@@ -10,7 +10,9 @@ use super::family::{MatchedFace, family_name_matches, style_matches};
 use super::*;
 use crate::fontconfig::{DEFAULT_FONT_SIZE, FontConfig};
 use ::fontconfig::{
-    FC_SLANT_ITALIC, FC_SLANT_ROMAN, FC_WEIGHT_BOLD, FC_WEIGHT_REGULAR, FontconfigError,
+    FC_SLANT_ITALIC, FC_SLANT_OBLIQUE, FC_SLANT_ROMAN, FC_WEIGHT_BLACK, FC_WEIGHT_BOLD,
+    FC_WEIGHT_DEMIBOLD, FC_WEIGHT_EXTRABLACK, FC_WEIGHT_EXTRABOLD, FC_WEIGHT_MEDIUM,
+    FC_WEIGHT_REGULAR, FontconfigError,
 };
 
 fn book() -> Option<FontBook> {
@@ -132,6 +134,42 @@ fn style_matches_rejects_off_weight_and_slant_matches() {
     italic_no_bold.slant = FC_SLANT_ITALIC;
     assert!(style_matches(Style::Italic, &italic_no_bold));
     assert!(!style_matches(Style::BoldItalic, &italic_no_bold));
+
+    // The thresholds: bold runs from demibold (180) through black (210), so
+    // a family whose boldest face is extrabold or black still gets a real
+    // bold face; italic accepts oblique (110), so an oblique-only family is
+    // not synthesized on top of a real face.
+    let mut medium = regular_only.clone();
+    medium.weight = FC_WEIGHT_MEDIUM;
+    assert!(style_matches(Style::Regular, &medium));
+
+    let mut demibold = regular_only.clone();
+    demibold.weight = FC_WEIGHT_DEMIBOLD;
+    assert!(style_matches(Style::Bold, &demibold), "demibold is bold");
+
+    let mut extrabold = regular_only.clone();
+    extrabold.weight = FC_WEIGHT_EXTRABOLD;
+    assert!(style_matches(Style::Bold, &extrabold), "extrabold is bold");
+
+    let mut black = regular_only.clone();
+    black.weight = FC_WEIGHT_BLACK;
+    assert!(style_matches(Style::Bold, &black), "black is bold");
+
+    let mut extrablack = regular_only.clone();
+    extrablack.weight = FC_WEIGHT_EXTRABLACK;
+    assert!(!style_matches(Style::Bold, &extrablack), "beyond black");
+
+    let mut oblique = regular_only.clone();
+    oblique.slant = FC_SLANT_OBLIQUE;
+    assert!(style_matches(Style::Italic, &oblique), "oblique is italic");
+    assert!(
+        !style_matches(Style::Regular, &oblique),
+        "oblique is not roman"
+    );
+
+    let mut bold_oblique = bold_no_italic.clone();
+    bold_oblique.slant = FC_SLANT_OBLIQUE;
+    assert!(style_matches(Style::BoldItalic, &bold_oblique));
 }
 
 #[test]
@@ -155,18 +193,13 @@ fn a_fallback_face_is_found_for_an_emoji() {
         eprintln!("skipping: no emoji font is installed");
         return;
     };
-    // The fallback really covers the code point, and it is not the
-    // primary monospace face.
+    // The fallback really covers the code point, and it is not the primary
+    // monospace face — coverage and difference are the contract, since a
+    // system may ship its emoji face under any file name (OpenMoji,
+    // Twemoji, ...).
     assert!(face.covers(fire), "the fallback covers U+1F525");
     assert!(face.path().is_file());
     assert_ne!(face.path(), book_primary_path(&book));
-    // Emoji render in colour or as symbols through a dedicated face;
-    // assert the resolved face is one of those families.
-    let family = face.path().to_string_lossy().to_lowercase();
-    assert!(
-        family.contains("emoji") || family.contains("symbol"),
-        "the emoji fallback is a colour or symbol face, got {family}"
-    );
 }
 
 fn book_primary_path(book: &FontBook) -> std::path::PathBuf {
