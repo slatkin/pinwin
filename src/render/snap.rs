@@ -33,7 +33,6 @@ impl OutputScale {
     }
 
     /// The scale factor itself (device pixels per logical pixel).
-    #[cfg(test)]
     pub(crate) fn get(self) -> f64 {
         self.0
     }

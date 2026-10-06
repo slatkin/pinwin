@@ -129,6 +129,94 @@ fn snap_vertices(scale: OutputScale, points: [f64; 6]) -> [f64; 6] {
     points.map(|v| scale.snap_edge(v))
 }
 
+/// Ghostty's `Fraction.min` (`draw/common.zig`) on a size in whole device
+/// pixels: the min edge of a section, taken as the complement of the max
+/// edge so that rounding evens out.
+fn fraction_min(size: f64, fraction: f64) -> f64 {
+    size - ((1.0 - fraction) * size).round()
+}
+
+/// Ghostty's `Fraction.max` on a size in whole device pixels.
+fn fraction_max(size: f64, fraction: f64) -> f64 {
+    (fraction * size).round()
+}
+
+/// The rectangles of a block element or quadrant (0x2580..=0x259F, less the
+/// shades) in `cell` = (x, y, w, h) logical pixels, as Ghostty's
+/// `draw/block.zig` draws them: its integer arithmetic runs on the cell's
+/// snapped device box, so every bar is a whole number of device pixels and
+/// a bar of the same fraction has the same thickness whichever edge it is
+/// anchored to. The result is converted back to logical pixels.
+fn block_rects(
+    cp: u32,
+    (left, top, width, height): (f64, f64, f64, f64),
+    scale: OutputScale,
+) -> Vec<(f64, f64, f64, f64)> {
+    let factor = scale.get();
+    let (x0, y0) = ((left * factor).round(), (top * factor).round());
+    let (x1, y1) = (
+        ((left + width) * factor).round(),
+        ((top + height) * factor).round(),
+    );
+    let (dw, dh) = (x1 - x0, y1 - y0);
+    // `blockShade`'s bar: `round(size * fraction)` device pixels, and at
+    // least one so a thin bar never vanishes (as `snap_rect` guaranteed).
+    let bar = |size: f64, fraction: f64| fraction_max(size, fraction).max(1.0).min(size);
+
+    // Device edges (left, top, right, bottom).
+    let edges: Vec<(f64, f64, f64, f64)> = match cp {
+        // Upper half, upper 1/8.
+        0x2580 | 0x2594 => {
+            let fh = if cp == 0x2580 { 0.5 } else { 0.125 };
+            vec![(x0, y0, x1, y0 + bar(dh, fh))]
+        }
+        // Lower 1/8..8/8 (8/8 is the whole box).
+        0x2581..=0x2588 => {
+            let fh = f64::from(cp - 0x2580) / 8.0;
+            vec![(x0, y1 - bar(dh, fh), x1, y1)]
+        }
+        // Left 7/8..1/8.
+        0x2589..=0x258F => vec![(x0, y0, x0 + bar(dw, f64::from(0x2590 - cp) / 8.0), y1)],
+        // Right half, right 1/8.
+        0x2590 | 0x2595 => {
+            let fw = if cp == 0x2590 { 0.5 } else { 0.125 };
+            vec![(x1 - bar(dw, fw), y0, x1, y1)]
+        }
+        // Quadrants: `fill` with the half line, the first half's max edge
+        // and the second half's min edge.
+        _ => {
+            let bits = QUADRANTS[(cp - 0x2596) as usize];
+            let (x_max, x_min) = (x0 + fraction_max(dw, 0.5), x0 + fraction_min(dw, 0.5));
+            let (y_max, y_min) = (y0 + fraction_max(dh, 0.5), y0 + fraction_min(dh, 0.5));
+            let mut edges = Vec::with_capacity(4);
+            if bits & 0x1 != 0 {
+                edges.push((x0, y0, x_max, y_max));
+            }
+            if bits & 0x2 != 0 {
+                edges.push((x_min, y0, x1, y_max));
+            }
+            if bits & 0x4 != 0 {
+                edges.push((x0, y_min, x_max, y1));
+            }
+            if bits & 0x8 != 0 {
+                edges.push((x_min, y_min, x1, y1));
+            }
+            edges
+        }
+    };
+    edges
+        .into_iter()
+        .map(|(ax, ay, bx, by)| {
+            (
+                ax / factor,
+                ay / factor,
+                (bx - ax) / factor,
+                (by - ay) / factor,
+            )
+        })
+        .collect()
+}
+
 /// The geometry [`draw_sprite`] paints `cp` with, or [`SpriteShape::None`]
 /// when `cp` is left to the text pass. Pure geometry — no drawing — so both
 /// painters consume the same numbers. Rectangles and triangle vertices are
@@ -157,44 +245,11 @@ pub(crate) fn sprite_shape(cell: &Cell, cp: u32, cell_metrics: &CellMetrics) -> 
     }
 
     if (0x2580..=0x259F).contains(&cp) {
-        let rects: Vec<(f64, f64, f64, f64)> = match cp {
-            // Upper half.
-            0x2580 => vec![(x, y, w, ch / 2.0)],
-            // Lower 1/8..8/8.
-            0x2581..=0x2588 => {
-                let h = ch * f64::from(cp - 0x2580) / 8.0;
-                vec![(x, y + ch - h, w, h)]
-            }
-            // Left 7/8..1/8.
-            0x2589..=0x258F => vec![(x, y, w * f64::from(0x2590 - cp) / 8.0, ch)],
-            // Right half.
-            0x2590 => vec![(x + w / 2.0, y, w / 2.0, ch)],
-            // Shades: the font has them.
-            0x2591..=0x2593 => return SpriteShape::None,
-            // Upper 1/8: whole pixels, 3 px at our 19 px cell height.
-            0x2594 => vec![(x, y, w, f64::from((cell_metrics.cell_h + 7) / 8))],
-            // Right 1/8.
-            0x2595 => vec![(x + w * 7.0 / 8.0, y, w / 8.0, ch)],
-            // Quadrants.
-            _ => {
-                let q = QUADRANTS[(cp - 0x2596) as usize];
-                let mut rects = Vec::with_capacity(4);
-                if q & 0x1 != 0 {
-                    rects.push((x, y, w / 2.0, ch / 2.0));
-                }
-                if q & 0x2 != 0 {
-                    rects.push((x + w / 2.0, y, w / 2.0, ch / 2.0));
-                }
-                if q & 0x4 != 0 {
-                    rects.push((x, y + ch / 2.0, w / 2.0, ch / 2.0));
-                }
-                if q & 0x8 != 0 {
-                    rects.push((x + w / 2.0, y + ch / 2.0, w / 2.0, ch / 2.0));
-                }
-                rects
-            }
-        };
-        return SpriteShape::Rects(snap_rects(cell_metrics.scale, rects));
+        // Shades: the font has them.
+        if (0x2591..=0x2593).contains(&cp) {
+            return SpriteShape::None;
+        }
+        return SpriteShape::Rects(block_rects(cp, (x, y, w, ch), cell_metrics.scale));
     }
 
     if (0x2800..=0x28FF).contains(&cp) {
@@ -426,8 +481,49 @@ mod tests {
     #[test]
     fn upper_one_eighth_fills_whole_pixel_rows() {
         for painter in PAINTERS {
-            // (16 + 7) / 8 = 2 whole pixel rows at a 16px cell height.
+            // round(16 / 8) = 2 whole pixel rows at a 16px cell height.
             assert_filled(painter, 0x2594, 8 * 2);
+        }
+    }
+
+    /// The device top and bottom edges of the one rectangle `cp` draws in
+    /// `cell`.
+    fn device_edges(cell: &Cell, cp: u32, metrics: &CellMetrics) -> (f64, f64) {
+        let SpriteShape::Rects(rects) = sprite_shape(cell, cp, metrics) else {
+            panic!("0x{cp:04X} is a rect sprite");
+        };
+        assert_eq!(rects.len(), 1);
+        let (_, y, _, h) = rects[0];
+        let scale = metrics.scale.get();
+        ((y * scale).round(), ((y + h) * scale).round())
+    }
+
+    /// U+2581 and U+2594 are the same one-eighth bar at either edge, so they
+    /// are the same thickness (issue #17): `round(device_cell_h / 8)` device
+    /// pixels, whatever the scale, the cell height or the row.
+    #[test]
+    fn lower_and_upper_one_eighth_have_the_same_device_thickness() {
+        for scale in [1.0, 1.5, 1.8] {
+            for cell_h in [19, 20] {
+                let metrics = CellMetrics {
+                    cell_w: 8,
+                    cell_h,
+                    scale: OutputScale::new(scale),
+                    ..CellMetrics::default()
+                };
+                for row in 0..6 {
+                    let top = (f64::from(row * cell_h) * scale).round();
+                    let bottom = (f64::from((row + 1) * cell_h) * scale).round();
+                    let expected = ((bottom - top) / 8.0).round();
+                    let lower = device_edges(&cell(0, row), 0x2581, &metrics);
+                    let upper = device_edges(&cell(0, row), 0x2594, &metrics);
+                    let ctx = format!("scale {scale} cell_h {cell_h} row {row}");
+                    assert_eq!(lower.1 - lower.0, expected, "lower thickness, {ctx}");
+                    assert_eq!(upper.1 - upper.0, expected, "upper thickness, {ctx}");
+                    assert_eq!(lower.1, bottom, "lower bar sits on the cell bottom, {ctx}");
+                    assert_eq!(upper.0, top, "upper bar sits on the cell top, {ctx}");
+                }
+            }
         }
     }
 
