@@ -114,6 +114,20 @@ fn metrics_reject_non_finite_and_negative_values() {
     assert!(NerdMetrics::new(10.0, 20.0, 0.0, 18.0, 14.0, -1.0, 10.0).is_none());
 }
 
+/// Scaling rejects a scale that is not positive and finite instead of
+/// silently measuring at scale 1 while the caller rasterizes at the real
+/// ppem: the constrained box would be wrong by the scale factor. A valid
+/// scale of 1 scales nothing.
+#[test]
+fn scaled_rejects_a_scale_that_is_not_positive_and_finite() {
+    let m = metrics();
+    assert_eq!(m.scaled(1.0), Some(m), "scale 1 is the identity");
+    assert!(m.scaled(1.5).is_some(), "a fractional scale scales");
+    for scale in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(m.scaled(scale).is_none(), "scale {scale} is rejected");
+    }
+}
+
 /// The bridge from the constrained box to the swash placement transform,
 /// against the real fonts (display-free, replace-gtk-with-wayland D10).
 mod bridge {

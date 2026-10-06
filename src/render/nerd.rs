@@ -169,18 +169,19 @@ impl NerdMetrics {
     }
 
     /// The same metrics at another output scale: every field multiplied by
-    /// `scale`. A `scale` that is not positive and finite falls back to 1,
-    /// like `OutputScale::new` does. The values stay unsnapped — the spec
-    /// requires the transform to be identical in every cell at one scale,
-    /// so no per-cell or per-row snapping may enter it.
+    /// `scale`. `None` when `scale` is not positive and finite: the caller
+    /// rasterizes at the real ppem that scale implies, so metrics that do
+    /// not describe it would constrain every glyph against a box wrong by
+    /// the scale factor, and the caller must skip the draw instead. The
+    /// values stay unsnapped — the spec requires the transform to be
+    /// identical in every cell at one scale, so no per-cell or per-row
+    /// snapping may enter it.
     #[must_use]
-    pub fn scaled(self, scale: f64) -> Self {
-        let scale = if scale.is_finite() && scale > 0.0 {
-            scale
-        } else {
-            1.0
-        };
-        NerdMetrics {
+    pub fn scaled(self, scale: f64) -> Option<Self> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        Some(NerdMetrics {
             face_w: self.face_w * scale,
             face_h: self.face_h * scale,
             face_y: self.face_y * scale,
@@ -188,14 +189,15 @@ impl NerdMetrics {
             icon_h_single: self.icon_h_single * scale,
             cell_w: self.cell_w * scale,
             cell_h: self.cell_h * scale,
-        }
+        })
     }
 
     /// The metrics [`CellMetrics`] carries, in logical pixels, scaled to
-    /// `scale` device pixels per logical pixel (see [`Self::scaled`]). The
-    /// logical values are whole pixels except the face and icon boxes, so
-    /// the device values carry the fractional part a fractional scale
-    /// produces — exactly what the constraints must work against.
+    /// `scale` device pixels per logical pixel (see [`Self::scaled`]).
+    /// `None` when the metrics are invalid or `scale` is not positive and
+    /// finite. The logical values are whole pixels except the face and icon
+    /// boxes, so the device values carry the fractional part a fractional
+    /// scale produces — exactly what the constraints must work against.
     #[must_use]
     pub fn from_cell_metrics(metrics: &CellMetrics, scale: f64) -> Option<Self> {
         let (cell_w, cell_h) = metrics.cell_size();
@@ -208,7 +210,7 @@ impl NerdMetrics {
             cell_w,
             cell_h,
         )
-        .map(|logical| logical.scaled(scale))
+        .and_then(|logical| logical.scaled(scale))
     }
 }
 
