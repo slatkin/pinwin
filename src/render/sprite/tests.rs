@@ -34,6 +34,12 @@ const THEME: ThemeColours = ThemeColours {
     foreground: [200, 150, 100],
 };
 
+/// Hides the frame's cursor (DECTCEM). The fresh terminal reports a
+/// visible block cursor — the GTK path draws it too — so the tests below
+/// that scan what the cell layers drew hide it first; the cursor layer
+/// has its own tests.
+const HIDE_CURSOR: &[u8] = b"\x1b[?25l";
+
 /// Frame input for a 64×64 logical frame at `scale`.
 fn frame(scale: f64) -> FrameInput {
     let device = u32::try_from(device_px(f64::from(64) * scale)).expect("frame fits u32");
@@ -216,6 +222,7 @@ fn the_skipped_cells_draw_no_sprite() {
 fn a_row_of_full_blocks_is_one_colour() {
     for scale in [1.0, 1.25, 1.5, 1.8] {
         let mut terminal = terminal();
+        terminal.push_pty_data(HIDE_CURSOR);
         let blocks: Vec<u8> = (0..8).flat_map(|_| utf8(0x2588)).collect();
         terminal.push_pty_data(&blocks);
         let canvas = painted(&mut terminal, scale);
@@ -306,6 +313,7 @@ fn every_block_code_point_paints_its_geometry() {
     let scale = 1.5;
     let m = metrics(scale);
     let mut terminal = terminal();
+    terminal.push_pty_data(HIDE_CURSOR);
     let data: Vec<u8> = (0x2580..=0x259F).flat_map(utf8).collect();
     terminal.push_pty_data(&data);
     let walked = cells(&mut terminal);

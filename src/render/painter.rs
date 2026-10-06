@@ -126,6 +126,12 @@ mod tests {
     /// The font ascent the band positions hang from.
     const ASCENT: f64 = 12.0;
 
+    /// Hides the frame's cursor (DECTCEM). The fresh terminal reports a
+    /// visible block cursor — the GTK path draws it too — so the tests
+    /// below that scan what the cell layers drew hide it first; the
+    /// cursor layer has its own tests.
+    const HIDE_CURSOR: &[u8] = b"\x1b[?25l";
+
     /// Frame input for a 64×64 logical frame at `scale`.
     fn frame(focused: bool, accent: Option<Accent>, draw_offset: f64, scale: f64) -> FrameInput {
         let device = device_px(f64::from(64) * scale);
@@ -202,6 +208,7 @@ mod tests {
     fn a_region_of_one_background_has_no_seams() {
         for scale in SCALES {
             let mut terminal = terminal();
+            terminal.push_pty_data(HIDE_CURSOR);
             terminal.push_pty_data(b"\x1b[41m........\x1b[0m");
             // The pinned vt's palette gives the SGR colour its own RGB, so
             // the expectation is the cell's own background, not a hard-coded
@@ -236,6 +243,7 @@ mod tests {
     fn two_runs_meet_on_one_snapped_edge() {
         for scale in SCALES {
             let mut terminal = terminal();
+            terminal.push_pty_data(HIDE_CURSOR);
             terminal.push_pty_data(b"\x1b[41m....\x1b[42m....\x1b[0m");
             let walked = cells(&mut terminal);
             let first = bytes([walked[0].bg.r, walked[0].bg.g, walked[0].bg.b]);
@@ -320,6 +328,7 @@ mod tests {
     fn a_styled_wide_glyph_fills_both_columns() {
         for scale in SCALES {
             let mut terminal = terminal();
+            terminal.push_pty_data(HIDE_CURSOR);
             terminal.push_pty_data(b"\x1b[44m\xe6\xbc\xa2\x1b[0m");
             let walked = cells(&mut terminal);
             let head = walked
@@ -505,6 +514,7 @@ mod tests {
     fn the_accent_draws_only_when_focused() {
         let accent = Accent::new([255, 0, 0], NonZeroU16::new(2).expect("nonzero"));
         let mut terminal = terminal();
+        terminal.push_pty_data(HIDE_CURSOR);
         let unfocused = painted(&mut terminal, &frame(false, Some(accent), 0.0, 1.0), 1.0);
         assert_eq!(
             unfocused.pixel(0, 0),
@@ -551,6 +561,7 @@ mod tests {
     #[test]
     fn a_focused_frame_without_an_accent_draws_none() {
         let mut terminal = terminal();
+        terminal.push_pty_data(HIDE_CURSOR);
         let canvas = painted(&mut terminal, &frame(true, None, 0.0, 1.0), 1.0);
         assert_eq!(canvas.pixel(0, 0), Some(theme_bytes()));
     }
@@ -594,6 +605,7 @@ mod tests {
     fn a_nonzero_draw_offset_crops_the_grid() {
         for (scale, offset) in [(1.0, 5.0), (1.5, 3.0)] {
             let mut terminal = terminal();
+            terminal.push_pty_data(HIDE_CURSOR);
             terminal.push_pty_data(b"\x1b[41m........\x1b[0m");
             let bg = {
                 let walked = cells(&mut terminal);
@@ -631,6 +643,7 @@ mod tests {
     fn an_empty_grid_frame_is_the_theme_background() {
         for scale in SCALES {
             let mut terminal = terminal();
+            terminal.push_pty_data(HIDE_CURSOR);
             let frame = frame(false, None, 0.0, scale);
             let canvas = painted(&mut terminal, &frame, scale);
             let theme = theme_bytes();
