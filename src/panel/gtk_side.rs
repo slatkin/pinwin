@@ -44,7 +44,7 @@ use gtk4::glib::ControlFlow;
 use gtk4::prelude::*;
 
 use super::Inner;
-use super::handshake::{Handshake, StartOutcome};
+use super::handshake::{FocusOutcome, Handshake, StartOutcome};
 
 /// The startup arguments one panel runs with (D6, D7): the host-owned pty
 /// master fd, the full layout, the keyboard mode and the optional focus
@@ -300,6 +300,33 @@ pub(crate) fn dispatch_teardown(id: u64, reply: &mpsc::SyncSender<()>) {
             }
         });
         let _ = reply.send(());
+    });
+}
+
+/// The focus-remap command, posted from the host thread with
+/// `MainContext::invoke` (keyboard-focus-request 2.1, the apply pattern):
+/// hide and re-present the panel window so the compositor focuses the new
+/// map. Answers `NotLive` when this command's panel is no longer the one
+/// running, and `Failed` when the remap panicked or the shared latch was
+/// already set (D5: a panic reports `Internal`, never `NotRunning`).
+/// [`Surfaces::remap_for_focus`] itself no-ops outside `on-demand` mode; the
+/// host thread short-circuits those modes before posting, so this is defence
+/// in depth, and the reply is `Done` either way.
+pub(crate) fn dispatch_focus_remap(id: u64, reply: &mpsc::SyncSender<FocusOutcome>) {
+    GLUE.with(|cell| {
+        // The plumbing around the remap is itself a boundary closure (D5):
+        // a panic here still reports through the reply instead of unwinding
+        // into glib's dispatch.
+        let scratch = Poisoned::new();
+        let outcome = guard_always(&scratch, || match cell.borrow().as_ref() {
+            Some(live) if live.id == id => {
+                guard(&live.poisoned, || live.surfaces.remap_for_focus())
+                    .map_or(FocusOutcome::Failed, |()| FocusOutcome::Done)
+            }
+            _ => FocusOutcome::NotLive,
+        })
+        .unwrap_or(FocusOutcome::Failed);
+        let _ = reply.send(outcome);
     });
 }
 

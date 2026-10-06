@@ -112,6 +112,7 @@ width outside 1..=65535 cannot be expressed (pass `None` for "no accent").
 
 ```text
 pinwin [--] [command...]    # default command: $SHELL, else /bin/sh; needs niri
+pinwin --focus [name]       # ask the named running panel for focus, then exit
 ```
 
 The binary owns the pty and the child: it sets `TERM=xterm-256color` and
@@ -130,9 +131,31 @@ Environment:
 | `PINWIN_ACCENT` | `on`, `off` | `on` |
 | `PINWIN_ACCENT_COLOR` | `#RRGGBB` or `RRGGBB` | `#dabc7f` |
 | `PINWIN_ACCENT_WIDTH` | 1..=65535 (read only when the accent is on) | 1 |
+| `PINWIN_NAME` | 1..=64 characters from `A-Za-z0-9_-` | `default` |
 
 An invalid value exits 2 with a message on stderr before any surface opens.
 Only the binary reads these; the library reads no pinwin-owned configuration.
+
+## Focus request
+
+Every instance reads `PINWIN_NAME`. The default name is `default`. A name has
+1..=64 characters from `A-Za-z0-9_-`. While its command runs, the instance
+listens on a Unix socket under `$XDG_RUNTIME_DIR/pinwin/`, named for the
+Wayland display and the name. A second instance with a name that a live
+instance already uses prints a message, exits 2 and opens nothing. A socket
+file left by a killed instance does not block a new host.
+
+`pinwin --focus [name]` asks the instance with that name for keyboard focus
+and exits. The name defaults to `default`. The client exits 0 when the named
+instance accepts the request. With no instance on that name it prints a
+message and exits 1. A bad name prints a message and exits 2 in both places:
+in `PINWIN_NAME`, where the host opens nothing, and after `--focus`.
+
+In niri, bind a key to the client:
+
+```kdl
+Mod+P { spawn "pinwin" "--focus"; }
+```
 
 ## Behaviour
 
@@ -185,7 +208,11 @@ and reservation surfaces; `src/input/` wires the GDK controllers;
 `src/anim.rs` eases the width; `src/pty.rs` drives the host-supplied fd;
 `src/fontconfig.rs` reads the Ghostty font and theme; `src/nerd_font.rs` is a
 generated glyph table; `src/guard.rs` is the panic guard; `src/ghostty_sys/`
-is the hand-written FFI to the pinned libghostty-vt. `build.rs` fetches and
+is the hand-written FFI to the pinned libghostty-vt. The `pinwin` host
+program `src/main.rs` owns the pty, the child's process and the focus
+socket; its pure parts are `src/cli.rs` (arguments, `--focus`), `src/ipc.rs`
+(the focus socket's identity, bind, listener and client) and
+`src/settings.rs` (the environment contract). `build.rs` fetches and
 builds that pinned commit.
 
 The behaviour spec lives in `openspec/specs/pinwin-panel/spec.md`; the

@@ -335,7 +335,11 @@ impl Accent {
     }
 }
 
-/// The panel's keyboard interactivity mode, fixed at start time.
+/// The panel's keyboard interactivity mode, fixed at start time: no runtime
+/// override exists. In `on-demand` mode the panel keeps and gives up the
+/// keyboard by the click rules, and the host can add focus on request with
+/// [`Panel::request_focus`](crate::Panel::request_focus); a focus request in
+/// the `none` and `exclusive` modes is a no-op `Ok`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Keyboard {
     None,

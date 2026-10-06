@@ -91,6 +91,44 @@ pub(crate) fn map_start(outcome: StartOutcome) -> Result<(), PinwinError> {
     }
 }
 
+/// The focus-remap command's outcome (keyboard-focus-request 2.1), GTK-free
+/// like the other outcome types so tests can drive every mapping without a
+/// display.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FocusOutcome {
+    /// The panel window was remapped (or the mode needed no remap).
+    Done,
+    /// The command's panel is no longer the one running.
+    NotLive,
+    /// The remap panicked or the shared latch was already set (D5).
+    Failed,
+}
+
+/// Map a focus remap's outcome onto the `Panel` API's result: the same
+/// lifecycle mapping as an apply (a panel without live metrics is a
+/// lifecycle state, a caught panic is `Internal`).
+pub(crate) fn map_focus(outcome: FocusOutcome) -> Result<(), PinwinError> {
+    match outcome {
+        FocusOutcome::Done => Ok(()),
+        FocusOutcome::NotLive => Err(PinwinError::NotRunning),
+        FocusOutcome::Failed => Err(PinwinError::Internal),
+    }
+}
+
+/// Wait for a focus remap's reply within `timeout`, like [`wait_for_apply`]:
+/// a timeout and a closed channel are both `Internal`.
+pub(crate) fn wait_for_focus(
+    receiver: &mpsc::Receiver<FocusOutcome>,
+    timeout: Duration,
+) -> Result<(), PinwinError> {
+    match receiver.recv_timeout(timeout) {
+        Ok(outcome) => map_focus(outcome),
+        Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
+            Err(PinwinError::Internal)
+        }
+    }
+}
+
 /// Wait for the start handshake. Unbounded, like `pinwin_start`'s cond wait:
 /// the GTK side always reports (the start-result hook, the startup watchdog
 /// or the loop-returned cleanup), and a GTK thread that died closes the
@@ -190,6 +228,18 @@ mod tests {
             map_outcome(PublishOutcome::Terminal),
             Err(PinwinError::Internal)
         );
+    }
+
+    /// A focus remap's mappings cover every outcome, the same lifecycle
+    /// mapping as an apply.
+    #[test]
+    fn focus_outcomes_map_onto_the_api_errors() {
+        assert_eq!(map_focus(FocusOutcome::Done), Ok(()));
+        assert_eq!(
+            map_focus(FocusOutcome::NotLive),
+            Err(PinwinError::NotRunning)
+        );
+        assert_eq!(map_focus(FocusOutcome::Failed), Err(PinwinError::Internal));
     }
 
     /// A reply that arrives in time maps onto its outcome.
