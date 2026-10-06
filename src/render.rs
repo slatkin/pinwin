@@ -69,6 +69,11 @@ mod nodes;
 pub mod painter;
 #[cfg(test)]
 mod parity;
+/// The shaper (row 4.5): swash shapes one cell's grapheme cluster into
+/// glyph ids and pen positions, with the face chosen from the family's
+/// styles and the per-code-point fallback, cached (replace-gtk-with-wayland
+/// D6/D11). GTK-free, like the font module.
+pub mod shape;
 mod snap;
 mod snapshot;
 mod sprite;
