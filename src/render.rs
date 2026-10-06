@@ -36,6 +36,10 @@ mod bg;
 /// GTK-free, pixel tests without a display.
 pub mod canvas;
 pub mod cursor;
+/// The font module (row 4.4): fontconfig resolves the Ghostty family to font
+/// files and caches a fallback face per code point (replace-gtk-with-wayland
+/// D6/D11). GTK-free, like the canvas.
+pub mod font;
 /// The geometry seam between the snapped logical grid and the device-pixel
 /// canvas: the cast seam, the painter's cell metrics and the frame input
 /// (D5). GTK-free, like the canvas.
