@@ -47,6 +47,7 @@ use super::Startup;
 use super::activation::Activation;
 use super::buffers::{Scale, viewport_destination};
 use super::frame_log::{FrameLog, Presentation};
+use super::seat::SeatLinks;
 use super::sizing::{Grid, Sizing};
 use super::surfaces::{PanelSurfaces, SurfaceId};
 use super::tween::TweenDriver;
@@ -141,6 +142,11 @@ pub(crate) struct PanelState {
     /// adjusts pointer x by, published per frame through the seat links'
     /// shared cell.
     pub(crate) draw_offset: Rc<Cell<f64>>,
+    /// The seat links the thread built from its pieces (row 8.1, dispatch
+    /// D4c): the draw reads the focus flag the accent draws from through
+    /// them, and dispatch D5 wires the Wayland handlers to the same value.
+    /// `None` on a headless state — the tests.
+    pub(crate) seat_links: Option<SeatLinks>,
     pub(crate) sizing: Sizing,
     /// The held gap the reserve surface draws (overlay-expand D2, D5):
     /// seeded from the startup layout's own choice — a pushing start holds
@@ -201,6 +207,7 @@ impl PanelState {
             panel_size: None,
             stale_grid_px: Rc::new(Cell::new(0)),
             draw_offset: Rc::new(Cell::new(0.0)),
+            seat_links: None,
             sizing: Sizing::new(startup.layout.cols(), cell),
             held: start_held_gap(startup.layout, cell.width().get()),
             applied: startup.layout,

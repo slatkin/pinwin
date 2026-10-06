@@ -362,13 +362,21 @@ fn run_thread(
         return;
     };
     let (terminal, repaint, stale_px, pty) = glue::byte_path(poisoned.clone(), startup.fd, cell);
+    let focused = Rc::new(Cell::new(false));
     let draw_offset = Rc::new(Cell::new(0.0));
 
     let mut state = PanelState::headless(handshake.clone(), poisoned.clone(), inner, startup, cell);
     state.terminal = Some(Rc::clone(&terminal));
     state.repaint = Rc::clone(&repaint);
     state.stale_grid_px = stale_px;
-    state.draw_offset = draw_offset;
+    state.draw_offset = Rc::clone(&draw_offset);
+    state.seat_links = Some(glue::seat_links(
+        &terminal,
+        &repaint,
+        &draw_offset,
+        &focused,
+        poisoned.clone(),
+    ));
     state.render = Some(tween_draw::TweenRender { terminal, renderer });
     // The bind runs under the panel's shared latch: a panic in it latches
     // and reports `Internal` (D5), a missing required global reports

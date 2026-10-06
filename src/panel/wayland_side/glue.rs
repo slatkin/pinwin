@@ -23,6 +23,7 @@ use crate::term::Terminal;
 
 use super::super::handshake::StartOutcome;
 use super::renderer::{FontSetup, FontSetupError, Renderer};
+use super::seat::SeatLinks;
 use super::sizing::Grid;
 use super::state::{PanelState, apply_pty_size};
 
@@ -116,6 +117,34 @@ pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd, cell: CellSize) -> BytePa
         },
     )));
     (terminal, repaint, stale_grid_px, pty)
+}
+
+/// The seat links the thread's pieces build (row 8.1, dispatch D4c): the
+/// encoders' terminal, the draw offset the frames publish, the focus flag
+/// the renderer draws the accent from, the repaint request the seat's
+/// `queue_draw` latches, and the shared latch. No Wayland event reaches
+/// them yet — dispatch D5 does the handler wiring — but the focus flag and
+/// the offset cell are already the draw's sources.
+pub(crate) fn seat_links(
+    terminal: &Rc<RefCell<Terminal>>,
+    repaint: &Rc<Cell<bool>>,
+    draw_offset: &Rc<Cell<f64>>,
+    focused: &Rc<Cell<bool>>,
+    poisoned: Poisoned,
+) -> SeatLinks {
+    SeatLinks {
+        terminal: Rc::clone(terminal),
+        draw_offset: {
+            let cell = Rc::clone(draw_offset);
+            Rc::new(move || cell.get())
+        },
+        focused: Rc::clone(focused),
+        queue_draw: {
+            let repaint = Rc::clone(repaint);
+            Rc::new(move || repaint.set(true))
+        },
+        poisoned,
+    }
 }
 
 impl PanelState {
@@ -385,6 +414,31 @@ mod tests {
         terminal.borrow_mut().push_pty_data(b"hi");
         assert_eq!(stale.get(), 0, "the output cleared the record");
         assert!(repaint.get(), "the output latched the repaint flag");
+    }
+
+    /// The seat links the thread's pieces build (dispatch D4c): a focus
+    /// enter through the seat side flips the flag the renderer draws the
+    /// accent from and latches the repaint request the loop serves, and a
+    /// leave clears it and latches one too.
+    #[test]
+    fn a_focus_enter_through_the_seat_links_flips_the_flag_and_requests_a_repaint() {
+        use crate::panel::wayland_side::seat::SeatSide;
+
+        let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
+        let (terminal, repaint, _stale, _pty) = byte_path(Poisoned::new(), -1, cell);
+        let focused = Rc::new(Cell::new(false));
+        let draw_offset = Rc::new(Cell::new(0.0));
+        let links = seat_links(&terminal, &repaint, &draw_offset, &focused, Poisoned::new());
+        let mut seat = SeatSide::new(links);
+        assert!(!focused.get(), "unfocused at start");
+
+        seat.keyboard_entered();
+        assert!(focused.get(), "the enter set the flag");
+        assert!(repaint.get(), "the enter requested a repaint");
+
+        seat.keyboard_left();
+        assert!(!focused.get(), "the leave cleared the flag");
+        assert!(repaint.get(), "the leave requested a repaint too");
     }
 
     /// A connected pty pair (master, slave): the master is the panel-side

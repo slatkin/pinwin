@@ -295,6 +295,14 @@ impl PanelState {
             return Some(kept);
         }
         let render = self.render.as_mut()?;
+        // The seat's focus flag is the accent's source (D8): the wide draw
+        // reads the renderer's flag, so it syncs from the shared cell the
+        // seat links hold first.
+        let focused = self
+            .seat_links
+            .as_ref()
+            .is_some_and(|links| links.focused.get());
+        render.renderer.borrow_mut().set_focused(focused);
         let mut fresh = TweenDraw::draw(
             staged.crop,
             height?,

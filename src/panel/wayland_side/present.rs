@@ -268,9 +268,18 @@ impl PanelState {
             super::surfaces::grid_width_px(self.sizing.live_cols(), self.cell).unwrap_or(0);
         let stale_grid_px = self.stale_grid_px.get();
         let side = self.applied.side();
-        let (focused, theme, accent) = {
-            let renderer = render.renderer.borrow();
-            (renderer.focused(), renderer.theme(), renderer.accent())
+        // The seat's focus flag is the accent's source (D8, dispatch D4c):
+        // the draw syncs the renderer's flag from the shared cell the seat
+        // links hold, so a focus enter the seat latched reaches the next
+        // frame — and the wide draw's cache rebuilds read the same flag.
+        let focused = self
+            .seat_links
+            .as_ref()
+            .is_some_and(|links| links.focused.get());
+        let (theme, accent) = {
+            let mut renderer = render.renderer.borrow_mut();
+            renderer.set_focused(focused);
+            (renderer.theme(), renderer.accent())
         };
         let Some(input) = frame_input(
             (width, height),
