@@ -285,7 +285,13 @@ impl BufferPool {
         let Ok(stride) = i32::try_from(u64::from(width) * 4) else {
             return Err(BufferPoolError::InvalidSize);
         };
-        let bytes = stride as usize * height as usize;
+        let bytes = u64::from(width)
+            .checked_mul(4)
+            .and_then(|stride| stride.checked_mul(u64::from(height)))
+            .and_then(|bytes| usize::try_from(bytes).ok());
+        let Some(bytes) = bytes else {
+            return Err(BufferPoolError::InvalidSize);
+        };
 
         // A free slot already at this size: the steady-state hand-out.
         for i in 0..2 {
