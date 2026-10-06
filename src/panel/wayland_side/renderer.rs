@@ -206,6 +206,20 @@ impl Renderer {
         CellSize::new(self.cell_metrics.cell_w(), self.cell_metrics.cell_h())
     }
 
+    /// The Ghostty theme colours the frames and the wide draw fill with,
+    /// the frame input's source.
+    #[must_use]
+    pub fn theme(&self) -> ThemeColours {
+        self.theme
+    }
+
+    /// The startup accent the focus accent draws with, the frame input's
+    /// source; `None` is a disabled accent.
+    #[must_use]
+    pub fn accent(&self) -> Option<Accent> {
+        self.accent
+    }
+
     /// Move the renderer to a new output scale: the painter metrics are
     /// rebuilt, and the next frame's fingerprint carries the new metrics,
     /// so the gate repaints everything without an explicit invalidate.

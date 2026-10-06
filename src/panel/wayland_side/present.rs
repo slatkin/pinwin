@@ -35,6 +35,8 @@ use crate::render::frame_gate::FrameOutcome;
 use crate::render::geom::{DeviceRect, FrameInput};
 
 use super::buffers::{self, FractionalScale};
+use super::crop::upload_wide;
+use super::state::PanelState;
 
 /// What a frame's present step does with the renderer's outcome (dispatch
 /// D4c): nothing at all when the frame drew nothing or a tween owns the
@@ -146,6 +148,25 @@ pub enum FinishViewport {
     Destination(i32, i32),
 }
 
+/// What one draw step did (dispatch D4c): nothing to draw on a thread or
+/// size that cannot produce a frame, a gate that drew nothing, a frame
+/// attached and committed, or a present the pool refused — the caller
+/// latches the repaint request again for the latter ([`latch_after_service`])
+/// and leaves the panel unmapped for the next configure on a first map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceOutcome {
+    /// No frame could be built: no render state, no session, or a size no
+    /// buffer could hold.
+    Idle,
+    /// The gate drew nothing; the committed state is current.
+    Clean,
+    /// The frame was drawn, copied into a pool slot and committed.
+    Drawn,
+    /// The pool had no slot, or the attach was refused; the frame's draw
+    /// happened, and the next service pass retries.
+    Busy,
+}
+
 /// The viewport end state the tween's finish leaves the panel surface in
 /// (D4c): without a viewporter nothing is pending — the frames presented
 /// fresh buffers at their own size — and with one the source crop the last
@@ -225,6 +246,88 @@ pub fn frame_input(
     Some(FrameInput::new(
         logical.0, logical.1, device.0, device.1, offset, focused, theme, accent,
     ))
+}
+
+impl PanelState {
+    /// Draw one live frame of the terminal at the logical size and present
+    /// it (dispatch D4c, the executor): the frame input from the state's
+    /// sizing, the renderer's gated draw, then the plan's requests — the
+    /// pool slot at the device size, the full canvas copied into its bytes,
+    /// the buffer attached, one `damage_buffer` per planned rectangle and
+    /// the commit. The stale pre-resize width is not recorded yet; the
+    /// offset shift reads the live grid alone until the widen record lands.
+    pub fn draw_frame_at(&mut self, width: u32, height: u32) -> ServiceOutcome {
+        let Some(render) = self.render.clone() else {
+            return ServiceOutcome::Idle;
+        };
+        let Some(session) = self.session.as_ref() else {
+            return ServiceOutcome::Idle;
+        };
+        let scale = session.scale.resolved();
+        let live_grid_px =
+            super::surfaces::grid_width_px(self.sizing.live_cols(), self.cell).unwrap_or(0);
+        let side = self.applied.side();
+        let (focused, theme, accent) = {
+            let renderer = render.renderer.borrow();
+            (renderer.focused(), renderer.theme(), renderer.accent())
+        };
+        let Some(input) = frame_input(
+            (width, height),
+            scale,
+            side,
+            live_grid_px,
+            0,
+            focused,
+            theme,
+            accent,
+        ) else {
+            return ServiceOutcome::Idle;
+        };
+        let outcome = render
+            .renderer
+            .borrow_mut()
+            .draw(&mut render.terminal.borrow_mut(), &input);
+        let (device_w, device_h) = input.device_size();
+        let plan = present_plan(&outcome, (device_w, device_h), self.tween_draw.is_some());
+        let PresentPlan::Frame(rects) = plan else {
+            // Nothing may be committed: a clean gate, or a tween that owns
+            // the commits (the configure path never reaches this under a
+            // tween, and the service step does not call this there).
+            return ServiceOutcome::Clean;
+        };
+        let renderer = render.renderer.borrow();
+        let Some(canvas) = renderer.canvas() else {
+            // A canvas no allocator produced: nothing could have been
+            // attached that this would leave stale (see `Renderer::draw`).
+            return ServiceOutcome::Idle;
+        };
+        let Some(session) = self.session.as_mut() else {
+            return ServiceOutcome::Idle;
+        };
+        let Some(surfaces) = session.surfaces.as_mut() else {
+            return ServiceOutcome::Idle;
+        };
+        let Ok((buffer, bytes)) = surfaces.pool_mut().buffer(device_w, device_h) else {
+            // The pool could not provide a slot (both ping-pong buffers and
+            // every bounded spare still held): the frame retries on the
+            // buffer releases the source dispatches ([`latch_after_service`]).
+            return ServiceOutcome::Busy;
+        };
+        // The full canvas, always: the handed slot may hold the frame
+        // before the last one (see the module docs).
+        if upload_wide(canvas, bytes).is_err() {
+            return ServiceOutcome::Busy;
+        }
+        let surface = surfaces.panel_wl_surface();
+        if buffer.attach_to(surface).is_err() {
+            return ServiceOutcome::Busy;
+        }
+        for rect in &rects {
+            surface.damage_buffer(rect.x(), rect.y(), rect.w(), rect.h());
+        }
+        surface.commit();
+        ServiceOutcome::Drawn
+    }
 }
 
 #[cfg(test)]

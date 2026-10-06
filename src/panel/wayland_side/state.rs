@@ -125,6 +125,11 @@ pub(crate) struct PanelState {
     /// clears it after each dispatch, where the draw step turns it into a
     /// frame (dispatch D4c).
     pub(crate) repaint: Rc<Cell<bool>>,
+    /// The panel surface's latest logical size (dispatch D4c): the last
+    /// configure's, or the tween finish's final size — the frame input the
+    /// live draws build from. `None` before the first configure, which is
+    /// when no live frame exists yet.
+    pub(crate) panel_size: Option<(u32, u32)>,
     pub(crate) sizing: Sizing,
     /// The held gap the reserve surface draws (overlay-expand D2, D5):
     /// seeded from the startup layout's own choice — a pushing start holds
@@ -182,6 +187,7 @@ impl PanelState {
             cell,
             terminal: None,
             repaint: Rc::new(Cell::new(false)),
+            panel_size: None,
             sizing: Sizing::new(startup.layout.cols(), cell),
             held: start_held_gap(startup.layout, cell.width().get()),
             applied: startup.layout,
@@ -290,11 +296,23 @@ impl PanelState {
         };
         // A torn-down session has no surfaces left, so no late configure can
         // reach the pty push.
-        let Some(surfaces) = session.surfaces.as_mut() else {
+        if session.surfaces.is_none() {
             return;
-        };
+        }
         let (width, height) = configure.new_size;
-        if surfaces.is_panel(layer) {
+        // Which surface the configure names, decided while the session
+        // borrow is alive; the arms re-borrow per step, because the panel's
+        // draw step needs the rest of the state while it runs.
+        let is_panel = session
+            .surfaces
+            .as_ref()
+            .is_some_and(|surfaces| surfaces.is_panel(layer));
+        let is_reserve = !is_panel
+            && session
+                .surfaces
+                .as_ref()
+                .is_some_and(|surfaces| surfaces.is_reserve(layer));
+        if is_panel {
             if self.tween_draw.is_some() {
                 // A tween owns the panel surface's size, viewport and buffer
                 // commits until it finishes (row 6.2): this configure only
@@ -304,7 +322,14 @@ impl PanelState {
                 // committing the cached height, the same staleness the GTK
                 // path had; the tween's finish and the next configure catch
                 // up.
-                surfaces.panel_configured_under_tween();
+                self.panel_size = Some((width, height));
+                if let Some(surfaces) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.surfaces.as_mut())
+                {
+                    surfaces.panel_configured_under_tween();
+                }
                 self.configure_grid(height, &mut push);
                 return;
             }
@@ -314,20 +339,39 @@ impl PanelState {
             // protocol's fatal `bad_value` covers a zero or negative
             // dimension — and the panel simply stays unmapped until a real
             // configure arrives.
-            if let Some((width_i, height_i)) = viewport_destination(width, height) {
+            if let Some(session) = self.session.as_mut()
+                && let Some((width_i, height_i)) = viewport_destination(width, height)
+            {
                 session
                     .scale
                     .set_destination(SurfaceId::Panel, width_i, height_i);
             }
-            surfaces.panel_configured(width, height);
+            // The configure draws the frame it maps the panel with
+            // (dispatch D4c): the renderer's canvas resizes to the device
+            // size — which invalidates the gate — and the full frame goes
+            // into a pool buffer at that device size, committed against
+            // the destination above. The `on-demand` switch follows the
+            // first buffer commit, so it runs only when one landed.
+            self.panel_size = Some((width, height));
+            let drawn = self.draw_frame_at(width, height);
+            if drawn == super::present::ServiceOutcome::Drawn
+                && let Some(surfaces) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.surfaces.as_mut())
+            {
+                surfaces.panel_configured();
+            }
             self.configure_grid(height, &mut push);
-        } else if surfaces.is_reserve(layer) {
+        } else if is_reserve && let Some(session) = self.session.as_mut() {
             if let Some((width_i, height_i)) = viewport_destination(width, height) {
                 session
                     .scale
                     .set_destination(SurfaceId::Reserve, width_i, height_i);
             }
-            surfaces.reserve_configured(width, height);
+            if let Some(surfaces) = session.surfaces.as_mut() {
+                surfaces.reserve_configured(width, height);
+            }
         }
     }
 

@@ -9,8 +9,6 @@ use crate::render::frame_gate::Damage;
 use crate::render::text_pass::test_support;
 use crate::term::{PngDecoder, PtySink, Terminal};
 
-use super::super::crop::upload_wide;
-
 fn scale(units: u32) -> FractionalScale {
     FractionalScale::from_120ths(units)
 }

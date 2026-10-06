@@ -67,6 +67,7 @@ mod tests;
 /// snapping. The fields are `pub(crate)`: the bundle is row 8.1's to
 /// assemble, and the D6 field-privacy rule guards the crate's public API,
 /// not this internal one.
+#[derive(Clone)]
 pub(crate) struct TweenRender {
     /// The terminal whose grid the wide draw paints. Shared, because the
     /// seat and the pty source that join this thread in row 8.1 hold the

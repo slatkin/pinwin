@@ -16,8 +16,10 @@
 //! keyboard focus only on the map itself; `exclusive` and `none` map
 //! directly.
 //!
-//! The renderer arrives in group 4, so the buffers here are transparent
-//! placeholders of the right size — enough to map the surfaces. The pure
+//! The renderer arrived in group 4, so the panel's frames draw live from
+//! dispatch D4c on: the configure path and the repaint service present the
+//! renderer's frames through the pool at the device size, and only the
+//! reserve still attaches a transparent placeholder buffer. The pure
 //! geometry mapping (anchors, margins, zones, interactivity) is unit tested
 //! here without a compositor (`port-to-rust` D10); the queue-dependent
 //! surface creation lives in the state module beside the sctk handlers.
@@ -133,9 +135,6 @@ pub(crate) struct PanelSurfaces {
     layout: Layout,
     keyboard: Keyboard,
     cell: CellSize,
-    /// The size the panel's transparent buffer was last attached at, so a
-    /// repeated configure at the same size does not re-attach it.
-    panel_buffer_size: Option<(u32, u32)>,
     /// Whether the `on-demand` switch (D3) has run: it follows the first
     /// buffer, exactly once.
     switched_to_on_demand: bool,
@@ -181,7 +180,6 @@ impl PanelSurfaces {
             layout,
             keyboard,
             cell,
-            panel_buffer_size: None,
             switched_to_on_demand: false,
             reserve_buffer_size: None,
         })
@@ -208,26 +206,14 @@ impl PanelSurfaces {
         });
     }
 
-    /// One configure of the panel surface: map the panel with a transparent
-    /// buffer of the configured size when the size changed, and switch an
-    /// `on-demand` panel to `on-demand` in the commit after its first buffer
-    /// (D3). Later configures at a new size re-commit a transparent buffer so
-    /// the surface stays coherent until the renderer takes the frames over
-    /// (group 4).
-    pub fn panel_configured(&mut self, width: u32, height: u32) {
-        if self.panel_buffer_size == Some((width, height)) {
-            return;
-        }
-        if attach_transparent(&mut self.pool, &self.panel, width, height).is_err() {
-            // A buffer the pool could not provide (or a zero-sized
-            // configure) leaves the panel unmapped; the next configure
-            // retries. The library never exits over it (port-to-rust D3).
-            return;
-        }
-        self.panel_buffer_size = Some((width, height));
-
-        // The first buffer mapped the panel: the `on-demand` switch runs in
-        // the commit after it, exactly once (D3, spike row 1.2).
+    /// One configure of the panel surface, after the state drew the frame
+    /// the configure maps the panel with (dispatch D4c): the buffer commit
+    /// is the draw's, and this runs the `on-demand` switch once after the
+    /// first buffer commit (D3, spike row 1.2). The caller invokes it only
+    /// when a buffer was actually committed — a configure the pool could
+    /// not serve leaves the panel unmapped and the switch unrun, and the
+    /// next configure retries.
+    pub fn panel_configured(&mut self) {
         self.switch_to_on_demand();
     }
 
@@ -416,9 +402,10 @@ impl PanelSurfaces {
 
 /// Attach a fully transparent `ARGB8888` buffer of `width` by `height` to
 /// `surface` and commit, so a layer surface maps without drawing anything
-/// (the renderer arrives in group 4). Fails on a zero-sized or oversized
-/// configure, a pool the size does not fit, or an attach the compositor
-/// refused; the caller keeps its previous state in every failure case.
+/// (the reserve still maps this way; the panel draws live from dispatch
+/// D4c on). Fails on a zero-sized or oversized configure, a pool the size
+/// does not fit, or an attach the compositor refused; the caller keeps its
+/// previous state in every failure case.
 fn attach_transparent(
     pool: &mut BufferPool,
     surface: &LayerSurface,

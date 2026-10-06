@@ -20,9 +20,11 @@
 //! that this pool sizes. The hand-out's slot decisions are pure functions
 //! here, tested without a display (`port-to-rust` D10).
 //!
-//! Row 4.3 switches the attach call site in `surfaces` to the device size,
-//! so the drawn frames match the viewport destination; until then the
-//! placeholder buffers stay at the logical size.
+//! The panel's frames present at the device size (row 8.1, dispatch D4c):
+//! the configure draw and the repaint service request buffers at
+//! [`device_size`] and the viewport destination carries the logical size,
+//! so the compositor maps device pixels 1:1. The reserve's placeholder
+//! stays at the logical size; it draws nothing.
 
 use smithay_client_toolkit::globals::GlobalData;
 use smithay_client_toolkit::shm::slot::{Buffer, Slot, SlotPool};
