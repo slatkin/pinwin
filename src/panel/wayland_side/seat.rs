@@ -18,6 +18,12 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use smithay_client_toolkit::globals::GlobalData;
+use smithay_client_toolkit::reexports::client::globals::GlobalList;
+use smithay_client_toolkit::reexports::client::protocol::wl_pointer::WlPointer;
+use smithay_client_toolkit::reexports::client::{Dispatch, QueueHandle};
+use smithay_client_toolkit::reexports::protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
+use smithay_client_toolkit::reexports::protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, Modifiers as SctkModifiers, RawModifiers, RepeatInfo,
 };
@@ -205,6 +211,25 @@ impl SeatSide {
     pub fn pointer_frame(&mut self, kind: &PointerEventKind, position: (f64, f64)) {
         let mods = self.keyboard.mods();
         self.pointer.frame(kind, position, &self.links, mods);
+    }
+
+    /// Bind the cursor-shape global for the panel pointer (row 5.5): when
+    /// the compositor offers `wp_cursor_shape_manager_v1`, the pointer gets
+    /// a shape device and [`SeatSide::pointer_frame`] sets the default shape
+    /// on each enter; without the global the pointer cursor stays unset.
+    /// Call once, at the row 8.1 bind, after the pointer exists.
+    pub fn bind_cursor_shape<D>(
+        &mut self,
+        globals: &GlobalList,
+        qh: &QueueHandle<D>,
+        pointer: &WlPointer,
+    ) where
+        D: Dispatch<WpCursorShapeManagerV1, GlobalData>
+            + Dispatch<WpCursorShapeDeviceV1, GlobalData>
+            + 'static,
+    {
+        self.pointer
+            .set_cursor(cursor::CursorShape::bind(globals, qh, pointer));
     }
 
     /// One `repeat_info` update (row 5.2): the compositor's rate decides
