@@ -54,6 +54,7 @@ use wayland_client::Connection;
 use crate::activation::ActivationToken;
 use crate::guard::{Poisoned, guard, guard_always};
 use crate::layout::Layout;
+use crate::pty::{Pty, attach_calloop};
 use crate::surfaces::PublishOutcome;
 
 use super::Inner;
@@ -353,7 +354,7 @@ fn run_thread(
         handshake.report(StartOutcome::Internal);
         return;
     };
-    let (terminal, repaint, _pty) = glue::byte_path(poisoned.clone(), startup.fd, cell);
+    let (terminal, repaint, pty) = glue::byte_path(poisoned.clone(), startup.fd, cell);
 
     let mut state = PanelState::headless(handshake.clone(), poisoned.clone(), inner, startup, cell);
     state.terminal = Some(Rc::clone(&terminal));
@@ -378,7 +379,7 @@ fn run_thread(
     // loop on, so nothing can have moved it before here).
     state.sync_renderer_scale();
 
-    if run_loop(&connection, &mut state, queue, commands).is_err() {
+    if run_loop(&connection, &mut state, queue, commands, &pty).is_err() {
         // The wayland source surfaces a closed connection (and any other
         // fatal loop error) as a dispatch error: the compositor is gone, so
         // the panel is dead (D2).
@@ -395,6 +396,7 @@ fn run_loop(
     state: &mut PanelState,
     queue: wayland_client::EventQueue<PanelState>,
     commands: Channel<PanelCommand>,
+    pty: &Pty,
 ) -> Result<(), calloop::Error> {
     let mut event_loop = calloop::EventLoop::<PanelState>::try_new()?;
     let handle = event_loop.handle();
@@ -431,14 +433,57 @@ fn run_loop(
         |_, &mut (), state| watchdog::on_deadline_tick(state),
     )?;
 
+    // The pty read source (row 8.1): the fd the thread's `Pty` holds, its
+    // bytes fed into the shared terminal. The drain's tween budget reads
+    // the tween driver's own flag, and a hangup or a teardown retires the
+    // shared fd slot, so later writes are no-ops while the descriptor stays
+    // open for the host (D7). A failed attach degrades to no read source —
+    // the library never exits over an environment failure (port-to-rust
+    // D3), the same degradation the GTK path's `let _ = attach` has; the
+    // writes and the winsize pushes keep working, only the reads are gone.
+    let tween_flag = state.tween.tween_flag();
+    let mut pty_source = state.render.as_ref().and_then(|render| {
+        let terminal = Rc::clone(&render.terminal);
+        let (fd, fd_slot, pty_poisoned) = pty.read_source();
+        // `.ok()`: a failed attach degrades to no read source (port-to-rust
+        // D3), the GTK path's `let _ = attach` — the writes and the winsize
+        // pushes keep working, only the reads are gone.
+        attach_calloop(
+            handle.clone(),
+            fd,
+            fd_slot,
+            tween_flag,
+            pty_poisoned,
+            move |data| terminal.borrow_mut().push_pty_data(data),
+        )
+        .ok()
+    });
+    // No terminal (unreachable on a production thread, which builds it
+    // before the bind): nothing to feed, and no source to attach.
+
     loop {
         if state.done {
+            // The teardown removed the surfaces; the pty read source goes
+            // with them (row 8.1, the GTK teardown's order: surfaces first,
+            // then the `Pty::detach` twin), retiring the fd slot. A source
+            // that already removed itself on hangup leaves a stale request
+            // here, which dropping is harmless.
+            if let Some(source) = pty_source.take() {
+                source.remove();
+            }
             let _ = queue;
             return Ok(());
         }
-        // `None`: park until the command channel or the connection wakes the
-        // loop, like the parked GTK thread's main context.
-        event_loop.dispatch(None, state)?;
+        if let Err(error) = event_loop.dispatch(None, state) {
+            // The wayland source surfaces a closed connection (and any other
+            // fatal loop error) as a dispatch error: the compositor is gone,
+            // so the panel is dead (D2). The read source goes with the loop;
+            // removing it first retires the fd slot like a teardown does.
+            if let Some(source) = pty_source.take() {
+                source.remove();
+            }
+            return Err(error);
+        }
         // The repaint request the terminal's callbacks latched (row 8.1):
         // the draw step reads and clears it here once the pool buffers and
         // the present path exist (dispatch D4c). Nothing draws yet.

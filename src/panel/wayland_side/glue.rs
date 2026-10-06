@@ -117,11 +117,13 @@ mod tests {
     use crate::layout::{Keyboard, Layout, Side};
     use crate::panel::PinwinError;
     use crate::panel::handshake::{Handshake, map_start};
+    use crate::pty::attach_calloop;
     use crate::render::font::FontBook;
     use crate::render::text_pass::test_support;
     use std::num::NonZeroU16;
+    use std::os::fd::FromRawFd;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
 
     /// A startup for the tests; the thread does not touch the pty fd in
@@ -260,6 +262,90 @@ mod tests {
         assert!(
             repaint.get(),
             "the terminal's output latched the repaint flag"
+        );
+    }
+
+    /// A connected pty pair (master, slave): the master is the panel-side
+    /// fd, the slave stands in for the hosted child (D10 — no display, no
+    /// real child), like the calloop source's own tests.
+    fn pty_pair() -> (std::fs::File, std::fs::File) {
+        // SAFETY: `posix_openpt` takes only flags.
+        let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+        assert!(master >= 0, "posix_openpt");
+        // SAFETY: `master` is an open pty master from the call above;
+        // `grantpt` and `unlockpt` take only the descriptor, and `ptsname`
+        // returns libc's static slave-name buffer.
+        let ptr = unsafe {
+            assert_eq!(libc::grantpt(master), 0, "grantpt");
+            assert_eq!(libc::unlockpt(master), 0, "unlockpt");
+            libc::ptsname(master)
+        };
+        assert!(!ptr.is_null(), "ptsname");
+        // SAFETY: `ptsname` returned a pointer to a nul-terminated name.
+        let name = unsafe { std::ffi::CStr::from_ptr(ptr) };
+        let slave = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(name.to_str().expect("slave name is utf-8"))
+            .expect("open the slave side");
+        // SAFETY: the master descriptor is owned by this `File` from here on.
+        unsafe { (std::fs::File::from_raw_fd(master), slave) }
+    }
+
+    /// Dispatch until `until` holds, failing after five seconds instead of
+    /// hanging the test.
+    fn dispatch_until(until: impl Fn() -> bool, event_loop: &mut calloop::EventLoop<()>) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !until() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the loop never reached the condition"
+            );
+            event_loop
+                .dispatch(Some(std::time::Duration::from_millis(100)), &mut ())
+                .expect("dispatch");
+        }
+    }
+
+    /// The thread's byte path feeds the pty's bytes into the terminal
+    /// through the calloop read source: bytes written on the slave side
+    /// reach the terminal — initialized here, the way the real thread's
+    /// first `push_size` initializes it — and the terminal's output latches
+    /// the repaint flag the loop reads. The source stays installed and the
+    /// fd slot live for an idle loop afterwards.
+    #[test]
+    fn the_pty_source_feeds_the_terminal_and_latches_the_repaint_flag() {
+        use std::io::Write as _;
+        use std::os::fd::AsRawFd as _;
+
+        let (master, mut slave) = pty_pair();
+        let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
+        let (terminal, repaint, pty) = byte_path(Poisoned::new(), master.as_raw_fd(), cell);
+        assert!(
+            terminal.borrow_mut().push_size(8, 4, 9, 16),
+            "the test grid pushes"
+        );
+
+        let mut event_loop = calloop::EventLoop::<()>::try_new().expect("event loop");
+        let (fd, fd_slot, pty_poisoned) = pty.read_source();
+        let _source = attach_calloop(
+            event_loop.handle(),
+            fd,
+            Arc::clone(&fd_slot),
+            Arc::new(AtomicBool::new(false)),
+            pty_poisoned,
+            {
+                let terminal = Rc::clone(&terminal);
+                move |data| terminal.borrow_mut().push_pty_data(data)
+            },
+        )
+        .expect("attach the calloop source");
+
+        slave.write_all(b"hello").expect("write to the slave");
+        dispatch_until(|| repaint.get(), &mut event_loop);
+        assert!(
+            fd_slot.load(Ordering::Relaxed) >= 0,
+            "a plain dispatch leaves the source installed"
         );
     }
 }

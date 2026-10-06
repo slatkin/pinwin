@@ -24,7 +24,7 @@ use calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 
 use crate::guard::{Poisoned, guard};
 
-use super::{Drain, PTY_BUDGET_US, drain, set_non_blocking};
+use super::{Drain, PTY_BUDGET_US, Pty, drain, set_non_blocking};
 
 /// The registration handle of one calloop pty read source (D2): the teardown
 /// twin of `Pty::detach` on the glib path. [`PtySource::remove`] takes the
@@ -62,6 +62,22 @@ impl<D> PtySource<'_, D> {
         // (calloop versions the entry), so this drops the stale request.
         self.handle.remove(self.token);
         self.fd_slot.store(-1, Ordering::Relaxed);
+    }
+}
+
+impl Pty {
+    /// The read-source inputs the panel thread's calloop attach needs
+    /// (row 8.1): the fd and the shared slot — the one the [`PtyWriter`]
+    /// reads, so a hangup or a teardown retires the writes with the reads —
+    /// and the panel's shared D5 latch the drain runs under. The pty module
+    /// owns them; the panel thread only attaches. The tween flag is the
+    /// tween driver's own `Arc` (row 8.1), not this handle's glib-path one.
+    pub(crate) fn read_source(&self) -> (RawFd, Arc<AtomicI32>, Poisoned) {
+        (
+            self.fd.load(Ordering::Relaxed),
+            Arc::clone(&self.fd),
+            self.poisoned.clone(),
+        )
     }
 }
 

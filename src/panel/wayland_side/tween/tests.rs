@@ -1,6 +1,4 @@
 use std::num::NonZeroU16;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 
 use crate::guard::Poisoned;
@@ -500,4 +498,81 @@ fn the_driver_holds_a_frame_log_only_while_one_was_begun() {
 
     driver.cancel();
     assert!(!driver.has_log(), "the stop took the log away");
+}
+
+/// The pty read source's tween flag (row 8.1): a begin that stages a tween
+/// sets it and the finish frame clears it — the drain's budget follows the
+/// driver's own state.
+#[test]
+fn the_tween_flag_sets_at_the_begin_and_clears_at_the_finish() {
+    let mut driver = TweenDriver::default();
+    assert!(
+        !driver.tween_flag().load(Ordering::Relaxed),
+        "no tween, no flag"
+    );
+    driver.begin(0, 100, 1000, Instant::now(), None);
+    assert!(
+        driver.tween_flag().load(Ordering::Relaxed),
+        "a begin sets it"
+    );
+    // The first frame stamps the tween's clock start.
+    let _ = driver.frame(0);
+    assert_eq!(driver.frame(1000), FrameStep::Finished(100));
+    assert!(
+        !driver.tween_flag().load(Ordering::Relaxed),
+        "the finish clears it"
+    );
+}
+
+/// The watchdog's expiry is a stop relay too: the flag clears with the
+/// tween it snapped.
+#[test]
+fn the_tween_flag_clears_at_the_watchdogs_expiry() {
+    let mut driver = TweenDriver::default();
+    // A begin whose instant is already 2000 ms past: the deadline is long
+    // gone, so the next fire expires the tween.
+    driver.begin(0, 100, 1000, past(2000), None);
+    assert!(driver.tween_flag().load(Ordering::Relaxed));
+    assert_eq!(driver.watchdog(Instant::now()), WatchdogStep::Expired(100));
+    assert!(
+        !driver.tween_flag().load(Ordering::Relaxed),
+        "the expiry clears it"
+    );
+}
+
+/// The cancel is a stop relay whether or not a tween ran, and a snap begin
+/// — a zero duration — sets nothing.
+#[test]
+fn the_tween_flag_clears_at_the_cancel_and_sets_nothing_on_a_snap() {
+    let mut driver = TweenDriver::default();
+    driver.begin(0, 100, 1000, Instant::now(), None);
+    driver.cancel();
+    assert!(
+        !driver.tween_flag().load(Ordering::Relaxed),
+        "the cancel clears it"
+    );
+
+    assert_eq!(
+        driver.begin(0, 100, 0, Instant::now(), None),
+        TweenBegin::Snap
+    );
+    assert!(
+        !driver.tween_flag().load(Ordering::Relaxed),
+        "a snap sets nothing"
+    );
+}
+
+/// A retarget keeps the flag set: the old tween's stop and the new one's
+/// begin land in the same store, so the drain's budget never drops between
+/// two tweens.
+#[test]
+fn the_tween_flag_keeps_set_through_a_retarget() {
+    let mut driver = TweenDriver::default();
+    driver.begin(0, 100, 1000, Instant::now(), None);
+    driver.begin(100, 200, 1000, Instant::now(), None);
+    assert!(driver.is_active(), "the retarget staged a tween");
+    assert!(
+        driver.tween_flag().load(Ordering::Relaxed),
+        "the flag survives the retarget"
+    );
 }

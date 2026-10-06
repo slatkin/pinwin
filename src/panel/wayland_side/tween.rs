@@ -37,6 +37,8 @@
 //! prints its one summary line, exactly where the GTK path's `stop_inner`
 //! printed.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use calloop::timer::{TimeoutAction, Timer};
@@ -143,6 +145,12 @@ pub struct TweenDriver {
     /// already stopped or was retargeted cannot land in the next tween's
     /// log.
     generation: u64,
+    /// The pty read source's tween flag (row 8.1): whether a tween runs,
+    /// shared with the calloop pty source so the drain's budget applies
+    /// only while a tween runs. Owned here — not mirrored from outside —
+    /// so the flag is set and cleared exactly where the driver begins and
+    /// stops a tween, and a missed stop cannot throttle the drain forever.
+    tween_active: Arc<AtomicBool>,
 }
 
 impl TweenDriver {
@@ -171,29 +179,48 @@ impl TweenDriver {
         // The frame feedbacks carry the generation they were requested
         // under, so the new tween's log starts clean.
         self.generation = self.generation.wrapping_add(1);
-        if duration_ms == 0 {
+        let outcome = if duration_ms == 0 {
             // A snap holds no log: nothing runs to feed one.
-            return TweenBegin::Snap;
-        }
-        let Some(deadline) = now.checked_add(Duration::from_millis(
-            u64::from(duration_ms) + WATCHDOG_SLACK_MS,
-        )) else {
-            // A deadline beyond the monotonic clock's range cannot be armed;
-            // a snap is always a valid outcome.
-            return TweenBegin::Snap;
+            TweenBegin::Snap
+        } else {
+            match now.checked_add(Duration::from_millis(
+                u64::from(duration_ms) + WATCHDOG_SLACK_MS,
+            )) {
+                // A deadline beyond the monotonic clock's range cannot be
+                // armed; a snap is always a valid outcome.
+                None => TweenBegin::Snap,
+                Some(deadline) => {
+                    self.running = Some(Running {
+                        tween: Tween::begin(from_px, to_px, duration_ms),
+                        deadline,
+                    });
+                    self.frame_log = frame_log;
+                    TweenBegin::Run { deadline }
+                }
+            }
         };
-        self.running = Some(Running {
-            tween: Tween::begin(from_px, to_px, duration_ms),
-            deadline,
-        });
-        self.frame_log = frame_log;
-        TweenBegin::Run { deadline }
+        // The pty read source's tween flag (row 8.1): a begin that staged a
+        // tween sets it, a retarget over a running tween keeps it set — the
+        // old tween's stop and the new one's begin land in the same store —
+        // and a begin that snapped clears it. The drain's budget follows
+        // the driver's own state.
+        self.tween_active
+            .store(self.running.is_some(), Ordering::Relaxed);
+        outcome
     }
 
     /// Whether a tween is running.
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.running.is_some()
+    }
+
+    /// The pty read source's tween flag (row 8.1): the `Arc` the calloop
+    /// pty source reads its drain budget from, owned here so the flag is
+    /// set and cleared exactly where the driver begins and stops a tween.
+    #[must_use]
+    pub(crate) fn tween_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.tween_active)
     }
 
     /// Whether the running tween carries a frame log (row 6.3): the caller
@@ -237,6 +264,9 @@ impl TweenDriver {
                 }
                 Advance::Finished => {
                     self.stop_log();
+                    // The pty read source's flag (row 8.1): the finish is a
+                    // stop relay, so the drain's budget ends with the tween.
+                    self.tween_active.store(false, Ordering::Relaxed);
                     FrameStep::Finished(running.tween.target_px())
                 }
             },
@@ -252,6 +282,9 @@ impl TweenDriver {
     pub fn cancel(&mut self) {
         self.running = None;
         self.stop_log();
+        // The pty read source's flag (row 8.1): the cancel is a stop relay,
+        // whether or not a tween ran.
+        self.tween_active.store(false, Ordering::Relaxed);
     }
 
     /// The generation the running tween's presentation feedbacks carry
@@ -315,6 +348,8 @@ impl TweenDriver {
         }
         self.armed = None;
         self.stop_log();
+        // The pty read source's flag (row 8.1): the expiry is a stop relay.
+        self.tween_active.store(false, Ordering::Relaxed);
         WatchdogStep::Expired(running.tween.target_px())
     }
 
