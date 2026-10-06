@@ -32,7 +32,8 @@ pub(crate) const CACHE_CAP: usize = 8192;
 /// LRU) keeps every hit O(1), costs no per-entry bookkeeping, and suits
 /// answers whose repeat chance does not depend on age. Memory ceiling:
 /// at most `CACHE_CAP` entries of one `char` key and one [`Cached`]
-/// answer — a few hundred kilobytes — plus, through the byte map the
+/// answer — about 1 MB (each entry holds a `Face` with its path and an
+/// `Arc`) — plus, through the byte map the
 /// cached faces share, at most one allocation per font file loaded since
 /// the last clear.
 pub(crate) struct FallbackCache {
