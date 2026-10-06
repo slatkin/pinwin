@@ -133,6 +133,9 @@ impl Modifiers {
     pub const ALT: Modifiers = Modifiers(crate::ghostty_sys::input::GHOSTTY_MODS_ALT);
     pub const SUPER: Modifiers = Modifiers(crate::ghostty_sys::input::GHOSTTY_MODS_SUPER);
     pub const CAPS_LOCK: Modifiers = Modifiers(crate::ghostty_sys::input::GHOSTTY_MODS_CAPS_LOCK);
+    /// The seat path (replace-gtk-with-wayland row 5.1) reports num lock;
+    /// the GDK path has no num-lock mask and never sets this bit.
+    pub const NUM_LOCK: Modifiers = Modifiers(crate::ghostty_sys::input::GHOSTTY_MODS_NUM_LOCK);
 
     /// The raw modifier bits for the FFI call.
     #[must_use]

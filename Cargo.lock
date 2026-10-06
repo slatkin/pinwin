@@ -793,6 +793,7 @@ dependencies = [
  "tiny-skia",
  "wayland-client",
  "wayland-protocols",
+ "xkbcommon",
  "yeslogic-fontconfig-sys",
 ]
 

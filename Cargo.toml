@@ -53,6 +53,13 @@ smithay-client-toolkit = "0.21"
 calloop = "0.14"
 calloop-wayland-source = "0.4"
 
+# The keyboard handler's own xkbcommon state (replace-gtk-with-wayland D8,
+# row 5.1): the toolkit hands the keymap over as a string and its KeyEvent
+# carries no consumed modifiers or level-0 keysym, so the seat side keeps a
+# keymap and state of its own. Same 0.8 line the toolkit pins, so one shared
+# build.
+xkbcommon = "0.8"
+
 # The renderer's CPU stack (replace-gtk-with-wayland D5/D6, row 2.1):
 # tiny-skia fills and scales, swash shapes and rasterizes, fontconfig resolves
 # the Ghostty family (D6) and png decodes the kitty images.

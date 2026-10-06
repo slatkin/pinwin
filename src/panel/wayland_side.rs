@@ -55,6 +55,7 @@ use super::handshake::{APPLY_WAIT, Handshake, StartOutcome, wait_for_apply, wait
 pub(crate) mod apply;
 pub mod buffers;
 pub(crate) mod commands;
+pub mod seat;
 pub mod sizing;
 pub(crate) mod state;
 mod surfaces;
