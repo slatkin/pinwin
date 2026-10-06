@@ -47,6 +47,10 @@ pub mod font;
 /// canvas: the cast seam, the painter's cell metrics and the frame input
 /// (D5). GTK-free, like the canvas.
 pub mod geom;
+/// The glyph module (row 4.5): swash rasterizes one glyph id of one face at
+/// one device size, with hinting, colour and style synthesis, and caches the
+/// results (replace-gtk-with-wayland D6/D11). GTK-free, like the canvas.
+pub mod glyph;
 mod images;
 mod metrics;
 mod node_cursor;
