@@ -318,17 +318,15 @@ mod tests {
         );
 
         // A bad name is an exit-2 error before any surface opens; an empty
-        // value is bad too, not the default.
+        // value is bad too, not the default. The exact wording is
+        // `InstanceName::parse`'s contract, asserted in `ipc.rs`; here only
+        // the error class holds: the rejection names the variable.
         for raw in ["", "a/b", &"a".repeat(65), "a b"] {
             let map = HashMap::from([("PINWIN_NAME".to_owned(), raw.to_owned())]);
             let error = call(&map).expect_err(raw);
-            assert_eq!(
-                error,
-                format!(
-                    "pinwin: PINWIN_NAME: expected a name of 1..=64 characters from \
-                     [A-Za-z0-9_-], got '{raw}'"
-                ),
-                "raw = {raw:?}"
+            assert!(
+                error.contains("pinwin: PINWIN_NAME:"),
+                "raw = {raw:?}, error = {error}"
             );
         }
     }

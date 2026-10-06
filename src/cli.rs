@@ -133,14 +133,15 @@ mod tests {
         );
 
         // The same name check as `PINWIN_NAME`, under the `--focus` label:
-        // a bad name, the empty one included, is an exit-2 error.
+        // a bad name, the empty one included, is an exit-2 error. The exact
+        // wording is `InstanceName::parse`'s contract, asserted in `ipc.rs`;
+        // here only the error class holds: the rejection names the option.
         for raw in ["", "a/b"] {
-            assert_eq!(
-                parse_args(&os(&["--focus", raw])),
-                Err(format!(
-                    "pinwin: --focus: expected a name of 1..=64 characters from \
-                     [A-Za-z0-9_-], got '{raw}'"
-                )),
+            assert!(
+                matches!(
+                    parse_args(&os(&["--focus", raw])),
+                    Err(message) if message.contains("pinwin: --focus:")
+                ),
                 "raw = {raw:?}"
             );
         }

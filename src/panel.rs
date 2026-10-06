@@ -288,17 +288,14 @@ fn post_apply(inner: &Inner, layout: Layout, duration_ms: u32) -> Result<(), Pin
 /// A focus request through the display-free inner handle (D10): the same
 /// order as [`apply_via_inner`] — the poisoned check first (D5: a panic
 /// reports `Internal`, never `NotRunning`), then the ended check — then the
-/// mode short-circuit and the bounded posted remap.
-// Approved per-instance (#13): the guard-Poisoned latch discards the panic
-// payload by design; the entry maps it onto `Internal`.
-#[allow(
-    clippy::map_err_ignore,
-    reason = "approved #13: guard-Poisoned latch discards the panic payload by design"
-)]
+/// mode short-circuit and the bounded posted remap. The guard's `Err` maps
+/// with a match, like `handshake.rs`'s outcome mappings, so no
+/// payload-discarding `map_err` is needed here.
 pub(crate) fn request_focus_via_inner(inner: &Inner) -> Result<(), PinwinError> {
-    guard(&inner.poisoned, || post_focus(inner))
-        .map_err(|_| PinwinError::Internal)
-        .and_then(std::convert::identity)
+    match guard(&inner.poisoned, || post_focus(inner)) {
+        Ok(result) => result,
+        Err(_) => Err(PinwinError::Internal),
+    }
 }
 
 /// The unguarded body of [`request_focus_via_inner`].

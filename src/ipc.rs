@@ -171,10 +171,14 @@ fn bind_fresh(path: &Path) -> Result<net::UnixListener, io::Error> {
     let listener = net::UnixListener::bind(path)?;
     // The forked child execs the host's command, and the command must never
     // inherit the listener; set the close-on-exec flag explicitly instead of
-    // relying on the socket type std happens to create.
+    // relying on the socket type std happens to create. A failed `fcntl` is
+    // an error, not a tolerated one: an inheritable listener would keep the
+    // name claimed after the host exits.
     // SAFETY: `fd` is the listener's own descriptor and `F_SETFD` only sets
     // its close-on-exec flag.
-    let _ = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
+    if unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok(listener)
 }
 
@@ -551,6 +555,22 @@ mod tests {
         // ...and the first owner's socket still answers.
         net::UnixStream::connect(&path).expect("the live socket survived");
         drop(first);
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// The exec'd command never inherits the listener: the bound descriptor
+    /// carries the close-on-exec flag (`F_GETFD` shows it).
+    #[test]
+    fn the_bound_listener_is_close_on_exec() {
+        let dir = temp_dir("cloexec");
+        let path = dir.join("wayland-0-default.sock");
+        let listener = bind_instance_socket(&path).expect("bind");
+        // SAFETY: `F_GETFD` takes no argument and the fd is this test's own
+        // listener.
+        let flags = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0, "fcntl");
+        assert_ne!(flags & libc::FD_CLOEXEC, 0, "the listener is CLOEXEC");
+        drop(listener);
         fs::remove_dir_all(&dir).expect("cleanup");
     }
 
