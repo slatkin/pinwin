@@ -21,8 +21,8 @@
 //! surface geometry, [`sizing`] the pure size decisions, [`apply`] the layout
 //! apply (row 3.5), [`commands`] the command-channel handling,
 //! [`watchdog`] the startup watchdog, [`tween`] the width tween's driver
-//! (row 6.1) and [`crop`] the tween's crop plan and wide buffer (row 6.2).
-//! Until row
+//! (row 6.1), [`crop`] the tween's crop plan and wide buffer (row 6.2) and
+//! [`tween_draw`] the tween's holder and frame glue (row 6.2). Until row
 //! 8.1 switches `Panel::start` over, nothing in the crate calls
 //! [`spawn_panel_thread`]: the entry point is `pub` so it stays reachable (a
 //! `pub(crate)` entry with no caller is dead code under `-D warnings`, and
@@ -63,6 +63,7 @@ pub mod sizing;
 pub(crate) mod state;
 mod surfaces;
 pub mod tween;
+pub(crate) mod tween_draw;
 pub(crate) mod watchdog;
 
 use state::{BindFailure, PanelState};

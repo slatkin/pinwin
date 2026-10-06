@@ -45,11 +45,11 @@ use crate::surfaces::gap::{HeldGap, start_held_gap};
 
 use super::super::handshake::{Handshake, StartOutcome};
 use super::Startup;
-use super::apply::SurfaceGeometry;
 use super::buffers::{Scale, viewport_destination};
 use super::sizing::{Grid, Sizing};
-use super::surfaces::{PanelSurfaces, SurfaceId, panel_margins};
+use super::surfaces::{PanelSurfaces, SurfaceId};
 use super::tween::TweenDriver;
+use super::tween_draw::{TweenDraw, TweenRender};
 
 /// The globals and surfaces one bound panel thread session holds (D2). The
 /// fields live here and not on [`PanelState`] because every one of them needs
@@ -78,6 +78,10 @@ pub(crate) struct Session {
     /// The resolved output and its xdg-output logical size (D3). `None` until
     /// both the enter and the logical size have arrived.
     pub(crate) resolved: Option<OutputSize>,
+    /// The queue handle the session dispatches through (row 6.2): the tween
+    /// frames' `wl_surface.frame` requests go through it, from the apply's
+    /// begin frame as well as from the frame handler.
+    pub(crate) qh: QueueHandle<PanelState>,
 }
 
 /// The wayland panel thread's dispatch state: the display-free core every
@@ -112,6 +116,14 @@ pub(crate) struct PanelState {
     /// callbacks and the watchdog timer drive it from row 6.2's animated
     /// apply on.
     pub(crate) tween: TweenDriver,
+    /// The running tween's wide cache (row 6.2, [`super::tween_draw`]):
+    /// `Some` exactly while a tween runs and its wide buffer is presentable,
+    /// dropped when the tween stops.
+    pub(crate) tween_draw: Option<TweenDraw>,
+    /// The render state the tween's wide draw reads (row 6.2,
+    /// [`super::tween_draw`]): row 8.1 fills it when the terminal and the
+    /// painter move onto this thread; until then an animated apply snaps.
+    pub(crate) render: Option<TweenRender>,
     pub(crate) session: Option<Session>,
 }
 
@@ -147,6 +159,8 @@ impl PanelState {
             held: start_held_gap(startup.layout, cell.width().get()),
             applied: startup.layout,
             tween: TweenDriver::default(),
+            tween_draw: None,
+            render: None,
             session: None,
         }
     }
@@ -191,6 +205,7 @@ impl PanelState {
             pending_output: None,
             resolved: None,
             scale,
+            qh: qh.clone(),
         });
         Ok(())
     }
@@ -202,33 +217,6 @@ impl PanelState {
     pub(crate) fn connection_closed(&mut self) {
         self.inner.live.store(false, Ordering::Relaxed);
         self.handshake.report(StartOutcome::NoDisplay);
-    }
-
-    /// The tween's finish action (row 6.1): apply the target width through
-    /// the same path a plain apply writes its geometry, so a watchdog fire
-    /// leaves the panel at the target width exactly like the GTK watchdog's
-    /// `on_finish`. The geometry comes from the applied layout and the held
-    /// gap: a tween only runs between layouts that match in side and
-    /// left/right gutters, and the apply that began it staged the rest. The
-    /// stop relay — the frame-cache drop, the deferred grid push and the pty
-    /// tween flag — joins here when rows 6.2 and 8.1 move those onto this
-    /// thread. The headless core has no session, so the write is exercised
-    /// only on niri (row 10.1).
-    pub(crate) fn tween_finished(&mut self, target_px: i32) {
-        let geometry = SurfaceGeometry {
-            panel_side: self.applied.side(),
-            panel_margins: panel_margins(self.applied),
-            panel_width: Some(target_px),
-            reserve_side: self.held.side(),
-            reserve_zone: self.held.zone(),
-        };
-        if let Some(surfaces) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.surfaces.as_mut())
-        {
-            surfaces.apply_geometry(&geometry);
-        }
     }
 
     /// Tear the panel down: drop the two layer surfaces and end the loop.
@@ -345,6 +333,19 @@ impl PanelState {
         };
         let (width, height) = configure.new_size;
         if surfaces.is_panel(layer) {
+            if self.tween_draw.is_some() {
+                // A tween owns the panel surface's size, viewport and buffer
+                // commits until it finishes (row 6.2): this configure only
+                // runs the `on-demand` switch and records the height for the
+                // deferred grid push — the sizing's defer mode holds the
+                // push until the finish — while the tween frames keep
+                // committing the cached height, the same staleness the GTK
+                // path had; the tween's finish and the next configure catch
+                // up.
+                surfaces.panel_configured_under_tween();
+                self.configure_grid(height, &mut |grid| apply_pty_size(fd, grid));
+                return;
+            }
             // The viewporter destination is the logical size (D5): set
             // before the buffer commit the configure handler makes. A
             // zero-sized configure sets no destination — the viewport
@@ -473,12 +474,23 @@ impl CompositorHandler for PanelState {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _time: u32,
+        surface: &wl_surface::WlSurface,
+        time: u32,
     ) {
-        // The tween's frame callbacks arrive here; row 6.2 wires them to the
-        // driver in [`super::tween`] — each callback maps to
-        // `TweenDriver::frame`, and a running tween requests the next one.
+        // The tween's frame callbacks arrive here (row 6.2): the panel
+        // surface's step the driver and commit the eased frame, the
+        // reserve's change nothing. Guarded like every handler (D5).
+        let poisoned = self.poisoned.clone();
+        let _ = guard(&poisoned, || {
+            let is_panel = self
+                .session
+                .as_ref()
+                .and_then(|session| session.surfaces.as_ref())
+                .is_some_and(|surfaces| surfaces.is_panel_surface(surface));
+            if is_panel {
+                super::tween_draw::on_tween_frame(self, time);
+            }
+        });
     }
 
     fn surface_enter(
@@ -617,7 +629,7 @@ delegate_dispatch2!(PanelState);
 
 #[cfg(test)]
 mod tests {
-    use super::super::surfaces::panel_anchor;
+    use super::super::surfaces::{panel_anchor, panel_margins};
     use super::*;
     use crate::guard::Poisoned as GuardPoisoned;
     use crate::layout::{Keyboard, Side};
