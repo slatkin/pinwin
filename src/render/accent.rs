@@ -17,34 +17,84 @@
 //! GTK-free (`replace-gtk-with-wayland` D10); private to the painter, whose
 //! frame pass calls it last, on top of every grid layer.
 
-use super::canvas::Canvas;
-use super::geom::{FrameInput, PainterMetrics, device_f32};
+use super::canvas::{Canvas, CanvasColor};
+use super::geom::{DeviceRect, FrameInput, PainterMetrics, device_f32};
 
 /// Draw the focus accent for `frame`, if the frame is focused and an accent
 /// is configured. `metrics` supplies the output scale the accent's logical
 /// stroke width is converted with.
 pub(super) fn paint(canvas: &mut Canvas, frame: &FrameInput, metrics: &PainterMetrics) {
+    let Some(color) = bands_color(frame) else {
+        return;
+    };
+    let Some(bands) = bands(frame, metrics) else {
+        return;
+    };
+    for (x, y, w, h) in bands {
+        canvas.fill_rect_f32(x, y, w, h, color);
+    }
+}
+
+/// The accent colour, when the frame is focused and an accent is
+/// configured — the gate [`paint`] and [`paint_rows`] share.
+fn bands_color(frame: &FrameInput) -> Option<CanvasColor> {
+    let accent = frame.accent()?;
+    frame.focused().then_some(accent.color())
+}
+
+/// The four accent bands of [`paint`], as `(x, y, w, h)` device f32
+/// rectangles — the one place the band geometry is written, so the full
+/// and the partial draw cannot drift.
+fn bands(frame: &FrameInput, metrics: &PainterMetrics) -> Option<[(f32, f32, f32, f32); 4]> {
+    let (device_w, device_h) = frame.device_size();
+    let (device_w, device_h) = to_f32_pair(device_w, device_h)?;
+    let stroke = f32::from(frame.accent().expect("the caller checked").width().get())
+        * device_f32(metrics.scale());
+    Some([
+        (0.0, 0.0, device_w, stroke),
+        (0.0, device_h - stroke, device_w, stroke),
+        (0.0, 0.0, stroke, device_h),
+        (device_w - stroke, 0.0, stroke, device_h),
+    ])
+}
+
+/// Draw the part of the focus accent that falls inside `rows` (row 4.8):
+/// the partial repaint cleared those device rectangles to the theme
+/// background, which erased the accent where it crosses them, so the bands
+/// are redrawn — clipped to each row rectangle, exactly the pixels a full
+/// repaint would put there. The clipping edges are the rows' snapped whole
+/// device pixels; a band's own fractional edge that falls inside a row is
+/// preserved, so the anti-aliased edge pixels come out identical. Nothing
+/// draws when the frame is unfocused or carries no accent, like [`paint`].
+pub(super) fn paint_rows(
+    canvas: &mut Canvas,
+    frame: &FrameInput,
+    metrics: &PainterMetrics,
+    rows: &[DeviceRect],
+) {
     if !frame.focused() {
         return;
     }
-    let Some(accent) = frame.accent() else {
+    if frame.accent().is_none() {
+        return;
+    }
+    let Some(bands) = bands(frame, metrics) else {
         return;
     };
-    let (device_w, device_h) = frame.device_size();
-    let Some((device_w, device_h)) = to_f32_pair(device_w, device_h) else {
-        return;
-    };
-    // The logical stroke width scales to device pixels; the rectangle it
-    // strokes is inset by half the stroke so the stroke stays inside.
-    let stroke = f32::from(accent.width().get()) * device_f32(metrics.scale());
-    let color = accent.color();
-    // The stroked rectangle's four sides, outer edges first. A stroke
-    // wider than the window degenerates into overlapping bands, which the
-    // fills clip to the canvas.
-    canvas.fill_rect_f32(0.0, 0.0, device_w, stroke, color);
-    canvas.fill_rect_f32(0.0, device_h - stroke, device_w, stroke, color);
-    canvas.fill_rect_f32(0.0, 0.0, stroke, device_h, color);
-    canvas.fill_rect_f32(device_w - stroke, 0.0, stroke, device_h, color);
+    let color = frame.accent().expect("checked above").color();
+    for row in rows {
+        for (x, y, w, h) in bands {
+            // The intersection of the row rectangle and the band: empty in
+            // one axis draws nothing, like every canvas fill.
+            let left = x.max(device_f32(f64::from(row.x())));
+            let top = y.max(device_f32(f64::from(row.y())));
+            let right = (x + w).min(device_f32(f64::from(row.x() + row.w())));
+            let bottom = (y + h).min(device_f32(f64::from(row.y() + row.h())));
+            if right > left && bottom > top {
+                canvas.fill_rect_f32(left, top, right - left, bottom - top, color);
+            }
+        }
+    }
 }
 
 /// The canvas' device extents as `f32`. `None` past the `f32` range — a

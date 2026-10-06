@@ -32,6 +32,8 @@ use crate::ghostty_sys::screen::{
 };
 use crate::ghostty_sys::style::{GHOSTTY_STYLE_COLOR_RGB, GhosttyColorRgb, GhosttyStyle};
 
+mod dirty;
+pub use dirty::FrameDirty;
 mod graphemes;
 pub(crate) use graphemes::first_codepoint;
 mod images;
@@ -44,6 +46,7 @@ mod types;
 const PLACEHOLDER: u32 = 0x0010_EEEE;
 
 pub use types::{CELL_TEXT_CAP, Cell, Colors, Cursor, CursorStyle, Image, Rgb, StyleFlags, Wide};
+
 /// The frame's lifecycle state, grouped so [`FrameState`] stays readable
 /// (`struct_excessive_bools`: adjacent flags invite swapped writes). The
 /// row-walk flag stays on [`FrameState`] itself: it belongs to the row
@@ -67,12 +70,34 @@ pub(crate) struct FrameState {
     background: Rgb,
     graphics: Option<GhosttyKittyGraphics>,
     placeholders: images::PlaceholderMap,
+    /// The global dirty state the render state reported at `frame_begin`
+    /// (row 4.8). `update` only updates the dirty state, it never unsets
+    /// it; `frame_end`'s clean unsets both layers after a consumed frame.
+    dirty: FrameDirty,
+    /// The viewport rows whose dirty flag the render state reported at
+    /// `frame_begin`, in walk order (row 4.8). The flag is conservative: a
+    /// row may be listed without its content changing.
+    dirty_rows: Vec<i32>,
+    /// Whether the render state carries any kitty placement at all (row
+    /// 4.8): an image placement changing does not necessarily mark any row
+    /// dirty, so the frame gate escalates every frame with placements to a
+    /// full redraw.
+    has_images: bool,
+    /// When set, the frame walk visits only these viewport rows — the
+    /// painter's partial repaint (row 4.8) draws the dirty rows and their
+    /// glyph-spill neighbours, and every cell pass shares the walk. Cleared
+    /// by `frame_begin`, kept by `frame_rewind` (every pass of one frame
+    /// walks the same rows).
+    row_filter: Option<Vec<i32>>,
 }
 
 /// The frame API on [`Terminal`]. Every draw callback draws a complete frame:
 /// GTK asks for a redraw for its own reasons too (focus, exposure, resize),
 /// and a frame that skipped the cells it thinks are unchanged would leave those
-/// areas blank, because the callback paints the panel's background first.
+/// areas blank, because the callback paints the panel's background first. The
+/// Wayland painter (row 4.8) keeps its canvas across frames instead, so it can
+/// consult the dirty data — [`Terminal::frame_dirty`],
+/// [`Terminal::frame_dirty_rows`] — and repaint only the changed rows.
 impl Terminal {
     /// Refresh the render state and start a frame. Returns false when the
     /// terminal does not exist or its render state cannot be refreshed, in
@@ -140,7 +165,10 @@ impl Terminal {
         images::image_next(&mut self.frame, handles, cell_w, cell_h)
     }
 
-    /// Finish the frame and clear the render state's dirty flags.
+    /// Finish the frame and clear the render state's dirty flags — both
+    /// layers: `ghostty_render_state_clean` sets the global state to
+    /// `DIRTY_FALSE` and clears every per-row flag, so a consumed frame
+    /// needs no per-row setter (row 4.8).
     pub fn frame_end(&mut self) {
         let Some(handles) = self.handles.as_ref() else {
             return;
@@ -211,6 +239,18 @@ fn begin(frame: &mut FrameState, handles: &mut Handles, keep_placeholders: bool)
         frame.cursor.style = CursorStyle::from_raw(cursor.visual_style);
         frame.cursor.wide_tail = cursor.wide_tail;
     }
+
+    // The dirty data the update just computed (row 4.8), and the kitty
+    // placement presence. Both walks below leave their iterator wherever
+    // they stop, so each one re-fetches it afterwards; the cell passes and
+    // the image pass must start from their first entry.
+    frame.row_filter = None;
+    frame.dirty = FrameDirty::Clean;
+    frame.dirty_rows.clear();
+    frame.has_images = false;
+    dirty::capture_dirty(frame, render_state, &mut row_iterator);
+    handles.row_iterator = Some(row_iterator);
+    dirty::capture_images(frame, handles);
 
     frame.flags.open = true;
     frame.flags.has_pending = false;
@@ -303,6 +343,12 @@ fn next_raw_cell(frame: &mut FrameState, handles: &mut Handles) -> Option<Cell> 
             )
         } != GHOSTTY_SUCCESS
         {
+            continue;
+        }
+        // The partial repaint's row filter (row 4.8): skip the rows the
+        // painter is not repainting this frame. The filter persists across
+        // `frame_rewind`, so every pass of the frame walks the same rows.
+        if !dirty::row_visible(frame, viewport_y) {
             continue;
         }
         frame.cell_y = viewport_y;

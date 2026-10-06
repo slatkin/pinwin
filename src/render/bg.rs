@@ -95,8 +95,10 @@ fn flush(
 /// The snapped device rectangle of `len` cells in one row: one rectangle
 /// for the whole run. The frame's last row — the one row whose cell pitch
 /// reaches the frame's logical height — fills down to that height, which
-/// need not land on a cell boundary.
-fn run_rect(
+/// need not land on a cell boundary. Also the frame gate's row band (row
+/// 4.8): the partial repaint clears and damages exactly this rectangle per
+/// row, so the two cannot drift.
+pub(super) fn run_rect(
     metrics: &PainterMetrics,
     frame: &FrameInput,
     row: i32,

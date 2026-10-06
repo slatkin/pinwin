@@ -203,7 +203,7 @@ impl Cell {
 }
 
 /// The cursor's viewport position and shape (`PinwinCursor`).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cursor {
     /// Whether the cursor is visible and has a viewport position.
     pub has_value: bool,

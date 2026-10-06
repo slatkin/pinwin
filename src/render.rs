@@ -43,6 +43,10 @@ pub mod cursor;
 /// files and caches a fallback face per code point (replace-gtk-with-wayland
 /// D6/D11). GTK-free, like the canvas.
 pub mod font;
+/// The frame gate (row 4.8): what a frame must redraw, from the render
+/// state's dirty data and the inputs it does not cover. GTK-free, like
+/// the canvas.
+pub mod frame_gate;
 /// The geometry seam between the snapped logical grid and the device-pixel
 /// canvas: the cast seam, the painter's cell metrics and the frame input
 /// (D5). GTK-free, like the canvas.

@@ -79,7 +79,23 @@ pub fn paint_frame(
         accent::paint(canvas, frame, metrics);
         return;
     }
+    paint_open_frame(canvas, metrics, frame, terminal, text, images, offset);
+}
 
+/// Draw the layers of an already-open frame and finish it: the cell layers
+/// in order, the cursor, the kitty images, then [`terminal.frame_end`] and
+/// the focus accent on top. [`paint_frame`] opens the frame and hands the
+/// opened one here; the frame gate (`super::frame_gate`) reuses the same
+/// sequence for its full-repaint path, so the two entries cannot drift.
+pub(super) fn paint_open_frame(
+    canvas: &mut Canvas,
+    metrics: &PainterMetrics,
+    frame: &FrameInput,
+    terminal: &mut Terminal,
+    text: &mut TextPass,
+    images: &mut ImagePass,
+    offset: i32,
+) {
     bg::paint(canvas, metrics, frame, terminal, offset);
     terminal.frame_rewind();
     sprite::paint(canvas, metrics, frame, terminal, offset);
