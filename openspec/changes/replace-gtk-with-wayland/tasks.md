@@ -54,8 +54,8 @@ start a later group.
 
 ## 7. Focus through xdg-activation
 
-- [ ] 7.1 Add the `ActivationToken` newtype with a fallible constructor for 1..=255 bytes of visible ASCII. Export it from the crate. Verify: unit tests accept a valid token and reject an empty token, 256 bytes, a space, a newline and a non-ASCII byte.
-- [ ] 7.2 Change `Panel::request_focus` to take an `ActivationToken`. In `on-demand` mode, send `xdg_activation_v1.activate` for the panel surface. In `none` and `exclusive` mode, or without xdg-activation, return `Ok(())` and do nothing. Delete `remap_for_focus` and the second-map handling. Verify: a display-free test covers the `none` mode no-op. `grep` finds no remap code in `src/`.
+- [x] 7.1 Add the `ActivationToken` newtype with a fallible constructor for 1..=255 bytes of visible ASCII. Export it from the crate. Verify: unit tests accept a valid token and reject an empty token, 256 bytes, a space, a newline and a non-ASCII byte.
+- [x] 7.2 Change `Panel::request_focus` to take an `ActivationToken`. In `on-demand` mode, send `xdg_activation_v1.activate` for the panel surface. In `none` and `exclusive` mode, or without xdg-activation, return `Ok(())` and do nothing. Delete `remap_for_focus` and the second-map handling. Verify: a display-free test covers the `none` mode no-op. `grep` finds no remap code in `src/`.
 - [ ] 7.3 Change the focus socket request to `focus <token>\n`. Make the listener parse the token and answer `error\n` for a request without one. Raise the request size bound to fit a 255-byte token. Verify: protocol tests over a socket pair cover a valid token, a missing token and an oversized line.
 - [ ] 7.4 Make `pinwin --focus` read `XDG_ACTIVATION_TOKEN` and build the token before it connects. If the token is missing or invalid, print a message and exit 2. Verify: tests cover both cases, and the "No token" scenario behaves as written.
 - [ ] 7.5 Update the usage block in `src/main.rs`, the README focus section and the rustdoc on `Panel::request_focus`. Name the key binding example, the niri patch and the stale-token caveat. Verify: `cargo doc` builds with no warnings, and the README shows the new call.
