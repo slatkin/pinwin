@@ -53,9 +53,12 @@ and returns once the panel is on screen or has failed. Layouts push by
 default; `Layout::covering` opts a layout into covering the tiled windows
 while the reservation stays where the last pushing layout put it.
 `apply_layout` and `apply_layout_animated` are methods on the handle;
-`apply_layout_animated` clamps its duration to 1000 ms. Dropping the handle
-closes the panel and cancels any running animation. The library never closes
-the fd and never exits the host.
+`apply_layout_animated` clamps its duration to 1000 ms.
+`request_focus(&ActivationToken::new(token)?)` asks the compositor to give
+the panel keyboard focus with an xdg-activation token; `ActivationToken` is
+re-exported from the crate root and validates the token before any request
+is made. Dropping the handle closes the panel and cancels any running
+animation. The library never closes the fd and never exits the host.
 
 ```rust
 use std::num::NonZeroU16;
@@ -112,7 +115,8 @@ width outside 1..=65535 cannot be expressed (pass `None` for "no accent").
 
 ```text
 pinwin [--] [command...]    # default command: $SHELL, else /bin/sh; needs niri
-pinwin --focus [name]       # ask the named running panel for focus, then exit
+pinwin --focus [name]       # ask the named running panel for focus, then exit;
+                            # needs XDG_ACTIVATION_TOKEN, exits 2 without it
 ```
 
 The binary owns the pty and the child: it sets `TERM=xterm-256color` and
@@ -150,6 +154,22 @@ and exits. The name defaults to `default`. The client exits 0 when the named
 instance accepts the request. With no instance on that name it prints a
 message and exits 1. A bad name prints a message and exits 2 in both places:
 in `PINWIN_NAME`, where the host opens nothing, and after `--focus`.
+
+The client reads the activation token from `XDG_ACTIVATION_TOKEN`, which the
+compositor sets for a process it launches from a key binding. A token is
+1..=255 bytes of visible ASCII. With the variable unset, or with a value
+that is not a valid token, the client prints a message and exits 2 without
+contacting any instance. The host passes the token to its panel's focus
+request, which asks the compositor to focus the panel through xdg-activation.
+
+On-demand focus through xdg-activation needs a compositor that honours the
+request for layer surfaces. Stock niri ignores it for layer surfaces; a niri
+patch — one added branch in niri's `request_activation`, branch
+`spike/xdg-activation-layer-focus` — enables it and is pending upstream, not
+merged. Click focus works on every compositor. A stale token — one the
+compositor already used, or one that is too old — does nothing: the
+compositor's choice is invisible to the client, so the request still exits
+0.
 
 In niri, bind a key to the client:
 

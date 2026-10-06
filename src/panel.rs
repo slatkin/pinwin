@@ -1,6 +1,7 @@
 //! The public `Panel` API (port-to-rust D4, D6, D7): the host calls from its
 //! own thread; the GTK side runs on a process-lifetime `pinwin-gtk` thread
-//! ([`gtk_side`]) whose loop each start drives with its own `GtkApplication`.
+//! (the `gtk_side` module) whose loop each start drives with its own
+//! `GtkApplication`.
 //!
 //! The shape follows `src/pinwin_api.c`: start validates its arguments before
 //! any GTK work, then hands the startup to the GTK thread and waits for a
@@ -235,9 +236,11 @@ impl Panel {
     /// the compositor as an xdg-activation request for the panel surface
     /// (replace-gtk-with-wayland D4): the panel never unmaps, and the
     /// request changes neither the terminal grid, the pty window size nor
-    /// the reserved gap. Whether the compositor honours the request is
-    /// invisible to the caller, so the call returns `Ok(())` once the
-    /// request is made. In the `none` and `exclusive` modes the call returns
+    /// the reserved gap. On a compositor without xdg-activation, or for a
+    /// stale token — one the compositor already used, or one that is too
+    /// old — the request does nothing; the compositor's choice is invisible
+    /// to the caller, so the call returns `Ok(())` once the request is sent
+    /// either way. In the `none` and `exclusive` modes the call returns
     /// `Ok(())` and changes nothing — the host chose the mode, and an
     /// activation request could not gain focus there anyway. The keyboard
     /// mode itself is fixed at start time; the request never changes it.
