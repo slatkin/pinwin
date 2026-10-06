@@ -35,6 +35,9 @@ mod bg;
 /// The canvas the grid painter draws a frame into, from row 4.3 on (D5):
 /// GTK-free, pixel tests without a display.
 pub mod canvas;
+/// The cell metrics from the font, computed with swash (row 4.6): the port
+/// of the Pango `measure`. GTK-free, like the font module.
+pub mod cell_metrics;
 pub mod cursor;
 /// The font module (row 4.4): fontconfig resolves the Ghostty family to font
 /// files and caches a fallback face per code point (replace-gtk-with-wayland
