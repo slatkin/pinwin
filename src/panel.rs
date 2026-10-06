@@ -98,10 +98,10 @@ impl Panel {
     /// Start a panel: put it on screen and return once it is there or has
     /// failed.
     ///
-    /// The fd is validated before any GTK work (`InvalidFd`, D7). A start
+    /// The fd is validated before any thread work (`InvalidFd`, D7). A start
     /// while another handle is alive fails with `AlreadyRunning` and leaves
-    /// the running panel unchanged. `NoDisplay` when GTK or wlr-layer-shell
-    /// is unavailable — nothing opened.
+    /// the running panel unchanged. `NoDisplay` when no Wayland display or
+    /// wlr-layer-shell is available — nothing opened.
     // Approved per-instance (#13): the guard-Poisoned latch discards the
     // panic payload by design; the public entry maps it onto `Internal`.
     #[allow(
@@ -112,7 +112,7 @@ impl Panel {
         // D5 boundary: the start itself is a public entry point. The shared
         // latch does not exist until the start succeeds, so the start's own
         // body is guarded with a throwaway one; the panel's shared latch is
-        // built inside and handed to the GTK side.
+        // built inside and handed to the panel thread.
         let latch = Poisoned::new();
         guard(&latch, || Self::start_inner(startup))
             .map_err(|_| PinwinError::Internal)
