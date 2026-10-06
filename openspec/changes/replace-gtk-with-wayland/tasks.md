@@ -48,7 +48,7 @@ start a later group.
 ## 6. Animation
 
 - [x] 6.1 Drive the tween from frame callbacks, and replace the GLib watchdog with a calloop timer at the duration plus 100 ms. Remove `Anim::allowed` and its read of `gtk-enable-animations`. Verify: the existing tween tests pass, and `grep` finds no `gtk-enable-animations` in `src/`.
-- [ ] 6.2 At the tween's start, draw the grid once into a buffer as wide as the larger width. Commit the size, the margins, the viewporter crop and that buffer in each frame, and move the reserve's zone in the same frames. Without viewporter, copy the crop into a fresh buffer. Verify: a display-free test shows that the crop offset is a whole device pixel at scale 1.5 for both sides.
+- [x] 6.2 At the tween's start, draw the grid once into a buffer as wide as the larger width. Commit the size, the margins, the viewporter crop and that buffer in each frame, and move the reserve's zone in the same frames. Without viewporter, copy the crop into a fresh buffer. Verify: a display-free test shows that the crop offset is a whole device pixel at scale 1.5 for both sides.
 - [ ] 6.3 If presentation-time is available, record presentation times in `PINWIN_FRAMELOG`. Otherwise, record callback times. Verify: `cargo build` succeeds. 10.1 checks the `PINWIN_FRAMELOG` summary line on niri.
 - [ ] 6.4 Update the README behaviour section: the GTK animation setting has no effect, and a duration of 0 snaps. Verify: the README names the zero duration as the only way to snap.
 
