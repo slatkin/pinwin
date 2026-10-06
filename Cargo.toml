@@ -26,24 +26,19 @@ path = "src/main.rs"
 # already in the lock as a transitive dependency.
 libc = "0.2"
 
-# The v4_12 features on gtk4/gdk4 enable `ScrollUnit` (the scroll
-# controller's unit, which the scroll translation needs — port-to-rust row
-# 3.7) and `Surface::scale()` (the fractional output scale the grid snapping
-# reads — snap-grid-edges D3); both are otherwise plain transitive
-# dependencies.
-gtk4 = { version = "0.11", features = ["v4_12"] }
-gtk4-layer-shell = "0.8"
+# The renderer's cairo/pango seam until the painter move (dispatch D6):
+# the cairo draw state and the Pango/pangocairo text path and the gdk-pixbuf
+# decoder still compile against these. The GTK crates went with the GTK path
+# (replace-gtk-with-wayland row 8.1); the direct Wayland client stack below
+# is the only compositor dependency.
 pango = "0.22"
 pangocairo = "0.22"
 cairo-rs = "0.22"
 gdk-pixbuf = "0.22"
 
-gdk4 = { version = "0.11", features = ["v4_12"] }
-
 # The direct Wayland client stack (replace-gtk-with-wayland D1, row 2.1). The
-# GTK crates above stay until row 8.1 removes them; until then nothing on the
-# GTK path touches these. The toolkit's defaults are the calloop and xkbcommon
-# features the row names; the connection is the pure-Rust wayland backend, so
+# toolkit's defaults are the calloop and xkbcommon features the row names; the
+# connection is the pure-Rust wayland backend, so
 # no libwayland link step is needed.
 wayland-client = "0.31"
 # `staging` adds wp_fractional_scale_v1 (D5's preferred-scale source); the

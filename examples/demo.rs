@@ -86,6 +86,36 @@ extern "C" fn dense_on_winch(_sig: std::os::raw::c_int) {
     DENSE_RESIZED.store(true, Ordering::Release);
 }
 
+/// RFC 4648 base64 (standard alphabet, padded) for the kitty payload: the
+/// local replacement for the `glib::base64_encode` the GTK path used. The
+/// RFC 4648 test vectors are asserted in the demo's test module.
+fn base64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = chunk.get(1).map_or(0, |&byte| u32::from(byte));
+        let b2 = chunk.get(2).map_or(0, |&byte| u32::from(byte));
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        let quad = [
+            TABLE[num_traits::cast::<u32, usize>((n >> 18) & 0x3f).expect("six bits")],
+            TABLE[num_traits::cast::<u32, usize>((n >> 12) & 0x3f).expect("six bits")],
+            if chunk.len() > 1 {
+                TABLE[num_traits::cast::<u32, usize>((n >> 6) & 0x3f).expect("six bits")]
+            } else {
+                b'='
+            },
+            if chunk.len() > 2 {
+                TABLE[num_traits::cast::<u32, usize>(n & 0x3f).expect("six bits")]
+            } else {
+                b'='
+            },
+        ];
+        out.push_str(std::str::from_utf8(&quad).expect("table bytes are ascii"));
+    }
+    out
+}
+
 /// The dense child's kitty image transmission: the PNG base64-encoded into
 /// four placements of distinct image ids, one per quadrant — a ~480 KB kitty
 /// burst per repaint, the same order as the real host's art re-encode.
@@ -99,7 +129,7 @@ fn dense_send_image() {
         Err(_) => return,
     };
     let raw = &raw[..raw.len().min(1 << 17)];
-    let b64 = gtk4::glib::base64_encode(raw);
+    let b64 = base64_encode(raw);
 
     let mut out = String::new();
     for id in 1..=4u32 {
@@ -551,6 +581,19 @@ fn run_commands(panel: Panel, cols: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The encoder's RFC 4648 test vectors (the empty string through all
+    /// three padding shapes plus the full alphabet prefix).
+    #[test]
+    fn base64_encode_matches_the_rfc_4648_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
 
     #[test]
     fn canned_layout_reserves_only_the_right_gutter() {
