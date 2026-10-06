@@ -22,14 +22,18 @@ use crate::render::glyph::{FaceIdentity, Ppem, Synthesis};
 /// the memory ceiling.
 const DEFAULT_ENTRY_CAP: usize = 8192;
 
-/// The cache key: the chosen face's identity, the cluster text, the
-/// quantized ppem and the style as its two bits (`Style` itself does not
-/// implement `Hash`, and the (bold, italic) bits are exactly what the face
-/// choice and the synthesis derive from). The ppem arrives quantized
-/// ([`Ppem`]), so float dust cannot split one size into two keys.
+/// The cache key: the request's inputs — the cluster text, the quantized
+/// ppem and the style as its two bits (`Style` itself does not implement
+/// `Hash`, and the (bold, italic) bits are exactly what the face choice and
+/// the synthesis derive from). The key is the choice's input, not its
+/// outcome: for one `TextShaper` the face choice is a pure function of
+/// these three (the shaper owns one [`FamilyFaces`] and one [`FontBook`],
+/// and the book's fallback answer per code point is itself cached), so the
+/// cached cluster — which carries its own face — stays valid without the
+/// face in the key, and a hit never re-runs the choice. The ppem arrives
+/// quantized ([`Ppem`]), so float dust cannot split one size into two keys.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ShapeKey {
-    face: FaceIdentity,
     text: Box<str>,
     ppem: Ppem,
     style: (bool, bool),
@@ -51,6 +55,10 @@ pub struct TextShaper {
     max_entries: usize,
     hits: usize,
     misses: usize,
+    /// How many requests ran the face choice: every cache miss and every
+    /// request that errors before it can be cached. The tests assert
+    /// through it that a hit skips the choice.
+    face_choices: usize,
     clears: usize,
 }
 
@@ -64,6 +72,7 @@ impl std::fmt::Debug for TextShaper {
             .field("max_entries", &self.max_entries)
             .field("hits", &self.hits)
             .field("misses", &self.misses)
+            .field("face_choices", &self.face_choices)
             .field("clears", &self.clears)
             .finish_non_exhaustive()
     }
@@ -89,6 +98,7 @@ impl TextShaper {
             max_entries,
             hits: 0,
             misses: 0,
+            face_choices: 0,
             clears: 0,
         }
     }
@@ -107,15 +117,18 @@ impl TextShaper {
     /// fallback lookup) is returned but never cached: the next request
     /// retries, and a broken font stays broken visibly rather than freezing
     /// into one error.
+    ///
+    /// The cache answers before the face choice runs: the choice is a pure
+    /// function of the key (see [`ShapeKey`]), so a hit is one map lookup
+    /// and the choice's cost — a charmap walk over the cluster, a swash
+    /// parser pass — is paid once per distinct cluster, style and size.
     pub fn shape(
         &mut self,
         cluster: &str,
         style: Style,
         ppem: Ppem,
     ) -> Result<Arc<ShapedCluster>, ShapeError> {
-        let (face, synthesis) = self.choose_face(cluster, style)?;
         let key = ShapeKey {
-            face: FaceIdentity::of(&face),
             text: cluster.into(),
             ppem,
             style: style_bits(style),
@@ -125,6 +138,7 @@ impl TextShaper {
             return Ok(Arc::clone(shaped));
         }
         self.misses += 1;
+        let (face, synthesis) = self.choose_face(cluster, style)?;
         let shaped = Arc::new(self.shape_miss(&face, &face.bytes(), cluster, synthesis, ppem)?);
         // A full cache clears, then the new cluster starts the fresh
         // generation — like [`GlyphCache`]: every hit stays O(1), no
@@ -150,6 +164,13 @@ impl TextShaper {
         self.misses
     }
 
+    /// How many requests ran the face choice — every cache miss, plus every
+    /// request that errored before it could be cached. A hit never runs it.
+    #[must_use]
+    pub fn face_choices(&self) -> usize {
+        self.face_choices
+    }
+
     /// How many times the cache overflowed its cap and cleared.
     #[must_use]
     pub fn clears(&self) -> usize {
@@ -169,12 +190,14 @@ impl TextShaper {
     }
 
     /// Choose the face the whole cluster draws on, and the synthesis to
-    /// apply. See the shape method's doc for the rules.
+    /// apply. See the shape method's doc for the rules. Runs only on a
+    /// cache miss (see [`ShapeKey`]).
     fn choose_face(
         &mut self,
         cluster: &str,
         style: Style,
     ) -> Result<(Face, Synthesis), ShapeError> {
+        self.face_choices += 1;
         let (face, synthesis) = match style {
             Style::Regular => (self.faces.regular().clone(), Synthesis::new(false, false)),
             Style::Bold => match self.faces.bold() {

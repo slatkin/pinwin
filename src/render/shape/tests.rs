@@ -278,6 +278,37 @@ fn the_cache_hits_and_clears_and_never_caches_errors() {
     assert_eq!(shaper.hits(), 0);
 }
 
+/// A cache hit skips the face choice: the choice is a pure function of the
+/// key (cluster text, style, ppem), so it runs only on a miss — the
+/// charmap walk and the parser pass it costs are paid once per distinct
+/// request, not per frame.
+#[test]
+fn a_cache_hit_does_not_rerun_the_face_choice() {
+    let Some(mut shaper) = shaper() else { return };
+    shaper
+        .shape("A", Style::Regular, ppem_at(SIZE))
+        .expect("the cluster shapes");
+    assert_eq!(shaper.face_choices(), 1, "the first request chose a face");
+    shaper
+        .shape("A", Style::Regular, ppem_at(SIZE))
+        .expect("the cluster shapes");
+    assert_eq!(shaper.hits(), 1, "the repeat is a hit");
+    assert_eq!(
+        shaper.face_choices(),
+        1,
+        "the hit did not run the face choice"
+    );
+
+    // A different cluster or style is a new key and chooses again.
+    shaper
+        .shape("B", Style::Regular, ppem_at(SIZE))
+        .expect("the cluster shapes");
+    shaper
+        .shape("A", Style::Bold, ppem_at(SIZE))
+        .expect("the cluster shapes");
+    assert_eq!(shaper.face_choices(), 3, "each new key chose once");
+}
+
 /// The named instance applies in shaping: the named-instance Bold of the
 /// variable-only Cantarell shapes 'A' to different metrics than the
 /// default instance of the same file. Skipped when fontconfig matches no

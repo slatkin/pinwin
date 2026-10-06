@@ -33,14 +33,18 @@
 //! Default features only (kerning, the font's default ligatures), which
 //! within one cluster is what the old Pango path applied.
 //!
-//! The shape cache keys on the chosen face's identity, the cluster text,
-//! the quantized ppem and the style, holds each result as an `Arc`, and
-//! bounds itself by an entry cap, clearing on overflow like [`GlyphCache`]
-//! and the font module's fallback cache. Errors are not cached. Memory
-//! ceiling: 8192 entries, each a key (a face identity, a cluster text of at
-//! most a few dozen bytes, a ppem and two style bits) and a
-//! [`ShapedCluster`] of at most a few dozen 16-byte glyphs plus a shared
-//! `Face` — under 8 MiB in the worst case, a few hundred KiB typically.
+//! The shape cache keys on the request's inputs — the cluster text, the
+//! quantized ppem and the style — not on the face those inputs pick: the
+//! face choice is a pure function of the three for one shaper, so a hit
+//! skips the choice entirely (a charmap walk over the cluster and a swash
+//! parser pass) and returns the cached cluster, which carries its own face.
+//! Each result is held as an `Arc`, and the cache bounds itself by an entry
+//! cap, clearing on overflow like [`GlyphCache`] and the font module's
+//! fallback cache. Errors are not cached. Memory ceiling: 8192 entries, each
+//! a key (a cluster text of at most a few dozen bytes, a ppem and two style
+//! bits) and a [`ShapedCluster`] of at most a few dozen 16-byte glyphs plus
+//! a shared `Face` — under 8 MiB in the worst case, a few hundred KiB
+//! typically.
 //!
 //! GTK-free like the font module (replace-gtk-with-wayland D10): the tests
 //! run without a display. The module is `pub` from `render` so the row's
