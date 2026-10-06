@@ -474,6 +474,7 @@ impl PanelState {
             );
         }
     }
+
     /// The tween's finish action (row 6.1, wired in row 6.2): the stop
     /// relay first — drop the wide cache, lift the sizing defer and push
     /// the deferred grid once through the sizing path, the new columns
@@ -487,6 +488,11 @@ impl PanelState {
     /// no session, so the geometry write is exercised only on niri (row
     /// 10.1); the relay is display-free and tested in the apply module.
     pub(crate) fn tween_finished(&mut self, target_px: i32, push: &mut dyn FnMut(Grid)) {
+        // The final frame commits at the target before the cache drops
+        // (row 6.1): the viewport's source and destination are persistent
+        // state, so the last eased crop would pin the surface against the
+        // finish's `set_size` — a blank panel.
+        self.commit_tween_frame(target_px);
         self.tween_draw = None;
         self.sizing.defer_pushes(false);
         let cols = self.applied.cols();
@@ -757,5 +763,38 @@ mod tests {
         let plan = held.commit_plan(360, true).expect("the begin frame plans");
         assert_eq!(plan.actions()[0], TweenAction::PanelSize(360));
         assert_eq!(plan.damage(), (1620, 1080));
+    }
+
+    /// The finish's final frame (row 6.1): the plan at the target is the
+    /// whole wide buffer — the viewport source and destination end at the
+    /// exact target, and the fallback's fresh copy covers the buffer too.
+    /// The finish commits it before dropping the cache (the proof: row
+    /// 8.1's render state makes it reachable).
+    #[test]
+    fn the_finishs_final_frame_plan_shows_the_full_wide_buffer_at_the_target() {
+        let held = holder(Side::Left, 360, 1080, 180, true);
+        let plan = held.commit_plan(1080, true).expect("a presentable frame");
+        let source = plan.frame().source();
+        assert_eq!(
+            (source.x(), source.y(), source.width(), source.height()),
+            (0, 0, 1620, 1080),
+            "the whole wide buffer"
+        );
+        assert_eq!(plan.actions()[0], TweenAction::PanelSize(1080));
+        assert_eq!(
+            plan.actions()[3],
+            TweenAction::ViewportDestination(1080, 720)
+        );
+
+        // The fallback copies the full crop: its source covers the buffer.
+        let held = holder(Side::Right, 360, 1080, 180, false);
+        let plan = held.commit_plan(1080, false).expect("a presentable frame");
+        assert_eq!(plan.actions()[3], TweenAction::CopyFresh);
+        let source = plan.frame().source();
+        assert_eq!(
+            (source.x(), source.width()),
+            (0, 1620),
+            "the fresh copy shows the whole buffer"
+        );
     }
 }
