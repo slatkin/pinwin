@@ -17,7 +17,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use smithay_client_toolkit::seat::keyboard::{KeyEvent, Modifiers as SctkModifiers, RawModifiers};
+use smithay_client_toolkit::seat::keyboard::{
+    KeyEvent, Modifiers as SctkModifiers, RawModifiers, RepeatInfo,
+};
 
 use crate::guard::{Poisoned, guard};
 use crate::term::Terminal;
@@ -108,6 +110,35 @@ impl SeatSide {
             }
         });
     }
+
+    /// A repeat from the toolkit's calloop repeat source (row 5.2): sent as
+    /// [`crate::term::input::KeyAction::Repeat`] while the repeat gate still
+    /// has the key armed.
+    pub fn key_repeated(&mut self, event: &KeyEvent) {
+        let poisoned = self.links.poisoned.clone();
+        let _ = guard(&poisoned, || {
+            if let Some(input) = self.keyboard.repeated(event) {
+                self.links.terminal.borrow_mut().push_key(input);
+            }
+        });
+    }
+
+    /// The keyboard left the surface (row 5.2): the repeat stops.
+    pub fn keyboard_left(&mut self) {
+        let poisoned = self.links.poisoned.clone();
+        let _ = guard(&poisoned, || {
+            self.keyboard.left();
+        });
+    }
+
+    /// One `repeat_info` update (row 5.2): the compositor's rate decides
+    /// whether any key repeats.
+    pub fn repeat_info_updated(&mut self, info: &RepeatInfo) {
+        let poisoned = self.links.poisoned.clone();
+        let _ = guard(&poisoned, || {
+            self.keyboard.repeat_info_updated(info);
+        });
+    }
 }
 
 #[cfg(test)]
@@ -115,7 +146,6 @@ mod tests {
     use super::*;
     use crate::guard::Poisoned as GuardPoisoned;
     use crate::term::{DecodedPng, PngDecoder, PtySink};
-    use std::cell::Cell;
     use std::sync::{Arc, Mutex};
     use xkbcommon::xkb::Keysym;
 
@@ -179,8 +209,9 @@ xkb_keymap {
     }
 
     /// The seat fixture: a seat side over a real display-free terminal
-    /// (40x24 at 8x16) and the pty bytes it wrote.
-    type SeatFixture = (SeatSide, Arc<Mutex<Vec<u8>>>);
+    /// (40x24 at 8x16), the links to reach the terminal with, and the pty
+    /// bytes it wrote.
+    type SeatFixture = (SeatSide, KeyboardLinks, Arc<Mutex<Vec<u8>>>);
 
     fn seat_side() -> SeatFixture {
         let writes = Arc::new(Mutex::new(Vec::new()));
@@ -195,7 +226,7 @@ xkb_keymap {
             terminal: Rc::new(RefCell::new(terminal)),
             poisoned: GuardPoisoned::new(),
         };
-        (SeatSide::new(links), writes)
+        (SeatSide::new(links.clone()), links, writes)
     }
 
     fn take(writes: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
@@ -206,7 +237,7 @@ xkb_keymap {
     /// encodes the translated `KeyInput` like the GDK path's push would.
     #[test]
     fn a_key_press_reaches_the_pty() {
-        let (mut seat, writes) = seat_side();
+        let (mut seat, _links, writes) = seat_side();
         seat.keymap_updated(TEST_KEYMAP);
         seat.modifiers_updated(RawModifiers::default(), 0, SctkModifiers::default());
         seat.key_pressed(&key_event(RAW_Q, 0x71));
@@ -218,11 +249,53 @@ xkb_keymap {
         assert_eq!(take(&writes), Vec::new());
     }
 
+    /// A repeat flows through the seat side as a repeat event (row 5.2):
+    /// with the kitty report-all flags the child receives the repeat
+    /// report, and a release or a keyboard leave stops the repeats.
+    #[test]
+    fn a_repeat_flows_through_and_stops_on_release_and_leave() {
+        let (mut seat, links, writes) = seat_side();
+        links.terminal.borrow_mut().push_pty_data(b"\x1b[>11u");
+        seat.keymap_updated(TEST_KEYMAP);
+        seat.repeat_info_updated(&RepeatInfo::Repeat {
+            rate: std::num::NonZeroU32::new(25).expect("test rate"),
+            delay: 250,
+        });
+        seat.modifiers_updated(RawModifiers::default(), 0, SctkModifiers::default());
+        seat.key_pressed(&key_event(RAW_Q, 0x71));
+        seat.key_repeated(&key_event(RAW_Q, 0x71));
+        seat.key_released(&key_event(RAW_Q, 0x71));
+        seat.key_repeated(&key_event(RAW_Q, 0x71));
+        // Press, repeat, release; the late repeat after the release never
+        // reaches the encoder.
+        assert_eq!(take(&writes), b"\x1b[113u\x1b[113;1:2u\x1b[113;1:3u");
+
+        // A fresh press repeats until the keyboard leaves.
+        seat.key_pressed(&key_event(RAW_Q, 0x71));
+        seat.key_repeated(&key_event(RAW_Q, 0x71));
+        assert_eq!(take(&writes), b"\x1b[113u\x1b[113;1:2u");
+        seat.keyboard_left();
+        seat.key_repeated(&key_event(RAW_Q, 0x71));
+        assert_eq!(take(&writes), Vec::new(), "the leave stopped the repeat");
+    }
+
+    /// Until a `repeat_info` arrives, the seat side sends no repeats — the
+    /// compositor's rate is the only source (row 5.2).
+    #[test]
+    fn repeats_wait_for_the_repeat_info() {
+        let (mut seat, _links, writes) = seat_side();
+        seat.keymap_updated(TEST_KEYMAP);
+        seat.modifiers_updated(RawModifiers::default(), 0, SctkModifiers::default());
+        seat.key_pressed(&key_event(RAW_Q, 0x71));
+        seat.key_repeated(&key_event(RAW_Q, 0x71));
+        assert_eq!(take(&writes), b"q", "the press went through, no repeat");
+    }
+
     /// A key event before the compositor's keymap arrived writes nothing:
     /// there is no xkb state to translate it with.
     #[test]
     fn a_press_before_the_keymap_writes_nothing() {
-        let (mut seat, writes) = seat_side();
+        let (mut seat, _links, writes) = seat_side();
         seat.key_pressed(&key_event(RAW_Q, 0x71));
         assert_eq!(take(&writes), Vec::new());
     }
@@ -249,14 +322,5 @@ xkb_keymap {
         poisoned.latch();
         seat.key_pressed(&key_event(RAW_Q, 0x71));
         assert_eq!(take(&writes), Vec::new(), "a latched side runs no hooks");
-    }
-
-    /// The `Cell` import keeps the fixture's counter shape available; the
-    /// type alias pins the fixture's shape for the later rows.
-    #[test]
-    fn the_fixture_shape_holds() {
-        let draws = Cell::new(0usize);
-        draws.set(draws.get() + 1);
-        assert_eq!(draws.get(), 1);
     }
 }

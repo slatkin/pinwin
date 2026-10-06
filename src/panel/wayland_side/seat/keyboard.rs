@@ -8,15 +8,17 @@
 //! the dispatch state carries; the type itself holds no Wayland objects, so
 //! every rule here is testable without a display (`port-to-rust` D10).
 
-use smithay_client_toolkit::seat::keyboard::{KeyEvent, Modifiers as SctkModifiers, RawModifiers};
+use smithay_client_toolkit::seat::keyboard::{
+    KeyEvent, Modifiers as SctkModifiers, RawModifiers, RepeatInfo,
+};
 
 use crate::term::input::{KeyAction, KeyInput, Modifiers};
 
 use super::xkb::XkbKeyboard;
 
 /// The keyboard side's translation state: the xkb keymap and state once the
-/// compositor's keymap string has arrived, and the modifier bits the last
-/// modifiers event reported.
+/// compositor's keymap string has arrived, the modifier bits the last
+/// modifiers event reported, and the repeat gate (row 5.2).
 #[derive(Debug, Default)]
 pub struct KeyboardSide {
     /// `None` until the first `update_keymap`: the keymap precedes the key
@@ -28,6 +30,9 @@ pub struct KeyboardSide {
     /// The last raw modifiers set and layout, re-applied to a new keymap so
     /// a mid-session keymap update keeps the held modifiers active.
     last_modifiers: Option<(RawModifiers, u32)>,
+    /// The repeat gate between the toolkit's calloop repeat and the terminal
+    /// (row 5.2).
+    repeat: RepeatTracker,
 }
 
 impl KeyboardSide {
@@ -86,17 +91,52 @@ impl KeyboardSide {
         self.mods = mods_from_sctk(mods);
     }
 
-    /// A key press: the [`KeyInput`] the GDK path builds.
+    /// A key press: the [`KeyInput`] the GDK path builds, and the repeat
+    /// gate arms when the key is no modifier and the keymap repeats it.
     #[must_use]
     pub fn pressed(&mut self, event: &KeyEvent) -> Option<KeyInput> {
-        self.key_input(KeyAction::Press, event)
+        let input = self.key_input(KeyAction::Press, event)?;
+        let repeats = self
+            .xkb
+            .as_ref()
+            .is_some_and(|xkb| xkb.key_repeats(event.raw_code));
+        self.repeat
+            .on_press(event.raw_code, input.is_modifier, repeats);
+        Some(input)
     }
 
     /// A key release: the [`KeyInput`], which the encoder sends only when
-    /// the child asked for release reports.
+    /// the child asked for release reports; the repeat gate stops repeating
+    /// the released key.
     #[must_use]
     pub fn released(&mut self, event: &KeyEvent) -> Option<KeyInput> {
+        self.repeat.on_release(event.raw_code);
         self.key_input(KeyAction::Release, event)
+    }
+
+    /// A repeat from the toolkit's calloop repeat source (row 5.2): the
+    /// [`KeyInput`] when the gate still has the key armed, `None` when the
+    /// repeat must not reach the terminal — released, left, a modifier, or
+    /// a compositor repeat rate of 0.
+    #[must_use]
+    pub fn repeated(&mut self, event: &KeyEvent) -> Option<KeyInput> {
+        if self.repeat.accepts_repeat(event.raw_code) {
+            self.key_input(KeyAction::Repeat, event)
+        } else {
+            None
+        }
+    }
+
+    /// The keyboard left the surface (row 5.2): the repeat stops.
+    pub fn left(&mut self) {
+        self.repeat.on_leave();
+    }
+
+    /// One `repeat_info` update (row 5.2): the compositor's rate decides
+    /// whether any key repeats; a rate of 0 disables it.
+    pub fn repeat_info_updated(&mut self, info: &RepeatInfo) {
+        self.repeat
+            .set_enabled(matches!(info, RepeatInfo::Repeat { .. }));
     }
 
     /// Build the encoder's view of one key event (D8): the same
@@ -146,6 +186,53 @@ pub fn mods_from_sctk(mods: SctkModifiers) -> Modifiers {
         out = out | Modifiers::NUM_LOCK;
     }
     out
+}
+
+/// The repeat gate between the toolkit's calloop repeat and the terminal
+/// (row 5.2). The toolkit schedules the repeats and stops them on release
+/// and on keyboard leave itself; this gate re-checks the same rules so a
+/// repeat only reaches the terminal while its key is armed, is no modifier,
+/// repeats under the keymap, and the compositor's repeat rate is non-zero.
+#[derive(Debug, Default)]
+pub struct RepeatTracker {
+    /// The raw keycode of the armed key, if any.
+    armed: Option<u32>,
+    /// Whether the compositor's repeat rate is non-zero (D8: a rate of 0
+    /// means no key repeats). `false` until the first `repeat_info` arrives,
+    /// the toolkit's own default.
+    enabled: bool,
+}
+
+impl RepeatTracker {
+    /// Arm (or re-arm) the gate for a key press. A modifier key and a key
+    /// the keymap does not repeat never arm it.
+    pub fn on_press(&mut self, raw_code: u32, is_modifier: bool, repeats: bool) {
+        self.armed = (!is_modifier && repeats).then_some(raw_code);
+    }
+
+    /// A release stops the repeat of the released key; another key's repeat
+    /// (the toolkit repeats one key at a time) is untouched.
+    pub fn on_release(&mut self, raw_code: u32) {
+        if self.armed == Some(raw_code) {
+            self.armed = None;
+        }
+    }
+
+    /// A keyboard leave stops any repeat.
+    pub fn on_leave(&mut self) {
+        self.armed = None;
+    }
+
+    /// The compositor's repeat rate changed; a rate of 0 disables repeat.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    /// Whether a repeat of this key may reach the terminal.
+    #[must_use]
+    pub fn accepts_repeat(&self, raw_code: u32) -> bool {
+        self.enabled && self.armed == Some(raw_code)
+    }
 }
 
 #[cfg(test)]
@@ -359,5 +446,106 @@ xkb_keymap {
             .pressed(&key_event(RAW_CTRL, 0xffe3))
             .expect("the keymap is live");
         assert!(input.is_modifier);
+    }
+
+    /// A rate the compositor sent, for the repeat tests.
+    fn repeat_info() -> RepeatInfo {
+        RepeatInfo::Repeat {
+            rate: std::num::NonZeroU32::new(25).expect("test rate"),
+            delay: 250,
+        }
+    }
+
+    /// A repeating key arms the gate and its repeats pass (row 5.2).
+    #[test]
+    fn a_repeating_key_arms_and_repeats() {
+        let mut keyboard = KeyboardSide::new();
+        keyboard.keymap_updated(TEST_KEYMAP);
+        keyboard.repeat_info_updated(&repeat_info());
+        let press = keyboard
+            .pressed(&key_event(RAW_Q, 0x71))
+            .expect("the keymap is live");
+        assert_eq!(press.action, KeyAction::Press);
+        let repeat = keyboard
+            .repeated(&key_event(RAW_Q, 0x71))
+            .expect("the repeat is accepted");
+        assert_eq!(repeat.action, KeyAction::Repeat);
+        assert_eq!(repeat.keycode, 24);
+    }
+
+    /// A release stops the repeat: the toolkit stops its timer, and the
+    /// gate refuses a late repeat of the released key.
+    #[test]
+    fn a_release_stops_the_repeat() {
+        let mut keyboard = KeyboardSide::new();
+        keyboard.keymap_updated(TEST_KEYMAP);
+        keyboard.repeat_info_updated(&repeat_info());
+        let _ = keyboard.pressed(&key_event(RAW_Q, 0x71));
+        let _ = keyboard.released(&key_event(RAW_Q, 0x71));
+        assert!(keyboard.repeated(&key_event(RAW_Q, 0x71)).is_none());
+    }
+
+    /// A keyboard leave stops any repeat (row 5.2's stop-on-leave rule).
+    #[test]
+    fn a_keyboard_leave_stops_the_repeat() {
+        let mut keyboard = KeyboardSide::new();
+        keyboard.keymap_updated(TEST_KEYMAP);
+        keyboard.repeat_info_updated(&repeat_info());
+        let _ = keyboard.pressed(&key_event(RAW_Q, 0x71));
+        keyboard.left();
+        assert!(keyboard.repeated(&key_event(RAW_Q, 0x71)).is_none());
+    }
+
+    /// A modifier key never repeats: the gate refuses to arm it even though
+    /// the keymap marks the key repeating.
+    #[test]
+    fn a_modifier_key_never_repeats() {
+        let mut keyboard = KeyboardSide::new();
+        keyboard.keymap_updated(TEST_KEYMAP);
+        keyboard.repeat_info_updated(&repeat_info());
+        let _ = keyboard.pressed(&key_event(RAW_CTRL, 0xffe3));
+        assert!(keyboard.repeated(&key_event(RAW_CTRL, 0xffe3)).is_none());
+    }
+
+    /// A key the keymap does not repeat never arms the gate.
+    #[test]
+    fn a_non_repeating_key_never_arms() {
+        let mut tracker = RepeatTracker::default();
+        tracker.set_enabled(true);
+        tracker.on_press(RAW_Q, false, false);
+        assert!(!tracker.accepts_repeat(RAW_Q));
+    }
+
+    /// A compositor repeat rate of 0 disables repeat even for an armed key
+    /// (the spec's "Repeat disabled" scenario).
+    #[test]
+    fn a_zero_repeat_rate_disables_repeat() {
+        let mut keyboard = KeyboardSide::new();
+        keyboard.keymap_updated(TEST_KEYMAP);
+        keyboard.repeat_info_updated(&repeat_info());
+        let _ = keyboard.pressed(&key_event(RAW_Q, 0x71));
+        keyboard.repeat_info_updated(&RepeatInfo::Disable);
+        assert!(keyboard.repeated(&key_event(RAW_Q, 0x71)).is_none());
+    }
+
+    /// Until a `repeat_info` arrives nothing repeats, the toolkit's own
+    /// default.
+    #[test]
+    fn repeat_stays_disabled_without_a_repeat_info() {
+        let mut keyboard = KeyboardSide::new();
+        keyboard.keymap_updated(TEST_KEYMAP);
+        let _ = keyboard.pressed(&key_event(RAW_Q, 0x71));
+        assert!(keyboard.repeated(&key_event(RAW_Q, 0x71)).is_none());
+    }
+
+    /// A release of another key does not stop the armed key's repeat: the
+    /// toolkit repeats one key at a time, and only its own release ends it.
+    #[test]
+    fn another_keys_release_keeps_the_armed_repeat() {
+        let mut tracker = RepeatTracker::default();
+        tracker.set_enabled(true);
+        tracker.on_press(RAW_Q, false, true);
+        tracker.on_release(RAW_CTRL);
+        assert!(tracker.accepts_repeat(RAW_Q));
     }
 }
