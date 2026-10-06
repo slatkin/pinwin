@@ -79,6 +79,7 @@ mod snapshot;
 mod sprite;
 mod sprites;
 mod text;
+pub mod text_pass;
 mod texture;
 
 use crate::guard::{Poisoned, guard};

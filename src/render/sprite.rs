@@ -14,9 +14,13 @@
 //! routing and colour — so the dispatch stays testable without a frame
 //! walk; [`paint`] only walks and fills.
 //!
-//! The layer sits after the backgrounds and before the bands: GTK draws
-//! each cell's decorations after its glyph, so the bands layer must come
-//! after this one (and after the text pass later rows add).
+//! The layer sits after the backgrounds and before the bands, with the
+//! text pass between it and the bands: GTK draws each cell's decorations
+//! after its glyph, so the bands layer must come after this one and after
+//! the text pass.
+//!
+//! [`cell_sprite`] is the pure per-cell decision, so the text pass reuses
+//! it to stay disjoint from this one (`super::text_pass::text_owns`).
 //!
 //! GTK-free (`replace-gtk-with-wayland` D10); private to the painter, whose
 //! frame pass calls it between the backgrounds and the bands.
@@ -97,8 +101,9 @@ fn shift(x: f64, offset: i32) -> f32 {
 /// The sprite one cell draws: its colour and drawing primitives, or `None`
 /// when the cell is not drawn as a sprite — the skipped cells, and every
 /// code point no dispatch arm owns yet (the text pass draws those). Pure,
-/// so the tests build cells by hand and no frame walk is needed.
-fn cell_sprite(
+/// so the tests build cells by hand and no frame walk is needed; the text
+/// pass reuses it as its ownership decision (`super::text_pass::text_owns`).
+pub(super) fn cell_sprite(
     metrics: &PainterMetrics,
     frame: &FrameInput,
     cell: &crate::term::cells::Cell,

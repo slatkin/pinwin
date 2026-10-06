@@ -17,24 +17,24 @@
 //! terminal's default foreground (`Terminal::colors().foreground`), the
 //! same unconditional colour `draw_cursor` sets.
 //!
-//! Seam for the text unit (row 4.4) — the block cursor's glyph redraw.
-//! Under a `Block` cursor the GTK path redraws the glyph under the cursor
-//! in the terminal's default background, on top of the block; the cell
-//! pass collected that glyph's text into `render_grid`'s `cursor_text`
-//! buffer while it walked. This layer draws the shape only. When the text
-//! pass arrives it must hand this layer (a) the text bytes of the cell at
-//! the cursor's position, collected during its own cell walk, and (b) a
-//! way to draw one cell's text, and this layer then calls it after the
-//! block fill, in `Terminal::colors().background`, skipped exactly when
-//! [`glyph_redraw`] is false — no redraw on a wide tail or with no text.
+//! The block cursor's glyph redraw: after the block fill, `paint` redraws
+//! the glyph under the cursor in the terminal's default background through
+//! the text pass's [`TextPass::draw_cell`] — the same redraw the GTK
+//! path's `draw_cursor` makes with `draw_text`, so a cell the sprite pass
+//! owns (a block character under the cursor) is redrawn with its font
+//! glyph there too, exactly as the old path does. The redraw inputs come
+//! from the text pass's walk: the collected [`CursorText`] (the cell bytes
+//! at the cursor's position) and the pass itself, skipped exactly when
+//! [`glyph_redraw`] is false — not a Block cursor, no text, or a wide tail.
 //!
 //! GTK-free (`replace-gtk-with-wayland` D10): [`cursor_shape`],
 //! [`glyph_redraw`] and the pixel tests below run without a display.
 
 use super::canvas::{Canvas, CanvasColor};
 use super::geom::{DeviceRect, PainterMetrics};
+use super::text_pass::{CursorText, TextPass};
 use crate::term::Terminal;
-use crate::term::cells::{Cursor, CursorStyle};
+use crate::term::cells::{CELL_TEXT_CAP, Cell, Cursor, CursorStyle};
 
 /// The cursor's shape as the painter draws it: one rectangle to fill, or
 /// the hollow block's four bands (top, bottom, left, right), all snapped
@@ -97,13 +97,17 @@ fn hollow_bands(metrics: &PainterMetrics, x: i32, y: i32) -> [DeviceRect; 4] {
 }
 
 /// Fill the open frame's cursor shape, shifted by `offset` device pixels
-/// along x. The frame must be open; the cursor layer walks no cells, it
-/// reads the frame's captured cursor.
+/// along x, and redraw the glyph under a block cursor in the terminal's
+/// default background through the text pass. The frame must be open; the
+/// cursor layer walks no cells, it reads the frame's captured cursor and
+/// the text the text pass collected at the cursor's position.
 pub(super) fn paint(
     canvas: &mut Canvas,
     metrics: &PainterMetrics,
     terminal: &Terminal,
     offset: i32,
+    cursor_text: &CursorText,
+    text: &mut TextPass,
 ) {
     let Some(cursor) = terminal.cursor() else {
         return;
@@ -119,9 +123,25 @@ pub(super) fn paint(
             }
         }
     }
-    // Seam (row 4.4, text pass): here the block cursor's glyph redraw goes
-    // — see the module comment. The shape fills above the text pass's
-    // glyph, the redraw above the block.
+    // The block cursor's glyph redraw, above the block fill: the same
+    // synthetic cell and colour the GTK path's `draw_cursor` builds for
+    // `draw_text`. The old path redraws through the text path unconditionally
+    // on the condition, so a sprite-owned cell's block character is redrawn
+    // with its font glyph here too.
+    let bytes = cursor_text.as_bytes();
+    if glyph_redraw(&cursor, bytes) {
+        let mut cell_text = [0; CELL_TEXT_CAP];
+        cell_text[..bytes.len()].copy_from_slice(bytes);
+        let cell = Cell {
+            x: cursor.x,
+            y: cursor.y,
+            text: cell_text,
+            len: bytes.len(),
+            ..Cell::default()
+        };
+        let background = CanvasColor::from_theme(terminal.colors().background);
+        text.draw_cell(canvas, metrics, &cell, background, offset);
+    }
 }
 
 /// Fill one snapped device rectangle, shifted by `offset` device pixels

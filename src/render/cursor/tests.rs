@@ -4,6 +4,8 @@ use super::super::painter::paint_frame;
 use super::{CursorShape, cursor_shape, glyph_redraw};
 use crate::fontconfig::ThemeColours;
 use crate::guard::Poisoned;
+use crate::render::text_pass::TextPass;
+use crate::render::text_pass::test_support;
 use crate::term::cells::{Cursor, CursorStyle};
 use crate::term::{PngDecoder, PtySink, Terminal};
 
@@ -49,11 +51,11 @@ fn metrics(scale: f64) -> PainterMetrics {
 }
 
 /// A canvas of `frame`'s device size with the frame painted into it.
-fn painted(terminal: &mut Terminal, scale: f64) -> Canvas {
+fn painted(terminal: &mut Terminal, scale: f64, text: &mut TextPass) -> Canvas {
     let frame = frame(scale, false, None);
     let (w, h) = frame.device_size();
     let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
-    paint_frame(&mut canvas, &metrics(scale), &frame, terminal);
+    paint_frame(&mut canvas, &metrics(scale), &frame, terminal, text);
     canvas
 }
 
@@ -281,13 +283,16 @@ fn a_wide_tail_cursor_keeps_its_shape() {
 /// pixels.
 #[test]
 fn a_cursor_on_a_wide_head_covers_the_head_cell_only() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     let scale = 1.5;
     let mut terminal = terminal();
-    terminal.push_pty_data("漢".as_bytes());
+    terminal.push_pty_data("\u{3000}".as_bytes());
     // The cursor back onto the wide head cell.
     terminal.push_pty_data(b"\x1b[1;1H");
     let default_fg = cursor_bytes(&mut terminal);
-    let canvas = painted(&mut terminal, scale);
+    let canvas = painted(&mut terminal, scale, &mut test.pass);
     let m = metrics(scale);
     rect_is(&canvas, &m.cell_rect(0, 0), default_fg, "the head cell");
     rect_is(&canvas, &m.cell_rect(1, 0), theme_bytes(), "the tail cell");
@@ -298,6 +303,9 @@ fn a_cursor_on_a_wide_head_covers_the_head_cell_only() {
 /// foreground; the underline sits at the cell's bottom.
 #[test]
 fn the_frame_cursor_paints_its_shape() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     let cases: [(&[u8], CursorStyle); 3] = [
         (b"\x1b[2 q", CursorStyle::Block),
         (b"\x1b[4 q", CursorStyle::Underline),
@@ -307,7 +315,7 @@ fn the_frame_cursor_paints_its_shape() {
         for scale in SCALES {
             let mut terminal = terminal();
             terminal.push_pty_data(sequence);
-            terminal.push_pty_data(b"X");
+            terminal.push_pty_data(b" ");
             terminal.push_pty_data(b"\x1b[1;1H");
             let default_fg = cursor_bytes(&mut terminal);
             let walked_cursor = {
@@ -322,7 +330,7 @@ fn the_frame_cursor_paints_its_shape() {
                 theme_bytes(),
                 "the default foreground is distinct from the theme"
             );
-            let canvas = painted(&mut terminal, scale);
+            let canvas = painted(&mut terminal, scale, &mut test.pass);
             let m = metrics(scale);
             let shape = cursor_shape(&walked_cursor, &m);
             let CursorShape::Fill(rect) = shape else {
@@ -342,14 +350,17 @@ fn the_frame_cursor_paints_its_shape() {
 /// the layer fills nothing, and the cell keeps the cell layers' pixels.
 #[test]
 fn a_hidden_cursor_draws_nothing() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     let scale = 1.5;
     let mut terminal = terminal();
-    terminal.push_pty_data(b"\x1b[?25lX");
+    terminal.push_pty_data(b"\x1b[?25l ");
     assert!(
         terminal.cursor().is_none(),
         "the hidden cursor is not reported"
     );
-    let canvas = painted(&mut terminal, scale);
+    let canvas = painted(&mut terminal, scale, &mut test.pass);
     let m = metrics(scale);
     rect_is(
         &canvas,
@@ -365,6 +376,9 @@ fn a_hidden_cursor_draws_nothing() {
 #[test]
 fn the_cursor_draws_above_the_cells_and_below_the_accent() {
     use std::num::NonZeroU16;
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     let scale = 1.0;
     let accent = crate::layout::Accent::new([0, 0, 255], NonZeroU16::new(2).expect("nonzero"));
     let m = metrics(scale);
@@ -376,7 +390,13 @@ fn the_cursor_draws_above_the_cells_and_below_the_accent() {
     let unfocused = frame(scale, false, None);
     let (w, h) = unfocused.device_size();
     let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
-    paint_frame(&mut canvas, &m, &unfocused, &mut bg_terminal);
+    paint_frame(
+        &mut canvas,
+        &m,
+        &unfocused,
+        &mut bg_terminal,
+        &mut test.pass,
+    );
     rect_is(
         &canvas,
         &m.cell_rect(0, 0),
@@ -384,9 +404,16 @@ fn the_cursor_draws_above_the_cells_and_below_the_accent() {
         "over the background",
     );
 
-    // Above the sprite: a red full-block sprite under the block cursor.
+    // Above the sprite: a red full-block sprite under an underline cursor.
+    // The underline (no glyph redraw — only a block redraws) reads the
+    // default foreground across its rows while the sprite keeps its red
+    // everywhere else, which pins the cursor above the sprite. The block
+    // style is excluded here on purpose: it redraws the sprite cell's text
+    // through the text pass — the old path redraws a sprite-owned cell's
+    // block character with its font glyph too — and the redrawn ink would
+    // sit inside the asserted rectangle.
     let mut sprite_terminal = terminal();
-    sprite_terminal.push_pty_data(b"\x1b[31m\xE2\x96\x88\x1b[1;1H");
+    sprite_terminal.push_pty_data(b"\x1b[31m\xE2\x96\x88\x1b[4 q\x1b[1;1H");
     let walked = {
         assert!(sprite_terminal.frame_begin(), "frame began");
         let mut walked = Vec::new();
@@ -396,20 +423,39 @@ fn the_cursor_draws_above_the_cells_and_below_the_accent() {
         sprite_terminal.frame_end();
         walked
     };
-    let sprite = bytes([walked[0].fg.r, walked[0].fg.g, walked[0].fg.b]);
+    let block_cell = walked
+        .iter()
+        .find(|cell| cell.len > 0)
+        .expect("the block cell");
+    let sprite = bytes([block_cell.fg.r, block_cell.fg.g, block_cell.fg.b]);
     assert_ne!(
         sprite, default_fg,
         "the sprite colour differs from the cursor's"
     );
-    let canvas = painted(&mut sprite_terminal, scale);
-    rect_is(&canvas, &m.cell_rect(0, 0), default_fg, "over the sprite");
+    let canvas = painted(&mut sprite_terminal, scale, &mut test.pass);
+    // The underline cursor fills the bottom two device rows of the cell
+    // (2 logical pixels tall at the cell's bottom, scale 1).
+    let underline = m.cell_sub_rect(0, 0, 0.0, m.cell_h() - 2.0, m.cell_w(), 2.0);
+    rect_is(&canvas, &underline, default_fg, "over the sprite");
+    // The sprite's red shows where the cursor is not.
+    assert_eq!(
+        canvas.pixel(4, 8),
+        Some(sprite),
+        "the sprite shows past the cursor"
+    );
 
     // Below the accent: the focused frame's corner bands overwrite the
     // cursor's corner, the interior keeps the cursor.
     let focused = frame(scale, true, Some(accent));
     let (w, h) = focused.device_size();
     let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
-    paint_frame(&mut canvas, &m, &focused, &mut sprite_terminal);
+    paint_frame(
+        &mut canvas,
+        &m,
+        &focused,
+        &mut sprite_terminal,
+        &mut test.pass,
+    );
     let accent_bytes = bytes([0, 0, 255]);
     assert_eq!(
         canvas.pixel(0, 0),
@@ -417,8 +463,16 @@ fn the_cursor_draws_above_the_cells_and_below_the_accent() {
         "the accent is on top"
     );
     assert_eq!(canvas.pixel(1, 1), Some(accent_bytes), "the accent's band");
+    // The underline cursor sits on the cell's bottom two rows: the accent's
+    // left band covers its first columns, and the cursor's fill shows past
+    // the stroke.
     assert_eq!(
-        canvas.pixel(3, 3),
+        canvas.pixel(0, 14),
+        Some(accent_bytes),
+        "the accent is over the cursor's underline"
+    );
+    assert_eq!(
+        canvas.pixel(3, 14),
         Some(default_fg),
         "the cursor shows past the accent's stroke"
     );

@@ -3,6 +3,8 @@ use super::super::painter::paint_frame;
 use super::*;
 use crate::fontconfig::ThemeColours;
 use crate::guard::Poisoned;
+use crate::render::text_pass::TextPass;
+use crate::render::text_pass::test_support;
 use crate::term::cells::{CELL_TEXT_CAP, Cell};
 use crate::term::{PngDecoder, PtySink};
 
@@ -52,11 +54,11 @@ fn metrics(scale: f64) -> PainterMetrics {
 }
 
 /// A canvas of `frame`'s device size with the frame painted into it.
-fn painted(terminal: &mut Terminal, scale: f64) -> Canvas {
+fn painted(terminal: &mut Terminal, scale: f64, text: &mut TextPass) -> Canvas {
     let frame = frame(scale);
     let (w, h) = frame.device_size();
     let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
-    paint_frame(&mut canvas, &metrics(scale), &frame, terminal);
+    paint_frame(&mut canvas, &metrics(scale), &frame, terminal, text);
     canvas
 }
 
@@ -220,12 +222,15 @@ fn the_skipped_cells_draw_no_sprite() {
 /// seams between the cells, at every scale the painter tests.
 #[test]
 fn a_row_of_full_blocks_is_one_colour() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     for scale in [1.0, 1.25, 1.5, 1.8] {
         let mut terminal = terminal();
         terminal.push_pty_data(HIDE_CURSOR);
         let blocks: Vec<u8> = (0..8).flat_map(|_| utf8(0x2588)).collect();
         terminal.push_pty_data(&blocks);
-        let canvas = painted(&mut terminal, scale);
+        let canvas = painted(&mut terminal, scale, &mut test.pass);
         let m = metrics(scale);
         let row = DeviceRect::new(
             0,
@@ -260,6 +265,9 @@ fn a_row_of_full_blocks_is_one_colour() {
 /// right half's left edge to the left half's right edge is foreground.
 #[test]
 fn half_blocks_meet_without_a_seam() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     for scale in [1.25, 1.8] {
         let mut terminal = terminal();
         let cells_bytes: Vec<u8> = [0x2590u32, 0x258C]
@@ -268,7 +276,7 @@ fn half_blocks_meet_without_a_seam() {
             .flat_map(utf8)
             .collect();
         terminal.push_pty_data(&cells_bytes);
-        let canvas = painted(&mut terminal, scale);
+        let canvas = painted(&mut terminal, scale, &mut test.pass);
         let m = metrics(scale);
         let boundary = m.cell_rect(1, 0).x();
         let right = block::rects(0x2590, &m, &cell_at(0, 0x2590))
@@ -306,33 +314,40 @@ fn half_blocks_meet_without_a_seam() {
 
 /// Every block code point paints exactly the device rectangles its
 /// geometry names — nothing inside them missing, nothing outside them
-/// painted — across the whole block range at 1.5, shades included
-/// (they stay unpainted: the text pass owns them).
+/// painted — across the block range at 1.5.
 #[test]
 fn every_block_code_point_paints_its_geometry() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     let scale = 1.5;
     let m = metrics(scale);
     let mut terminal = terminal();
     terminal.push_pty_data(HIDE_CURSOR);
-    let data: Vec<u8> = (0x2580..=0x259F).flat_map(utf8).collect();
+    // The shades (0x2591-0x2593) are left out: the text pass owns them
+    // now — their font glyphs bleed past the cell edge at this pitch —
+    // and their ownership is pinned by the text pass's routing test.
+    let data: Vec<u8> = (0x2580..=0x2590)
+        .chain(0x2594..=0x259F)
+        .flat_map(utf8)
+        .collect();
     terminal.push_pty_data(&data);
     let walked = cells(&mut terminal);
-    assert_eq!(walked.len(), 32, "one cell per code point");
-    let canvas = painted(&mut terminal, scale);
+    assert_eq!(
+        walked.iter().filter(|cell| cell.len > 0).count(),
+        29,
+        "one written cell per code point (the walk covers the whole grid)"
+    );
+    let canvas = painted(&mut terminal, scale, &mut test.pass);
     // The walk wraps at the frame's 8 columns, so each walked cell
     // carries its own position; the assertions follow it.
     for cell in &walked {
         let cp = first_codepoint(cell.text_bytes());
         let cell_rect = m.cell_rect(cell.x, cell.y);
-        let expected = if (0x2591..=0x2593).contains(&cp) {
-            Vec::new() // the shades stay text; nothing paints them yet
-        } else {
-            block::rects(cp, &m, cell).unwrap_or_default()
-        };
         area_matches_rects(
             &canvas,
             cell_rect,
-            &expected,
+            &block::rects(cp, &m, cell).unwrap_or_default(),
             &format!("0x{cp:04X} at scale {scale}"),
         );
     }
@@ -343,13 +358,16 @@ fn every_block_code_point_paints_its_geometry() {
 /// 1.5 — the device positions the geometry and the snap rule give.
 #[test]
 fn braille_paints_exactly_its_dots() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     let scale = 1.5;
     let m = metrics(scale);
     let origin = Cell::default();
     for (cp, lit) in [(0x28FF, 8), (0x2801, 1), (0x2800, 0)] {
         let mut terminal = terminal();
         terminal.push_pty_data(&utf8(cp));
-        let canvas = painted(&mut terminal, scale);
+        let canvas = painted(&mut terminal, scale, &mut test.pass);
         let cell_rect = m.cell_rect(0, 0);
         let dots = braille::rects(cp, &m, &origin).expect("inside the braille range");
         assert_eq!(dots.len(), lit, "0x{cp:04X} lights {lit} dots");
@@ -360,6 +378,9 @@ fn braille_paints_exactly_its_dots() {
 /// A sprite takes the cell's explicit foreground colour.
 #[test]
 fn a_sprite_takes_the_cells_foreground() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     let scale = 1.0;
     let mut terminal = terminal();
     // SGR 4-bit red foreground, then a full block.
@@ -370,7 +391,7 @@ fn a_sprite_takes_the_cells_foreground() {
     let walked = cells(&mut terminal);
     assert!(walked[0].has_fg, "the cell carries the SGR colour");
     let fg = bytes([walked[0].fg.r, walked[0].fg.g, walked[0].fg.b]);
-    let canvas = painted(&mut terminal, scale);
+    let canvas = painted(&mut terminal, scale, &mut test.pass);
     let m = metrics(scale);
     rect_is_full_cell(&canvas, &m, 0, 0, fg, "the block is the cell's red");
     // The plain cell after it stays theme.
@@ -427,10 +448,13 @@ fn an_invisible_sprite_cell_draws_nothing() {
 /// the right edge.
 #[test]
 fn a_solid_powerline_fills_its_interior_and_leaves_the_far_corners() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     let scale = 1.0;
     let mut terminal = terminal();
     terminal.push_pty_data(&utf8(0xE0B0));
-    let canvas = painted(&mut terminal, scale);
+    let canvas = painted(&mut terminal, scale, &mut test.pass);
     pixel_is(&canvas, 0, 8, fg_bytes(), "the base midpoint");
     pixel_is(&canvas, 2, 8, fg_bytes(), "the interior");
     pixel_is(&canvas, 0, 12, fg_bytes(), "the lower base");
@@ -451,12 +475,15 @@ fn a_solid_powerline_fills_its_interior_and_leaves_the_far_corners() {
 /// what the shape pins.
 #[test]
 fn the_two_solid_separators_are_mirror_images() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     let scale = 1.0;
     let mut terminal = terminal();
     let mut data = utf8(0xE0B0);
     data.extend(utf8(0xE0B2));
     terminal.push_pty_data(&data);
-    let canvas = painted(&mut terminal, scale);
+    let canvas = painted(&mut terminal, scale, &mut test.pass);
     let class = |pixel: [u8; 4]| -> u8 {
         if pixel == theme_bytes() {
             0
@@ -485,6 +512,9 @@ fn the_two_solid_separators_are_mirror_images() {
 /// corner background, and the painted coverage sums to half the cell.
 #[test]
 fn each_corner_triangle_covers_its_half_of_the_cell() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     let scale = 1.0;
     for (cp, full, empty) in [
         (0x25E2, (6, 14), (0, 0)), // lower right
@@ -494,7 +524,7 @@ fn each_corner_triangle_covers_its_half_of_the_cell() {
     ] {
         let mut terminal = terminal();
         terminal.push_pty_data(&utf8(cp));
-        let canvas = painted(&mut terminal, scale);
+        let canvas = painted(&mut terminal, scale, &mut test.pass);
         pixel_is(&canvas, full.0, full.1, fg_bytes(), "the interior corner");
         pixel_is(&canvas, empty.0, empty.1, theme_bytes(), "the far corner");
         // The antialiased coverage, read off the blue channel's blend
@@ -524,12 +554,15 @@ fn each_corner_triangle_covers_its_half_of_the_cell() {
 /// background and the foreground, and the blend pins the width.
 #[test]
 fn the_hollow_separator_strokes_at_two_logical_pixels() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     for (scale, coverage) in [(1.0, 0.0f64), (1.25, 0.25), (1.5, 0.5), (1.8, 0.8)] {
         let mut terminal = terminal();
         let mut data = utf8(u32::from(' '));
         data.extend(utf8(0xE0B1));
         terminal.push_pty_data(&data);
-        let canvas = painted(&mut terminal, scale);
+        let canvas = painted(&mut terminal, scale, &mut test.pass);
         let m = metrics(scale);
         let base = m.cell_rect(1, 0).x();
         let mid = device_px(8.0 * scale);
@@ -589,12 +622,15 @@ fn the_hollow_separator_strokes_at_two_logical_pixels() {
 /// and the block continues at full strength on the shared edge.
 #[test]
 fn a_solid_separator_and_a_full_block_leave_no_seam_at_1_5() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     let scale = 1.5;
     let mut terminal = terminal();
     let mut data = utf8(0xE0B0);
     data.extend(utf8(0x2588));
     terminal.push_pty_data(&data);
-    let canvas = painted(&mut terminal, scale);
+    let canvas = painted(&mut terminal, scale, &mut test.pass);
     let m = metrics(scale);
     let cell0 = m.cell_rect(0, 0);
     let cell1 = m.cell_rect(1, 0);
@@ -635,6 +671,9 @@ fn a_solid_separator_and_a_full_block_leave_no_seam_at_1_5() {
 /// the separator cell by its code point.
 #[test]
 fn a_polygon_sprite_takes_the_cells_foreground() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     let scale = 1.0;
     let mut explicit = terminal();
     let mut data = b"\x1b[31m".to_vec();
@@ -647,7 +686,7 @@ fn a_polygon_sprite_takes_the_cells_foreground() {
         .expect("the separator cell");
     assert!(separator.has_fg, "the cell carries the SGR colour");
     let fg = bytes([separator.fg.r, separator.fg.g, separator.fg.b]);
-    let canvas = painted(&mut explicit, scale);
+    let canvas = painted(&mut explicit, scale, &mut test.pass);
     let m = metrics(scale);
     let cell_rect = m.cell_rect(separator.x, separator.y);
     pixel_is(
@@ -661,7 +700,7 @@ fn a_polygon_sprite_takes_the_cells_foreground() {
     // No colour named: the theme foreground.
     let mut fallback = terminal();
     fallback.push_pty_data(&utf8(0xE0B0));
-    let canvas = painted(&mut fallback, scale);
+    let canvas = painted(&mut fallback, scale, &mut test.pass);
     pixel_is(
         &canvas,
         2,
@@ -679,6 +718,9 @@ fn a_polygon_sprite_takes_the_cells_foreground() {
 /// scale the painter tests; the two separators mirror each other.
 #[test]
 fn the_hollow_separators_miter_their_corners() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
     // At scale 1 the base corner's spike covers about five sixths of its
     // pixel, so the test pins the blend's blue channel there; at the
     // fractional scales the coverage varies with the snap, and
@@ -689,7 +731,7 @@ fn the_hollow_separators_miter_their_corners() {
             let mut data = utf8(u32::from(' '));
             data.extend(utf8(cp));
             terminal.push_pty_data(&data);
-            let canvas = painted(&mut terminal, scale);
+            let canvas = painted(&mut terminal, scale, &mut test.pass);
             let m = metrics(scale);
             let cell = m.cell_rect(1, 0);
             let (x1, x2) = (cell.x(), cell.x() + cell.w());

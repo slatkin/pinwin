@@ -10,28 +10,31 @@
 //!
 //! 1. [`bg`] — the cell backgrounds, merged into runs of equal colour.
 //! 2. [`sprite`] — the block and braille sprites.
-//! 3. [`bands`] — the underline and strikethrough decorations.
-//! 4. [`cursor`] — the cursor shape, in the terminal's default foreground.
-//! 5. later rows plug the text pass in between the sprites and the bands
-//!    (the two passes own disjoint cells, and GTK draws each cell's bands
-//!    after its glyph), then the kitty image pass, in
-//!    [`crate::render::DrawState::render_grid`]'s order — the text pass
-//!    also feeds the cursor layer the block cursor's cell text (see the
-//!    seam in [`cursor`]).
+//! 3. [`text_pass`] — the cells' text, on the device pixel lattice. The
+//!    sprite and text passes own disjoint cells ([`sprite::cell_sprite`]
+//!    returns `None` for the cells the text pass owns), and GTK draws each
+//!    cell's bands after its glyph, so the text pass runs before the bands.
+//!    The walk also collects the cursor cell's text for the cursor layer.
+//! 4. [`bands`] — the underline and strikethrough decorations.
+//! 5. [`cursor`] — the cursor shape, in the terminal's default foreground,
+//!    with the block cursor's glyph redraw through the text pass.
+//! 6. later rows add the kitty image pass, in
+//!    [`crate::render::DrawState::render_grid`]'s order.
 //!
 //! The focus accent ([`accent`]) draws last, on top, in raw surface
 //! coordinates — the one layer the tween's draw offset does not translate,
 //! as `DrawState::draw` draws it after the translated grid.
 //!
 //! The layers are stateless passes over one frame, so they are free
-//! functions; the stateful caches later rows bring (the glyph and sprite
-//! caches) will live beside the frame call, not reshape it.
+//! functions; the stateful caches they draw through (the glyph and sprite
+//! caches) live in the [`TextPass`] the caller owns beside the frame call.
 //!
 //! GTK-free (`replace-gtk-with-wayland` D10): `paint_frame` and the pixel
 //! tests below run without a display.
 
 use super::canvas::Canvas;
 use super::geom::{FrameInput, PainterMetrics, device_px};
+use super::text_pass::TextPass;
 use super::{accent, bands, bg, cursor, sprite};
 use crate::term::Terminal;
 
@@ -40,8 +43,10 @@ use crate::term::Terminal;
 ///
 /// `metrics` carries the cell pitch, the font ascent and the output scale
 /// the frame snaps at; `frame` carries the sizes, the tween's draw offset,
-/// the focus state and the theme colours. The canvas must already be the
-/// frame's device size ([`FrameInput::device_size`]).
+/// the focus state and the theme colours. `text` is the panel thread's
+/// text pass (the shaper, the glyph cache and the cell metrics), owned by
+/// the caller across frames. The canvas must already be the frame's device
+/// size ([`FrameInput::device_size`]).
 ///
 /// A terminal with no live frame (none created yet, or a failed refresh)
 /// draws the theme background and the accent only — the degraded draw
@@ -51,6 +56,7 @@ pub fn paint_frame(
     metrics: &PainterMetrics,
     frame: &FrameInput,
     terminal: &mut Terminal,
+    text: &mut TextPass,
 ) {
     // The theme background is the whole surface: the grid draws over it,
     // and cells without an explicit background show it.
@@ -73,9 +79,11 @@ pub fn paint_frame(
     terminal.frame_rewind();
     sprite::paint(canvas, metrics, frame, terminal, offset);
     terminal.frame_rewind();
+    let cursor_text = text.paint(canvas, metrics, frame, terminal, offset);
+    terminal.frame_rewind();
     bands::paint(canvas, metrics, frame, terminal, offset);
     terminal.frame_rewind();
-    cursor::paint(canvas, metrics, terminal, offset);
+    cursor::paint(canvas, metrics, terminal, offset, &cursor_text, text);
     terminal.frame_end();
 
     accent::paint(canvas, frame, metrics);
@@ -87,6 +95,7 @@ mod tests {
     use crate::fontconfig::ThemeColours;
     use crate::guard::Poisoned;
     use crate::layout::Accent;
+    use crate::render::text_pass::test_support;
     use crate::term::cells::{Cell, Wide};
     use std::num::NonZeroU16;
 
@@ -145,10 +154,19 @@ mod tests {
     }
 
     /// A canvas of `frame`'s device size with the frame painted into it.
-    fn painted(terminal: &mut Terminal, frame: &FrameInput, scale: f64) -> Canvas {
+    /// The text pass comes from the shared helper: every pixel test paints
+    /// with the real test family, so a test that scans what the cell layers
+    /// drew uses ink-free cells (spaces) where the assertion needs the bare
+    /// background.
+    fn painted(
+        terminal: &mut Terminal,
+        frame: &FrameInput,
+        scale: f64,
+        text: &mut TextPass,
+    ) -> Canvas {
         let (w, h) = frame.device_size();
         let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
-        paint_frame(&mut canvas, &metrics(scale), frame, terminal);
+        paint_frame(&mut canvas, &metrics(scale), frame, terminal, text);
         canvas
     }
 
@@ -206,17 +224,20 @@ mod tests {
     /// merge into.
     #[test]
     fn a_region_of_one_background_has_no_seams() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         for scale in SCALES {
             let mut terminal = terminal();
             terminal.push_pty_data(HIDE_CURSOR);
-            terminal.push_pty_data(b"\x1b[41m........\x1b[0m");
+            terminal.push_pty_data(b"\x1b[41m        \x1b[0m");
             // The pinned vt's palette gives the SGR colour its own RGB, so
             // the expectation is the cell's own background, not a hard-coded
             // one.
             let walked = cells(&mut terminal);
             let bg = bytes([walked[0].bg.r, walked[0].bg.g, walked[0].bg.b]);
             let frame = frame(false, None, 0.0, scale);
-            let canvas = painted(&mut terminal, &frame, scale);
+            let canvas = painted(&mut terminal, &frame, scale, &mut test.pass);
             let row = metrics(scale).run_rect(0, 0, 8);
             for y in row.y()..row.y() + row.h() {
                 for x in 0..canvas.size().0 {
@@ -241,17 +262,20 @@ mod tests {
     /// overlap, at every scale.
     #[test]
     fn two_runs_meet_on_one_snapped_edge() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         for scale in SCALES {
             let mut terminal = terminal();
             terminal.push_pty_data(HIDE_CURSOR);
-            terminal.push_pty_data(b"\x1b[41m....\x1b[42m....\x1b[0m");
+            terminal.push_pty_data(b"\x1b[41m    \x1b[42m    \x1b[0m");
             let walked = cells(&mut terminal);
             let first = bytes([walked[0].bg.r, walked[0].bg.g, walked[0].bg.b]);
             let second = bytes([walked[4].bg.r, walked[4].bg.g, walked[4].bg.b]);
             assert_ne!(first, second, "the two runs have different colours");
 
             let frame = frame(false, None, 0.0, scale);
-            let canvas = painted(&mut terminal, &frame, scale);
+            let canvas = painted(&mut terminal, &frame, scale, &mut test.pass);
             let boundary = metrics(scale).cell_rect(4, 0).x();
             let row = metrics(scale).run_rect(0, 0, 8);
             for y in row.y()..row.y() + row.h() {
@@ -286,9 +310,12 @@ mod tests {
     /// background the painter filled.
     #[test]
     fn wide_cells_fill_two_columns() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         for scale in SCALES {
             let mut terminal = terminal();
-            terminal.push_pty_data("\u{6f22}".as_bytes());
+            terminal.push_pty_data("\u{3000}".as_bytes());
             // The frame walk emits the tail before its head (the one-cell
             // lookahead), so the tests find them by their width.
             let walked = cells(&mut terminal);
@@ -305,7 +332,7 @@ mod tests {
             assert!(!head.has_bg && !tail.has_bg, "no explicit background");
 
             let frame = frame(false, None, 0.0, scale);
-            let canvas = painted(&mut terminal, &frame, scale);
+            let canvas = painted(&mut terminal, &frame, scale, &mut test.pass);
             let m = metrics(scale);
             for col in [0, 1] {
                 cell_is(
@@ -326,10 +353,13 @@ mod tests {
     /// edge.
     #[test]
     fn a_styled_wide_glyph_fills_both_columns() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         for scale in SCALES {
             let mut terminal = terminal();
             terminal.push_pty_data(HIDE_CURSOR);
-            terminal.push_pty_data(b"\x1b[44m\xe6\xbc\xa2\x1b[0m");
+            terminal.push_pty_data(b"\x1b[44m\xe3\x80\x80\x1b[0m");
             let walked = cells(&mut terminal);
             let head = walked
                 .iter()
@@ -344,7 +374,7 @@ mod tests {
 
             let bg = bytes([head.bg.r, head.bg.g, head.bg.b]);
             let frame = frame(false, None, 0.0, scale);
-            let canvas = painted(&mut terminal, &frame, scale);
+            let canvas = painted(&mut terminal, &frame, scale, &mut test.pass);
             let m = metrics(scale);
             for col in [0, 1] {
                 cell_is(&canvas, &m, col, 0, bg, "the wide glyph's background");
@@ -365,11 +395,14 @@ mod tests {
     /// and a plain cell shows the theme background — the theme fallback.
     #[test]
     fn inverse_and_theme_fallback_colours() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         for scale in SCALES {
             let mut terminal = terminal();
-            terminal.push_pty_data(b"\x1b[7m..\x1b[0m......");
+            terminal.push_pty_data(b"\x1b[7m  \x1b[0m      ");
             let frame = frame(false, None, 0.0, scale);
-            let canvas = painted(&mut terminal, &frame, scale);
+            let canvas = painted(&mut terminal, &frame, scale, &mut test.pass);
             let default = terminal.colors().foreground;
             let default_fg = bytes([default.r, default.g, default.b]);
             let m = metrics(scale);
@@ -402,12 +435,15 @@ mod tests {
     /// foreground colour — the theme foreground, when the cell names none.
     #[test]
     fn the_bands_have_their_thickness_and_position_at_1_5() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         let scale = 1.5;
         let mut terminal = terminal();
         // Underline only, strikethrough only, both, and a plain cell.
-        terminal.push_pty_data(b"\x1b[4mU\x1b[9mS\x1b[4;9mB\x1b[0m.\x1b[0m");
+        terminal.push_pty_data(b"\x1b[4m \x1b[9m \x1b[4;9m \x1b[0m \x1b[0m");
         let frame = frame(false, None, 0.0, scale);
-        let canvas = painted(&mut terminal, &frame, scale);
+        let canvas = painted(&mut terminal, &frame, scale, &mut test.pass);
         let fg = bytes(THEME.foreground);
 
         // The snapped device band rows, computed from the rule itself: a
@@ -477,11 +513,14 @@ mod tests {
     /// tail is skipped, so its underline does not continue across the tail.
     #[test]
     fn a_wide_glyphs_band_stops_at_its_head_cell() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         let scale = 1.5;
         let mut terminal = terminal();
-        terminal.push_pty_data("\x1b[4m漢\x1b[0m".as_bytes());
+        terminal.push_pty_data("\x1b[4m\u{3000}\x1b[0m".as_bytes());
         let frame = frame(false, None, 0.0, scale);
-        let canvas = painted(&mut terminal, &frame, scale);
+        let canvas = painted(&mut terminal, &frame, scale, &mut test.pass);
         let fg = bytes(THEME.foreground);
         // Head cell columns [0, 12) at 1.5; the tail is [12, 24).
         let underline_y = device_px((ASCENT + 1.0) * scale);
@@ -512,10 +551,18 @@ mod tests {
     /// device pixels and read back exactly.
     #[test]
     fn the_accent_draws_only_when_focused() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         let accent = Accent::new([255, 0, 0], NonZeroU16::new(2).expect("nonzero"));
         let mut terminal = terminal();
         terminal.push_pty_data(HIDE_CURSOR);
-        let unfocused = painted(&mut terminal, &frame(false, Some(accent), 0.0, 1.0), 1.0);
+        let unfocused = painted(
+            &mut terminal,
+            &frame(false, Some(accent), 0.0, 1.0),
+            1.0,
+            &mut test.pass,
+        );
         assert_eq!(
             unfocused.pixel(0, 0),
             Some(theme_bytes()),
@@ -527,7 +574,12 @@ mod tests {
             "the centre stays theme"
         );
 
-        let focused = painted(&mut terminal, &frame(true, Some(accent), 0.0, 1.0), 1.0);
+        let focused = painted(
+            &mut terminal,
+            &frame(true, Some(accent), 0.0, 1.0),
+            1.0,
+            &mut test.pass,
+        );
         let accent_bytes = bytes([255, 0, 0]);
         // The stroke of width 2 covers the two outermost rows and columns.
         for (x, y) in [
@@ -560,9 +612,17 @@ mod tests {
     /// No accent configured: a focused frame draws none either.
     #[test]
     fn a_focused_frame_without_an_accent_draws_none() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         let mut terminal = terminal();
         terminal.push_pty_data(HIDE_CURSOR);
-        let canvas = painted(&mut terminal, &frame(true, None, 0.0, 1.0), 1.0);
+        let canvas = painted(
+            &mut terminal,
+            &frame(true, None, 0.0, 1.0),
+            1.0,
+            &mut test.pass,
+        );
         assert_eq!(canvas.pixel(0, 0), Some(theme_bytes()));
     }
 
@@ -570,15 +630,18 @@ mod tests {
     /// the border stays on the window's edges and the grid shifts.
     #[test]
     fn the_accent_is_not_translated_by_the_draw_offset() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         let accent = Accent::new([255, 0, 0], NonZeroU16::new(2).expect("nonzero"));
         let mut terminal = terminal();
-        terminal.push_pty_data(b"\x1b[41m........\x1b[0m");
+        terminal.push_pty_data(b"\x1b[41m        \x1b[0m");
         let bg = {
             let walked = cells(&mut terminal);
             bytes([walked[0].bg.r, walked[0].bg.g, walked[0].bg.b])
         };
         let frame = frame(true, Some(accent), 5.0, 1.0);
-        let canvas = painted(&mut terminal, &frame, 1.0);
+        let canvas = painted(&mut terminal, &frame, 1.0, &mut test.pass);
         let accent_bytes = bytes([255, 0, 0]);
         // The accent hugs the window's edges, unmoved. Row 32 is the third
         // row's area, clear of the accent's top and bottom bands.
@@ -603,16 +666,19 @@ mod tests {
     /// shifted cells clip where they leave the surface, and nothing panics.
     #[test]
     fn a_nonzero_draw_offset_crops_the_grid() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         for (scale, offset) in [(1.0, 5.0), (1.5, 3.0)] {
             let mut terminal = terminal();
             terminal.push_pty_data(HIDE_CURSOR);
-            terminal.push_pty_data(b"\x1b[41m........\x1b[0m");
+            terminal.push_pty_data(b"\x1b[41m        \x1b[0m");
             let bg = {
                 let walked = cells(&mut terminal);
                 bytes([walked[0].bg.r, walked[0].bg.g, walked[0].bg.b])
             };
             let frame = frame(false, None, offset, scale);
-            let canvas = painted(&mut terminal, &frame, scale);
+            let canvas = painted(&mut terminal, &frame, scale, &mut test.pass);
             let shift = device_px(offset * scale);
             let m = metrics(scale);
             // The assertions run inside the background row (row 0); the
@@ -641,11 +707,14 @@ mod tests {
     /// A frame of an empty grid is the theme background and nothing else.
     #[test]
     fn an_empty_grid_frame_is_the_theme_background() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         for scale in SCALES {
             let mut terminal = terminal();
             terminal.push_pty_data(HIDE_CURSOR);
             let frame = frame(false, None, 0.0, scale);
-            let canvas = painted(&mut terminal, &frame, scale);
+            let canvas = painted(&mut terminal, &frame, scale, &mut test.pass);
             let theme = theme_bytes();
             for y in 0..canvas.size().1 {
                 for x in 0..canvas.size().0 {
@@ -663,10 +732,13 @@ mod tests {
     /// the accent: the degraded draw.
     #[test]
     fn a_frame_that_cannot_open_draws_the_background_and_the_accent() {
+        let Some(mut test) = test_support::text_pass() else {
+            return;
+        };
         let accent = Accent::new([255, 0, 0], NonZeroU16::new(2).expect("nonzero"));
         let mut terminal = uninitialized_terminal();
         let frame = frame(true, Some(accent), 0.0, 1.0);
-        let canvas = painted(&mut terminal, &frame, 1.0);
+        let canvas = painted(&mut terminal, &frame, 1.0, &mut test.pass);
         assert_eq!(canvas.pixel(32, 32), Some(theme_bytes()));
         assert_eq!(canvas.pixel(0, 32), Some(bytes([255, 0, 0])));
         assert_eq!(canvas.pixel(32, 0), Some(bytes([255, 0, 0])));
