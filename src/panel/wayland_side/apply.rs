@@ -209,11 +209,16 @@ impl PanelState {
         // previous tween's wide cache is taken, and an equal one survives
         // the retarget below.
         let previous = self.tween_draw.take();
+        // The frame log (row 6.3): built on the state, which reads the
+        // environment once and picks the session's presentation-time
+        // source.
+        let frame_log = self.new_frame_log();
         self.tween.begin(
             staged.from_px,
             staged.target_px,
             staged.duration_ms,
             Instant::now(),
+            frame_log,
         );
 
         // The wide cache (D7): a retarget keeps an equal one, otherwise the
@@ -676,7 +681,7 @@ mod tests {
             200,
             &mut |grid| pushed.push(grid),
         );
-        state.tween.begin(360, 1080, 200, Instant::now());
+        state.tween.begin(360, 1080, 200, Instant::now(), None);
         assert!(
             state.tween.is_active(),
             "the test tweens like the apply would"
@@ -712,7 +717,7 @@ mod tests {
             200,
             &mut |grid| pushed.push(grid),
         );
-        state.tween.begin(360, 1080, 200, Instant::now());
+        state.tween.begin(360, 1080, 200, Instant::now(), None);
 
         // A covering 400-column layout is 3600px wide, past the output.
         let too_wide = layout(Side::Left, 400, 0, 0, 0, 12).covering();
@@ -738,7 +743,7 @@ mod tests {
             200,
             &mut |grid| pushed.push(grid),
         );
-        state.tween.begin(360, 1080, 200, Instant::now());
+        state.tween.begin(360, 1080, 200, Instant::now(), None);
 
         // A covering 400-column layout is rejected; the staging restores
         // the defer the running tween holds.

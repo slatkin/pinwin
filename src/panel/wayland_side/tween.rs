@@ -29,8 +29,13 @@
 //! half of the decision is plain field operations that cannot panic, like
 //! the GTK watchdog's unguarded `stop_inner`.
 //!
-//! `PINWIN_FRAMELOG` (row 6.3) is not wired here; the GTK path's frame log
-//! in [`crate::anim`] stays as it is until then.
+//! `PINWIN_FRAMELOG` (row 6.3) rides on the driver: a tween's begin takes
+//! the frame log it will feed ([`FrameLog`](super::frame_log::FrameLog),
+//! built by the caller from the environment and the session's
+//! presentation-time binding), the frames feed it, and every stop point —
+//! a frame finish, the watchdog, a cancel, a retarget's stop relay —
+//! prints its one summary line, exactly where the GTK path's `stop_inner`
+//! printed.
 
 use std::time::{Duration, Instant};
 
@@ -41,6 +46,7 @@ use crate::anim::{Advance, Tween};
 use crate::guard::guard;
 use crate::layout::Layout;
 
+use super::frame_log::FrameLog;
 use super::state::PanelState;
 
 /// The watchdog's slack past the duration, the GTK path's rule
@@ -128,6 +134,15 @@ struct Armed {
 pub struct TweenDriver {
     running: Option<Running>,
     armed: Option<Armed>,
+    /// The running tween's frame log, `Some` exactly while a tween runs
+    /// and `PINWIN_FRAMELOG=1` (row 6.3): created at the begin, fed on
+    /// each frame, printed and dropped at the first stop point.
+    frame_log: Option<FrameLog>,
+    /// The generation the running tween's presentation feedbacks carry:
+    /// incremented at every begin, so a late `presented` from a tween that
+    /// already stopped or was retargeted cannot land in the next tween's
+    /// log.
+    generation: u64,
 }
 
 impl TweenDriver {
@@ -137,16 +152,27 @@ impl TweenDriver {
     /// exactly as the GTK path's `on_stop` runs on every begin. A zero
     /// duration stages no tween — the caller snaps through the plain apply
     /// path. The caller clamps the duration to 1000 ms, as `pinwin_api.c`
-    /// did before the apply reached the glue.
-    pub fn begin(
+    /// did before the apply reached the glue. Crate-internal like its
+    /// frame-log parameter.
+    pub(crate) fn begin(
         &mut self,
         from_px: i32,
         to_px: i32,
         duration_ms: u32,
         now: Instant,
+        frame_log: Option<FrameLog>,
     ) -> TweenBegin {
+        // A begin over a running tween is a retarget: the previous tween
+        // stops first and prints its summary, exactly as the GTK begin's
+        // unconditional stop did. With no tween running there is no log
+        // left to print — every stop path already took it.
+        self.stop_log();
         self.running = None;
+        // The frame feedbacks carry the generation they were requested
+        // under, so the new tween's log starts clean.
+        self.generation = self.generation.wrapping_add(1);
         if duration_ms == 0 {
+            // A snap holds no log: nothing runs to feed one.
             return TweenBegin::Snap;
         }
         let Some(deadline) = now.checked_add(Duration::from_millis(
@@ -160,6 +186,7 @@ impl TweenDriver {
             tween: Tween::begin(from_px, to_px, duration_ms),
             deadline,
         });
+        self.frame_log = frame_log;
         TweenBegin::Run { deadline }
     }
 
@@ -181,11 +208,17 @@ impl TweenDriver {
 
     /// One frame callback's step (row 6.1): the compositor's event time in
     /// milliseconds drives [`Tween::advance`], whose clock is microseconds.
+    /// The frame log's callback source records the same time for every
+    /// frame while a log exists — the finishing one included, exactly as
+    /// the GTK tick recorded before advancing (row 6.3).
     pub fn frame(&mut self, now_ms: u32) -> FrameStep {
         // The compositor's event time is u32 milliseconds and wraps about
         // every 49.7 days; a tween spanning a wrap eases at its start until
         // the watchdog snaps it.
         let frame_us = i64::from(now_ms) * 1000;
+        if let Some(log) = self.frame_log.as_mut() {
+            log.record_callback(now_ms);
+        }
         match self.running.take() {
             None => FrameStep::Idle,
             Some(mut running) => match running.tween.advance(frame_us) {
@@ -193,7 +226,10 @@ impl TweenDriver {
                     self.running = Some(running);
                     FrameStep::Frame(px)
                 }
-                Advance::Finished => FrameStep::Finished(running.tween.target_px()),
+                Advance::Finished => {
+                    self.stop_log();
+                    FrameStep::Finished(running.tween.target_px())
+                }
             },
         }
     }
@@ -202,9 +238,51 @@ impl TweenDriver {
     /// unconditional stop): the caller relays the stop whether or not a
     /// tween ran, exactly like the GTK path's unconditional cache drop and
     /// deferred-grid fire. The armed watchdog timer, if any, fires once more
-    /// and removes itself.
+    /// and removes itself. The running tween's frame log, if any, prints
+    /// its summary here, as the GTK stop did.
     pub fn cancel(&mut self) {
         self.running = None;
+        self.stop_log();
+    }
+
+    /// The generation the running tween's presentation feedbacks carry
+    /// (row 6.3): the user data a `wp_presentation.feedback` request tags
+    /// its `presented` events with, so the dispatch can drop a sample from
+    /// a tween that already stopped or was retargeted.
+    #[must_use]
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// One `wp_presentation_feedback.presented` timestamp (row 6.3): the
+    /// time the frame reached the screen, for a log fed from the
+    /// presentation-time protocol. Samples from an older generation — a
+    /// tween that already stopped or was retargeted — are dropped, and a
+    /// log fed from the frame callbacks records nothing here.
+    pub(crate) fn record_presented(
+        &mut self,
+        generation: u64,
+        tv_sec_hi: u32,
+        tv_sec_lo: u32,
+        tv_nsec: u32,
+    ) {
+        if generation != self.generation {
+            return;
+        }
+        if let Some(log) = self.frame_log.as_mut() {
+            log.record_presented(tv_sec_hi, tv_sec_lo, tv_nsec);
+        }
+    }
+
+    /// Print and drop the running tween's frame log: the one summary line
+    /// per tween, at every stop point — a frame finish, the watchdog, a
+    /// cancel, a retarget's stop relay — exactly where the GTK path's
+    /// `stop_inner` printed ([`crate::anim::FrameLog`]). A stopped tween
+    /// leaves no log behind, so no later stop prints again.
+    fn stop_log(&mut self) {
+        if let Some(log) = self.frame_log.take() {
+            log.print();
+        }
     }
 
     /// The watchdog timer fire's decision: a tween still short of its
@@ -227,6 +305,7 @@ impl TweenDriver {
             return WatchdogStep::Pending { remaining };
         }
         self.armed = None;
+        self.stop_log();
         WatchdogStep::Expired(running.tween.target_px())
     }
 
@@ -326,361 +405,4 @@ pub(crate) fn on_watchdog_tick(state: &mut PanelState) -> TimeoutAction {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::num::NonZeroU16;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::mpsc;
-
-    use crate::guard::Poisoned;
-    use crate::layout::{CellSize, Keyboard, Side};
-    use crate::panel::handshake::Handshake;
-
-    use super::super::{Inner, Startup};
-
-    use super::*;
-
-    /// A startup for the tests; the thread does not touch the pty fd until
-    /// the surfaces push a grid, so a placeholder fd is fine here.
-    fn startup() -> Startup {
-        Startup {
-            fd: -1,
-            layout: Layout::new(
-                Side::Left,
-                NonZeroU16::new(40).expect("test columns"),
-                0,
-                0,
-                0,
-                0,
-            ),
-            keyboard: Keyboard::OnDemand,
-            accent: None,
-        }
-    }
-
-    /// A live handle state like a started panel's, for the thread-side
-    /// tests.
-    fn live_inner() -> Arc<Inner> {
-        Arc::new(Inner {
-            id: 0,
-            poisoned: Poisoned::new(),
-            live: AtomicBool::new(true),
-            keyboard: Keyboard::OnDemand,
-        })
-    }
-
-    fn headless_state(handshake: Handshake) -> PanelState {
-        PanelState::headless(
-            handshake,
-            Poisoned::new(),
-            live_inner(),
-            startup(),
-            CellSize::new(9, 16).expect("test cell size is non-zero"),
-        )
-    }
-
-    /// An instant some milliseconds before now, so a test's deadlines are
-    /// already past and its timers fire on the first dispatch.
-    fn past(ms: u64) -> Instant {
-        Instant::now()
-            .checked_sub(Duration::from_millis(ms))
-            .expect("the monotonic clock is past boot")
-    }
-
-    /// A scripted sequence of frame times eases to the target: every eased
-    /// width matches [`crate::anim::ease`], the last callback finishes at
-    /// the target, and a frame after the stop does nothing.
-    #[test]
-    fn scripted_frames_ease_to_the_target() {
-        let mut driver = TweenDriver::default();
-        let t0 = Instant::now();
-        assert_eq!(
-            driver.begin(0, 100, 1000, t0),
-            TweenBegin::Run {
-                deadline: t0 + Duration::from_millis(1100)
-            },
-            "the watchdog bound is the duration plus 100 ms"
-        );
-        // The first frame stamps the tween's start and holds `from_px`.
-        assert_eq!(driver.frame(0), FrameStep::Frame(0));
-        // t = 0.25: ease = 1 - 0.75^3 = 0.578125, so 58 px.
-        assert_eq!(driver.frame(250), FrameStep::Frame(58));
-        // t = 0.5: ease = 0.875, so 88 px (rounded half away from zero).
-        assert_eq!(driver.frame(500), FrameStep::Frame(88));
-        // t = 0.75: ease = 0.984375, so 98 px.
-        assert_eq!(driver.frame(750), FrameStep::Frame(98));
-        // The duration is spent: the finish carries the target width.
-        assert_eq!(driver.frame(1000), FrameStep::Finished(100));
-        assert!(!driver.is_active());
-        // A frame after the stop does nothing.
-        assert_eq!(driver.frame(2000), FrameStep::Idle);
-    }
-
-    /// A retarget mid-tween starts from the current width: the caller reads
-    /// [`TweenDriver::current_px`] and begins from it, and the new tween's
-    /// first frame holds that width. The deadline moves with the retarget.
-    #[test]
-    fn a_retarget_starts_from_the_current_width() {
-        let mut driver = TweenDriver::default();
-        driver.begin(40, 120, 1000, Instant::now());
-        let _ = driver.frame(0);
-        // t = 0.5: 40 + round(80 * 0.875) = 110.
-        let _ = driver.frame(500);
-        assert_eq!(driver.current_px(40), 110);
-
-        // The retarget: the same `begin`, from the current width.
-        let base = Instant::now();
-        assert_eq!(
-            driver.begin(110, 200, 200, base),
-            TweenBegin::Run {
-                deadline: base + Duration::from_millis(300)
-            },
-            "the retarget's deadline replaces the old one"
-        );
-        assert!(driver.is_active());
-        // The first frame of the new tween is its start width.
-        assert_eq!(driver.frame(0), FrameStep::Frame(110));
-        assert_eq!(driver.current_px(40), 110);
-    }
-
-    /// The watchdog stops a tween whose frame callbacks never arrive and
-    /// applies the target: before the deadline the fire re-arms, at it the
-    /// tween stops with the target width, and both a later frame and a later
-    /// fire do nothing.
-    #[test]
-    fn the_watchdog_stops_a_stalled_tween_at_the_target() {
-        let mut driver = TweenDriver::default();
-        let t0 = Instant::now();
-        driver.begin(40, 120, 200, t0);
-        assert!(driver.is_active());
-        // Just short of the deadline the tween keeps running and re-arms.
-        assert_eq!(
-            driver.watchdog(t0 + Duration::from_millis(299)),
-            WatchdogStep::Pending {
-                remaining: Duration::from_millis(1)
-            }
-        );
-        assert!(driver.is_active());
-        // At the deadline the tween stops and the target width is the
-        // finish payload.
-        assert_eq!(
-            driver.watchdog(t0 + Duration::from_millis(300)),
-            WatchdogStep::Expired(120)
-        );
-        assert!(!driver.is_active());
-        // A late frame and a late fire do nothing.
-        assert_eq!(driver.frame(100_000), FrameStep::Idle);
-        assert_eq!(
-            driver.watchdog(t0 + Duration::from_millis(400)),
-            WatchdogStep::Idle
-        );
-    }
-
-    /// Cancel stops the tween: a later frame and fire do nothing, and a
-    /// cancel with nothing running is a no-op on the state.
-    #[test]
-    fn cancel_stops_the_tween() {
-        let mut driver = TweenDriver::default();
-        driver.begin(40, 120, 200, Instant::now());
-        assert!(driver.is_active());
-        driver.cancel();
-        assert!(!driver.is_active());
-        assert_eq!(driver.frame(10), FrameStep::Idle);
-        assert_eq!(driver.watchdog(Instant::now()), WatchdogStep::Idle);
-        // Cancel again with nothing running: still fine.
-        driver.cancel();
-        assert!(!driver.is_active());
-    }
-
-    /// A zero duration snaps with no tween: the caller applies directly
-    /// through the plain apply path. A zero duration while a tween runs
-    /// stops it first, like `Anim::begin`'s unconditional stop.
-    #[test]
-    fn a_zero_duration_snaps_with_no_tween() {
-        let mut driver = TweenDriver::default();
-        assert_eq!(driver.begin(40, 120, 0, Instant::now()), TweenBegin::Snap);
-        assert!(!driver.is_active());
-        assert_eq!(driver.frame(10), FrameStep::Idle);
-        assert_eq!(driver.watchdog(Instant::now()), WatchdogStep::Idle);
-
-        // A zero duration while a tween runs stops it.
-        driver.begin(40, 120, 200, Instant::now());
-        assert!(driver.is_active());
-        assert_eq!(driver.begin(40, 120, 0, Instant::now()), TweenBegin::Snap);
-        assert!(!driver.is_active());
-    }
-
-    /// An idle driver reports the applied width, like
-    /// [`crate::anim::Anim::current_px`].
-    #[test]
-    fn an_idle_driver_reports_the_applied_width() {
-        let driver = TweenDriver::default();
-        assert!(!driver.is_active());
-        assert_eq!(driver.current_px(320), 320);
-    }
-
-    /// The armed watchdog timer stops a stalled tween through a real calloop
-    /// loop (`port-to-rust` D10): the timer fires at the deadline and the
-    /// driver's state ends. The headless state has no session, so the
-    /// finish's geometry write itself is exercised only on niri (row 10.1).
-    #[test]
-    fn the_armed_watchdog_stops_a_stalled_tween() {
-        let (tx, _rx) = mpsc::channel();
-        let mut state = headless_state(Handshake::new(tx));
-        // A begin whose deadline is already in the past, so the timer fires
-        // on the first dispatch.
-        assert!(matches!(
-            state.tween.begin(40, 120, 1, past(500)),
-            TweenBegin::Run { .. }
-        ));
-        assert!(state.tween.is_active());
-
-        let mut event_loop = calloop::EventLoop::<PanelState>::try_new().expect("test loop");
-        arm_watchdog(&event_loop.handle(), &mut state);
-        assert_eq!(state.tween.watchdog_to_arm(), None, "the timer is armed");
-
-        event_loop
-            .dispatch(Some(Duration::from_millis(50)), &mut state)
-            .expect("dispatch");
-        assert!(!state.tween.is_active(), "the watchdog stopped the tween");
-        // The fired timer dropped itself: no re-arm is pending, and a second
-        // dispatch does nothing further.
-        assert_eq!(state.tween.watchdog_to_arm(), None);
-        event_loop
-            .dispatch(Some(Duration::from_millis(10)), &mut state)
-            .expect("dispatch");
-        assert!(!state.tween.is_active());
-    }
-
-    /// A retarget to an earlier deadline re-arms: the run loop removes the
-    /// stale timer and arms at the new deadline, so the shorter tween's
-    /// watchdog fires at its own deadline, not at the stale one.
-    #[test]
-    fn a_retarget_rearms_the_watchdog_at_the_new_deadline() {
-        let (tx, _rx) = mpsc::channel();
-        let mut state = headless_state(Handshake::new(tx));
-        let now = Instant::now();
-        state.tween.begin(40, 120, 10_000, now);
-        let long_deadline = state
-            .tween
-            .watchdog_to_arm()
-            .expect("a first deadline to arm");
-
-        let mut event_loop = calloop::EventLoop::<PanelState>::try_new().expect("test loop");
-        arm_watchdog(&event_loop.handle(), &mut state);
-        assert_eq!(state.tween.watchdog_to_arm(), None, "the timer is armed");
-
-        // The retarget: a one-millisecond tween begun in the past, whose
-        // deadline is far ahead of the first timer's.
-        state.tween.begin(120, 360, 1, past(500));
-        let short_deadline = state
-            .tween
-            .watchdog_to_arm()
-            .expect("the moved deadline to arm");
-        assert!(
-            short_deadline < long_deadline,
-            "the retarget's deadline is earlier"
-        );
-        // The re-arm removes the stale timer and arms at the new deadline.
-        arm_watchdog(&event_loop.handle(), &mut state);
-        assert_eq!(state.tween.watchdog_to_arm(), None);
-
-        event_loop
-            .dispatch(Some(Duration::from_millis(50)), &mut state)
-            .expect("dispatch");
-        assert!(
-            !state.tween.is_active(),
-            "the retargeted tween's watchdog fired"
-        );
-    }
-
-    /// An armed timer whose tween finished through its frames first fires
-    /// into an idle driver and drops itself: no finish runs twice.
-    #[test]
-    fn an_armed_timer_after_a_frame_finish_fires_into_idle() {
-        let (tx, _rx) = mpsc::channel();
-        let mut state = headless_state(Handshake::new(tx));
-        // A begin whose deadline is already in the past, so the armed timer
-        // would fire on the first dispatch if the tween were still running.
-        state.tween.begin(0, 100, 1, past(500));
-        let mut event_loop = calloop::EventLoop::<PanelState>::try_new().expect("test loop");
-        arm_watchdog(&event_loop.handle(), &mut state);
-
-        // The frames finish the tween before the timer can fire.
-        let _ = state.tween.frame(0);
-        assert_eq!(state.tween.frame(5), FrameStep::Finished(100));
-        assert!(!state.tween.is_active());
-
-        event_loop
-            .dispatch(Some(Duration::from_millis(20)), &mut state)
-            .expect("dispatch");
-        assert!(!state.tween.is_active(), "the fire found no tween");
-        assert_eq!(state.tween.watchdog_to_arm(), None, "the timer dropped");
-    }
-
-    /// An idle driver arms nothing, and a dispatch with no tween changes
-    /// nothing about the loop.
-    #[test]
-    fn an_idle_driver_arms_nothing() {
-        let (tx, _rx) = mpsc::channel();
-        let mut state = headless_state(Handshake::new(tx));
-        let mut event_loop = calloop::EventLoop::<PanelState>::try_new().expect("test loop");
-        arm_watchdog(&event_loop.handle(), &mut state);
-        assert_eq!(state.tween.watchdog_to_arm(), None);
-        assert!(!state.tween.is_active());
-
-        event_loop
-            .dispatch(Some(Duration::from_millis(10)), &mut state)
-            .expect("dispatch");
-        assert!(!state.tween.is_active());
-        assert!(!state.done, "an idle watchdog does not end the loop");
-    }
-
-    /// The animate decision is the GTK path's `should_animate` rule read
-    /// against the applied layout: a positive duration between layouts that
-    /// match in side and left and right gutters animates; a zero duration,
-    /// a side switch and a gutter change snap.
-    #[test]
-    fn the_animate_decision_follows_the_gtk_rule() {
-        fn layout(side: Side, cols: u16, left: i32, right: i32) -> Layout {
-            Layout::new(
-                side,
-                std::num::NonZeroU16::new(cols).expect("test columns"),
-                0,
-                0,
-                left,
-                right,
-            )
-        }
-        let applied = layout(Side::Left, 40, 0, 12);
-
-        assert!(
-            should_animate(200, &applied, &applied),
-            "an identity applies"
-        );
-        assert!(
-            should_animate(200, &applied, &layout(Side::Left, 120, 0, 12)),
-            "a column change at the same side and gutters animates"
-        );
-        assert!(
-            should_animate(200, &applied, &layout(Side::Left, 120, 0, 12).covering()),
-            "a covering-only change animates so the gap can ease back"
-        );
-        assert!(
-            !should_animate(0, &applied, &layout(Side::Left, 120, 0, 12)),
-            "a zero duration snaps"
-        );
-        assert!(
-            !should_animate(200, &applied, &layout(Side::Right, 120, 0, 12)),
-            "a side switch snaps"
-        );
-        assert!(
-            !should_animate(200, &applied, &layout(Side::Left, 120, 4, 12)),
-            "a left-gutter change snaps"
-        );
-        assert!(
-            !should_animate(200, &applied, &layout(Side::Left, 120, 0, 4)),
-            "a right-gutter change snaps"
-        );
-    }
-}
+mod tests;

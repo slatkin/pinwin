@@ -46,6 +46,7 @@ use crate::surfaces::gap::{HeldGap, start_held_gap};
 use super::super::handshake::{Handshake, StartOutcome};
 use super::Startup;
 use super::buffers::{Scale, viewport_destination};
+use super::frame_log::{FrameLog, Presentation};
 use super::sizing::{Grid, Sizing};
 use super::surfaces::{PanelSurfaces, SurfaceId};
 use super::tween::TweenDriver;
@@ -66,6 +67,11 @@ pub(crate) struct Session {
     /// loop ends without a teardown — destroys the per-surface scale
     /// objects before the surfaces they belong to, the protocol's order.
     pub(crate) scale: Scale,
+    /// The optional presentation-time global (row 6.3): the frame log's
+    /// on-screen timestamps when the compositor offers the protocol, the
+    /// frame callbacks' times otherwise. Its absence degrades the frame
+    /// log, never the start (D1).
+    pub(crate) presentation: Presentation,
     /// The two layer surfaces, `None` once the panel is torn down: the
     /// teardown drops them — the panel leaves the screen at once — and with
     /// them every configure and pty push path, while the connection and the
@@ -180,6 +186,7 @@ impl PanelState {
         let shm = Shm::bind(globals, qh).map_err(|_bind| BindFailure::NoDisplay)?;
         let shell = LayerShell::bind(globals, qh).map_err(|_bind| BindFailure::NoDisplay)?;
         let mut scale = Scale::bind(globals, qh);
+        let presentation = Presentation::bind(globals, qh);
         // The panel surface is created with no output, so the compositor
         // places it on the focused output (D3); the first enter names it.
         let surface = compositor.create_surface_with_data(qh, None, 1, SurfaceId::Panel);
@@ -205,6 +212,7 @@ impl PanelState {
             pending_output: None,
             resolved: None,
             scale,
+            presentation,
             qh: qh.clone(),
         });
         Ok(())
@@ -395,6 +403,20 @@ impl PanelState {
         if let Some(session) = &mut self.session {
             session.scale.note_preferred_scale(units_120);
         }
+    }
+
+    /// The frame log a new tween begins with (row 6.3,
+    /// [`super::frame_log`]): `Some` only under `PINWIN_FRAMELOG=1`,
+    /// sourced from the presentation-time protocol when that global is
+    /// bound and from the frame callbacks otherwise. The environment is
+    /// read once per tween, as the GTK path read it once per begin.
+    #[must_use]
+    pub(crate) fn new_frame_log(&self) -> Option<FrameLog> {
+        let presentation = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.presentation.is_bound());
+        FrameLog::begin(FrameLog::enabled(), presentation)
     }
 
     /// The compositor closed a layer surface. The panel's surface ending is

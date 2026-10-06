@@ -449,7 +449,12 @@ impl PanelState {
     /// Request the panel surface's next `wl_surface.frame` callback (row
     /// 6.2): the tween's frames are driven by these callbacks, so every
     /// committed frame requests the next one. The queue handle lives on the
-    /// session, so the apply's begin frame can request one too.
+    /// session, so the apply's begin frame can request one too. The same
+    /// committed frame requests its presentation feedback (row 6.3), tagged
+    /// with the tween's generation so a late `presented` from a tween that
+    /// already stopped cannot reach the next tween's log; without the
+    /// presentation-time global the request is skipped and the frame log
+    /// rides on the callbacks' times alone.
     pub(crate) fn request_tween_frame(&self) {
         let Some(session) = &self.session else {
             return;
@@ -458,6 +463,11 @@ impl PanelState {
             return;
         };
         surfaces.request_frame(&session.qh);
+        session.presentation.feedback(
+            surfaces.panel_wl_surface(),
+            &session.qh,
+            self.tween.generation(),
+        );
     }
 
     /// The tween's finish action (row 6.1, wired in row 6.2): the stop

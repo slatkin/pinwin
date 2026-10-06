@@ -381,6 +381,12 @@ impl PanelSurfaces {
         surface.frame(qh, FrameCallbackData(surface.clone()));
     }
 
+    /// The panel's `wl_surface`, for the committed tween frame's
+    /// presentation feedback request (row 6.3).
+    pub(crate) fn panel_wl_surface(&self) -> &wl_surface::WlSurface {
+        self.panel.wl_surface()
+    }
+
     /// One panel configure while a tween runs (row 6.2): the tween frames
     /// own the panel surface's size, viewport and buffer commits until the
     /// tween finishes, so this configure runs the `on-demand` switch only —
