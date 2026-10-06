@@ -208,7 +208,11 @@ and reservation surfaces; `src/input/` wires the GDK controllers;
 `src/anim.rs` eases the width; `src/pty.rs` drives the host-supplied fd;
 `src/fontconfig.rs` reads the Ghostty font and theme; `src/nerd_font.rs` is a
 generated glyph table; `src/guard.rs` is the panic guard; `src/ghostty_sys/`
-is the hand-written FFI to the pinned libghostty-vt. `build.rs` fetches and
+is the hand-written FFI to the pinned libghostty-vt. The `pinwin` host
+program `src/main.rs` owns the pty, the child's process and the focus
+socket; its pure parts are `src/cli.rs` (arguments, `--focus`), `src/ipc.rs`
+(the focus socket's identity, bind, listener and client) and
+`src/settings.rs` (the environment contract). `build.rs` fetches and
 builds that pinned commit.
 
 The behaviour spec lives in `openspec/specs/pinwin-panel/spec.md`; the

@@ -43,7 +43,11 @@ binary; the build is Cargo only. The pre-port C and Zig sources (`src/*.c`,
 - `src/guard.rs` — the shared panic guard.
 - `src/ghostty_sys/` — the hand-written `extern` declarations for the pinned
   libghostty-vt (the only module that talks to C).
-- `src/main.rs` — the thin `pinwin` program.
+- `src/main.rs` — the `pinwin` host program: runs a command in a panel over
+  the library API, owning the pty, the child's process and the focus socket;
+  its pure parts live in `src/cli.rs` (arguments, `--focus`), `src/ipc.rs`
+  (the focus socket's identity, bind, listener and client) and
+  `src/settings.rs` (the environment contract).
 - `examples/demo.rs` — the dev-only demo example, never installed.
 - `build.rs` — fetches and builds the pinned libghostty-vt.
 
