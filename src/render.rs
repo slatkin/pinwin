@@ -69,6 +69,9 @@ mod nodes;
 pub mod painter;
 #[cfg(test)]
 mod parity;
+/// The `png`-crate kitty PNG decoder (row 4.7): the [`PngDecoder`] the
+/// panel hands to the terminal from row 8 on, GTK-free like the canvas.
+pub mod png;
 /// The shaper (row 4.5): swash shapes one cell's grapheme cluster into
 /// glyph ids and pen positions, with the face chosen from the family's
 /// styles and the per-code-point fallback, cached (replace-gtk-with-wayland
