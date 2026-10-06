@@ -23,7 +23,6 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use pinwin::layout::{Layout, Side};
@@ -169,9 +168,10 @@ fn child_exec(child: &ChildCommand) -> ! {
 /// socket path — exits 2 like the other environment errors.
 fn run_focus_client(name: Option<InstanceName>) -> i32 {
     let name = name.unwrap_or_else(InstanceName::default_instance);
-    let runtime_dir = env::var_os("XDG_RUNTIME_DIR");
-    let display = env::var_os("WAYLAND_DISPLAY");
-    match ipc::request_focus_from_host(runtime_dir.as_deref(), display.as_deref(), &name) {
+    let result = ipc::socket_path_from_env(&name)
+        .map_err(FocusError::Environment)
+        .and_then(|path| ipc::focus_client(&path));
+    match result {
         Ok(()) => 0,
         Err(FocusError::Environment(message)) => {
             eprintln!("{message}");
@@ -181,24 +181,6 @@ fn run_focus_client(name: Option<InstanceName>) -> i32 {
             eprintln!("{message}");
             1
         }
-    }
-}
-
-/// Forward SIGINT and SIGTERM to the child as SIGHUP: install [`on_term`]
-/// for both signals. The handlers are installed in the parent only, after
-/// the fork, like the C.
-fn install_term_forwarding() {
-    // SAFETY: `on_term` is async-signal-safe and the libc signal handler
-    // signature matches.
-    unsafe {
-        libc::signal(
-            libc::SIGINT,
-            on_term as extern "C" fn(i32) as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGTERM,
-            on_term as extern "C" fn(i32) as libc::sighandler_t,
-        );
     }
 }
 
@@ -282,8 +264,6 @@ fn run() -> i32 {
     };
     if pid < 0 {
         eprintln!("pinwin: forkpty: {}", io::Error::last_os_error());
-        drop(listener);
-        ipc::remove_socket_file(&socket_file);
         return 1;
     }
     if pid == 0 {
@@ -293,7 +273,18 @@ fn run() -> i32 {
 
     // Forward SIGINT/SIGTERM to the child as SIGHUP (installed in the parent
     // only, after the fork, like the C).
-    install_term_forwarding();
+    // SAFETY: `on_term` is async-signal-safe and the libc signal handler
+    // signature matches.
+    unsafe {
+        libc::signal(
+            libc::SIGINT,
+            on_term as extern "C" fn(i32) as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            on_term as extern "C" fn(i32) as libc::sighandler_t,
+        );
+    }
 
     // Start the panel on the pty master. On failure the child is hung up and
     // reaped and the host exits 1.
@@ -311,8 +302,6 @@ fn run() -> i32 {
             };
             eprintln!("pinwin: cannot start the panel ({reason})");
             hang_up_child_and_wait(pid);
-            drop(listener);
-            ipc::remove_socket_file(&socket_file);
             return 1;
         }
     };
@@ -329,11 +318,10 @@ fn run() -> i32 {
         });
         let status = wait_for_child(pid);
         shutdown.store(true, Ordering::Relaxed);
-        ipc::remove_socket_file(&socket_file);
+        drop(socket_file);
         status
     });
     // Dropping the handle closes the panel (the C's `pinwin_stop`).
-    drop(listener);
     drop(panel);
     child_exit_status(status)
 }
@@ -343,15 +331,10 @@ fn run() -> i32 {
 /// (keyboard-focus-request design). Returns the listener together with the
 /// socket file's path, which the host removes after its child exits. Errors
 /// carry the full `pinwin:` message.
-fn bind_focus_socket(name: &InstanceName) -> Result<(net::UnixListener, PathBuf), String> {
-    // No lossy conversion: the runtime directory goes into the path as the
-    // environment provided it, and the display is validated in
-    // [`ipc::socket_path`].
-    let runtime_dir = env::var_os("XDG_RUNTIME_DIR");
-    let display = env::var_os("WAYLAND_DISPLAY");
-    let socket_path = ipc::socket_path(runtime_dir.as_deref(), display.as_deref(), name)?;
+fn bind_focus_socket(name: &InstanceName) -> Result<(net::UnixListener, ipc::SocketFile), String> {
+    let socket_path = ipc::socket_path_from_env(name)?;
     match ipc::bind_instance_socket(&socket_path) {
-        Ok(listener) => Ok((listener, socket_path)),
+        Ok(listener) => Ok((listener, ipc::SocketFile::new(socket_path))),
         Err(error) => Err(match error {
             BindError::Duplicate => {
                 format!(

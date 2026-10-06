@@ -310,6 +310,30 @@ pub(crate) fn remove_socket_file(path: &Path) {
     }
 }
 
+/// The instance's socket file; dropping it removes the file, so every exit
+/// path after the bind cleans up.
+pub(crate) struct SocketFile(PathBuf);
+
+impl SocketFile {
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self(path)
+    }
+}
+
+impl Drop for SocketFile {
+    fn drop(&mut self) {
+        remove_socket_file(&self.0);
+    }
+}
+
+/// [`socket_path`] from the process environment: `XDG_RUNTIME_DIR` is used as
+/// given, with no lossy conversion.
+pub(crate) fn socket_path_from_env(name: &InstanceName) -> Result<PathBuf, String> {
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+    let display = std::env::var_os("WAYLAND_DISPLAY");
+    socket_path(runtime_dir.as_deref(), display.as_deref(), name)
+}
+
 /// What asking a host for focus ended in.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum FocusError {
@@ -321,25 +345,11 @@ pub(crate) enum FocusError {
     NotAnswered(String),
 }
 
-/// Ask the host that owns `name`'s socket for focus: resolve the socket path
-/// from the environment (a failure is [`FocusError::Environment`]), connect,
-/// send `focus\n`, and wait a bounded time for the reply. `ok\n` is [`Ok`];
-/// everything else — a refused connect, `error\n`, a timeout, an invalid
-/// reply — is [`FocusError::NotAnswered`] with the message to print.
-pub(crate) fn request_focus_from_host(
-    runtime_dir: Option<&OsStr>,
-    display: Option<&OsStr>,
-    name: &InstanceName,
-) -> Result<(), FocusError> {
-    let path = socket_path(runtime_dir, display, name).map_err(FocusError::Environment)?;
-    focus_client(&path)
-}
-
 /// The exchange itself against the socket at `path`: connect, send
 /// `focus\n`, and wait a bounded time for the reply. `ok\n` is [`Ok`];
 /// everything else — a refused connect, `error\n`, a timeout, an invalid
 /// reply — is [`FocusError::NotAnswered`] with the message to print.
-fn focus_client(path: &Path) -> Result<(), FocusError> {
+pub(crate) fn focus_client(path: &Path) -> Result<(), FocusError> {
     let mut stream = net::UnixStream::connect(path).map_err(|error| {
         FocusError::NotAnswered(format!(
             "pinwin: no pinwin is listening on {} ({error})",
