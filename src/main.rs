@@ -307,14 +307,24 @@ fn run() -> i32 {
     };
 
     // The listener answers focus requests while the child runs (row 3.4):
-    // a scoped thread borrows the panel — the request posts to the GTK
-    // thread exactly like `Panel::apply_layout` — and ends within one accept
+    // a scoped thread borrows the panel — the request is bounded like
+    // `Panel::apply_layout` — and ends within one accept
     // poll of the shutdown flag the main thread sets once the child exits.
     // The socket file goes with it: the host removes the file it created.
+    //
+    // Row 7.3 replaces this placeholder: the focus socket's request line
+    // does not carry a token yet, so the listener reuses one fixed token
+    // until then (replace-gtk-with-wayland row 7.2).
+    let focus_token = match pinwin::ActivationToken::new("pinwin-focus-request") {
+        Ok(token) => token,
+        // The placeholder is a literal known valid; a rejection here is a
+        // bug in it, not a runtime condition.
+        Err(_) => return 1,
+    };
     let shutdown = AtomicBool::new(false);
     let status = std::thread::scope(|scope| {
         scope.spawn(|| {
-            ipc::serve_focus_requests(&listener, &|| panel.request_focus(), &shutdown);
+            ipc::serve_focus_requests(&listener, &|| panel.request_focus(&focus_token), &shutdown);
         });
         let status = wait_for_child(pid);
         shutdown.store(true, Ordering::Relaxed);

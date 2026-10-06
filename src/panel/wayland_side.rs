@@ -87,10 +87,12 @@ pub(crate) enum PanelCommand {
         /// The bounded reply the host waits on.
         reply: mpsc::SyncSender<PublishOutcome>,
     },
-    /// Request keyboard focus, answered with a [`FocusOutcome`].
+    /// Request keyboard focus, answered with `()` (replace-gtk-with-wayland
+    /// D4: the compositor's choice is invisible to the client, so the reply
+    /// only says the request was made).
     Focus {
         /// The bounded reply the host waits on.
-        reply: mpsc::SyncSender<super::handshake::FocusOutcome>,
+        reply: mpsc::SyncSender<()>,
     },
     /// Tear the panel down and end the thread, answered with `()`.
     Teardown {

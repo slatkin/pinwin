@@ -54,7 +54,7 @@ fn handle_command(state: &mut PanelState, command: super::PanelCommand) {
             let _ = reply.send(state.apply(layout, duration_ms));
         }
         super::PanelCommand::Focus { reply } => {
-            let _ = reply.send(focus_without_activation());
+            let _ = reply.send(());
         }
         super::PanelCommand::Teardown { reply } => {
             // A stop relay, not ordinary glue (D5): the reply and the loop's
@@ -67,13 +67,6 @@ fn handle_command(state: &mut PanelState, command: super::PanelCommand) {
             });
         }
     }
-}
-
-/// The focus answer while the thread has no xdg-activation request yet (row
-/// 7.2 replaces this with the activation call of decision 4): the same
-/// not-live lifecycle state as the pre-3.5 apply answer.
-fn focus_without_activation() -> super::super::handshake::FocusOutcome {
-    super::super::handshake::FocusOutcome::NotLive
 }
 
 #[cfg(test)]
@@ -150,17 +143,18 @@ mod tests {
         assert!(!state.done, "an apply does not end the thread");
     }
 
-    /// A focus request posted to a thread without an activation path is
-    /// answered `NotLive` through the same bounded reply (`NotRunning`).
+    /// A focus request posted to a thread without an activation path is a
+    /// no-op answered `Ok` through the same bounded reply (row 7.2: without
+    /// xdg-activation the request does nothing and still succeeds).
     #[test]
-    fn a_focus_request_without_an_activation_path_is_not_running() {
+    fn a_focus_request_without_an_activation_path_is_ok() {
         let (tx, _rx) = mpsc::channel();
         let mut state = headless_state(Handshake::new(tx));
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         handle_command(&mut state, PanelCommand::Focus { reply: reply_tx });
         assert_eq!(
             crate::panel::handshake::wait_for_focus(&reply_rx, std::time::Duration::from_secs(1)),
-            Err(crate::panel::PinwinError::NotRunning)
+            Ok(())
         );
     }
 

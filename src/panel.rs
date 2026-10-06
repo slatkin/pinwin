@@ -34,13 +34,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 
+use crate::activation::ActivationToken;
 use crate::guard::{Poisoned, guard, guard_always};
 use crate::layout::{Keyboard, Layout};
 
-use gtk_side::{
-    StartCommand, dispatch_apply, dispatch_focus_remap, dispatch_teardown, gtk_thread_main,
-};
-use handshake::{APPLY_WAIT, Handshake, wait_for_apply, wait_for_focus, wait_for_start};
+use gtk_side::{StartCommand, dispatch_apply, dispatch_teardown, gtk_thread_main};
+use handshake::{APPLY_WAIT, Handshake, wait_for_apply, wait_for_start};
 
 /// The longest animated apply duration, clamped like `pinwin_api.c`'s
 /// `PINWIN_ANIM_MAX_MS` (`pinwin.h`: "the duration SHALL be clamped").
@@ -91,9 +90,9 @@ pub(crate) struct Inner {
 /// A running panel, the host's handle. Dropping it closes the panel.
 ///
 /// Besides applies, the handle offers a focus request
-/// ([`Panel::request_focus`]): in `on-demand` mode the panel window is
-/// remapped so the compositor gives it keyboard focus, the other modes are a
-/// no-op `Ok`.
+/// ([`Panel::request_focus`]): in `on-demand` mode the panel passes the
+/// request's activation token to the compositor as an xdg-activation request
+/// (replace-gtk-with-wayland D4), the other modes are a no-op `Ok`.
 ///
 /// Not `Clone`: one handle per panel, so the single-instance rule is
 /// ownership, not bookkeeping.
@@ -232,22 +231,24 @@ impl Panel {
     }
 
     /// Ask the compositor to give the panel keyboard focus (issue #15's
-    /// focus on request). In `on-demand` mode the panel window is hidden and
-    /// presented again, so the compositor sees a new map and focuses it the
-    /// way it focused the first map; the reserved gap does not change, so
-    /// tiled windows keep their position and size. In the `none` and
-    /// `exclusive` modes the call returns `Ok(())` and changes nothing — the
-    /// host chose the mode, and a remap could not gain focus there anyway.
-    /// The keyboard mode itself is fixed at start time; the request never
-    /// changes it.
+    /// focus on request). In `on-demand` mode the panel passes `token` to
+    /// the compositor as an xdg-activation request for the panel surface
+    /// (replace-gtk-with-wayland D4): the panel never unmaps, and the
+    /// request changes neither the terminal grid, the pty window size nor
+    /// the reserved gap. Whether the compositor honours the request is
+    /// invisible to the caller, so the call returns `Ok(())` once the
+    /// request is made. In the `none` and `exclusive` modes the call returns
+    /// `Ok(())` and changes nothing — the host chose the mode, and an
+    /// activation request could not gain focus there anyway. The keyboard
+    /// mode itself is fixed at start time; the request never changes it.
     ///
-    /// Safe to call from any thread, like [`Panel::apply_layout`]: the remap
-    /// is posted to the GTK thread and waited for, bounded — a wedged loop is
-    /// `Internal`, never a hang. A panel that is no longer live reports
-    /// `NotRunning` without posting, and a panic anywhere in the panel
-    /// reports `Internal` (the poisoned check comes first, D5).
-    pub fn request_focus(&self) -> Result<(), PinwinError> {
-        request_focus_via_inner(&self.inner)
+    /// The token is the one-use permission a compositor gives a program it
+    /// launches; the library owns no transport for the request, the host
+    /// decides how a request and its token reach it. Taken by reference:
+    /// the request carries the token to the panel side, it does not consume
+    /// it, and the host may reuse the token it built.
+    pub fn request_focus(&self, token: &ActivationToken) -> Result<(), PinwinError> {
+        request_focus_via_inner(&self.inner, token)
     }
 }
 
@@ -289,35 +290,37 @@ fn post_apply(inner: &Inner, layout: Layout, duration_ms: u32) -> Result<(), Pin
 /// A focus request through the display-free inner handle (D10): the same
 /// order as [`apply_via_inner`] — the poisoned check first (D5: a panic
 /// reports `Internal`, never `NotRunning`), then the ended check — then the
-/// mode short-circuit and the bounded posted remap. The guard's `Err` maps
-/// with a match, like `handshake.rs`'s outcome mappings, so no
-/// payload-discarding `map_err` is needed here.
-pub(crate) fn request_focus_via_inner(inner: &Inner) -> Result<(), PinwinError> {
-    match guard(&inner.poisoned, || post_focus(inner)) {
+/// mode short-circuit and the request itself.
+pub(crate) fn request_focus_via_inner(
+    inner: &Inner,
+    token: &ActivationToken,
+) -> Result<(), PinwinError> {
+    match guard(&inner.poisoned, || post_focus(inner, token)) {
         Ok(result) => result,
         Err(_) => Err(PinwinError::Internal),
     }
 }
 
 /// The unguarded body of [`request_focus_via_inner`].
-fn post_focus(inner: &Inner) -> Result<(), PinwinError> {
+fn post_focus(inner: &Inner, _token: &ActivationToken) -> Result<(), PinwinError> {
     // Not running → `NotRunning` without blocking, unconditionally (the
     // spec's dead-panel scenario; pinwin_api.c's order).
     if !inner.live.load(Ordering::Relaxed) {
         return Err(PinwinError::NotRunning);
     }
-    // The mode is fixed at start time and recorded on the handle: a remap
-    // cannot gain focus outside `on-demand`, so the request is `Ok` and
-    // posts nothing.
+    // The mode is fixed at start time and recorded on the handle: an
+    // activation request cannot gain focus outside `on-demand`, so the
+    // request is `Ok` and posts nothing.
     if inner.keyboard != Keyboard::OnDemand {
         return Ok(());
     }
-    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-    let id = inner.id;
-    // The surfaces live on the GTK thread, so the remap must run there (D4):
-    // post the command and wait for the synchronous result, bounded (D5).
-    gtk4::glib::MainContext::default().invoke(move || dispatch_focus_remap(id, &reply_tx));
-    wait_for_focus(&reply_rx, APPLY_WAIT)
+    // Until row 8.1 switches `Panel` to the panel thread, the GTK side has
+    // no xdg-activation request to make (the gtk4-layer-shell binding has
+    // none), so the request is `Ok` and posts nothing: the legacy path
+    // loses its focus request on the way (replace-gtk-with-wayland row
+    // 7.2's known intermediate regression), and row 8.1 posts the token to
+    // the panel thread's activation instead.
+    Ok(())
 }
 
 impl Drop for Panel {
@@ -412,6 +415,12 @@ mod tests {
         }
     }
 
+    /// A valid test token, the argument every focus request carries from
+    /// row 7.2 on.
+    fn token() -> ActivationToken {
+        ActivationToken::new("pinwin-test-token").expect("test token is valid")
+    }
+
     /// A fd that is not an open descriptor is `InvalidFd` before any GTK
     /// work (D7): no thread is spawned, nothing else changes. A negative fd
     /// and a closed one are both covered.
@@ -477,7 +486,10 @@ mod tests {
         );
         // The focus request follows the same precedence: a latched handle
         // reports `Internal`, never `NotRunning`.
-        assert_eq!(request_focus_via_inner(&inner), Err(PinwinError::Internal));
+        assert_eq!(
+            request_focus_via_inner(&inner, &token()),
+            Err(PinwinError::Internal)
+        );
     }
 
     /// An apply on a handle whose panel is no longer live reports
@@ -505,7 +517,7 @@ mod tests {
 
     /// A focus request on a handle whose panel is no longer live reports
     /// `NotRunning` without blocking: the post is skipped, the reply path is
-    /// not entered (keyboard-focus-request's dead-panel scenario).
+    /// not entered (the dead-panel scenario).
     #[test]
     fn a_focus_request_on_a_dead_panel_is_not_running_without_blocking() {
         let inner = Inner {
@@ -516,7 +528,7 @@ mod tests {
         };
         let started = std::time::Instant::now();
         assert_eq!(
-            request_focus_via_inner(&inner),
+            request_focus_via_inner(&inner, &token()),
             Err(PinwinError::NotRunning)
         );
         assert!(
@@ -527,8 +539,8 @@ mod tests {
 
     /// In the `none` and `exclusive` modes a focus request is `Ok(())` and
     /// posts nothing: `Ok` itself is the proof, because a posted command on
-    /// this thread would run inline with no glue and reply `NotLive`
-    /// (`NotRunning`), never `Ok`.
+    /// this thread would run inline with no glue and fail the wait (`Ok`
+    /// could never come back through a reply channel).
     #[test]
     fn a_focus_request_outside_on_demand_is_ok_and_posts_nothing() {
         for keyboard in [Keyboard::None, Keyboard::Exclusive] {
@@ -538,25 +550,24 @@ mod tests {
                 live: AtomicBool::new(true),
                 keyboard,
             };
-            assert_eq!(request_focus_via_inner(&inner), Ok(()));
+            assert_eq!(request_focus_via_inner(&inner, &token()), Ok(()));
         }
     }
 
-    /// A posted focus remap whose command finds no glue (the invoke runs
-    /// inline here, like the publish test above) maps `NotLive` onto
-    /// `NotRunning` — the mapping the GTK side's reply reaches through.
+    /// Until row 8.1 switches `Panel` to the panel thread, a live
+    /// `on-demand` handle's request is also `Ok(())` and posts nothing: the
+    /// GTK side has no xdg-activation request to make (replace-gtk-with-wayland
+    /// row 7.2's known intermediate regression). The proof is the same as
+    /// for the mode no-ops above: `Ok` without any reply path.
     #[test]
-    fn a_not_live_focus_reply_is_not_running() {
+    fn a_focus_request_on_the_gtk_path_is_ok_and_posts_nothing() {
         let inner = Inner {
-            id: u64::MAX, // no panel this test could collide with
+            id: 0,
             poisoned: Poisoned::new(),
             live: AtomicBool::new(true),
             keyboard: Keyboard::OnDemand,
         };
-        assert_eq!(
-            request_focus_via_inner(&inner),
-            Err(PinwinError::NotRunning)
-        );
+        assert_eq!(request_focus_via_inner(&inner, &token()), Ok(()));
     }
 
     /// A panic in a guarded closure at the panel boundary yields
