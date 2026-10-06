@@ -683,4 +683,67 @@ mod tests {
         // An empty name is never a socket.
         assert!(socket_path("").is_none());
     }
+
+    /// A panel thread handle over a fake command server (a plain calloop
+    /// loop answering each command through its bounded reply): an apply and
+    /// a focus request post through the real command channel and map their
+    /// replies, and a teardown posts, answers and ends the loop — the wiring
+    /// `Panel::apply_layout`, `request_focus` and `Drop` depend on, without
+    /// a display (D10).
+    #[test]
+    fn a_panel_thread_handle_posts_apply_focus_and_teardown_to_a_loop() {
+        use calloop::channel::Event;
+
+        let (commands, receiver) = channel::channel::<PanelCommand>();
+        let thread = PanelThread {
+            commands,
+            inner: live_inner(),
+        };
+
+        // The fake server: answer each command like the real handlers do
+        // (an apply with its publish outcome, a focus and a teardown with
+        // `()`), then stop once the teardown passed.
+        let server = std::thread::spawn(move || {
+            let mut event_loop =
+                calloop::EventLoop::<Cell<bool>>::try_new().expect("the fake loop");
+            event_loop
+                .handle()
+                .insert_source(receiver, |event, (), done: &mut Cell<bool>| {
+                    let Event::Msg(command) = event else {
+                        done.set(true);
+                        return;
+                    };
+                    match command {
+                        PanelCommand::Apply { reply, .. } => {
+                            let _ = reply.send(PublishOutcome::Applied);
+                        }
+                        PanelCommand::Focus { reply, .. } => {
+                            let _ = reply.send(());
+                        }
+                        PanelCommand::Teardown { reply } => {
+                            let _ = reply.send(());
+                            done.set(true);
+                        }
+                    }
+                })
+                .expect("insert the command source");
+            let mut done = Cell::new(false);
+            while !done.get() {
+                if event_loop
+                    .dispatch(Some(std::time::Duration::from_secs(5)), &mut done)
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        assert_eq!(thread.apply(startup().layout, 0), Ok(()));
+        assert_eq!(
+            thread.request_focus(ActivationToken::new("pinwin-test-token").expect("token")),
+            Ok(())
+        );
+        thread.teardown();
+        server.join().expect("the fake server thread");
+    }
 }
