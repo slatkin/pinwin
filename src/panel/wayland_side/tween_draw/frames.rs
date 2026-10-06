@@ -8,7 +8,7 @@ use super::super::sizing::Grid;
 use super::super::state::PanelState;
 use super::super::surfaces::SurfaceId;
 use super::super::tween::FrameStep;
-use super::TweenAction;
+use super::{TweenAction, TweenDraw};
 
 /// One `wl_surface.frame` callback for the panel surface (row 6.2): the
 /// compositor's event time steps the tween driver, and the step decides the
@@ -46,6 +46,29 @@ impl PanelState {
         {
             self.tween_draw = None;
             return;
+        }
+        // Mid-tween output (row 8.1): the wide cache is a snapshot of the
+        // grid at the tween's start, and a repaint request while the tween
+        // runs marks the holder stale — the next frame, this one, redraws
+        // the cache from the live terminal before presenting it, the old
+        // path's cache redraw. A refused redraw skips the frame; the next
+        // one or the watchdog retries.
+        if self.tween_draw.as_ref().is_some_and(TweenDraw::is_stale) {
+            let Some(render) = self.render.clone() else {
+                return;
+            };
+            let Some(session) = self.session.as_mut() else {
+                return;
+            };
+            let Some(surfaces) = session.surfaces.as_mut() else {
+                return;
+            };
+            let Some(holder) = self.tween_draw.as_mut() else {
+                return;
+            };
+            if !holder.redraw(&render, surfaces.pool_mut()) {
+                return;
+            }
         }
         let Some(session) = &mut self.session else {
             return;

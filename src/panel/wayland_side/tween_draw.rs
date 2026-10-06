@@ -173,6 +173,13 @@ pub(crate) struct TweenDraw {
     gap_side: Side,
     gap_zone: i32,
     gap_tweening: bool,
+    /// The live grid's pixel width the cache was drawn against (row 8.1):
+    /// the redraw keys the docked-edge offset against the same grid.
+    grid_px: i32,
+    /// Whether terminal output has made the cache stale since it was drawn
+    /// (row 8.1): the next frame this holder presents redraws it from the
+    /// live terminal first.
+    stale: bool,
 }
 
 impl TweenDraw {
@@ -212,6 +219,8 @@ impl TweenDraw {
             gap_side,
             gap_zone,
             gap_tweening,
+            grid_px,
+            stale: false,
         })
     }
 
@@ -284,6 +293,46 @@ impl TweenDraw {
     #[must_use]
     pub(crate) fn buffer(&self) -> Option<&Buffer> {
         self.buffer.as_ref()
+    }
+
+    /// Mark the cache stale (row 8.1): terminal output arrived while the
+    /// tween runs, and the next frame this holder presents redraws the
+    /// cache from the live terminal instead of presenting the snapshot.
+    pub(crate) fn note_output(&mut self) {
+        self.stale = true;
+    }
+
+    /// Whether the cache is stale ([`Self::note_output`] and not yet
+    /// redrawn).
+    #[must_use]
+    pub(crate) fn is_stale(&self) -> bool {
+        self.stale
+    }
+
+    /// Redraw the cache from the live terminal (row 8.1): the same crop,
+    /// height, scale and grid width the first draw used, through the
+    /// renderer's passes into a fresh wide canvas, re-uploaded into the
+    /// pool buffer when the compositor has a viewport. `false` is a draw
+    /// or upload that was refused: the previous canvas and buffer stay in
+    /// place and the frame is skipped, so the next one retries.
+    pub(crate) fn redraw(&mut self, render: &TweenRender, pool: &mut BufferPool) -> bool {
+        let Some(draw) = self.crop.wide_draw(self.height, self.grid_px, self.scale) else {
+            return false;
+        };
+        let canvas = {
+            let mut renderer = render.renderer.borrow_mut();
+            renderer.paint_wide(draw, &mut render.terminal.borrow_mut())
+        };
+        let Some(canvas) = canvas else {
+            return false;
+        };
+        let previous = std::mem::replace(&mut self.canvas, canvas);
+        if self.buffer.is_some() && !self.upload(pool) {
+            self.canvas = previous;
+            return false;
+        }
+        self.stale = false;
+        true
     }
 
     /// One tween frame's commit plan at the eased width `px` (row 6.2): the

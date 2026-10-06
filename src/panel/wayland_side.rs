@@ -491,9 +491,11 @@ fn run_loop(
             return Err(error);
         }
         // The repaint request the terminal's callbacks latched (row 8.1):
-        // the draw step reads and clears it here once the pool buffers and
-        // the present path exist (dispatch D4c). Nothing draws yet.
-        let _repaint = state.take_repaint_request();
+        // the draw step reads and clears it here and draws a live frame —
+        // or marks the running tween's wide cache stale — and a present
+        // the pool refused latches the request again until the buffer
+        // releases arrive (dispatch D4c).
+        state.service_repaint_request();
         // The tween's watchdog (row 6.1, [`tween`]): the timer lives only
         // while a tween runs — armed here after each dispatch at the
         // driver's pending deadline, replaced when a retarget moves the

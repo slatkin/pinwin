@@ -38,6 +38,8 @@ fn holder(side: Side, start: i32, end: i32, units: u32, gap_tweening: bool) -> T
         gap_side: side,
         gap_zone: 372,
         gap_tweening,
+        grid_px: wide,
+        stale: false,
     }
 }
 

@@ -328,6 +328,39 @@ impl PanelState {
         surface.commit();
         ServiceOutcome::Drawn
     }
+
+    /// The loop's service of a repaint request (dispatch D4c, the
+    /// executor): read and clear the flag the terminal's callbacks and the
+    /// seat's `queue_draw` latch, then either mark the tween's wide cache
+    /// stale — a request while a tween owns the commits is terminal output
+    /// the snapshot must catch up with — or draw and present a live frame
+    /// at the panel's latest size. A present the pool refused latches the
+    /// request again: the buffer releases arrive as Wayland events the
+    /// source dispatches, and the next pass retries. A request before the
+    /// first configure consumes itself: the configure draw paints the
+    /// panel.
+    pub fn service_repaint_request(&mut self) {
+        let requested = self.take_repaint_request();
+        if !requested {
+            return;
+        }
+        match output_disposition(self.tween_draw.is_some()) {
+            OutputDisposition::MarkHolderStale => {
+                if let Some(holder) = self.tween_draw.as_mut() {
+                    holder.note_output();
+                }
+            }
+            OutputDisposition::DrawLiveFrame => {
+                let Some((width, height)) = self.panel_size else {
+                    return;
+                };
+                let busy = self.draw_frame_at(width, height) == ServiceOutcome::Busy;
+                if latch_after_service(true, busy) {
+                    self.repaint.set(true);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
