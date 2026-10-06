@@ -53,6 +53,11 @@ pub mod geom;
 pub mod glyph;
 mod images;
 mod metrics;
+/// The Nerd Font glyph constraints over swash geometry (row 4.5): the port
+/// of the old text pass's `constrain`, recast from a cairo post-scale into
+/// a swash placement transform (replace-gtk-with-wayland D6). GTK-free,
+/// like the font module.
+pub mod nerd;
 mod node_cursor;
 mod node_images;
 mod node_sprites;
