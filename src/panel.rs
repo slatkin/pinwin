@@ -23,6 +23,7 @@
 mod error;
 mod gtk_side;
 mod handshake;
+pub mod wayland_side;
 
 pub use error::PinwinError;
 pub use gtk_side::Startup;

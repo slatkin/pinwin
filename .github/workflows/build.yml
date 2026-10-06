@@ -56,7 +56,12 @@ jobs:
           # only when that pin is bumped deliberately. clang stays a system
           # package (native build-script tooling, not a cache-keyed compiler).
           pacman_retry pacman -S --noconfirm --needed rustup clang zig \
-            gtk4 gtk4-layer-shell git
+            gtk4 gtk4-layer-shell git \
+            # The wayland client stack and the fonts the display-free font
+            # tests resolve (replace-gtk-with-wayland row 2.1). The GTK
+            # packages stay until row 8.2 removes them.
+            wayland libxkbcommon fontconfig \
+            ttf-jetbrains-mono-nerd noto-fonts-emoji
 
       - uses: actions/checkout@v7
 

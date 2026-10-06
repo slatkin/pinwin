@@ -40,6 +40,25 @@ gdk-pixbuf = "0.22"
 
 gdk4 = { version = "0.11", features = ["v4_12"] }
 
+# The direct Wayland client stack (replace-gtk-with-wayland D1, row 2.1). The
+# GTK crates above stay until row 8.1 removes them; until then nothing on the
+# GTK path touches these. The toolkit's defaults are the calloop and xkbcommon
+# features the row names; the connection is the pure-Rust wayland backend, so
+# no libwayland link step is needed.
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
+smithay-client-toolkit = "0.21"
+calloop = "0.14"
+calloop-wayland-source = "0.4"
+
+# The renderer's CPU stack (replace-gtk-with-wayland D5/D6, row 2.1):
+# tiny-skia fills and scales, swash shapes and rasterizes, fontconfig resolves
+# the Ghostty family (D6) and png decodes the kitty images.
+tiny-skia = "0.12"
+swash = "0.2"
+fontconfig = "0.11"
+png = "0.18"
+
 # port-to-rust D5: panics must never cross the public API, so the unwind
 # runtime is required for the catch_unwind guards at every boundary. Setting
 # `panic = "abort"` is forbidden: it would abort the host instead.
