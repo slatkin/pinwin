@@ -41,6 +41,7 @@ use wayland_client::{Connection, QueueHandle};
 use crate::guard::{Poisoned, guard, guard_always};
 use crate::layout::{CellSize, OutputSize};
 use crate::pty::apply_winsize;
+use crate::surfaces::gap::{HeldGap, start_held_gap};
 
 use super::super::handshake::{Handshake, StartOutcome};
 use super::Startup;
@@ -61,13 +62,13 @@ pub(crate) struct Session {
     /// them every configure and pty push path, while the connection and the
     /// registry/output handlers it still dispatches to stay alive until the
     /// loop ends.
-    surfaces: Option<PanelSurfaces>,
+    pub(crate) surfaces: Option<PanelSurfaces>,
     /// The output the panel's first `wl_surface.enter` named (D3), whose
     /// xdg-output logical size is still awaited.
     pending_output: Option<wl_output::WlOutput>,
     /// The resolved output and its xdg-output logical size (D3). `None` until
     /// both the enter and the logical size have arrived.
-    resolved: Option<OutputSize>,
+    pub(crate) resolved: Option<OutputSize>,
 }
 
 /// The wayland panel thread's dispatch state: the display-free core every
@@ -81,14 +82,19 @@ pub(crate) struct PanelState {
     /// compositor-closed panel): end the loop and let the thread return.
     pub(crate) done: bool,
     pub(crate) inner: Arc<super::Inner>,
-    startup: Startup,
+    pub(crate) startup: Startup,
     /// The measured cell metrics the start command carried (D3): the
     /// surfaces' width and the grid derivation both need them from the
     /// first configure, so a required startup input instead of a later
     /// arrival.
-    cell: CellSize,
-    sizing: Sizing,
-    session: Option<Session>,
+    pub(crate) cell: CellSize,
+    pub(crate) sizing: Sizing,
+    /// The held gap the reserve surface draws (overlay-expand D2, D5):
+    /// seeded from the startup layout's own choice — a pushing start holds
+    /// its own strip, a covering start holds zero — and moved only by a
+    /// validated apply (row 3.5, `crate::surfaces::gap`).
+    pub(crate) held: HeldGap,
+    pub(crate) session: Option<Session>,
 }
 
 /// Why a start's bind failed: a required global is missing (the spec's
@@ -120,6 +126,7 @@ impl PanelState {
             startup,
             cell,
             sizing: Sizing::new(startup.layout.cols(), cell),
+            held: start_held_gap(startup.layout, cell.width().get()),
             session: None,
         }
     }
@@ -325,7 +332,7 @@ impl PanelState {
 /// terminal's grid push joins here when the terminal moves onto this thread
 /// (replace-gtk-with-wayland row 8.1); until then the pty carries the size
 /// alone, which is what the child's `TIOCGWINSZ` reads.
-fn apply_pty_size(fd: RawFd, grid: Grid) {
+pub(crate) fn apply_pty_size(fd: RawFd, grid: Grid) {
     let Ok(rows) = i32::try_from(grid.rows()) else {
         return;
     };

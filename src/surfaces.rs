@@ -37,7 +37,7 @@ use crate::layout::{Accent, Keyboard, Layout, Side};
 use crate::render::OutputScale;
 
 mod area;
-mod gap;
+pub(crate) mod gap;
 mod hooks;
 
 pub use area::GridArea;

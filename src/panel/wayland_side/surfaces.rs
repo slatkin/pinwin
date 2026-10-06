@@ -30,7 +30,10 @@ use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, La
 use smithay_client_toolkit::shm::{CreatePoolError, Shm, slot::SlotPool};
 use wayland_client::protocol::{wl_shm, wl_surface};
 
-use crate::layout::{CellSize, Coverage, Keyboard, Layout, Side};
+use crate::layout::{CellSize, Keyboard, Layout, Side};
+use crate::surfaces::gap::start_held_gap;
+
+use super::apply::SurfaceGeometry;
 
 /// Which of the panel thread's surfaces a `wl_surface` is: the user data the
 /// surfaces are created with, so the compositor handlers can tell the panel's
@@ -76,23 +79,11 @@ pub fn grid_width_px(cols: NonZeroU16, cell: CellSize) -> Option<i32> {
 /// The exclusive zone the reserve holds at startup, the startup held gap
 /// (overlay-expand D5): a pushing start reserves its own strip
 /// `left + panel width + right`, a covering start reserves nothing until the
-/// first pushing layout applies. Row 3.5 ports the apply path onto
-/// `crate::surfaces::gap`; until then this mirrors its `start_held_gap`. A
-/// strip the geometry rejects (the checked-arithmetic overflow a validated
-/// layout excludes) reserves nothing.
+/// first pushing layout applies. The decision is `gap::start_held_gap`'s,
+/// shared with the panel state's held gap (row 3.5).
 #[must_use]
 pub fn startup_reserve_zone(layout: Layout, cell: CellSize) -> i32 {
-    match layout.coverage() {
-        Coverage::Push => {
-            let Some(width) = grid_width_px(layout.cols(), cell) else {
-                return 0;
-            };
-            layout
-                .side_geometry(i64::from(width))
-                .map_or(0, |geometry| geometry.reservation())
-        }
-        Coverage::Cover => 0,
-    }
+    start_held_gap(layout, cell.width().get()).zone()
 }
 
 /// The keyboard interactivity a mode maps with (D3): `on-demand` maps with
@@ -285,6 +276,33 @@ impl PanelSurfaces {
         self.reserve
             .as_ref()
             .is_some_and(|reserve| reserve.surface == *layer)
+    }
+
+    /// Apply one staged layout's geometry to both surfaces (row 3.5): the
+    /// panel re-anchors to the layout's docking side with its margins and
+    /// pixel width, the reserve re-anchors to the held gap's side with its
+    /// zone. Each commit asks the compositor for the configure that follows;
+    /// the grid and the pty size were already pushed through the sizing path
+    /// (row 3.3), and a configure at the same height pushes nothing more.
+    pub fn apply_geometry(&mut self, geometry: &SurfaceGeometry) {
+        self.panel.set_anchor(panel_anchor(geometry.panel_side));
+        let (top, right, bottom, left) = geometry.panel_margins;
+        self.panel.set_margin(top, right, bottom, left);
+        // A validated layout's width always fits; a skipped `set_size` is
+        // the same skip the startup width applies.
+        if let Some(width) = geometry.panel_width
+            && let Ok(width) = u32::try_from(width)
+        {
+            self.panel.set_size(width, 0);
+        }
+        self.panel.commit();
+        if let Some(reserve) = &self.reserve {
+            reserve
+                .surface
+                .set_anchor(panel_anchor(geometry.reserve_side));
+            reserve.surface.set_exclusive_zone(geometry.reserve_zone);
+            reserve.surface.commit();
+        }
     }
 }
 

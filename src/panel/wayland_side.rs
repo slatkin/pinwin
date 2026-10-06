@@ -18,8 +18,9 @@
 //! The bound session — the sctk handlers, the two layer surfaces of row 3.1
 //! and the grid sizing of row 3.3 — lives in the submodules beside this
 //! lifecycle plumbing: [`state`] holds the dispatch state, [`surfaces`] the
-//! surface geometry, [`sizing`] the pure size decisions, [`commands`] the
-//! command-channel handling and [`watchdog`] the startup watchdog. Until row
+//! surface geometry, [`sizing`] the pure size decisions, [`apply`] the layout
+//! apply (row 3.5), [`commands`] the command-channel handling and
+//! [`watchdog`] the startup watchdog. Until row
 //! 8.1 switches `Panel::start` over, nothing in the crate calls
 //! [`spawn_panel_thread`]: the entry point is `pub` so it stays reachable (a
 //! `pub(crate)` entry with no caller is dead code under `-D warnings`, and
@@ -51,6 +52,7 @@ use super::PinwinError;
 use super::Startup;
 use super::handshake::{APPLY_WAIT, Handshake, StartOutcome, wait_for_apply, wait_for_focus};
 
+pub(crate) mod apply;
 pub(crate) mod commands;
 pub mod sizing;
 pub(crate) mod state;

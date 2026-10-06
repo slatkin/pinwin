@@ -51,7 +51,7 @@ fn handle_command(state: &mut PanelState, command: super::PanelCommand) {
             duration_ms,
             reply,
         } => {
-            let _ = reply.send(apply_without_publish(layout, duration_ms));
+            let _ = reply.send(state.apply(layout, duration_ms));
         }
         super::PanelCommand::Focus { reply } => {
             let _ = reply.send(focus_without_activation());
@@ -69,21 +69,9 @@ fn handle_command(state: &mut PanelState, command: super::PanelCommand) {
     }
 }
 
-/// The apply answer while the thread has no publish path yet (row 3.5
-/// replaces this with the validated publish of the surfaces — validation,
-/// the held gap, covering layouts and side switches — the shape of the GTK
-/// side's `dispatch_apply`): the layout verdict needs the publish path, so
-/// the answer stays the not-live lifecycle state until then.
-fn apply_without_publish(
-    _layout: crate::layout::Layout,
-    _duration_ms: u32,
-) -> crate::surfaces::PublishOutcome {
-    crate::surfaces::PublishOutcome::NotLive
-}
-
 /// The focus answer while the thread has no xdg-activation request yet (row
 /// 7.2 replaces this with the activation call of decision 4): the same
-/// not-live lifecycle state as [`apply_without_publish`].
+/// not-live lifecycle state as the pre-3.5 apply answer.
 fn focus_without_activation() -> super::super::handshake::FocusOutcome {
     super::super::handshake::FocusOutcome::NotLive
 }
@@ -139,10 +127,11 @@ mod tests {
         PanelState::headless(handshake, Poisoned::new(), live_inner(), startup(), cell())
     }
 
-    /// An apply posted to a thread without a publish path is answered
-    /// `NotLive` through the same bounded reply (`NotRunning`), never a hang.
+    /// An apply posted to a thread whose session is not bound — no resolved
+    /// output to validate against — is answered `NotLive` through the same
+    /// bounded reply (`NotRunning`), never a hang.
     #[test]
-    fn an_apply_without_a_publish_path_is_not_running() {
+    fn an_apply_without_a_session_is_not_running() {
         let (tx, _rx) = mpsc::channel();
         let mut state = headless_state(Handshake::new(tx));
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);

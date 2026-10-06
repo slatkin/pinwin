@@ -16,15 +16,29 @@ use crate::layout::{Coverage, Layout, Side};
 /// (overlay-expand D5): no pushing layout has ever applied, so there is no
 /// earlier pushing width to hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct HeldGap {
+pub(crate) struct HeldGap {
     side: Side,
     zone: i32,
+}
+
+impl HeldGap {
+    /// The side the reserve surface anchors to.
+    #[must_use]
+    pub(crate) const fn side(self) -> Side {
+        self.side
+    }
+
+    /// The exclusive zone the reserve surface carries.
+    #[must_use]
+    pub(crate) const fn zone(self) -> i32 {
+        self.zone
+    }
 }
 
 /// The held gap a panel starts with (overlay-expand D2, D5): a pushing start
 /// reserves its own strip from the first frame; a covering start holds an
 /// empty strip on its side until the first pushing apply establishes one.
-pub(super) fn start_held_gap(layout: Layout, cell_w: i32) -> HeldGap {
+pub(crate) fn start_held_gap(layout: Layout, cell_w: i32) -> HeldGap {
     let zone = match layout.coverage() {
         Coverage::Push => pushing_strip(layout, cell_w).unwrap_or(0),
         Coverage::Cover => 0,
@@ -97,7 +111,7 @@ fn pushing_strip_at(layout: Layout, panel_px: i32) -> Option<i32> {
 /// a validated layout yields the staged mutation — the applied layout, column
 /// count and held gap. `None` is a rejected publish, which leaves the applied
 /// layout and the held gap untouched.
-pub(super) fn staged_publish(
+pub(crate) fn staged_publish(
     output_w: i32,
     output_h: i32,
     cell_w: i32,
