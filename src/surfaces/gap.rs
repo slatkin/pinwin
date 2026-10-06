@@ -105,6 +105,28 @@ fn pushing_strip_at(layout: Layout, panel_px: i32) -> Option<i32> {
         .map(|g| g.reservation())
 }
 
+/// [`reserve_gap`] over the held gap's plain parts, for a caller that holds
+/// the side and zone as separate values: the wayland tween's per-frame crop
+/// plan (replace-gtk-with-wayland row 6.2) reads them from the panel state,
+/// and the decision itself stays here, stated once.
+pub fn reserve_gap_parts(
+    held_side: Side,
+    held_zone: i32,
+    gap_tweening: bool,
+    layout: Layout,
+    panel_px: i32,
+) -> (Side, i32) {
+    reserve_gap(
+        HeldGap {
+            side: held_side,
+            zone: held_zone,
+        },
+        gap_tweening,
+        layout,
+        panel_px,
+    )
+}
+
 /// The decision half of [`Surfaces::publish`] (overlay-expand D4), split out
 /// so the reject-before-mutate ordering is unit testable without a display:
 /// validate the staged layout against the live output metrics first, and only

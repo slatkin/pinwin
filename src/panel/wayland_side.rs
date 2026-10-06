@@ -20,8 +20,9 @@
 //! lifecycle plumbing: [`state`] holds the dispatch state, [`surfaces`] the
 //! surface geometry, [`sizing`] the pure size decisions, [`apply`] the layout
 //! apply (row 3.5), [`commands`] the command-channel handling,
-//! [`watchdog`] the startup watchdog and [`tween`] the width tween's driver
-//! (row 6.1). Until row
+//! [`watchdog`] the startup watchdog, [`tween`] the width tween's driver
+//! (row 6.1) and [`crop`] the tween's crop plan and wide buffer (row 6.2).
+//! Until row
 //! 8.1 switches `Panel::start` over, nothing in the crate calls
 //! [`spawn_panel_thread`]: the entry point is `pub` so it stays reachable (a
 //! `pub(crate)` entry with no caller is dead code under `-D warnings`, and
@@ -55,7 +56,8 @@ use super::handshake::{APPLY_WAIT, Handshake, StartOutcome, wait_for_apply, wait
 
 pub(crate) mod apply;
 pub mod buffers;
-pub(crate) mod commands;
+pub mod commands;
+pub mod crop;
 pub mod seat;
 pub mod sizing;
 pub(crate) mod state;
