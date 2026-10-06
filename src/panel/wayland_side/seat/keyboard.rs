@@ -95,7 +95,7 @@ impl KeyboardSide {
     /// gate arms when the key is no modifier and the keymap repeats it.
     #[must_use]
     pub fn pressed(&mut self, event: &KeyEvent) -> Option<KeyInput> {
-        let input = self.key_input(KeyAction::Press, event)?;
+        let input = self.key_input(KeyAction::Press, event.raw_code, event.keysym.raw())?;
         let repeats = self
             .xkb
             .as_ref()
@@ -111,20 +111,25 @@ impl KeyboardSide {
     #[must_use]
     pub fn released(&mut self, event: &KeyEvent) -> Option<KeyInput> {
         self.repeat.on_release(event.raw_code);
-        self.key_input(KeyAction::Release, event)
+        self.key_input(KeyAction::Release, event.raw_code, event.keysym.raw())
     }
 
     /// A repeat from the toolkit's calloop repeat source (row 5.2): the
     /// [`KeyInput`] when the gate still has the key armed, `None` when the
     /// repeat must not reach the terminal — released, left, a modifier, or
-    /// a compositor repeat rate of 0.
+    /// a compositor repeat rate of 0. The facts come from pinwin's own xkb
+    /// state with the current modifiers, not from the event's cached
+    /// values: the toolkit refreshes only a repeat's text when the
+    /// modifiers change, so a Shift tapped while a key is held would
+    /// otherwise keep repeating the press-time letter instead of the
+    /// shifted one.
     #[must_use]
     pub fn repeated(&mut self, event: &KeyEvent) -> Option<KeyInput> {
-        if self.repeat.accepts_repeat(event.raw_code) {
-            self.key_input(KeyAction::Repeat, event)
-        } else {
-            None
+        if !self.repeat.accepts_repeat(event.raw_code) {
+            return None;
         }
+        let keysym = self.xkb.as_ref()?.state_keysym(event.raw_code)?;
+        self.key_input(KeyAction::Repeat, event.raw_code, keysym)
     }
 
     /// The keyboard left the surface (row 5.2): the repeat stops.
@@ -141,12 +146,13 @@ impl KeyboardSide {
 
     /// Build the encoder's view of one key event (D8): the same
     /// [`KeyInput`] the GDK path's `on_key` fills, from the xkb state's
-    /// lookups and the event's own keysym. `None` while no keymap has
-    /// arrived.
+    /// lookups and the keysym passed in — the event's own keysym for a
+    /// press or release, the state's re-derived one for a repeat. `None`
+    /// while no keymap has arrived.
     #[must_use]
-    fn key_input(&self, action: KeyAction, event: &KeyEvent) -> Option<KeyInput> {
+    fn key_input(&self, action: KeyAction, raw_code: u32, keysym: u32) -> Option<KeyInput> {
         let xkb = self.xkb.as_ref()?;
-        let facts = xkb.facts(event.raw_code, event.keysym.raw());
+        let facts = xkb.facts(raw_code, keysym);
         Some(KeyInput {
             action,
             keyval: facts.keyval,
@@ -204,10 +210,16 @@ pub struct RepeatTracker {
 }
 
 impl RepeatTracker {
-    /// Arm (or re-arm) the gate for a key press. A modifier key and a key
-    /// the keymap does not repeat never arm it.
+    /// Arm (or re-target) the gate for a key press: only a non-modifier
+    /// key the keymap repeats takes the armed slot. A modifier or a
+    /// non-repeating press leaves the armed key alone — the toolkit keeps
+    /// the held key's repeat running across such presses (its calloop
+    /// handler re-arms only for keys the keymap marks repeating), and the
+    /// GDK path keeps repeating the held key when a modifier is tapped.
     pub fn on_press(&mut self, raw_code: u32, is_modifier: bool, repeats: bool) {
-        self.armed = (!is_modifier && repeats).then_some(raw_code);
+        if !is_modifier && repeats {
+            self.armed = Some(raw_code);
+        }
     }
 
     /// A release stops the repeat of the released key; another key's repeat
@@ -273,6 +285,8 @@ xkb_keymap {
 
     const RAW_Q: u32 = 16;
     const RAW_CTRL: u32 = 29;
+    /// The Wayland keycode of the left shift key (evdev 42 plus 8).
+    const RAW_SHIFT: u32 = 42;
 
     /// One key event for the tests: the keysym matches the keymap's base
     /// level for the keycode, as the toolkit's state would answer.
@@ -505,6 +519,69 @@ xkb_keymap {
         keyboard.repeat_info_updated(&repeat_info());
         let _ = keyboard.pressed(&key_event(RAW_CTRL, 0xffe3));
         assert!(keyboard.repeated(&key_event(RAW_CTRL, 0xffe3)).is_none());
+    }
+
+    /// A modifier pressed and released while a key is held leaves the held
+    /// key's repeat armed: the toolkit keeps the old repeat running across
+    /// a modifier press (it re-arms only for keys the keymap marks
+    /// repeating), and the GDK path keeps deleting when Shift is tapped
+    /// while Backspace is held.
+    #[test]
+    fn a_modifier_press_keeps_the_armed_repeat() {
+        let mut keyboard = KeyboardSide::new();
+        keyboard.keymap_updated(TEST_KEYMAP);
+        keyboard.repeat_info_updated(&repeat_info());
+        let _ = keyboard.pressed(&key_event(RAW_Q, 0x71));
+        let _ = keyboard.pressed(&key_event(RAW_SHIFT, 0xffe1));
+        let _ = keyboard.released(&key_event(RAW_SHIFT, 0xffe1));
+        assert!(keyboard.repeated(&key_event(RAW_Q, 0x71)).is_some());
+    }
+
+    /// A non-repeating, non-modifier press leaves the armed key's repeat
+    /// running: the toolkit re-arms its timer only for keys the keymap
+    /// marks repeating, so such a press must not disarm the held key.
+    #[test]
+    fn a_non_repeating_press_keeps_the_armed_repeat() {
+        let mut tracker = RepeatTracker::default();
+        tracker.set_enabled(true);
+        tracker.on_press(RAW_Q, false, true);
+        tracker.on_press(RAW_CTRL, false, false);
+        assert!(tracker.accepts_repeat(RAW_Q));
+    }
+
+    /// A repeat after Shift went down carries the shifted character: the
+    /// toolkit's cached repeat event keeps the press-time keysym (it
+    /// refreshes only the text when the modifiers change), so the facts
+    /// come from pinwin's own state with the current modifiers.
+    #[test]
+    fn a_repeat_after_shift_went_down_carries_the_shifted_keysym() {
+        let mut keyboard = KeyboardSide::new();
+        keyboard.keymap_updated(TEST_KEYMAP);
+        keyboard.repeat_info_updated(&repeat_info());
+        keyboard.modifiers_updated(RawModifiers::default(), 0, SctkModifiers::default());
+        let _ = keyboard.pressed(&key_event(RAW_Q, 0x71));
+        keyboard.modifiers_updated(
+            RawModifiers {
+                depressed: 1,
+                latched: 0,
+                locked: 0,
+            },
+            0,
+            SctkModifiers {
+                shift: true,
+                ..SctkModifiers::default()
+            },
+        );
+        // The cached event still carries the press-time base keysym.
+        let repeat = keyboard
+            .repeated(&key_event(RAW_Q, 0x71))
+            .expect("the repeat is accepted");
+        assert_eq!(repeat.action, KeyAction::Repeat);
+        assert_eq!(repeat.keyval, 0x51);
+        assert_eq!(repeat.keyval_unicode, u32::from('Q'));
+        assert_eq!(repeat.unshifted_codepoint, u32::from('q'));
+        assert_eq!(repeat.mods, Modifiers::SHIFT);
+        assert_eq!(repeat.consumed_mods, Modifiers::SHIFT);
     }
 
     /// A key the keymap does not repeat never arms the gate.

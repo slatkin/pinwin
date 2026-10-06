@@ -383,6 +383,46 @@ xkb_keymap {
         assert_eq!(take(&writes), Vec::new(), "the leave stopped the repeat");
     }
 
+    /// A repeat carries the current modifiers' character: Shift tapped
+    /// while a key is held shifts the repeats the way the GDK path's
+    /// re-translation does — the toolkit's cached repeat event still
+    /// carries the press-time keysym and text.
+    #[test]
+    fn a_repeat_after_shift_went_down_encodes_the_shifted_character() {
+        let (mut seat, links, writes) = seat_side();
+        // Disambiguate + report events + report all + report associated
+        // text: the associated text is where the shifted character shows.
+        links.terminal.borrow_mut().push_pty_data(b"\x1b[>27u");
+        seat.keymap_updated(TEST_KEYMAP);
+        seat.repeat_info_updated(&RepeatInfo::Repeat {
+            rate: std::num::NonZeroU32::new(25).expect("test rate"),
+            delay: 250,
+        });
+        seat.modifiers_updated(RawModifiers::default(), 0, SctkModifiers::default());
+        seat.key_pressed(&key_event(RAW_Q, 0x71));
+        seat.key_repeated(&key_event(RAW_Q, 0x71));
+        seat.modifiers_updated(
+            RawModifiers {
+                depressed: 1,
+                latched: 0,
+                locked: 0,
+            },
+            0,
+            SctkModifiers {
+                shift: true,
+                ..SctkModifiers::default()
+            },
+        );
+        seat.key_repeated(&key_event(RAW_Q, 0x71));
+        // The CSI u modifiers field is 1-based: 1 = no modifiers, 2 =
+        // shift. The shifted repeat carries Q (81) as its associated text
+        // where the unshifted one carries q (113).
+        assert_eq!(
+            take(&writes),
+            b"\x1b[113;;113u\x1b[113;1:2;113u\x1b[113;2:2;81u"
+        );
+    }
+
     /// Until a `repeat_info` arrives, the seat side sends no repeats — the
     /// compositor's rate is the only source (row 5.2).
     #[test]

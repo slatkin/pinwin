@@ -136,6 +136,19 @@ impl XkbKeyboard {
         self.keymap.key_repeats(keycode)
     }
 
+    /// The keysym this state answers for a key right now, with the
+    /// modifiers and layout the last modifiers event applied. A repeat
+    /// carries this, not the toolkit event's cached press-time keysym:
+    /// the toolkit refreshes only a repeat's text when the modifiers
+    /// change, so a Shift tapped while a key is held would otherwise keep
+    /// repeating the base letter. `None` for a keycode outside the
+    /// protocol's range.
+    #[must_use]
+    pub fn state_keysym(&self, raw_code: u32) -> Option<u32> {
+        let keycode = keycode(raw_code)?;
+        Some(self.state.key_get_one_sym(keycode).raw())
+    }
+
     /// The facts of one key event (D8). `keysym` is the event's keysym, the
     /// value the GDK path sees as the keyval; the rest is looked up in this
     /// state.
