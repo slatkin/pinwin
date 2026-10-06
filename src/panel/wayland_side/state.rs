@@ -20,7 +20,9 @@
 //! surface, like a teardown — run under [`guard_always`] so a latched panel
 //! still ends.
 
+use std::cell::{Cell, RefCell};
 use std::os::fd::RawFd;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -38,6 +40,7 @@ use crate::guard::Poisoned;
 use crate::layout::{CellSize, Layout, OutputSize};
 use crate::pty::apply_winsize;
 use crate::surfaces::gap::{HeldGap, start_held_gap};
+use crate::term::Terminal;
 
 use super::super::handshake::{Handshake, StartOutcome};
 use super::Startup;
@@ -106,11 +109,22 @@ pub(crate) struct PanelState {
     pub(crate) done: bool,
     pub(crate) inner: Arc<super::Inner>,
     pub(crate) startup: Startup,
-    /// The measured cell metrics the start command carried (D3): the
-    /// surfaces' width and the grid derivation both need them from the
-    /// first configure, so a required startup input instead of a later
-    /// arrival.
+    /// The cell the thread measured from its own font (row 8.1, D3): the
+    /// surfaces' width and the grid derivation both need it from the first
+    /// configure. The thread loads the font before it builds the state, so
+    /// the value is the measurement, not a startup input; the tests pass a
+    /// synthetic one through the same parameter.
     pub(crate) cell: CellSize,
+    /// The shared terminal the thread owns (row 8.1): the pty read source
+    /// feeds it, the seat links and the tween's render bundle hold clones.
+    /// `None` on a headless state — the tests — and set by the production
+    /// thread before the bind, so every push and feed after sees it.
+    pub(crate) terminal: Option<Rc<RefCell<Terminal>>>,
+    /// The repaint request the terminal's callbacks latch (row 8.1): the
+    /// terminal's `queue_draw` closure sets it, and the loop reads and
+    /// clears it after each dispatch, where the draw step turns it into a
+    /// frame (dispatch D4c).
+    pub(crate) repaint: Rc<Cell<bool>>,
     pub(crate) sizing: Sizing,
     /// The held gap the reserve surface draws (overlay-expand D2, D5):
     /// seeded from the startup layout's own choice — a pushing start holds
@@ -132,8 +146,8 @@ pub(crate) struct PanelState {
     pub(crate) tween_draw: Option<TweenDraw>,
     /// The render state the tween's wide draw reads (row 6.2,
     /// [`super::tween_draw`]): the terminal and the handle to the thread's
-    /// one renderer. Row 8.1 fills it when both move onto this thread;
-    /// until then an animated apply snaps.
+    /// one renderer. The thread fills it at start (row 8.1), so an animated
+    /// apply draws its wide cache instead of snapping.
     pub(crate) render: Option<TweenRender>,
     pub(crate) session: Option<Session>,
 }
@@ -149,9 +163,9 @@ pub(crate) enum BindFailure {
 impl PanelState {
     /// The display-free core, before the session is bound (D10): the command
     /// tests and the pre-bind window of [`super::run_thread`] both start
-    /// here. `cell` is the measured cell metrics the start command carried
-    /// (D3); without them no configure could derive a grid and the panel
-    /// would silently never map, so they are a required input.
+    /// here. `cell` is the cell the thread measured from its font (D3,
+    /// row 8.1); without a cell no configure could derive a grid and the
+    /// panel would silently never map, so it is a required input.
     pub(crate) fn headless(
         handshake: Handshake,
         poisoned: Poisoned,
@@ -166,6 +180,8 @@ impl PanelState {
             inner,
             startup,
             cell,
+            terminal: None,
+            repaint: Rc::new(Cell::new(false)),
             sizing: Sizing::new(startup.layout.cols(), cell),
             held: start_held_gap(startup.layout, cell.width().get()),
             applied: startup.layout,
@@ -316,12 +332,37 @@ impl PanelState {
 
     /// The grid size decision for one configure height (D3, row 3.3): the
     /// rows derive from the height, the columns from the applied layout, and
-    /// the push goes to the supplied sink — the pty winsize in production —
-    /// only when the derived grid changed. The sink is a parameter so the
-    /// display-free tests can observe the pushes the state drives
+    /// the push goes to the supplied sink — the thread's grid push (row
+    /// 8.1) — only when the derived grid changed. The sink is a parameter so
+    /// the display-free tests can observe the pushes the state drives
     /// (`port-to-rust` D10).
-    fn configure_grid(&mut self, height: u32, push: &mut dyn FnMut(Grid)) {
+    pub(crate) fn configure_grid(&mut self, height: u32, push: &mut dyn FnMut(Grid)) {
         self.sizing.configure(height, push);
+    }
+
+    /// Take the repaint request the terminal's callbacks latched (row 8.1):
+    /// the loop reads and clears it after each dispatch, where the draw
+    /// step (dispatch D4c) turns it into a frame.
+    pub(crate) fn take_repaint_request(&self) -> bool {
+        self.repaint.replace(false)
+    }
+
+    /// Move the renderer to the session's resolved scale (D5): called after
+    /// the bind — the preferred scale arrives with the surfaces' events,
+    /// dispatched only from the loop on — and from the two scale-note
+    /// handlers, so the metrics the frames and the wide draw read follow
+    /// the compositor's preferred scale.
+    pub(crate) fn sync_renderer_scale(&mut self) {
+        let Some(scale) = self
+            .session
+            .as_ref()
+            .map(|session| session.scale.resolved())
+        else {
+            return;
+        };
+        if let Some(render) = &self.render {
+            render.renderer.borrow_mut().set_scale(scale.as_f64());
+        }
     }
 
     /// Note the integer preferred buffer scale the compositor reported for
@@ -331,6 +372,7 @@ impl PanelState {
         if let Some(session) = &mut self.session {
             session.scale.note_integer(factor);
         }
+        self.sync_renderer_scale();
     }
 
     /// Note the fractional preferred scale the `wp_fractional_scale_v1`
@@ -340,6 +382,7 @@ impl PanelState {
         if let Some(session) = &mut self.session {
             session.scale.note_preferred_scale(units_120);
         }
+        self.sync_renderer_scale();
     }
 
     /// The frame log a new tween begins with (row 6.3,

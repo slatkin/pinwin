@@ -4,13 +4,14 @@
 //! `font-size` through the font module — falling back to `monospace 11`
 //! exactly as row 4.4's [`FontBook`] does, which is normal operation and
 //! not an error — and measures the cell the panel thread's sizing needs
-//! ([`CellSize`], the value `StartCommand.cell` carries until a later
-//! dispatch of row 8.1 removes it in favour of this measurement).
+//! ([`CellSize`], the measurement the thread performs before it binds its
+//! surfaces — row 8.1 — so the surfaces' width and the grid derivation
+//! have it from the first configure).
 //!
 //! A font that cannot be resolved at all — fontconfig unusable, the
 //! resolved file unreadable or unparsable, or metrics no cell comes out
-//! of — is a [`FontSetupError`], never a panic. A later dispatch maps it
-//! onto `PinwinError::Internal` at the start handshake.
+//! of — is a [`FontSetupError`], never a panic. The thread maps it onto
+//! `PinwinError::Internal` at the start handshake.
 //!
 //! GTK-free (`replace-gtk-with-wayland` D10): the tests run without a
 //! display.

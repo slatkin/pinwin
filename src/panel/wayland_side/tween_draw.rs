@@ -61,14 +61,12 @@ mod tests;
 /// their only owner, and the wide draw borrows them through the handle
 /// for the one draw of a fresh tween's cache (the borrow cannot contend:
 /// the renderer is borrowed only here and by the live frames outside a
-/// tween, sequentially on the one thread). Row 8.1 fills the state's
-/// bundle when the terminal and the renderer move onto this thread; until
-/// then it is `None` on the panel state and an animated apply snaps — a
-/// tween without a drawn wide buffer has nothing to present, and nothing
-/// runs this thread before row 8.1 switches `Panel::start` over. The
-/// fields are `pub(crate)`: the bundle is row 8.1's to assemble, and the
-/// D6 field-privacy rule guards the crate's public API, not this internal
-/// one.
+/// tween, sequentially on the one thread). The thread fills the bundle at
+/// start (row 8.1) — the terminal it owns and the renderer over the font
+/// it measured — so an animated apply draws its wide cache instead of
+/// snapping. The fields are `pub(crate)`: the bundle is row 8.1's to
+/// assemble, and the D6 field-privacy rule guards the crate's public API,
+/// not this internal one.
 pub(crate) struct TweenRender {
     /// The terminal whose grid the wide draw paints. Shared, because the
     /// seat and the pty source that join this thread in row 8.1 hold the

@@ -41,6 +41,7 @@
 
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -52,7 +53,7 @@ use wayland_client::Connection;
 
 use crate::activation::ActivationToken;
 use crate::guard::{Poisoned, guard, guard_always};
-use crate::layout::{CellSize, Layout};
+use crate::layout::Layout;
 use crate::surfaces::PublishOutcome;
 
 use super::Inner;
@@ -66,6 +67,7 @@ pub mod buffers;
 pub mod commands;
 pub mod crop;
 pub(crate) mod frame_log;
+pub(crate) mod glue;
 pub mod renderer;
 pub mod seat;
 pub mod sizing;
@@ -124,15 +126,9 @@ pub struct StartCommand {
     pub(crate) inner: Arc<Inner>,
     /// The startup payload: the host-owned pty fd, the startup layout the
     /// surfaces apply (row 3.1) and the keyboard mode they map with (row
-    /// 3.4). The fd stays untouched until the terminal and the pty source
-    /// move onto this thread (rows 4 and 8.1).
+    /// 3.4). The thread attaches the fd to its pty and its read source
+    /// (row 8.1); the host keeps the child's process lifetime.
     pub(crate) startup: Startup,
-    /// The measured cell metrics (D3): row 4.6's font module will compute
-    /// them before the thread binds its surfaces, so the surfaces' width
-    /// (`set_size`) and the grid sizing have them from the first configure.
-    /// A required input, because a metrics-less panel would silently never
-    /// map and never size the pty.
-    pub(crate) cell: CellSize,
 }
 
 impl std::fmt::Debug for StartCommand {
@@ -141,7 +137,6 @@ impl std::fmt::Debug for StartCommand {
         f.debug_struct("StartCommand")
             .field("poisoned", &self.poisoned)
             .field("startup", &self.startup)
-            .field("cell", &self.cell)
             .finish_non_exhaustive()
     }
 }
@@ -276,7 +271,6 @@ fn thread_main(display_name: Option<String>, start: StartCommand, commands: Chan
         handshake,
         inner,
         startup,
-        cell,
     } = start;
     let latch = Poisoned::new();
     let ended = guard_always(&latch, || {
@@ -287,7 +281,6 @@ fn thread_main(display_name: Option<String>, start: StartCommand, commands: Chan
             Arc::clone(&inner),
             commands,
             startup,
-            cell,
         );
     });
     // The panel is gone either way (D2): the handle stops posting, and a
@@ -313,10 +306,13 @@ fn report_thread_end(poisoned: &Poisoned, handshake: &Handshake, ended: &Result<
     }
 }
 
-/// The thread body once the start command is unpacked: connect, bind the
-/// session, then run the loop. A connection that fails to open (a missing
-/// socket, a socket that is not a Wayland server) is `NoDisplay` through the
-/// handshake; so is a bind whose required globals are missing (D1).
+/// The thread body once the start command is unpacked: connect, measure
+/// the cell from the thread's own font, build the terminal, the renderer
+/// and the pty, then bind the session and run the loop. A connection that
+/// fails to open (a missing socket, a socket that is not a Wayland server)
+/// is `NoDisplay` through the handshake; so is a bind whose required
+/// globals are missing (D1), and an unresolvable font is `Internal` (the
+/// display may be fine, the environment is not).
 fn run_thread(
     display_name: Option<String>,
     poisoned: &Poisoned,
@@ -324,7 +320,6 @@ fn run_thread(
     inner: Arc<Inner>,
     commands: Channel<PanelCommand>,
     startup: Startup,
-    cell: CellSize,
 ) {
     let Ok(connection) = connect(display_name) else {
         handshake.report(StartOutcome::NoDisplay);
@@ -339,7 +334,31 @@ fn run_thread(
         return;
     };
 
+    // The thread measures its own cell (row 8.1): the font loads before the
+    // surfaces are created, and its cell is what the sizing and the surfaces
+    // use from the first configure (D3).
+    let Ok(setup) = glue::font_start() else {
+        // Unresolvable font: not the "no display" case — the environment
+        // is what failed, so the internal path reports it.
+        handshake.report(StartOutcome::Internal);
+        return;
+    };
+    let Some(cell) = setup.cell() else {
+        // Unreachable: the measured pitch is a whole positive pixel count.
+        handshake.report(StartOutcome::Internal);
+        return;
+    };
+    let Ok(renderer) = glue::thread_renderer(startup.accent, setup) else {
+        // Unreachable: the same positive pitch always yields metrics.
+        handshake.report(StartOutcome::Internal);
+        return;
+    };
+    let (terminal, repaint, _pty) = glue::byte_path(poisoned.clone(), startup.fd, cell);
+
     let mut state = PanelState::headless(handshake.clone(), poisoned.clone(), inner, startup, cell);
+    state.terminal = Some(Rc::clone(&terminal));
+    state.repaint = Rc::clone(&repaint);
+    state.render = Some(tween_draw::TweenRender { terminal, renderer });
     // The bind runs under the panel's shared latch: a panic in it latches
     // and reports `Internal` (D5), a missing required global reports
     // `NoDisplay` (D1).
@@ -354,6 +373,10 @@ fn run_thread(
             return;
         }
     }
+    // The renderer's scale: the session's resolved scale (the preferred
+    // scale arrives with the surfaces' events, dispatched only from the
+    // loop on, so nothing can have moved it before here).
+    state.sync_renderer_scale();
 
     if run_loop(&connection, &mut state, queue, commands).is_err() {
         // The wayland source surfaces a closed connection (and any other
@@ -416,6 +439,10 @@ fn run_loop(
         // `None`: park until the command channel or the connection wakes the
         // loop, like the parked GTK thread's main context.
         event_loop.dispatch(None, state)?;
+        // The repaint request the terminal's callbacks latched (row 8.1):
+        // the draw step reads and clears it here once the pool buffers and
+        // the present path exist (dispatch D4c). Nothing draws yet.
+        let _repaint = state.take_repaint_request();
         // The tween's watchdog (row 6.1, [`tween`]): the timer lives only
         // while a tween runs — armed here after each dispatch at the
         // driver's pending deadline, replaced when a retarget moves the
@@ -517,7 +544,6 @@ mod tests {
             handshake: Handshake::new(tx),
             inner: live_inner(),
             startup: startup(),
-            cell: crate::layout::CellSize::new(9, 16).expect("test cell size is non-zero"),
         };
         let _thread =
             spawn_panel_thread(Some("pinwin-test-no-such-socket"), command).expect("the thread");
