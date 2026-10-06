@@ -31,7 +31,6 @@ fn startup() -> Startup {
 /// tests.
 fn live_inner() -> Arc<Inner> {
     Arc::new(Inner {
-        id: 0,
         poisoned: Poisoned::new(),
         live: AtomicBool::new(true),
         keyboard: Keyboard::OnDemand,

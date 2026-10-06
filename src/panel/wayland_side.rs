@@ -1,6 +1,6 @@
 //! The Wayland side of the `Panel` lifecycle (replace-gtk-with-wayland D2):
-//! one thread per start, owning the Wayland connection and the calloop loop,
-//! where the GTK side is a parked process-lifetime thread ([`super::gtk_side`]).
+//! one thread per start, owning the Wayland connection and the calloop loop.//! [`Panel::start`](super::Panel::start) spawns it and the drop's teardown
+//! ends it.
 //!
 //! [`spawn_panel_thread`] opens the connection from the display name (or the
 //! environment when none is given), answers a socket that is missing or does
@@ -11,9 +11,9 @@
 //! own, like the drop contract promises; a closed compositor connection
 //! marks the panel dead (D2), so later calls report `NotRunning`.
 //!
-//! The thread serves exactly one panel, so unlike the parked GTK thread its
-//! commands carry no panel id: a command can only reach the thread that
-//! started for it, and the single-instance guard keeps a second panel out.
+//! The thread serves exactly one panel, so its commands carry no panel id: a
+//! command can only reach the thread that started for it, and the
+//! single-instance guard keeps a second panel out.
 //!
 //! The bound session — the sctk handlers, the two layer surfaces of row 3.1
 //! and the grid sizing of row 3.3 — lives in the submodules beside this
@@ -24,25 +24,15 @@
 //! (row 6.1), [`crop`] the tween's crop plan and wide buffer (row 6.2),
 //! [`tween_draw`] the tween's holder and frame glue (row 6.2) and
 //! [`renderer`] the thread's font setup and renderer — the one owner of
-//! the draw passes, metrics, theme and focus state that row 8.1's later
-//! dispatches wire the frames and the tween's wide draw to (row 8.1).
-//! [`frame_log`] the tween's frame log and its presentation-time source
-//! (row 6.3). [`present`] is the frames' present step (dispatch D4c) —
-//! the pure planner, the frame input and the executor the configure path
-//! and the loop's repaint hook run; like [`renderer`] it is `pub` while
-//! dispatch D5 has not moved `Panel::start` onto the thread, because a
-//! `pub(crate)` entry with no caller is dead code under `-D warnings` and
-//! no lint suppression is permitted. Until row
-//! 8.1 switches `Panel::start` over, nothing in the crate calls
-//! [`spawn_panel_thread`]: the entry point is `pub` so it stays reachable (a
-//! `pub(crate)` entry with no caller is dead code under `-D warnings`, and
-//! no lint suppression is permitted). Rows 3.5 and 7.2 grow the publish and
-//! activation paths into the command handlers.
+//! the draw passes, metrics, theme and focus state that wires the frames
+//! and the tween's wide draw. [`frame_log`] is the tween's frame log and
+//! its presentation-time source (row 6.3), and [`present`] the frames'
+//! present step (dispatch D4c) — the pure planner, the frame input and the
+//! executor the configure path and the loop's repaint hook run.
 //!
 //! Panics never cross back into calloop or the compositor (D5): the whole
 //! thread body and every callback the loop runs go through the shared
-//! [`crate::guard`] helpers, latching the panel's one shared poisoned flag —
-//! the same rule [`super::gtk_side`] applies to its GTK closures.
+//! [`crate::guard`] helpers, latching the panel's one shared poisoned flag.
 
 use std::cell::Cell;
 use std::os::unix::net::UnixStream;
@@ -202,12 +192,13 @@ impl PanelThread {
     /// decides whether anything is posted at all. On the thread, the token
     /// reaches the compositor as an xdg-activation request for the panel
     /// surface (row 7.2, D4) — or as a no-op when the mode is not
-    /// `on-demand` or the compositor offers no xdg-activation.
+    /// `on-demand` or the compositor offers no xdg-activation. The token is
+    /// taken by value: the command posts it into the thread (D4).
     ///
     /// # Errors
     /// `NotRunning` on a dead panel, `Internal` on a caught panic or a
     /// wedged or ended thread.
-    pub fn request_focus(&self, token: &ActivationToken) -> Result<(), PinwinError> {
+    pub fn request_focus(&self, token: ActivationToken) -> Result<(), PinwinError> {
         match guard(&self.inner.poisoned, || self.post_focus(token)) {
             Ok(result) => result,
             Err(_) => Err(PinwinError::Internal),
@@ -215,13 +206,13 @@ impl PanelThread {
     }
 
     /// The unguarded body of [`PanelThread::request_focus`].
-    fn post_focus(&self, token: &ActivationToken) -> Result<(), PinwinError> {
+    fn post_focus(&self, token: ActivationToken) -> Result<(), PinwinError> {
         if !self.inner.live.load(Ordering::Relaxed) {
             return Err(PinwinError::NotRunning);
         }
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         let _ = self.commands.send(PanelCommand::Focus {
-            token: token.clone(),
+            token,
             reply: reply_tx,
         });
         wait_for_focus(&reply_rx, APPLY_WAIT)
@@ -613,7 +604,6 @@ mod tests {
     /// tests.
     fn live_inner() -> Arc<Inner> {
         Arc::new(Inner {
-            id: 0,
             poisoned: GuardPoisoned::new(),
             live: AtomicBool::new(true),
             keyboard: Keyboard::OnDemand,

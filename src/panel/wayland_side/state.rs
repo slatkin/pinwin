@@ -576,7 +576,6 @@ mod tests {
     /// tests.
     fn live_inner() -> Arc<super::super::Inner> {
         Arc::new(super::super::Inner {
-            id: 0,
             poisoned: GuardPoisoned::new(),
             live: AtomicBool::new(true),
             keyboard: Keyboard::OnDemand,

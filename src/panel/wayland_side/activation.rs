@@ -165,7 +165,6 @@ mod tests {
             Handshake::new(tx),
             GuardPoisoned::new(),
             Arc::new(Inner {
-                id: 0,
                 poisoned: GuardPoisoned::new(),
                 live: AtomicBool::new(true),
                 keyboard: Keyboard::OnDemand,

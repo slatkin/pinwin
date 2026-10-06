@@ -345,7 +345,7 @@ fn run() -> i32 {
         scope.spawn(|| {
             ipc::serve_focus_requests(
                 &listener,
-                &|token: &ActivationToken| panel.request_focus(token),
+                &|token: &ActivationToken| panel.request_focus(token.clone()),
                 &shutdown,
             );
         });

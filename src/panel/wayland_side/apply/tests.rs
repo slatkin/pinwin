@@ -45,7 +45,6 @@ fn output(width: i32, height: i32) -> OutputSize {
 /// tests.
 fn live_inner() -> Arc<Inner> {
     Arc::new(Inner {
-        id: 0,
         poisoned: Poisoned::new(),
         live: AtomicBool::new(true),
         keyboard: Keyboard::OnDemand,

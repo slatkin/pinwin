@@ -179,13 +179,6 @@ impl DrawState {
         self.cell_metrics = measured;
     }
 
-    /// Record the output scale the next draw runs at (`snap-grid-edges` D2,
-    /// D3): the shared geometry functions snap their rectangles through it.
-    /// Called from the draw hooks on every draw.
-    pub(crate) fn set_scale(&mut self, scale: OutputScale) {
-        self.cell_metrics.scale = scale;
-    }
-
     /// Render a frame into `cr` (`on_draw`): the theme background, the full
     /// grid and the focus accent.
     ///

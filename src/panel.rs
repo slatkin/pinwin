@@ -1,28 +1,27 @@
 //! The public `Panel` API (port-to-rust D4, D6, D7): the host calls from its
-//! own thread; the GTK side runs on a process-lifetime `pinwin-gtk` thread
-//! (the `gtk_side` module) whose loop each start drives with its own
-//! `GtkApplication`.
+//! own thread; each panel runs on its own Wayland panel thread (the
+//! `wayland_side` module) that the start spawns and the drop ends
+//! (replace-gtk-with-wayland D2).
 //!
 //! The shape follows `src/pinwin_api.c`: start validates its arguments before
-//! any GTK work, then hands the startup to the GTK thread and waits for a
-//! handshake that completes when the panel is on screen with live metrics.
-//! Applies post a command with `MainContext::invoke` and wait up to five
-//! seconds for the reply (a wedged loop is `Internal`, never a hang); a
-//! focus request posts the same way. Drop posts a teardown, waits for its
-//! reply, and never joins the parked thread (D4), so a later start may
-//! succeed.
+//! any thread work, then hands the startup to the panel thread and waits for
+//! a handshake that completes when the panel is on screen with live metrics.
+//! Applies and focus requests post a command on the thread's calloop channel
+//! and wait up to five seconds for the reply (a wedged thread is `Internal`,
+//! never a hang). Drop posts a teardown, waits for its bounded reply and
+//! returns; the thread then ends on its own (D2).
 //!
 //! Panics never cross the API (D5): every public entry point runs under the
 //! shared [`crate::guard`], and the poisoned check comes before the
-//! "GTK side ended" check, so a panic reports `Internal`, never `NotRunning`.
+//! "panel thread ended" check, so a panic reports `Internal`, never
+//! `NotRunning`.
 //!
-//! The tests here are GTK-free (D10): the error and outcome mappings, the
+//! The tests here are display-free (D10): the error and outcome mappings, the
 //! handshake and reply channel logic, the single-instance guard and the
 //! poisoned-over-not-running precedence run without a display; the display
 //! tests are `#[ignore]`d.
 
 mod error;
-mod gtk_side;
 mod handshake;
 mod startup;
 pub mod wayland_side;
@@ -33,27 +32,23 @@ pub use startup::Startup;
 use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use crate::activation::ActivationToken;
 use crate::guard::{Poisoned, guard, guard_always};
 use crate::layout::{Keyboard, Layout};
 
-use gtk_side::{StartCommand, dispatch_apply, dispatch_teardown, gtk_thread_main};
-use handshake::{APPLY_WAIT, Handshake, wait_for_apply, wait_for_start};
+use handshake::{Handshake, wait_for_start};
+use wayland_side::{PanelThread, StartCommand, spawn_panel_thread};
 
 /// The longest animated apply duration, clamped like `pinwin_api.c`'s
 /// `PINWIN_ANIM_MAX_MS` (`pinwin.h`: "the duration SHALL be clamped").
 pub const ANIMATION_MAX_MS: u32 = 1000;
 
-/// The next panel's id: distinct per start, so a queued command from a
-/// dropped panel can never act on the panel that runs after it.
-static NEXT_PANEL_ID: AtomicU64 = AtomicU64::new(0);
-
 /// The single-instance state: at most one panel per process (the spec's
 /// "Library Panel API"). `Starting` covers the start handshake window, so two
-/// concurrent starts cannot both spawn the GTK thread.
+/// concurrent starts cannot both spawn a panel thread.
 enum Phase {
     Idle,
     Starting,
@@ -62,26 +57,19 @@ enum Phase {
 
 struct Instance {
     phase: Phase,
-    /// The parked GTK thread's start-command channel; `None` until the first
-    /// start spawned the thread.
-    gtk: Option<mpsc::Sender<StartCommand>>,
 }
 
-static INSTANCE: Mutex<Instance> = Mutex::new(Instance {
-    phase: Phase::Idle,
-    gtk: None,
-});
+static INSTANCE: Mutex<Instance> = Mutex::new(Instance { phase: Phase::Idle });
 
-/// The display-free handle state (D10): the panel's id, its one shared D5
+/// The display-free handle state (D10): the panel's one shared D5
 /// latch — the same flag every glue closure of this panel guards against —
-/// whether the GTK side is still live, and the keyboard mode fixed at start
-/// time (a focus request short-circuits on it before posting, D10). The GTK
-/// thread holds a clone of the `Arc` and clears `live` when the panel ends
-/// on its own, so an apply or a focus request on a dead panel reports
+/// whether the panel thread is still live, and the keyboard mode fixed at
+/// start time (a focus request short-circuits on it before posting, D10).
+/// The thread holds a clone of the `Arc` and clears `live` when the panel
+/// ends on its own, so an apply or a focus request on a dead panel reports
 /// `NotRunning` without posting anything.
 #[derive(Debug)]
 pub(crate) struct Inner {
-    pub(crate) id: u64,
     pub(crate) poisoned: Poisoned,
     pub(crate) live: AtomicBool,
     /// The startup keyboard mode; `request_focus` is a no-op outside
@@ -101,6 +89,9 @@ pub(crate) struct Inner {
 #[derive(Debug)]
 pub struct Panel {
     inner: Arc<Inner>,
+    /// The panel thread the start spawned; the applies, the focus requests
+    /// and the drop's teardown post through it (D2).
+    thread: PanelThread,
 }
 
 impl Panel {
@@ -129,23 +120,21 @@ impl Panel {
     }
 
     fn start_inner(startup: Startup) -> Result<Panel, PinwinError> {
-        // Pure argument checks, no GTK (pinwin_api.c's startup_valid minus
-        // the classes the argument types make unrepresentable, D6/D7).
+        // Pure argument checks, no thread work (pinwin_api.c's startup_valid
+        // minus the classes the argument types make unrepresentable, D6/D7).
         if !fd_is_open(startup.fd) {
             return Err(PinwinError::InvalidFd);
         }
 
         let poisoned = Poisoned::new();
-        let id = NEXT_PANEL_ID.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::new(Inner {
-            id,
             poisoned: poisoned.clone(),
             live: AtomicBool::new(true),
             keyboard: startup.keyboard,
         });
 
-        // Claim the single-instance slot before touching GTK, so two
-        // concurrent starts cannot both reach the handshake. The guard is
+        // Claim the single-instance slot before touching the Wayland side, so
+        // two concurrent starts cannot both reach the handshake. The guard is
         // dropped explicitly: a bare scope block ping-pongs between the two
         // semicolon-placement lints.
         let mut instance = INSTANCE.lock().expect("pinwin instance lock");
@@ -157,31 +146,21 @@ impl Panel {
 
         let (reply_tx, reply_rx) = mpsc::channel();
         let command = StartCommand {
-            startup,
-            id,
-            poisoned: poisoned.clone(),
+            poisoned,
             handshake: Handshake::new(reply_tx),
             inner: Arc::clone(&inner),
+            startup,
         };
 
-        // Deliver to the parked GTK thread, or spawn it on the first start
-        // (D4). A dead sender means the thread died by panic: respawn it — a
-        // new thread cannot `gtk::init` (D4's restart caveat), so the
-        // handshake will report `Internal` through its closed channel.
-        let command = deliver(command).err();
-        if let Some(command) = command {
-            let Ok(sender) = spawn_gtk_thread() else {
-                release_phase();
-                return Err(PinwinError::Internal);
-            };
-            if sender.send(command).is_err() {
-                release_phase();
-                return Err(PinwinError::Internal);
-            }
-        }
+        // One panel thread per start (D2). A failed OS spawn is the internal
+        // path; a failed connection or bind reports through the handshake.
+        let Ok(thread) = spawn_panel_thread(None, command) else {
+            release_phase();
+            return Err(PinwinError::Internal);
+        };
 
-        // Wait for the GTK/layer-shell side to go live (the handshake), like
-        // pinwin_start's cond wait. The GTK side always reports.
+        // Wait for the panel thread to go live (the handshake), like
+        // pinwin_start's cond wait. The thread always reports.
         let outcome = wait_for_start(&reply_rx);
 
         {
@@ -192,7 +171,7 @@ impl Panel {
                 Phase::Idle
             }
         };
-        outcome.map(|()| Panel { inner })
+        outcome.map(|()| Panel { inner, thread })
     }
 
     /// Apply a layout without animation: update the applied column count,
@@ -212,7 +191,7 @@ impl Panel {
 
     /// Apply a layout animated: when the layout differs from the applied
     /// one only in its column count and/or push/cover choice (same side,
-    /// same left and right gutters) and GTK animations are enabled, the
+    /// same left and right gutters) and the duration is non-zero, the
     /// width changes continuously over `duration_ms` (clamped to
     /// [`ANIMATION_MAX_MS`]); anything else snaps exactly like
     /// [`Panel::apply_layout`]. The reservation moves with the panel only
@@ -229,7 +208,9 @@ impl Panel {
     }
 
     fn apply_common(&self, layout: Layout, duration_ms: u32) -> Result<(), PinwinError> {
-        apply_via_inner(&self.inner, layout, duration_ms)
+        apply_via_inner(&self.inner, layout, duration_ms, |layout, duration_ms| {
+            self.thread.apply(layout, duration_ms)
+        })
     }
 
     /// Ask the compositor to give the panel keyboard focus (issue #15's
@@ -253,12 +234,11 @@ impl Panel {
     ///
     /// The token is the one-use permission a compositor gives a program it
     /// launches; the library owns no transport for the request, the host
-    /// decides how a request and its token reach it. Taken by reference:
-    /// the request carries the token to the panel side, it does not consume
-    /// it, and the host may reuse the token it built.
-    // TEMPORARY (replace-gtk-with-wayland 8.1)
-    pub fn request_focus(&self, token: &ActivationToken) -> Result<(), PinwinError> {
-        request_focus_via_inner(&self.inner, token)
+    /// decides how a request and its token reach it. Taken by value: the
+    /// request posts the token to the panel thread, which hands it to the
+    /// compositor (replace-gtk-with-wayland D4).
+    pub fn request_focus(&self, token: ActivationToken) -> Result<(), PinwinError> {
+        request_focus_via_inner(&self.inner, token, |token| self.thread.request_focus(token))
     }
 }
 
@@ -275,26 +255,28 @@ pub(crate) fn apply_via_inner(
     inner: &Inner,
     layout: Layout,
     duration_ms: u32,
+    post: impl FnOnce(Layout, u32) -> Result<(), PinwinError>,
 ) -> Result<(), PinwinError> {
-    guard(&inner.poisoned, || post_apply(inner, layout, duration_ms))
-        .map_err(|_| PinwinError::Internal)
-        .and_then(std::convert::identity)
+    guard(&inner.poisoned, || {
+        post_apply(inner, layout, duration_ms, post)
+    })
+    .map_err(|_| PinwinError::Internal)
+    .and_then(std::convert::identity)
 }
 
-/// The unguarded body of [`apply_via_inner`].
-fn post_apply(inner: &Inner, layout: Layout, duration_ms: u32) -> Result<(), PinwinError> {
+/// The unguarded body of [`apply_via_inner`]: the ended check, then the
+/// bounded posted apply (`post` carries the token to the panel thread, D2).
+fn post_apply(
+    inner: &Inner,
+    layout: Layout,
+    duration_ms: u32,
+    post: impl FnOnce(Layout, u32) -> Result<(), PinwinError>,
+) -> Result<(), PinwinError> {
     // Not running → `NotRunning` without blocking (pinwin_api.c's order).
     if !inner.live.load(Ordering::Relaxed) {
         return Err(PinwinError::NotRunning);
     }
-    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-    let id = inner.id;
-    // The metrics live on the GTK thread, so the publish (and its validation)
-    // must run there (D4): post the command and wait for the synchronous
-    // result, bounded (D5).
-    gtk4::glib::MainContext::default()
-        .invoke(move || dispatch_apply(id, layout, duration_ms, &reply_tx));
-    wait_for_apply(&reply_rx, APPLY_WAIT)
+    post(layout, duration_ms)
 }
 
 /// A focus request through the display-free inner handle (D10): the same
@@ -303,16 +285,22 @@ fn post_apply(inner: &Inner, layout: Layout, duration_ms: u32) -> Result<(), Pin
 /// mode short-circuit and the request itself.
 pub(crate) fn request_focus_via_inner(
     inner: &Inner,
-    token: &ActivationToken,
+    token: ActivationToken,
+    post: impl FnOnce(ActivationToken) -> Result<(), PinwinError>,
 ) -> Result<(), PinwinError> {
-    match guard(&inner.poisoned, || post_focus(inner, token)) {
+    match guard(&inner.poisoned, || post_focus(inner, token, post)) {
         Ok(result) => result,
         Err(_) => Err(PinwinError::Internal),
     }
 }
 
-/// The unguarded body of [`request_focus_via_inner`].
-fn post_focus(inner: &Inner, _token: &ActivationToken) -> Result<(), PinwinError> {
+/// The unguarded body of [`request_focus_via_inner`]: the ended check, the
+/// mode short-circuit, then the request itself.
+fn post_focus(
+    inner: &Inner,
+    token: ActivationToken,
+    post: impl FnOnce(ActivationToken) -> Result<(), PinwinError>,
+) -> Result<(), PinwinError> {
     // Not running → `NotRunning` without blocking, unconditionally (the
     // spec's dead-panel scenario; pinwin_api.c's order).
     if !inner.live.load(Ordering::Relaxed) {
@@ -324,57 +312,31 @@ fn post_focus(inner: &Inner, _token: &ActivationToken) -> Result<(), PinwinError
     if inner.keyboard != Keyboard::OnDemand {
         return Ok(());
     }
-    // Until row 8.1 switches `Panel` to the panel thread, the GTK side has
-    // no xdg-activation request to make (the gtk4-layer-shell binding has
-    // none), so the request is `Ok` and posts nothing: the legacy path
-    // loses its focus request on the way (replace-gtk-with-wayland row
-    // 7.2's known intermediate regression), and row 8.1 posts the token to
-    // the panel thread's activation instead.
-    Ok(())
+    // The token posts to the panel thread, which makes the xdg-activation
+    // request for the panel surface (replace-gtk-with-wayland D4).
+    post(token)
 }
 
 impl Drop for Panel {
     fn drop(&mut self) {
-        // D5: the teardown runs even on a latched flag and never unwinds; it
-        // never joins the parked GTK thread (D4).
-        let _ = guard_always(&self.inner.poisoned, || teardown_inner(&self.inner));
+        // D5: the teardown runs even on a latched flag and never unwinds; the
+        // thread ends on its own after the teardown, and the drop never joins
+        // it (D2).
+        let _ = guard_always(&self.inner.poisoned, || {
+            teardown_inner(&self.inner, || self.thread.teardown());
+        });
     }
 }
 
 /// The teardown body: post the teardown and wait for its reply, then release
-/// the single-instance slot so a later start may succeed.
-fn teardown_inner(inner: &Inner) {
+/// the single-instance slot so a later start may succeed. A dead panel (its
+/// thread ended on its own) posts nothing — the teardown is a no-op that
+/// still releases the slot.
+fn teardown_inner(inner: &Inner, post_teardown: impl FnOnce()) {
     if inner.live.swap(false, Ordering::Relaxed) {
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        let id = inner.id;
-        gtk4::glib::MainContext::default().invoke(move || dispatch_teardown(id, &reply_tx));
-        // Wait for the reply, bounded: a wedged loop must not block the host
-        // forever (the C joined the thread; the port never joins, D4).
-        let _ = reply_rx.recv_timeout(APPLY_WAIT);
+        post_teardown();
     }
     release_phase();
-}
-
-/// Deliver a start command to the parked GTK thread. `Err(command)` when
-/// there is no live thread to receive it.
-fn deliver(command: StartCommand) -> Result<(), StartCommand> {
-    let sender = INSTANCE.lock().expect("pinwin instance lock").gtk.clone();
-    match sender {
-        Some(sender) => sender.send(command).map_err(|error| error.0),
-        None => Err(command),
-    }
-}
-
-/// Spawn the process-lifetime `pinwin-gtk` thread (D4) and store its command
-/// channel. Created lazily on the first start; parked between panels; never
-/// joined.
-fn spawn_gtk_thread() -> std::io::Result<mpsc::Sender<StartCommand>> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("pinwin-gtk".to_owned())
-        .spawn(move || gtk_thread_main(&receiver))?;
-    INSTANCE.lock().expect("pinwin instance lock").gtk = Some(sender.clone());
-    Ok(sender)
 }
 
 /// Back out of a claimed single-instance slot after a failed start.
@@ -397,6 +359,7 @@ fn fd_is_open(fd: RawFd) -> bool {
 mod tests {
     use super::*;
     use crate::layout::Side;
+    use std::cell::Cell;
     use std::num::NonZeroU16;
     use std::os::fd::AsRawFd;
     use std::time::Duration;
@@ -431,11 +394,11 @@ mod tests {
         ActivationToken::new("pinwin-test-token").expect("test token is valid")
     }
 
-    /// A fd that is not an open descriptor is `InvalidFd` before any GTK
+    /// A fd that is not an open descriptor is `InvalidFd` before any thread
     /// work (D7): no thread is spawned, nothing else changes. A negative fd
     /// and a closed one are both covered.
     #[test]
-    fn start_rejects_a_bad_fd_before_any_gtk_work() {
+    fn start_rejects_a_bad_fd_before_any_thread_work() {
         assert!(matches!(
             Panel::start(startup(-1)),
             Err(PinwinError::InvalidFd)
@@ -457,7 +420,7 @@ mod tests {
     }
 
     /// A start while another handle is alive fails with `AlreadyRunning`
-    /// before any GTK work; the fd check keeps its precedence over it.
+    /// before any thread work; the fd check keeps its precedence over it.
     #[test]
     fn start_while_running_is_already_running() {
         let _test_lock = INSTANCE_TEST_LOCK.lock().expect("test lock");
@@ -480,43 +443,43 @@ mod tests {
         INSTANCE.lock().expect("instance lock").phase = Phase::Idle;
     }
 
-    /// The poisoned check comes before the "GTK side ended" check (D5): a
-    /// latched handle reports `Internal`, never `NotRunning`.
+    /// The poisoned check comes before the "panel thread ended" check (D5):
+    /// a latched handle reports `Internal`, never `NotRunning`. The post
+    /// closures would fail the result if they ran, so `Internal` can only
+    /// come from the latch.
     #[test]
     fn poisoned_beats_not_running() {
         let inner = Inner {
-            id: 0,
             poisoned: Poisoned::latched(),
             live: AtomicBool::new(false),
             keyboard: Keyboard::OnDemand,
         };
         assert_eq!(
-            apply_via_inner(&inner, layout(), 0),
+            apply_via_inner(&inner, layout(), 0, |_, _| Err(PinwinError::Internal)),
             Err(PinwinError::Internal)
         );
         // The focus request follows the same precedence: a latched handle
         // reports `Internal`, never `NotRunning`.
         assert_eq!(
-            request_focus_via_inner(&inner, &token()),
+            request_focus_via_inner(&inner, token(), |_| Err(PinwinError::Internal)),
             Err(PinwinError::Internal)
         );
     }
 
     /// An apply on a handle whose panel is no longer live reports
     /// `NotRunning` without blocking: the post is skipped, the reply path is
-    /// not entered (D10's dead-handle path; the invoke that would run is
-    /// never posted).
+    /// not entered (D10's dead-handle path). The post closure fails the
+    /// result if it ran, so `NotRunning` can only come from the ended check.
     #[test]
     fn apply_on_a_dead_panel_is_not_running_without_blocking() {
         let inner = Inner {
-            id: 0,
             poisoned: Poisoned::new(),
             live: AtomicBool::new(false),
             keyboard: Keyboard::OnDemand,
         };
         let started = std::time::Instant::now();
         assert_eq!(
-            apply_via_inner(&inner, layout(), 0),
+            apply_via_inner(&inner, layout(), 0, |_, _| Err(PinwinError::Internal)),
             Err(PinwinError::NotRunning)
         );
         assert!(
@@ -531,14 +494,13 @@ mod tests {
     #[test]
     fn a_focus_request_on_a_dead_panel_is_not_running_without_blocking() {
         let inner = Inner {
-            id: 0,
             poisoned: Poisoned::new(),
             live: AtomicBool::new(false),
             keyboard: Keyboard::OnDemand,
         };
         let started = std::time::Instant::now();
         assert_eq!(
-            request_focus_via_inner(&inner, &token()),
+            request_focus_via_inner(&inner, token(), |_| Err(PinwinError::Internal)),
             Err(PinwinError::NotRunning)
         );
         assert!(
@@ -548,36 +510,40 @@ mod tests {
     }
 
     /// In the `none` and `exclusive` modes a focus request is `Ok(())` and
-    /// posts nothing: `Ok` itself is the proof, because a posted command on
-    /// this thread would run inline with no glue and fail the wait (`Ok`
-    /// could never come back through a reply channel).
+    /// posts nothing: the post closure fails the result if it ran, so `Ok`
+    /// can only come from the mode short-circuit.
     #[test]
     fn a_focus_request_outside_on_demand_is_ok_and_posts_nothing() {
         for keyboard in [Keyboard::None, Keyboard::Exclusive] {
             let inner = Inner {
-                id: 0,
                 poisoned: Poisoned::new(),
                 live: AtomicBool::new(true),
                 keyboard,
             };
-            assert_eq!(request_focus_via_inner(&inner, &token()), Ok(()));
+            assert_eq!(
+                request_focus_via_inner(&inner, token(), |_| Err(PinwinError::Internal)),
+                Ok(())
+            );
         }
     }
 
-    /// Until row 8.1 switches `Panel` to the panel thread, a live
-    /// `on-demand` handle's request is also `Ok(())` and posts nothing: the
-    /// GTK side has no xdg-activation request to make (replace-gtk-with-wayland
-    /// row 7.2's known intermediate regression). The proof is the same as
-    /// for the mode no-ops above: `Ok` without any reply path.
+    /// A live `on-demand` handle's request posts the token to the panel
+    /// thread: the post closure receives the very token the caller built
+    /// (replace-gtk-with-wayland D4).
     #[test]
-    fn a_focus_request_on_the_gtk_path_is_ok_and_posts_nothing() {
+    fn a_focus_request_on_demand_posts_the_token() {
         let inner = Inner {
-            id: 0,
             poisoned: Poisoned::new(),
             live: AtomicBool::new(true),
             keyboard: Keyboard::OnDemand,
         };
-        assert_eq!(request_focus_via_inner(&inner, &token()), Ok(()));
+        let posted = Cell::new(None);
+        let result = request_focus_via_inner(&inner, token(), |token| {
+            posted.set(Some(token));
+            Ok(())
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(posted.take().as_ref(), Some(&token()));
     }
 
     /// A panic in a guarded closure at the panel boundary yields
@@ -596,7 +562,6 @@ mod tests {
     )]
     fn a_panic_in_a_guarded_closure_is_internal_and_stays_internal() {
         let inner = Inner {
-            id: 0,
             poisoned: Poisoned::new(),
             live: AtomicBool::new(true),
             keyboard: Keyboard::OnDemand,
@@ -614,54 +579,36 @@ mod tests {
         );
 
         // Later applies through the inner-handle entry short-circuit on the
-        // latch (`Internal`) before the not-running check could run, even
-        // though `live` is still true here.
+        // latch (`Internal`) before the not-running check or the post could
+        // run, even though `live` is still true here.
         assert_eq!(
-            apply_via_inner(&inner, layout(), 0),
+            apply_via_inner(&inner, layout(), 0, |_, _| Err(PinwinError::Internal)),
             Err(PinwinError::Internal)
         );
         assert_eq!(
-            apply_via_inner(&inner, layout(), 0),
+            apply_via_inner(&inner, layout(), 0, |_, _| Err(PinwinError::Internal)),
             Err(PinwinError::Internal)
-        );
-    }
-
-    /// An apply on a live handle whose glue is gone (the invoked command
-    /// finds no live panel) maps the not-live outcome onto `NotRunning` —
-    /// the mapping the GTK side's reply reaches through.
-    #[test]
-    fn a_not_live_publish_reply_is_not_running() {
-        // The invoke below runs inline on this thread: the default main
-        // context has no owner here, and this thread's GLUE is empty, so the
-        // command reports NotLive and the reply maps to NotRunning.
-        let inner = Inner {
-            id: u64::MAX, // no panel this test could collide with
-            poisoned: Poisoned::new(),
-            live: AtomicBool::new(true),
-            keyboard: Keyboard::OnDemand,
-        };
-        assert_eq!(
-            apply_via_inner(&inner, layout(), 0),
-            Err(PinwinError::NotRunning)
         );
     }
 
     /// A teardown on an already-dead panel posts nothing and releases the
-    /// slot; the drop path never joins the GTK thread (D4 — structurally:
-    /// there is no join in this module).
+    /// slot; the drop path never joins the panel thread (D2 — structurally:
+    /// there is no join in this module). The post closure panics if it ran,
+    /// so a post would fail the test loudly.
     #[test]
     fn teardown_of_a_dead_panel_is_a_noop_that_releases_the_slot() {
         let _test_lock = INSTANCE_TEST_LOCK.lock().expect("test lock");
         INSTANCE.lock().expect("instance lock").phase = Phase::Running;
 
         let inner = Inner {
-            id: 0,
             poisoned: Poisoned::new(),
             live: AtomicBool::new(false),
             keyboard: Keyboard::OnDemand,
         };
         let started = std::time::Instant::now();
-        let _ = guard_always(&inner.poisoned, || teardown_inner(&inner));
+        let _ = guard_always(&inner.poisoned, || {
+            teardown_inner(&inner, || panic!("a dead panel posts no teardown"));
+        });
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "the dead-panel teardown does not wait"
@@ -674,11 +621,37 @@ mod tests {
         ));
     }
 
-    /// A teardown whose reply never comes (a wedged loop) gives up after the
-    /// bound instead of blocking the drop forever.
+    /// A teardown on a live panel posts exactly once and releases the slot;
+    /// the handle stops posting afterwards.
+    #[test]
+    fn a_live_teardown_posts_once_and_releases_the_slot() {
+        let _test_lock = INSTANCE_TEST_LOCK.lock().expect("test lock");
+        INSTANCE.lock().expect("instance lock").phase = Phase::Running;
+
+        let inner = Inner {
+            poisoned: Poisoned::new(),
+            live: AtomicBool::new(true),
+            keyboard: Keyboard::OnDemand,
+        };
+        let posted = Cell::new(0);
+        let _ = guard_always(&inner.poisoned, || {
+            teardown_inner(&inner, || posted.set(posted.get() + 1));
+        });
+        assert_eq!(posted.get(), 1, "the teardown posted once");
+        assert!(!inner.live.load(std::sync::atomic::Ordering::Relaxed));
+
+        // The single-instance slot was released.
+        assert!(matches!(
+            INSTANCE.lock().expect("instance lock").phase,
+            Phase::Idle
+        ));
+    }
+
+    /// A teardown whose reply never comes (a wedged thread) gives up after
+    /// the bound instead of blocking the drop forever.
     #[test]
     fn a_wedged_teardown_reply_gives_up_after_the_bound() {
-        // Hold the reply sender in another thread, like a wedged GTK side.
+        // Hold the reply sender in another thread, like a wedged panel thread.
         let (tx, rx) = mpsc::sync_channel::<()>(1);
         let holder = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(300));
@@ -719,8 +692,9 @@ mod tests {
     }
 
     /// A start in a session without any display fails with `NoDisplay` and
-    /// opens nothing: the real handshake plumbing (thread spawn, command
-    /// delivery, handshake reply) against a GTK that cannot init.
+    /// opens nothing: the real handshake plumbing (thread spawn, connection
+    /// attempt, handshake reply) against a compositor that cannot be
+    /// reached. The connection failure is fast, so the test never hangs.
     #[test]
     fn a_start_without_a_display_is_no_display() {
         // Only meaningful where no display exists at all; in a session with
@@ -735,7 +709,6 @@ mod tests {
 
         let _test_lock = INSTANCE_TEST_LOCK.lock().expect("test lock");
         INSTANCE.lock().expect("instance lock").phase = Phase::Idle;
-        INSTANCE.lock().expect("instance lock").gtk = None;
 
         let file = std::fs::File::open("/dev/null").expect("/dev/null");
         let started = Panel::start(startup(file.as_raw_fd()));
@@ -751,7 +724,7 @@ mod tests {
     /// A full lifecycle in a real compositor session: start, apply, animated
     /// apply, drop, and a second start may then succeed. Ignored because it
     /// needs a Wayland compositor with wlr-layer-shell and opens real
-    /// surfaces.
+    /// surfaces on the panel thread (D2).
     #[test]
     #[ignore = "needs a Wayland compositor with wlr-layer-shell; opens real surfaces"]
     fn a_full_lifecycle_opens_applies_and_closes() {

@@ -419,33 +419,6 @@ impl Surfaces {
         drawn_grid_px((self.hooks.live_grid_px)(), self.stale_grid_px.get())
     }
 
-    /// Record that a resize widened the terminal grid from `previous_cols_px`:
-    /// the content the host drew for the old width is still on screen (the
-    /// vt does not rewrap), so draws keep it glued to the docked edge until
-    /// the host produces output for the new width (gsk-render-nodes design, Post-task decisions: C52).
-    /// The content occupies the narrowest grid since the last host output —
-    /// a widening after a widening without any output in between keeps the
-    /// narrower of the two stale widths.
-    pub(crate) fn note_grid_widened(&self, previous_cols_px: i32) {
-        if previous_cols_px <= 0 {
-            return;
-        }
-        let current = self.stale_grid_px.get();
-        self.stale_grid_px.set(if current > 0 {
-            current.min(previous_cols_px)
-        } else {
-            previous_cols_px
-        });
-    }
-
-    /// The terminal produced output — the host's post-resize repaint, or any
-    /// other bytes: the drawn grid is the terminal's live one again, and the
-    /// frame asks for a redraw.
-    pub(crate) fn note_terminal_output(&self) {
-        self.stale_grid_px.replace(0);
-        self.queue_draw();
-    }
-
     /// Queue a redraw of the drawing area (`glue_queue_draw`).
     pub fn queue_draw(&self) {
         if !self.closed.get() {

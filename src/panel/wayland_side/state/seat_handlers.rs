@@ -747,7 +747,6 @@ xkb_keymap {
     /// tests.
     fn test_inner() -> Arc<Inner> {
         Arc::new(Inner {
-            id: 0,
             poisoned: GuardPoisoned::new(),
             live: AtomicBool::new(true),
             keyboard: Keyboard::OnDemand,
