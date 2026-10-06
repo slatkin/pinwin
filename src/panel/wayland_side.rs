@@ -63,6 +63,7 @@ pub mod buffers;
 pub mod commands;
 pub mod crop;
 pub(crate) mod frame_log;
+pub mod renderer;
 pub mod seat;
 pub mod sizing;
 pub(crate) mod state;
