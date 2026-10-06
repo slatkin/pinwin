@@ -19,9 +19,13 @@
 //!
 //! The primitive set is the full set the grid painter needs (rows 4.3 to
 //! 4.7): an exact and a fractional rectangle fill, a polygon fill for the
-//! powerline triangles, a straight-line stroke for the one-line sprite, an
-//! image blit and a coverage-mask blit for the glyphs, and a pixel read for
-//! the tests. The module is frozen for those rows.
+//! powerline triangles, a closed-outline stroke with miter joins for the
+//! one-line sprite (the hollow powerline separators), an image blit and a
+//! coverage-mask blit for the glyphs, and a pixel read for the tests. The
+//! module was frozen for those rows; the row 4.3 review replaced the
+//! straight-line stroke with the closed-outline stroke, because cairo
+//! strokes the hollow separators as one closed triangle whose joins fill
+//! the corners and three butt-capped lines do not.
 //!
 //! GTK-free like the snap rules (`replace-gtk-with-wayland` D10): the tests
 //! below run without a display. The module is `pub` because its only
@@ -29,7 +33,9 @@
 //! entries with no caller are dead code under `-D warnings`, and no lint
 //! suppression is permitted).
 
-use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Shader, Stroke, Transform};
+use tiny_skia::{
+    FillRule, LineJoin, Paint, PathBuilder, Pixmap, PixmapPaint, Shader, Stroke, Transform,
+};
 
 use crate::term::cells::Rgb;
 
@@ -192,35 +198,42 @@ impl Canvas {
         );
     }
 
-    /// Stroke a straight line with a width in device pixels, anti-aliased
-    /// (the one-line sprite and the hollow powerline outline, butt caps
-    /// like the cairo painter's default). A non-positive width, a
-    /// zero-length line or a non-finite coordinate draws nothing; the
-    /// stroke is clipped to the canvas.
-    pub fn stroke_line(
-        &mut self,
-        x0: f32,
-        y0: f32,
-        x1: f32,
-        y1: f32,
-        width: f32,
-        color: CanvasColor,
-    ) {
-        if width <= 0.0
+    /// Stroke a closed polygon's outline with a width in device pixels,
+    /// anti-aliased, with a MITER join at cairo's default miter limit of
+    /// 10 and butt caps (the hollow powerline separators: the GTK path
+    /// strokes one closed triangle, so cairo's joins fill the corners out
+    /// to the miter — the apex tip and the spikes at the sharp base
+    /// corners — which separate butt-capped lines leave uncovered). Fewer
+    /// than three points, a non-positive or non-finite width or a
+    /// non-finite coordinate draws nothing; the stroke is clipped to the
+    /// canvas.
+    pub fn stroke_polygon(&mut self, points: &[(f32, f32)], width: f32, color: CanvasColor) {
+        if points.len() < 3
+            || width <= 0.0
             || !width.is_finite()
-            || ![x0, y0, x1, y1].iter().all(|v| v.is_finite())
-            || ((x1 - x0).abs() < f32::EPSILON && (y1 - y0).abs() < f32::EPSILON)
+            || !points.iter().all(|(x, y)| x.is_finite() && y.is_finite())
         {
             return;
         }
+        let mut points = points.iter().copied();
+        let Some((x0, y0)) = points.next() else {
+            return;
+        };
         let mut builder = PathBuilder::new();
         builder.move_to(x0, y0);
-        builder.line_to(x1, y1);
+        for (x, y) in points {
+            builder.line_to(x, y);
+        }
+        builder.close();
         let Some(path) = builder.finish() else {
             return;
         };
         let stroke = Stroke {
             width,
+            // Cairo's default join is a miter, kept while the miter length
+            // stays within ten line widths; tiny-skia's default limit is 4.
+            miter_limit: 10.0,
+            line_join: LineJoin::Miter,
             ..Stroke::default()
         };
         let paint = paint(color, true);
@@ -649,17 +662,17 @@ mod tests {
         );
     }
 
-    /// A stroke has the width asked: a horizontal line of width 2 centred
-    /// on y = 2 covers exactly the two device rows 1 and 2, butt-capped at
-    /// the line's ends.
+    /// A closed-outline stroke has the width asked and fills its joins:
+    /// an axis-aligned rectangle outline of width 2 centred on the path
+    /// covers exactly the two device pixel rows and columns along each
+    /// side, the miter joins fill the four corner squares exactly, and the
+    /// interior hole stays empty.
     #[test]
-    fn a_stroke_has_the_width_asked() {
+    fn a_closed_rectangle_outline_covers_its_frame_exactly() {
         let mut canvas = Canvas::new(6, 6).expect("test canvas size is valid");
-        canvas.stroke_line(
-            0.0,
-            2.0,
-            4.0,
-            2.0,
+        canvas.clear();
+        canvas.stroke_polygon(
+            &[(1.0, 1.0), (4.0, 1.0), (4.0, 4.0), (1.0, 4.0)],
             2.0,
             CanvasColor::from_theme(Rgb {
                 r: 0,
@@ -667,45 +680,59 @@ mod tests {
                 b: 0xff,
             }),
         );
-        for y in [1u32, 2] {
-            for x in 0..4u32 {
+        for y in 0..6u32 {
+            for x in 0..6u32 {
+                let covered = x <= 4 && y <= 4 && !(x == 2 && y == 2);
+                let expected = if covered { [0xff, 0, 0, 0xff] } else { [0; 4] };
                 assert_eq!(
                     canvas.pixel(x, y),
-                    Some([0xff, 0, 0, 0xff]),
-                    "the stroke covers row {y} at x {x}"
+                    Some(expected),
+                    "the rectangle outline at ({x}, {y})"
                 );
             }
         }
-        // Outside the stroke's width and beyond its butt end: untouched.
-        assert_eq!(canvas.pixel(0, 0), Some([0, 0, 0, 0]), "above the stroke");
-        assert_eq!(canvas.pixel(0, 3), Some([0, 0, 0, 0]), "below the stroke");
-        assert_eq!(canvas.pixel(4, 2), Some([0, 0, 0, 0]), "past the butt end");
     }
 
-    /// A stroke with no width, a zero-length line or a non-finite
-    /// coordinate draws nothing, and a stroke reaching past the canvas
-    /// clips without panic.
+    /// An outline reaching past the canvas clips to it without panic, and
+    /// a degenerate input — fewer than three points, a non-finite
+    /// coordinate, a zero, negative or non-finite width — draws nothing.
     #[test]
-    fn degenerate_strokes_draw_nothing_or_clip() {
+    fn degenerate_closed_strokes_draw_nothing_or_clip() {
         let mut canvas = Canvas::new(4, 4).expect("test canvas size is valid");
         let red = CanvasColor::from_theme(Rgb {
             r: 0xff,
             g: 0,
             b: 0,
         });
-        canvas.stroke_line(0.0, 2.0, 4.0, 2.0, 0.0, red);
-        canvas.stroke_line(1.0, 2.0, 1.0, 2.0, 2.0, red);
-        canvas.stroke_line(f32::NAN, 0.0, 4.0, 0.0, 2.0, red);
-        canvas.stroke_line(0.0, 0.0, 4.0, 4.0, f32::INFINITY, red);
+        let square = [(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)];
+        canvas.stroke_polygon(&square[..2], 2.0, red);
+        canvas.stroke_polygon(&[], 2.0, red);
+        canvas.stroke_polygon(&[(f32::NAN, 1.0), (3.0, 1.0), (3.0, 3.0)], 2.0, red);
+        canvas.stroke_polygon(&square, 0.0, red);
+        canvas.stroke_polygon(&square, -2.0, red);
+        canvas.stroke_polygon(&square, f32::INFINITY, red);
         assert!(
             canvas.data().iter().all(|byte| *byte == 0),
-            "degenerate strokes draw nothing"
+            "degenerate closed strokes draw nothing"
         );
-        canvas.stroke_line(-2.0, 1.0, 8.0, 1.0, 2.0, red);
+        // A square reaching past the top left corner clips to it: its
+        // outline's visible part covers the canvas' last pixel exactly and
+        // leaves the far interior clear.
+        canvas.clear();
+        canvas.stroke_polygon(
+            &[(-2.0, -2.0), (3.0, -2.0), (3.0, 3.0), (-2.0, 3.0)],
+            2.0,
+            red,
+        );
         assert_eq!(
-            canvas.pixel(0, 1),
+            canvas.pixel(3, 3),
             Some([0, 0, 0xff, 0xff]),
-            "clipped at the edge"
+            "the visible corner is exact"
+        );
+        assert_eq!(
+            canvas.pixel(0, 0),
+            Some([0, 0, 0, 0]),
+            "the far interior stays clear"
         );
     }
 

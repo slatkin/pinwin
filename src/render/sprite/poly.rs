@@ -14,11 +14,13 @@
 //! The two hollow separators (U+E0B1 and U+E0B3) are design decision 5's
 //! "one line sprite" (`replace-gtk-with-wayland` D5): the only sprite the
 //! GTK path strokes instead of filling — `draw_sprite`'s
-//! `StrokeTriangle`, stroked as one closed triangle at line width 2.0 in
-//! cairo's logical user space. There is no other line shape on the GTK
-//! path to port. A cairo stroke width is a user-space length, so the
-//! device width is 2 logical pixels times the output scale, and this pass
-//! carries that device width.
+//! `StrokeTriangle`, stroked as ONE closed triangle at line width 2.0 in
+//! cairo's logical user space, so cairo's MITER joins fill the corners:
+//! the apex tip pokes one miter length into the neighbouring cell and the
+//! sharp 45-degree base corners keep their miter spikes. There is no other
+//! line shape on the GTK path to port. A cairo stroke width is a
+//! user-space length, so the device width is 2 logical pixels times the
+//! output scale, and this pass carries that device width.
 //!
 //! GTK-free like the rest of the painter (`replace-gtk-with-wayland` D10).
 
@@ -32,16 +34,10 @@ use crate::term::cells::{Cell, Wide};
 pub(super) fn primitive(cp: u32, metrics: &PainterMetrics, cell: &Cell) -> Option<Primitive> {
     let points = points(cp, metrics, cell)?;
     Some(match cp {
-        // The hollow separators stroke their closed outline: the three
-        // sides of the triangle, in draw order, at the GTK path's 2
-        // logical pixels of line width.
-        0xE0B1 | 0xE0B3 => {
-            let mut sides = Vec::with_capacity(3);
-            for i in 0..3 {
-                sides.push([points[i], points[(i + 1) % 3]]);
-            }
-            Primitive::StrokeLines(sides, 2.0 * metrics.scale())
-        }
+        // The hollow separators stroke their closed outline: one closed
+        // triangle at the GTK path's 2 logical pixels of line width, whose
+        // miter joins fill the corners the way cairo's do.
+        0xE0B1 | 0xE0B3 => Primitive::StrokePolygon(points, 2.0 * metrics.scale()),
         _ => Primitive::FillPolygon(points),
     })
 }
@@ -212,21 +208,19 @@ mod tests {
     }
 
     /// The hollow separators stroke their closed triangle — its three
-    /// sides in draw order, closing back to the first vertex — at 2
-    /// logical pixels of width; the solid shapes fill instead.
+    /// vertices in draw order, the path closing back to the first vertex —
+    /// at 2 logical pixels of width; the solid shapes fill instead.
     #[test]
     fn the_hollow_separators_stroke_their_closed_outline() {
         let m = metrics(1.5);
         let cell = cell(0, 0);
         for cp in [0xE0B1, 0xE0B3] {
-            let Some(Primitive::StrokeLines(sides, width)) = primitive(cp, &m, &cell) else {
+            let Some(Primitive::StrokePolygon(vertices, width)) = primitive(cp, &m, &cell) else {
                 panic!("0x{cp:04X} strokes its outline");
             };
-            assert_eq!(sides.len(), 3, "0x{cp:04X} closes the triangle");
             let points = points(cp, &m, &cell).expect("points");
-            assert_eq!(sides[0], [points[0], points[1]]);
-            assert_eq!(sides[1], [points[1], points[2]]);
-            assert_eq!(sides[2], [points[2], points[0]]);
+            assert_eq!(vertices, points, "0x{cp:04X} strokes the triangle itself");
+            assert_eq!(vertices.len(), 3, "0x{cp:04X} is a triangle");
             assert_eq!(width, 3.0, "2 logical pixels at scale 1.5");
         }
         for cp in [0x25E2, 0x25E5, 0xE0B0, 0xE0B2] {

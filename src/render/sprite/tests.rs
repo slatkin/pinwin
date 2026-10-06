@@ -662,3 +662,86 @@ fn a_polygon_sprite_takes_the_cells_foreground() {
         "the separator is the theme foreground",
     );
 }
+
+/// The hollow separators stroke one closed triangle with MITER joins,
+/// so the corners fill out to the miter the way cairo's do: the apex
+/// tip is painted and pokes beside the apex into the neighbouring
+/// cell, the sharp base corner keeps its miter spike on the diagonal
+/// outside the triangle, and the interior stays empty. Probed at every
+/// scale the painter tests; the two separators mirror each other.
+#[test]
+fn the_hollow_separators_miter_their_corners() {
+    // At scale 1 the base corner's spike covers about five sixths of its
+    // pixel, so the test pins the blend's blue channel there; at the
+    // fractional scales the coverage varies with the snap, and
+    // painted-or-not is what the shape pins.
+    for (scale, spike_blue) in [(1.0, Some(88)), (1.25, None), (1.5, None), (1.8, None)] {
+        for cp in [0xE0B1, 0xE0B3] {
+            let mut terminal = terminal();
+            let mut data = utf8(u32::from(' '));
+            data.extend(utf8(cp));
+            terminal.push_pty_data(&data);
+            let canvas = painted(&mut terminal, scale);
+            let m = metrics(scale);
+            let cell = m.cell_rect(1, 0);
+            let (x1, x2) = (cell.x(), cell.x() + cell.w());
+            let ym = device_px(8.0 * scale);
+            let y2 = device_px(16.0 * scale);
+            // U+E0B1 points right: its apex sits on the cell's right
+            // edge and its base corners on the left; U+E0B3 mirrors.
+            let (apex, beside, corner, inner) = if cp == 0xE0B1 {
+                // Apex on the right edge, base on the left: the tip
+                // pokes right, the bottom base corner's spike leans
+                // left, so the pixel it covers sits one step left of
+                // and below the corner.
+                ((x2, ym), (x2 + 1, ym), (x1 - 1, y2 + 1), (x1 + 4, ym))
+            } else {
+                // Mirrored: apex on the left edge, base on the right,
+                // the spike leaning right under the corner.
+                ((x1, ym), (x1 - 1, ym), (x2, y2 + 1), (x2 - 4, ym))
+            };
+            let label = format!("0x{cp:04X} at scale {scale}");
+            // The apex's outer pixel and the pixel beside it along
+            // the miter - which lies in the neighbouring cell - are
+            // painted: the join fills the tip the butt caps left
+            // background.
+            assert_ne!(
+                canvas.pixel(px(apex.0), px(apex.1)),
+                Some(theme_bytes()),
+                "{label}: the apex tip is painted"
+            );
+            assert_ne!(
+                canvas.pixel(px(beside.0), px(beside.1)),
+                Some(theme_bytes()),
+                "{label}: the miter reaches beside the apex"
+            );
+            // The base corner's miter spike covers the pixel on the
+            // spike's side of the corner, outside the triangle - the
+            // background the butt caps left there.
+            let corner_pixel = canvas.pixel(px(corner.0), px(corner.1)).expect("inside");
+            match spike_blue {
+                Some(want) => assert!(
+                    (i32::from(corner_pixel[0]) - want).abs() <= 14,
+                    "{label}: the base corner spike blends: {} vs {want}",
+                    corner_pixel[0]
+                ),
+                None => assert_ne!(
+                    canvas.pixel(px(corner.0), px(corner.1)),
+                    Some(theme_bytes()),
+                    "{label}: the base corner spike is painted"
+                ),
+            }
+            // The interior stays empty.
+            pixel_is(&canvas, inner.0, inner.1, theme_bytes(), &label);
+            let centre = (
+                if cp == 0xE0B1 {
+                    (2 * x1 + x2) / 3
+                } else {
+                    (x1 + 2 * x2) / 3
+                },
+                (ym + y2) / 3,
+            );
+            pixel_is(&canvas, centre.0, centre.1, theme_bytes(), &label);
+        }
+    }
+}

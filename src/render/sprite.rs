@@ -32,10 +32,12 @@ mod poly;
 
 /// The drawing primitives one sprite cell carries (row 4.3): unantialiased
 /// rectangles for the blocks and the braille dots, an antialiased filled
-/// polygon for the solid corner and powerline triangles, and antialiased
-/// stroked segments for the hollow powerline outline — design decision 5's
-/// one line sprite. All coordinates are device pixels; a `None` from
-/// [`cell_sprite`] still means the text pass owns the cell.
+/// polygon for the solid corner and powerline triangles, and an antialiased
+/// closed-outline stroke with miter joins for the hollow powerline outline —
+/// design decision 5's one line sprite, which the GTK path strokes as one
+/// closed triangle so cairo's joins fill the corners. All coordinates are
+/// device pixels; a `None` from [`cell_sprite`] still means the text pass
+/// owns the cell.
 #[derive(Debug)]
 pub(crate) enum Primitive {
     /// Axis-aligned rectangles to fill exactly with the sprite colour.
@@ -43,9 +45,10 @@ pub(crate) enum Primitive {
     /// A closed polygon to fill with the sprite colour, its vertices in
     /// draw order.
     FillPolygon(Vec<(f64, f64)>),
-    /// Open segments to stroke with the sprite colour at the given device
-    /// width; a closed outline arrives as its sides.
-    StrokeLines(Vec<[(f64, f64); 2]>, f64),
+    /// A closed polygon's outline to stroke with the sprite colour at the
+    /// given device width, its vertices in draw order (the path closes
+    /// back to the first vertex).
+    StrokePolygon(Vec<(f64, f64)>, f64),
 }
 
 /// Walk the open frame's cells and draw the sprites, shifted by `offset`
@@ -75,18 +78,12 @@ pub(super) fn paint(
                     .collect();
                 canvas.fill_polygon(&points, color);
             }
-            Primitive::StrokeLines(sides, width) => {
-                let width = device_f32(width);
-                for [(ax, ay), (bx, by)] in sides {
-                    canvas.stroke_line(
-                        shift(ax, offset),
-                        device_f32(ay),
-                        shift(bx, offset),
-                        device_f32(by),
-                        width,
-                        color,
-                    );
-                }
+            Primitive::StrokePolygon(points, width) => {
+                let points: Vec<(f32, f32)> = points
+                    .iter()
+                    .map(|(x, y)| (shift(*x, offset), device_f32(*y)))
+                    .collect();
+                canvas.stroke_polygon(&points, device_f32(width), color);
             }
         }
     }
