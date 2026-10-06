@@ -41,9 +41,9 @@ start a later group.
 
 - [x] 5.1 Feed the XKB keycode, the keysym and the modifiers from the seat into `src/input.rs` and `src/term/keys.rs`. Build the xkbcommon state from design decision 8 for the consumed modifiers, the modifier flag and the unshifted code point. Verify: the existing translation tests pass with keysym input.
 - [x] 5.2 Add key repeat with the toolkit's calloop repeat and the compositor's `repeat_info`. Send each repeat as `KeyAction::Repeat`, and stop on release and on keyboard leave. Verify: `cargo build` succeeds. 10.1 checks the key repeat scenarios on niri.
-- [ ] 5.3 Map pointer enter, motion, button and axis events to the mouse and scroll encoders. Use `value120` for wheels and continuous values for touchpads. Adjust pointer x by the tween's draw offset. Verify: display-free tests map both axis kinds to scroll units.
-- [ ] 5.4 Drive the accent and the focus reports from keyboard enter and leave. Verify: `cargo build` succeeds. 10.1 checks the accent and focus report scenarios on niri.
-- [ ] 5.5 If the compositor offers cursor-shape, set the default cursor shape on each pointer enter. Verify: `cargo build` succeeds. 10.1 checks "Cursor on enter" on niri.
+- [x] 5.3 Map pointer enter, motion, button and axis events to the mouse and scroll encoders. Use `value120` for wheels and continuous values for touchpads. Adjust pointer x by the tween's draw offset. Verify: display-free tests map both axis kinds to scroll units.
+- [x] 5.4 Drive the accent and the focus reports from keyboard enter and leave. Verify: `cargo build` succeeds. 10.1 checks the accent and focus report scenarios on niri.
+- [x] 5.5 If the compositor offers cursor-shape, set the default cursor shape on each pointer enter. Verify: `cargo build` succeeds. 10.1 checks "Cursor on enter" on niri.
 
 ## 6. Animation
 
