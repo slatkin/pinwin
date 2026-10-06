@@ -392,10 +392,18 @@ fn run_thread(
         return;
     };
 
+    // The 'static handle is what the toolkit's repeat source stores (row
+    // 5.2); the loop itself is not tied to any shorter borrow.
+    let loop_handle: calloop::LoopHandle<'static, PanelState> = event_loop.handle();
+
     // The bind runs under the panel's shared latch: a panic in it latches
     // and reports `Internal` (D5), a missing required global reports
-    // `NoDisplay` (D1).
-    match guard(poisoned, || state.bind(&globals, &queue.handle())) {
+    // `NoDisplay` (D1). The bind owns the globals from here on — the
+    // session keeps them for the cursor-shape bind the pointer capability
+    // makes (row 5.5).
+    match guard(poisoned, || {
+        state.bind(globals, &queue.handle(), loop_handle)
+    }) {
         Ok(Ok(())) => {}
         Ok(Err(BindFailure::NoDisplay)) => {
             handshake.report(StartOutcome::NoDisplay);

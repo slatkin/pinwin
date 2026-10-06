@@ -109,7 +109,10 @@ impl SeatLinks {
 pub struct SeatSide {
     links: SeatLinks,
     keyboard: keyboard::KeyboardSide,
-    pointer: PointerSide,
+    /// `pub(crate)` for the row 8.1 wiring: the pointer capability's
+    /// removal resets the cursor-shape device through
+    /// [`PointerSide::set_cursor`], the only path that drops it.
+    pub(crate) pointer: PointerSide,
     focus: FocusSide,
 }
 

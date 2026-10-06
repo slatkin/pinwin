@@ -29,6 +29,7 @@ use std::sync::atomic::Ordering;
 use smithay_client_toolkit::compositor::{CompositorState, Region};
 use smithay_client_toolkit::output::OutputState;
 use smithay_client_toolkit::registry::RegistryState;
+use smithay_client_toolkit::seat::SeatState;
 use smithay_client_toolkit::shell::wlr_layer::{
     Layer, LayerShell, LayerSurface, LayerSurfaceConfigure,
 };
@@ -48,12 +49,14 @@ use super::activation::Activation;
 use super::buffers::{Scale, viewport_destination};
 use super::frame_log::{FrameLog, Presentation};
 use super::seat::SeatLinks;
+use super::seat::SeatSide;
 use super::sizing::{Grid, Sizing};
 use super::surfaces::{PanelSurfaces, SurfaceId};
 use super::tween::TweenDriver;
 use super::tween_draw::{TweenDraw, TweenRender};
 
 mod handlers;
+mod seat_handlers;
 mod session;
 
 /// The globals and surfaces one bound panel thread session holds (D2). The
@@ -80,6 +83,28 @@ pub(crate) struct Session {
     /// D4): the focus request's transport; its absence degrades the request
     /// to a no-op, never the start (D1).
     pub(crate) activation: Activation,
+    /// The globals the session bound (row 8.1's seat wiring): the list the
+    /// pointer's cursor-shape device binds from when the pointer capability
+    /// arrives (row 5.5).
+    pub(crate) globals: wayland_client::globals::GlobalList,
+    /// The seat state (row 8.1's seat wiring): the `wl_seat` handler the
+    /// capability events dispatch through, and the source the keyboard and
+    /// the pointer are created from.
+    pub(crate) seat: SeatState,
+    /// The seat side the seat handlers route into (row 8.1's seat wiring):
+    /// the keyboard, pointer and focus hooks rows 5.1 to 5.5 built, over
+    /// the thread's links.
+    pub(crate) seat_side: SeatSide,
+    /// The seat's capability objects (row 8.1's seat wiring): the keyboard
+    /// and the pointer the capability events created, dropped on removal,
+    /// on a removed seat and at teardown.
+    pub(crate) seat_objects: seat_handlers::SeatObjects,
+    /// The loop handle the keyboard's repeat source installs itself
+    /// through (row 5.2): `new_capability` runs from the loop's dispatch,
+    /// so the handle the bind stores must reach it. `EventLoop::try_new`
+    /// leaves the lifetime to the caller, and the 'static one is what the
+    /// toolkit's repeat source holds.
+    pub(crate) loop_handle: calloop::LoopHandle<'static, PanelState>,
     /// The two layer surfaces, `None` once the panel is torn down: the
     /// teardown drops them — the panel leaves the screen at once — and with
     /// them every configure and pty push path, while the connection and the
