@@ -23,6 +23,8 @@ use crate::term::Terminal;
 
 use super::super::handshake::StartOutcome;
 use super::renderer::{FontSetup, FontSetupError, Renderer};
+use super::sizing::Grid;
+use super::state::{PanelState, apply_pty_size};
 
 /// The font the thread starts with (row 8.1): [`FontSetup::load`] — the one
 /// font load the panel performs, on the thread that owns the text pass —
@@ -107,24 +109,71 @@ pub(crate) fn byte_path(
     (terminal, repaint, pty)
 }
 
+impl PanelState {
+    /// The one grid push sink (row 8.1): every push the sizing decides — a
+    /// plain apply's, a mid-tween configure's and the deferred tween-end's —
+    /// runs through it, each exactly once (the sizing's pushed-grid memory
+    /// never repeats one). The closure owns clones of the shared terminal
+    /// and the repaint flag, so the callers hold `&mut self` while it runs.
+    /// `None` on a headless state — the tests — where the sink degrades to
+    /// the winsize-only push the pre-8.1 thread had.
+    pub(crate) fn grid_sink(&self) -> impl FnMut(Grid) + 'static {
+        let terminal = self.terminal.clone();
+        let repaint = Rc::clone(&self.repaint);
+        let fd = self.startup.fd;
+        move |grid| push_grid(terminal.as_ref(), &repaint, fd, grid)
+    }
+}
+
+/// Push one derived grid to the terminal and the pty (row 8.1), the GTK
+/// path's `apply_size` order: the terminal first — a terminal that cannot
+/// be allocated leaves the previous grid and the pty winsize in place —
+/// then the winsize with `SIGWINCH`, then the repaint request the
+/// post-resize repaint needs. The terminal's own output latches the same
+/// flag later, when the vt answers the new width.
+fn push_grid(
+    terminal: Option<&Rc<RefCell<Terminal>>>,
+    repaint: &Cell<bool>,
+    fd: RawFd,
+    grid: Grid,
+) {
+    // Unreachable for a derived grid — the configure height bounds the rows
+    // — handled: no push at all rather than a truncated one.
+    let Ok(rows) = i32::try_from(grid.rows()) else {
+        return;
+    };
+    if let Some(terminal) = terminal {
+        let pushed = terminal.borrow_mut().push_size(
+            i32::from(grid.cols()),
+            rows,
+            grid.cell_width(),
+            grid.cell_height(),
+        );
+        if !pushed {
+            return;
+        }
+    }
+    apply_pty_size(fd, grid);
+    repaint.set(true);
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::sizing::Grid;
-    use super::super::state::PanelState;
     use super::super::{Inner, Startup};
     use super::*;
     use crate::fontconfig::FontConfig;
-    use crate::layout::{Keyboard, Layout, Side};
+    use crate::layout::{Keyboard, Layout, OutputSize, Side};
     use crate::panel::PinwinError;
     use crate::panel::handshake::{Handshake, map_start};
     use crate::pty::attach_calloop;
     use crate::render::font::FontBook;
     use crate::render::text_pass::test_support;
     use std::num::NonZeroU16;
-    use std::os::fd::FromRawFd;
+    use std::os::fd::{AsRawFd, FromRawFd};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
+    use std::time::Instant;
 
     /// A startup for the tests; the thread does not touch the pty fd in
     /// these tests, so a placeholder fd is fine here.
@@ -347,5 +396,214 @@ mod tests {
             fd_slot.load(Ordering::Relaxed) >= 0,
             "a plain dispatch leaves the source installed"
         );
+    }
+
+    /// A winsize for the tests' layouts.
+    fn layout(side: Side, cols: u16, top: i32, bottom: i32, left: i32, right: i32) -> Layout {
+        Layout::new(
+            side,
+            NonZeroU16::new(cols).expect("test column count is non-zero"),
+            top,
+            bottom,
+            left,
+            right,
+        )
+    }
+
+    /// An output size for the tests' applies.
+    fn output(width: i32, height: i32) -> OutputSize {
+        OutputSize::new(width, height).expect("test output size is non-zero")
+    }
+
+    /// A headless state wired to the thread's byte path over a real pty
+    /// master: the production sink pushes the terminal grid and the pty
+    /// winsize through it (D10 — the compositor paths stay out).
+    fn state_over_pty(
+        master: &std::fs::File,
+    ) -> (PanelState, Rc<RefCell<Terminal>>, Rc<Cell<bool>>, Pty) {
+        let startup = Startup {
+            fd: master.as_raw_fd(),
+            layout: layout(Side::Left, 40, 0, 0, 0, 0),
+            keyboard: Keyboard::OnDemand,
+            accent: None,
+        };
+        let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
+        let (terminal, repaint, pty) = byte_path(Poisoned::new(), startup.fd, cell);
+        let mut state = PanelState::headless(
+            Handshake::new(mpsc::channel().0),
+            Poisoned::new(),
+            live_inner(),
+            startup,
+            cell,
+        );
+        state.terminal = Some(Rc::clone(&terminal));
+        state.repaint = Rc::clone(&repaint);
+        (state, terminal, repaint, pty)
+    }
+
+    /// Read back the master's winsize.
+    fn read_winsize(fd: RawFd) -> libc::winsize {
+        let mut ws = libc::winsize {
+            ws_col: 0,
+            ws_row: 0,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: `fd` is open and `ws` is writable for the call.
+        let result = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &raw mut ws) };
+        assert!(result >= 0, "TIOCGWINSZ");
+        ws
+    }
+
+    /// Block `SIGWINCH` on this test thread for its lifetime: the winsize
+    /// ioctls the sink performs raise it, and the pty module's tests record
+    /// the signal process-wide — blocking it here keeps this test's raises
+    /// out of their recording windows when the tests share one process
+    /// (nextest runs each test in its own process anyway). The mask is
+    /// never restored: the pending signal dies with the thread, and a
+    /// restore would deliver it into the shared process instead.
+    fn block_sigwinch() {
+        // SAFETY: `set` and `old` are writable sigsets for the calls.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&raw mut set);
+            libc::sigaddset(&raw mut set, libc::SIGWINCH);
+            let mut old: libc::sigset_t = std::mem::zeroed();
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_BLOCK, &raw const set, &raw mut old),
+                0,
+                "block SIGWINCH"
+            );
+        }
+    }
+
+    /// The winsize and the terminal grid one push of the production sink
+    /// leaves behind, read back from both ends.
+    fn assert_pushed(
+        master: &std::fs::File,
+        terminal: &Rc<RefCell<Terminal>>,
+        cols: u16,
+        rows: u32,
+    ) {
+        let ws = read_winsize(master.as_raw_fd());
+        assert_eq!(
+            (ws.ws_col, ws.ws_row),
+            (cols, u16::try_from(rows).expect("rows"))
+        );
+        assert_eq!(
+            (ws.ws_xpixel, ws.ws_ypixel),
+            (cols * 9, u16::try_from(rows * 16).expect("pixel height"))
+        );
+        let term = terminal.borrow();
+        assert_eq!(
+            (term.cols(), term.rows()),
+            (cols, u16::try_from(rows).expect("rows"))
+        );
+        assert_eq!((term.cell_w(), term.cell_h()), (9, 16));
+    }
+
+    /// One apply pushes the winsize and the terminal grid exactly once,
+    /// through the production sink: both ends read back the same derived
+    /// grid, the push latched the repaint flag, and a repeat apply of the
+    /// same layout pushes nothing.
+    #[test]
+    fn one_apply_pushes_the_winsize_and_the_terminal_grid_once() {
+        let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");
+        block_sigwinch();
+        let (mut state, terminal, repaint, _pty) = state_over_pty(&master);
+        state.sizing.configure(1080, &mut |_| {});
+        let target = layout(Side::Left, 120, 0, 0, 0, 0);
+
+        let mut sink = state.grid_sink();
+        let pushes = Cell::new(0usize);
+        let mut counted = |grid: Grid| {
+            pushes.set(pushes.get() + 1);
+            sink(grid);
+        };
+        state
+            .apply_against(output(1920, 1080), target, &mut counted)
+            .expect("the layout fits the output");
+        assert_eq!(pushes.get(), 1, "exactly one push");
+        assert_pushed(&master, &terminal, 120, 1080 / 16);
+        assert!(repaint.get(), "the push latched the repaint flag");
+
+        // A repeat apply of the same layout derives the same grid and
+        // pushes nothing: the winsize and the grid are unchanged.
+        let mut sink = state.grid_sink();
+        let pushes = Cell::new(0usize);
+        let mut counted = |grid: Grid| {
+            pushes.set(pushes.get() + 1);
+            sink(grid);
+        };
+        state
+            .apply_against(output(1920, 1080), target, &mut counted)
+            .expect("the layout fits the output");
+        assert_eq!(pushes.get(), 0, "the repeat apply pushes nothing");
+        assert_pushed(&master, &terminal, 120, 1080 / 16);
+    }
+
+    /// The deferred tween-end push lands once, at the new columns and the
+    /// recorded height: the staging pushes nothing, and the finish's single
+    /// push reaches both the pty and the terminal.
+    #[test]
+    fn a_deferred_tween_end_push_pushes_the_winsize_and_the_grid_once() {
+        let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");
+        block_sigwinch();
+        let (mut state, terminal, repaint, _pty) = state_over_pty(&master);
+        state.sizing.configure(1080, &mut |_| {});
+
+        let mut sink = state.grid_sink();
+        let pushes = Cell::new(0usize);
+        let mut counted = |grid: Grid| {
+            pushes.set(pushes.get() + 1);
+            sink(grid);
+        };
+        let _ = state.stage_animated(
+            output(1920, 1080),
+            layout(Side::Left, 120, 0, 0, 0, 12),
+            200,
+            &mut counted,
+        );
+        assert_eq!(pushes.get(), 0, "a staged animated apply pushes nothing");
+        state.tween.begin(360, 1080, 200, Instant::now(), None);
+        state.tween_finished(1080, &mut counted);
+        assert_eq!(pushes.get(), 1, "the finish pushes once");
+        assert_pushed(&master, &terminal, 120, 1080 / 16);
+        assert!(repaint.get(), "the push latched the repaint flag");
+    }
+
+    /// A snap during a running tween pushes at once: the stop relay lifts
+    /// the sizing defer and the deferred grid reaches the pty and the
+    /// terminal in the same apply.
+    #[test]
+    fn a_snap_during_a_tween_pushes_the_winsize_and_the_grid_once() {
+        let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");
+        block_sigwinch();
+        let (mut state, terminal, repaint, _pty) = state_over_pty(&master);
+        state.sizing.configure(1080, &mut |_| {});
+
+        let mut sink = state.grid_sink();
+        let pushes = Cell::new(0usize);
+        let mut counted = |grid: Grid| {
+            pushes.set(pushes.get() + 1);
+            sink(grid);
+        };
+        let _ = state.stage_animated(
+            output(1920, 1080),
+            layout(Side::Left, 120, 0, 0, 0, 12),
+            200,
+            &mut counted,
+        );
+        state.tween.begin(360, 1080, 200, Instant::now(), None);
+        state
+            .apply_snap_against(
+                output(1920, 1080),
+                layout(Side::Left, 120, 0, 0, 0, 12),
+                &mut counted,
+            )
+            .expect("the layout fits the output");
+        assert_eq!(pushes.get(), 1, "the snap pushes at once");
+        assert_pushed(&master, &terminal, 120, 1080 / 16);
+        assert!(repaint.get(), "the push latched the repaint flag");
     }
 }

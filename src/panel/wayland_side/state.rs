@@ -281,9 +281,10 @@ impl PanelState {
     /// maps the surface and drives the grid sizing; the reserve's maps the
     /// reservation.
     fn on_configure(&mut self, layer: &LayerSurface, configure: &LayerSurfaceConfigure) {
-        // The pty fd the pushes reach: copied before the session borrow, the
-        // way the push closure below captures it.
-        let fd = self.startup.fd;
+        // The push sink the configures drive (row 8.1): it owns clones of
+        // the shared terminal and the repaint flag, so the session borrow
+        // below does not alias it.
+        let mut push = self.grid_sink();
         let Some(session) = &mut self.session else {
             return;
         };
@@ -304,7 +305,7 @@ impl PanelState {
                 // path had; the tween's finish and the next configure catch
                 // up.
                 surfaces.panel_configured_under_tween();
-                self.configure_grid(height, &mut |grid| apply_pty_size(fd, grid));
+                self.configure_grid(height, &mut push);
                 return;
             }
             // The viewporter destination is the logical size (D5): set
@@ -319,7 +320,7 @@ impl PanelState {
                     .set_destination(SurfaceId::Panel, width_i, height_i);
             }
             surfaces.panel_configured(width, height);
-            self.configure_grid(height, &mut |grid| apply_pty_size(fd, grid));
+            self.configure_grid(height, &mut push);
         } else if surfaces.is_reserve(layer) {
             if let Some((width_i, height_i)) = viewport_destination(width, height) {
                 session
@@ -431,9 +432,9 @@ impl PanelState {
 
 /// Apply a pushed grid to the pty: the winsize ioctl with the grid and its
 /// pixel size, `SIGWINCH` raised inside [`apply_winsize`] on success. The
-/// terminal's grid push joins here when the terminal moves onto this thread
-/// (replace-gtk-with-wayland row 8.1); until then the pty carries the size
-/// alone, which is what the child's `TIOCGWINSZ` reads.
+/// single grid push sink in [`super::glue`] runs this after the terminal's
+/// own `push_size`, so the terminal and the pty change together (row 8.1);
+/// the child's `TIOCGWINSZ` reads the result.
 pub(crate) fn apply_pty_size(fd: RawFd, grid: Grid) {
     let Ok(rows) = i32::try_from(grid.rows()) else {
         return;

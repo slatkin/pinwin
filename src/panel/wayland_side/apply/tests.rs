@@ -420,7 +420,7 @@ fn a_repeat_animated_apply_leaves_the_running_tween_alone() {
     assert!(tween::should_animate(200, &state.applied, &same));
     assert!(!PanelState::animates_width(&state.applied, &same));
     assert_eq!(
-        state.apply_quiet(output(1920, 1080), same, -1),
+        state.apply_quiet(output(1920, 1080), same),
         PublishOutcome::Applied
     );
     assert!(state.tween.is_active(), "the tween keeps easing");

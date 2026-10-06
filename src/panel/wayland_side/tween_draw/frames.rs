@@ -23,10 +23,8 @@ pub(crate) fn on_tween_frame(state: &mut PanelState, time_ms: u32) {
             state.request_tween_frame();
         }
         FrameStep::Finished(px) => {
-            let fd = state.startup.fd;
-            state.tween_finished(px, &mut |grid| {
-                super::super::state::apply_pty_size(fd, grid);
-            });
+            let mut push = state.grid_sink();
+            state.tween_finished(px, &mut push);
         }
     }
 }

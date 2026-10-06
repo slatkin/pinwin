@@ -17,7 +17,6 @@
 //! drive the same staging, held-gap and pty-push path the production
 //! `PanelState::apply` runs against the resolved output and the pty fd.
 
-use std::os::fd::RawFd;
 use std::time::Instant;
 
 use crate::layout::{CellSize, Layout, OutputSize, Side};
@@ -26,7 +25,7 @@ use crate::surfaces::gap::{HeldGap, gap_tween_decision, reserve_gap_parts, stage
 
 use super::crop::TweenCrop;
 use super::sizing::Grid;
-use super::state::{PanelState, apply_pty_size};
+use super::state::PanelState;
 use super::surfaces::{grid_width_px, panel_margins};
 use super::tween;
 use super::tween_draw::TweenDraw;
@@ -146,7 +145,6 @@ impl PanelState {
         {
             return PublishOutcome::NotLive;
         }
-        let fd = self.startup.fd;
         // The animate decision (row 6.2) against the applied layout, the
         // GTK path's `should_animate` rule. An animated apply whose columns
         // and coverage the applied layout already has animates nothing (the
@@ -156,11 +154,11 @@ impl PanelState {
         // the snap path runs the stop relay.
         if tween::should_animate(duration_ms, &self.applied, &layout) {
             if Self::animates_width(&self.applied, &layout) {
-                return self.apply_animated(output, layout, duration_ms, fd);
+                return self.apply_animated(output, layout, duration_ms);
             }
-            return self.apply_quiet(output, layout, fd);
+            return self.apply_quiet(output, layout);
         }
-        self.apply_snap(output, layout, fd)
+        self.apply_snap(output, layout)
     }
 
     /// Whether an animated apply moves the width (row 6.2, the GTK
@@ -191,8 +189,9 @@ impl PanelState {
     /// so a rejected apply leaves the tween running — and lifts the sizing
     /// defer, so the deferred grid pushes here, once, through the sizing
     /// path: the push the staging could not make while the defer held.
-    fn apply_snap(&mut self, output: OutputSize, layout: Layout, fd: RawFd) -> PublishOutcome {
-        match self.apply_snap_against(output, layout, &mut |grid| apply_pty_size(fd, grid)) {
+    fn apply_snap(&mut self, output: OutputSize, layout: Layout) -> PublishOutcome {
+        let mut push = self.grid_sink();
+        match self.apply_snap_against(output, layout, &mut push) {
             Ok(geometry) => {
                 self.write_geometry(geometry);
                 PublishOutcome::Applied
@@ -207,8 +206,9 @@ impl PanelState {
     /// and leaves a running tween alone: the tween already heads for these
     /// columns (the GTK publish's rule), so the stop relay does not run,
     /// the wide cache stays and the deferred push waits for the finish.
-    fn apply_quiet(&mut self, output: OutputSize, layout: Layout, fd: RawFd) -> PublishOutcome {
-        match self.apply_against(output, layout, &mut |grid| apply_pty_size(fd, grid)) {
+    fn apply_quiet(&mut self, output: OutputSize, layout: Layout) -> PublishOutcome {
+        let mut push = self.grid_sink();
+        match self.apply_against(output, layout, &mut push) {
             Ok(geometry) => {
                 self.write_geometry(geometry);
                 PublishOutcome::Applied
@@ -229,11 +229,9 @@ impl PanelState {
         output: OutputSize,
         layout: Layout,
         duration_ms: u32,
-        fd: RawFd,
     ) -> PublishOutcome {
-        let Some(staged) = self.stage_animated(output, layout, duration_ms, &mut |grid| {
-            apply_pty_size(fd, grid);
-        }) else {
+        let mut push = self.grid_sink();
+        let Some(staged) = self.stage_animated(output, layout, duration_ms, &mut push) else {
             return PublishOutcome::InvalidLayout;
         };
 
@@ -261,7 +259,7 @@ impl PanelState {
         let height = self.sizing.height();
         let cache = self.build_tween_cache(previous, &staged, height);
         let Some(holder) = cache else {
-            return self.apply_snap(output, layout, fd);
+            return self.apply_snap(output, layout);
         };
         self.tween_draw = Some(holder);
         self.commit_tween_frame(staged.from_px);

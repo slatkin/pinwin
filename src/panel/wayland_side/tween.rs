@@ -437,11 +437,9 @@ pub(crate) fn on_watchdog_tick(state: &mut PanelState) -> TimeoutAction {
         WatchdogStep::Pending { remaining } => TimeoutAction::ToDuration(remaining),
         WatchdogStep::Expired(target_px) => {
             let poisoned = state.poisoned.clone();
-            let fd = state.startup.fd;
+            let mut push = state.grid_sink();
             let _ = guard(&poisoned, || {
-                state.tween_finished(target_px, &mut |grid| {
-                    super::state::apply_pty_size(fd, grid);
-                });
+                state.tween_finished(target_px, &mut push);
             });
             TimeoutAction::Drop
         }
