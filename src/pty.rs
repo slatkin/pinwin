@@ -19,6 +19,14 @@
 //! area's allocation to the grid before resizing — is not ported here: it
 //! belongs to the render/surface rows (tasks 3.6/3.7/4.1) and drives
 //! [`Pty::resize`] once the grid is known.
+//!
+//! The calloop twin of the read source for the panel thread lives beside it
+//! in the `calloop` submodule (`replace-gtk-with-wayland` D2); nothing
+//! registers it before row 8.1 switches `Panel::start` over.
+
+mod calloop;
+
+pub use self::calloop::{PtySource, attach_calloop};
 
 use std::io;
 use std::os::fd::RawFd;
