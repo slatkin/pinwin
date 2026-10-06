@@ -19,24 +19,32 @@ use super::identity::FaceIdentity;
 /// ppem as `f32`, whose 24-bit mantissa cannot represent a 1/64-px
 /// distinction beyond 2^17 px either.
 ///
-/// The range is the 26.6 range (0 to 65535 px), which the cell metrics
-/// already refuse to exceed.
+/// The upper bound is a device-sane maximum, not the 26.6 range: one
+/// rasterization at a huge ppem allocates its mask before the cache's byte
+/// budget is ever consulted, so the ppem itself must refuse sizes no panel
+/// could need. A 4K output at scale 3 with a 200 pt font is about
+/// 267 * 3 = 800 px per em; a 5K output at scale 3 with the same font is
+/// 1200. 2048 px caps both with a wide margin while keeping one glyph's
+/// worst-case mask (about 1.5 em tall) near 6 MB, and it stays far under
+/// the 65535-px 26.6 range the cell metrics refuse to exceed anyway.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Ppem {
     units: i32,
 }
 
+/// The largest ppem [`Ppem::from_px`] accepts, in device pixels. See the
+/// `Ppem` doc for how the value was chosen.
+const MAX_PPEM_PX: f64 = 2048.0;
+
 impl Ppem {
     /// Quantize a device pixels-per-em into 26.6 fixed point. An error when
-    /// the value is not finite and positive, or leaves the 26.6 range.
+    /// the value is not finite and positive, leaves the 26.6 range, or is
+    /// above the device-sane maximum (see `MAX_PPEM_PX`).
     pub fn from_px(px: f64) -> Result<Self, GlyphError> {
-        if !px.is_finite() || px <= 0.0 {
+        if !px.is_finite() || px <= 0.0 || px > MAX_PPEM_PX {
             return Err(GlyphError::BadPpem(px));
         }
         let units = px * 64.0;
-        if units > 65535.0 * 64.0 {
-            return Err(GlyphError::BadPpem(px));
-        }
         let units = num_traits::cast(units.round()).ok_or(GlyphError::BadPpem(px))?;
         Ok(Ppem { units })
     }

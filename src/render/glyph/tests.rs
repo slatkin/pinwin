@@ -485,6 +485,20 @@ fn a_colour_glyph_draws_into_the_canvas() {
     );
 }
 
+/// The ppem cap: sizes above the device-sane maximum are refused before
+/// any rasterization allocates, while the largest size a real panel could
+/// need still passes.
+#[test]
+fn the_ppem_is_capped_to_a_device_sane_maximum() {
+    for px in [2049.0, 3000.0, 70_000.0] {
+        assert!(
+            matches!(Ppem::from_px(px), Err(GlyphError::BadPpem(_))),
+            "{px} is above the cap"
+        );
+    }
+    assert!(Ppem::from_px(2048.0).is_ok(), "the cap itself passes");
+}
+
 /// Bad requests give typed errors instead of panics: an unusable ppem, an
 /// unusable transform, an unparsable face and an unknown named instance.
 #[test]
