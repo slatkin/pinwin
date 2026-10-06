@@ -80,14 +80,10 @@ pub enum InitFailure {
 /// layout touching them snaps. A covering-only change animates so a pushing
 /// retarget at the same width can ease its gap back (overlay-expand D3). The
 /// duration clamp to 1000 ms happens upstream (`pinwin_api.c`), as in the C.
-fn should_animate(
-    duration_ms: u32,
-    animations_enabled: bool,
-    applied: &Layout,
-    requested: &Layout,
-) -> bool {
+/// The library reads no desktop animation setting: the host's duration is the
+/// only control.
+fn should_animate(duration_ms: u32, applied: &Layout, requested: &Layout) -> bool {
     duration_ms > 0
-        && animations_enabled
         && requested.side() == applied.side()
         && requested.left() == applied.left()
         && requested.right() == applied.right()
@@ -656,7 +652,7 @@ impl Surfaces {
         // A layout differing only in its column count and/or push/cover
         // choice animates (overlay-expand D3); the side and gutters must
         // match. A tween already heading for these columns keeps going.
-        let animate = should_animate(duration_ms, Anim::allowed(), &applied, &layout);
+        let animate = should_animate(duration_ms, &applied, &layout);
         let from_px = self.panel_px();
         let cols_changed = layout.cols().get() != self.cols.get();
         let coverage_changed = layout.coverage() != applied.coverage();

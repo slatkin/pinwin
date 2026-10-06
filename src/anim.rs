@@ -9,8 +9,11 @@
 //!
 //! Everything runs on the GTK thread; the state is one struct, so a frame
 //! allocates nothing. The easing and the per-tick step are pure and unit
-//! tested here; the GTK pieces (tick callback, watchdog, the
-//! `gtk-enable-animations` setting) cannot run without a display.
+//! tested here; the GTK pieces (the tick callback and the watchdog) cannot
+//! run without a display. The wayland side's twin, driven by frame callbacks
+//! and a calloop timer, lives in `src/panel/wayland_side/tween.rs` (row
+//! 6.1): the library reads no desktop animation setting — the host's
+//! duration is the only control.
 //!
 //! The pty read drain bounds itself while a tween runs (`src/pty.c` read
 //! `glue_anim_active()` directly; here [`Anim`] owns a flag for
@@ -327,12 +330,6 @@ impl Anim {
             Some(width) if side == Side::Right => width - grid_px,
             _ => 0,
         }
-    }
-
-    /// False when the `gtk-enable-animations` setting is off (`glue_anim_allowed`).
-    #[must_use]
-    pub fn allowed() -> bool {
-        gtk4::Settings::default().is_some_and(|settings| settings.is_gtk_enable_animations())
     }
 
     /// Start, or retarget from the current width, a tween on `widget`'s frame

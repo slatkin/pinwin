@@ -18,55 +18,43 @@ fn layout(side: Side, cols: u16, top: i32, bottom: i32, left: i32, right: i32) -
 
 /// A layout differing only in its column count and/or push/cover choice
 /// animates (overlay-expand D3); anything touching the side or the left and
-/// right gutters snaps, as do zero durations and disabled animations.
+/// right gutters snaps, as does a zero duration. The library reads no
+/// desktop animation setting: the host's duration is the only control.
 #[test]
 fn only_a_column_or_coverage_change_animates() {
     let applied = layout(Side::Left, 40, 0, 0, 0, 12);
-    // Columns change, everything else matches, animations on: animate.
+    // Columns change, everything else matches: animate.
     assert!(should_animate(
         200,
-        true,
         &applied,
         &layout(Side::Left, 120, 0, 0, 0, 12)
     ));
     // Zero duration snaps.
     assert!(!should_animate(
         0,
-        true,
-        &applied,
-        &layout(Side::Left, 120, 0, 0, 0, 12)
-    ));
-    // Animations disabled snap.
-    assert!(!should_animate(
-        200,
-        false,
         &applied,
         &layout(Side::Left, 120, 0, 0, 0, 12)
     ));
     // The side moves the reservation: snap.
     assert!(!should_animate(
         200,
-        true,
         &applied,
         &layout(Side::Right, 120, 0, 0, 0, 12)
     ));
     // The left or right gutter moves the reservation: snap.
     assert!(!should_animate(
         200,
-        true,
         &applied,
         &layout(Side::Left, 120, 0, 0, 4, 12)
     ));
     assert!(!should_animate(
         200,
-        true,
         &applied,
         &layout(Side::Left, 120, 0, 0, 0, 20)
     ));
     // The top and bottom gutters do not: animate.
     assert!(should_animate(
         200,
-        true,
         &applied,
         &layout(Side::Left, 120, 8, 8, 0, 12)
     ));
@@ -74,26 +62,23 @@ fn only_a_column_or_coverage_change_animates() {
     // retarget can ease its gap back (overlay-expand D3).
     assert!(should_animate(
         200,
-        true,
         &applied,
         &layout(Side::Left, 40, 0, 0, 0, 12).covering()
     ));
     // Coverage and columns together: animate.
     assert!(should_animate(
         200,
-        true,
         &applied,
         &layout(Side::Left, 120, 0, 0, 0, 12).covering()
     ));
     // A side switch is never a covering move, and it still snaps.
     assert!(!should_animate(
         200,
-        true,
         &applied,
         &layout(Side::Right, 40, 0, 0, 0, 12).covering()
     ));
     // The same columns keep an already-heading tween going.
-    assert!(should_animate(200, true, &applied, &applied));
+    assert!(should_animate(200, &applied, &applied));
 }
 
 #[test]
