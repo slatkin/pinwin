@@ -341,7 +341,6 @@ fn run_thread(
         handshake.report(StartOutcome::NoDisplay);
         return;
     };
-
     // The thread measures its own cell (row 8.1): the font loads before the
     // surfaces are created, and its cell is what the sizing and the surfaces
     // use from the first configure (D3).
@@ -378,6 +377,21 @@ fn run_thread(
         poisoned.clone(),
     ));
     state.render = Some(tween_draw::TweenRender { terminal, renderer });
+
+    // The calloop loop exists before the bind (row 8.1's seat wiring): the
+    // keyboard's repeat source installs itself from `new_capability`, which
+    // the loop's dispatch runs, and the toolkit's repeat needs the loop
+    // handle at creation time (row 5.2), so the bind will store it with the
+    // session. A loop that cannot be created is the thread's environment
+    // failing, not a missing display, so the internal path reports it (D5).
+    // The panel is dead either way: the handle stops posting and a pending
+    // start fails.
+    let Ok(event_loop) = calloop::EventLoop::<PanelState>::try_new() else {
+        state.inner.live.store(false, Ordering::Relaxed);
+        handshake.report(StartOutcome::Internal);
+        return;
+    };
+
     // The bind runs under the panel's shared latch: a panic in it latches
     // and reports `Internal` (D5), a missing required global reports
     // `NoDisplay` (D1).
@@ -397,7 +411,7 @@ fn run_thread(
     // loop on, so nothing can have moved it before here).
     state.sync_renderer_scale();
 
-    if run_loop(&connection, &mut state, queue, commands, &pty).is_err() {
+    if run_loop(&connection, &mut state, queue, commands, &pty, event_loop).is_err() {
         // The wayland source surfaces a closed connection (and any other
         // fatal loop error) as a dispatch error: the compositor is gone, so
         // the panel is dead (D2).
@@ -415,8 +429,8 @@ fn run_loop(
     queue: wayland_client::EventQueue<PanelState>,
     commands: Channel<PanelCommand>,
     pty: &Pty,
+    mut event_loop: calloop::EventLoop<'static, PanelState>,
 ) -> Result<(), calloop::Error> {
-    let mut event_loop = calloop::EventLoop::<PanelState>::try_new()?;
     let handle = event_loop.handle();
 
     // The connection's event queue from the registry enumeration: the
