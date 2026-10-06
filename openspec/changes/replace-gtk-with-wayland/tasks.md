@@ -24,7 +24,7 @@ start a later group.
 - [x] 3.2 Resolve the panel's output from the first `wl_surface.enter`. Create the reserve on that output. Use the xdg-output logical size in `publish` instead of `gdk::Monitor::geometry`. Complete the start handshake at that point. Verify: `cargo build` succeeds. 10.1 checks the monitor scenarios on niri.
 - [x] 3.3 Derive the rows from the latest configure height, and the columns from the layout. Push the grid and the pty size only on a layout apply or a new configure height. Verify: a display-free test sends three configures with one height, then one with a new height. The pty receives exactly one resize, for the new height.
 - [x] 3.4 In `on-demand` mode, map with no keyboard interactivity and switch to `on-demand` after the first buffer. Map `exclusive` and `none` directly. Verify: `cargo build` succeeds. 10.1 checks the keyboard focus scenarios on niri.
-- [ ] 3.5 Port the layout apply path in `src/surfaces.rs` to the layer surfaces: validation, the held gap, covering layouts and side switches. Keep `src/surfaces/gap.rs` as it is. Verify: the existing surfaces tests pass.
+- [x] 3.5 Port the layout apply path in `src/surfaces.rs` to the layer surfaces: validation, the held gap, covering layouts and side switches. Keep `src/surfaces/gap.rs` as it is. Verify: the existing surfaces tests pass.
 
 ## 4. Renderer
 
