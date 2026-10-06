@@ -24,10 +24,11 @@
 mod error;
 mod gtk_side;
 mod handshake;
+mod startup;
 pub mod wayland_side;
 
 pub use error::PinwinError;
-pub use gtk_side::Startup;
+pub use startup::Startup;
 
 use std::os::fd::RawFd;
 use std::sync::Arc;

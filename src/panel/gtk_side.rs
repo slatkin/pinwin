@@ -24,7 +24,6 @@
 //! panel's one shared poisoned flag.
 
 use std::cell::{Cell, RefCell};
-use std::os::fd::RawFd;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -44,22 +43,8 @@ use gtk4::glib::ControlFlow;
 use gtk4::prelude::*;
 
 use super::Inner;
+use super::Startup;
 use super::handshake::{Handshake, StartOutcome};
-
-/// The startup arguments one panel runs with (D6, D7): the host-owned pty
-/// master fd, the full layout, the keyboard mode and the optional focus
-/// accent. `Copy`, so a start command can carry it across threads.
-#[derive(Clone, Copy, Debug)]
-pub struct Startup {
-    /// The host-owned pty master fd (D7). The library never closes it.
-    pub fd: RawFd,
-    /// The full startup layout.
-    pub layout: Layout,
-    /// The keyboard interactivity mode, fixed at start time.
-    pub keyboard: crate::layout::Keyboard,
-    /// The focus accent; `None` disables it.
-    pub accent: Option<crate::layout::Accent>,
-}
 
 /// A start command delivered to the parked GTK thread. Everything in it is
 /// `Send`: the layout and the fd are plain data, the latch is an atomic, the
