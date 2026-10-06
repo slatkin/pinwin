@@ -181,9 +181,11 @@ Mod+P { spawn "pinwin" "--focus"; }
   above, and resizes the existing terminal grid and pty winsize without
   recreating the terminal or touching the child. An animated apply changes
   the width continuously when only the column count or the push/cover choice
-  differs; any other change, a zero duration or disabled GTK animations snap.
-  During a covering animation the reservation holds still while the panel
-  width tweens.
+  differs; any other change — a side switch or a gutter change — snaps, and
+  a duration of 0 is the only way to snap an animateable apply: the desktop
+  animation setting (GTK's `gtk-enable-animations`) has no effect, because
+  the library reads no desktop setting. During a covering animation the
+  reservation holds still while the panel width tweens.
 - The font and theme follow the user's Ghostty config (font family and size,
   default background/foreground); with no config the panel falls back to
   `monospace 11`. A missing or unreadable config never prevents opening.
