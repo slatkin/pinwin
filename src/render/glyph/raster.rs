@@ -302,7 +302,7 @@ fn colour_rgba(image: &swash::scale::image::Image) -> Result<Vec<u8>, GlyphError
 /// zero (the only straight colour a transparent pixel could carry).
 /// Round-to-nearest through `u16` arithmetic: the product of a channel and
 /// 255 cannot overflow, so the division is the only rounding.
-fn premultiplied_to_straight(data: &[u8]) -> Vec<u8> {
+pub(crate) fn premultiplied_to_straight(data: &[u8]) -> Vec<u8> {
     data.as_chunks::<4>()
         .0
         .iter()
