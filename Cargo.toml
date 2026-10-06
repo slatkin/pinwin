@@ -46,7 +46,9 @@ gdk4 = { version = "0.11", features = ["v4_12"] }
 # features the row names; the connection is the pure-Rust wayland backend, so
 # no libwayland link step is needed.
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client"] }
+# `staging` adds wp_fractional_scale_v1 (D5's preferred-scale source); the
+# stable `client` set already carries wp_viewporter.
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 smithay-client-toolkit = "0.21"
 calloop = "0.14"
 calloop-wayland-source = "0.4"

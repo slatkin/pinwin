@@ -53,6 +53,7 @@ use super::Startup;
 use super::handshake::{APPLY_WAIT, Handshake, StartOutcome, wait_for_apply, wait_for_focus};
 
 pub(crate) mod apply;
+pub mod buffers;
 pub(crate) mod commands;
 pub mod sizing;
 pub(crate) mod state;

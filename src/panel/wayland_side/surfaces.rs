@@ -27,13 +27,14 @@ use std::num::NonZeroU16;
 use smithay_client_toolkit::compositor::Region;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, LayerSurface};
-use smithay_client_toolkit::shm::{CreatePoolError, Shm, slot::SlotPool};
-use wayland_client::protocol::{wl_shm, wl_surface};
+use smithay_client_toolkit::shm::{CreatePoolError, Shm};
+use wayland_client::protocol::wl_surface;
 
 use crate::layout::{CellSize, Keyboard, Layout, Side};
 use crate::surfaces::gap::start_held_gap;
 
 use super::apply::SurfaceGeometry;
+use super::buffers::BufferPool;
 
 /// Which of the panel thread's surfaces a `wl_surface` is: the user data the
 /// surfaces are created with, so the compositor handlers can tell the panel's
@@ -124,7 +125,9 @@ struct Reserve {
 pub(crate) struct PanelSurfaces {
     panel: LayerSurface,
     reserve: Option<Reserve>,
-    pool: SlotPool,
+    /// The two-buffer pool the transparent placeholder buffers and, from
+    /// row 4.3 on, the drawn frames come from (D5).
+    pool: BufferPool,
     layout: Layout,
     keyboard: Keyboard,
     cell: CellSize,
@@ -168,7 +171,7 @@ impl PanelSurfaces {
         panel.set_keyboard_interactivity(map_interactivity(keyboard));
         apply_panel_width(&panel, layout.cols(), cell);
         panel.commit();
-        let pool = SlotPool::new(1, shm)?;
+        let pool = BufferPool::new(shm)?;
         Ok(PanelSurfaces {
             panel,
             reserve: None,
@@ -312,33 +315,16 @@ impl PanelSurfaces {
 /// configure, a pool the size does not fit, or an attach the compositor
 /// refused; the caller keeps its previous state in every failure case.
 fn attach_transparent(
-    pool: &mut SlotPool,
+    pool: &mut BufferPool,
     surface: &LayerSurface,
     width: u32,
     height: u32,
 ) -> Result<(), AttachFailure> {
-    if width == 0 || height == 0 {
-        return Err(AttachFailure::ZeroSized);
-    }
-    let Ok(logical_width) = i32::try_from(width) else {
-        return Err(AttachFailure::Oversized);
-    };
-    let Ok(logical_height) = i32::try_from(height) else {
-        return Err(AttachFailure::Oversized);
-    };
-    let Ok(stride) = i32::try_from(i64::from(logical_width) * 4) else {
-        return Err(AttachFailure::Oversized);
-    };
     let (buffer, canvas) = pool
-        .create_buffer(
-            logical_width,
-            logical_height,
-            stride,
-            wl_shm::Format::Argb8888,
-        )
+        .buffer(width, height)
         .map_err(|_pool| AttachFailure::Pool)?;
     // A fresh mmap is already zero-filled; the fill keeps the transparency
-    // true also for a slot reused from the free list.
+    // true also for a slot reused from the pool.
     canvas.fill(0);
     buffer
         .attach_to(surface.wl_surface())
@@ -352,10 +338,6 @@ fn attach_transparent(
 /// comment.
 #[derive(Debug)]
 enum AttachFailure {
-    /// A zero-sized configure cannot have a buffer.
-    ZeroSized,
-    /// The size does not fit the buffer API's bounds.
-    Oversized,
     /// The pool could not provide the buffer.
     Pool,
     /// The attach was refused.

@@ -45,6 +45,7 @@ use crate::surfaces::gap::{HeldGap, start_held_gap};
 
 use super::super::handshake::{Handshake, StartOutcome};
 use super::Startup;
+use super::buffers::Scale;
 use super::sizing::{Grid, Sizing};
 use super::surfaces::{PanelSurfaces, SurfaceId};
 
@@ -69,6 +70,9 @@ pub(crate) struct Session {
     /// The resolved output and its xdg-output logical size (D3). `None` until
     /// both the enter and the logical size have arrived.
     pub(crate) resolved: Option<OutputSize>,
+    /// The output-scale state (D5): the optional fractional/viewporter
+    /// globals, the per-surface objects and the preferred-scale sources.
+    pub(crate) scale: Scale,
 }
 
 /// The wayland panel thread's dispatch state: the display-free core every
@@ -145,9 +149,13 @@ impl PanelState {
             CompositorState::bind(globals, qh).map_err(|_bind| BindFailure::NoDisplay)?;
         let shm = Shm::bind(globals, qh).map_err(|_bind| BindFailure::NoDisplay)?;
         let shell = LayerShell::bind(globals, qh).map_err(|_bind| BindFailure::NoDisplay)?;
+        let mut scale = Scale::bind(globals, qh);
         // The panel surface is created with no output, so the compositor
         // places it on the focused output (D3); the first enter names it.
         let surface = compositor.create_surface_with_data(qh, None, 1, SurfaceId::Panel);
+        // The per-surface fractional-scale and viewport objects (D1):
+        // optional globals, their absence degrades the scale, never the start.
+        scale.attach(SurfaceId::Panel, &surface, qh);
         let panel = shell.create_layer_surface(qh, surface, Layer::Overlay, Some("pinwin"), None);
         let surfaces = PanelSurfaces::new(
             panel,
@@ -166,6 +174,7 @@ impl PanelState {
             surfaces: Some(surfaces),
             pending_output: None,
             resolved: None,
+            scale,
         });
         Ok(())
     }
@@ -251,6 +260,7 @@ impl PanelState {
                 session
                     .compositor
                     .create_surface_with_data(qh, None, 1, SurfaceId::Reserve);
+            session.scale.attach(SurfaceId::Reserve, &surface, qh);
             let reserve = session.shell.create_layer_surface(
                 qh,
                 surface,
@@ -285,9 +295,21 @@ impl PanelState {
         };
         let (width, height) = configure.new_size;
         if surfaces.is_panel(layer) {
+            // The viewporter destination is the logical size (D5): set
+            // before the buffer commit the configure handler makes.
+            if let (Ok(width_i), Ok(height_i)) = (i32::try_from(width), i32::try_from(height)) {
+                session
+                    .scale
+                    .set_destination(SurfaceId::Panel, width_i, height_i);
+            }
             surfaces.panel_configured(width, height);
             self.configure_grid(height, &mut |grid| apply_pty_size(fd, grid));
         } else if surfaces.is_reserve(layer) {
+            if let (Ok(width_i), Ok(height_i)) = (i32::try_from(width), i32::try_from(height)) {
+                session
+                    .scale
+                    .set_destination(SurfaceId::Reserve, width_i, height_i);
+            }
             surfaces.reserve_configured(width, height);
         }
     }
@@ -300,6 +322,24 @@ impl PanelState {
     /// (`port-to-rust` D10).
     fn configure_grid(&mut self, height: u32, push: &mut dyn FnMut(Grid)) {
         self.sizing.configure(height, push);
+    }
+
+    /// Note the integer preferred buffer scale the compositor reported for
+    /// one surface: the fallback source of the resolution order (D5), read
+    /// only while no fractional preferred scale has arrived.
+    pub(crate) fn note_integer_scale(&mut self, factor: i32) {
+        if let Some(session) = &mut self.session {
+            session.scale.note_integer(factor);
+        }
+    }
+
+    /// Note the fractional preferred scale the `wp_fractional_scale_v1`
+    /// object of one surface reported, in 1/120 units: the primary source
+    /// of the resolution order (D5).
+    pub(crate) fn note_preferred_scale(&mut self, units_120: u32) {
+        if let Some(session) = &mut self.session {
+            session.scale.note_preferred_scale(units_120);
+        }
     }
 
     /// The compositor closed a layer surface. The panel's surface ending is
@@ -351,9 +391,13 @@ impl CompositorHandler for PanelState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
+        new_factor: i32,
     ) {
-        // The renderer redraws at the new scale (row 4.x); nothing draws yet.
+        // The integer preferred buffer scale is the fallback scale source
+        // (D5); the fractional preferred scale arrives through the
+        // `wp_fractional_scale_v1` dispatch in `buffers`.
+        let poisoned = self.poisoned.clone();
+        let _ = guard(&poisoned, || self.note_integer_scale(new_factor));
     }
 
     fn transform_changed(
