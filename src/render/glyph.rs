@@ -35,7 +35,11 @@
 //! dead code under `-D warnings`, and no lint suppression is permitted).
 
 mod cache;
+#[cfg(test)]
+mod cache_tests;
 mod error;
+#[cfg(test)]
+mod harness;
 mod identity;
 mod raster;
 mod request;

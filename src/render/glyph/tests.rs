@@ -1,167 +1,22 @@
-//! Display-free tests for the glyph rasterizer and its cache
-//! (replace-gtk-with-wayland D10): real system fonts, real pixel masks, no
-//! display. The font-dependent tests skip with a printed message only when
-//! the family is not installed; a broken `FontBook` or a failed lookup is
-//! an `expect`, so a row 4.4 or 4.5 regression cannot hide behind "not
-//! installed".
-//!
-//! `CanvasMask` exposes its size but not its bytes, and the canvas module
-//! was frozen for its own rows, so the coverage tests read the mask back
-//! through the public draw path: blitted over a cleared canvas with an
-//! opaque colour, a pixel's alpha is exactly the coverage byte (the
-//! `draw_mask` blend writes `alpha = coverage * 255 / 255`).
+//! Display-free tests for the glyph rasterizer (replace-gtk-with-wayland
+//! D10): real system fonts, real pixel masks, no display. The cache's
+//! bounds have their own file in `cache_tests`.
 
 use std::sync::Arc;
 
 use super::cache::GlyphCache;
 use super::error::GlyphError;
+use super::harness::{
+    FAMILY, SIZE, VARIABLE_FAMILY, coverage, covered_runs, glyph_of, leftmost_column, mask_bytes,
+    mask_of, masks_equal, ppem_at, rasterized_a, regular_face, request, to_i32, to_usize,
+};
 use super::identity::FaceIdentity;
-use super::raster::{Glyph, GlyphImage, GlyphPlacement};
+use super::raster::{GlyphImage, GlyphPlacement, premultiplied_to_straight};
 use super::request::{GlyphRequest, PlacementTransform, Ppem, Synthesis};
 use crate::fontconfig::FontConfig;
-use crate::render::canvas::{Canvas, CanvasColor, CanvasMask, image_pixmap};
-use crate::render::font::{Face, FontBook};
+use crate::render::canvas::{Canvas, CanvasColor, image_pixmap};
+use crate::render::font::FontBook;
 use crate::term::cells::Rgb;
-
-/// The family the plain-glyph tests pin; CI installs it (design D10).
-const FAMILY: &str = "JetBrainsMono Nerd Font";
-/// The size in points the tests run at: the Ghostty default 11, which is
-/// 14.6667 device px per em at the 96 dpi convention.
-const SIZE: f64 = 11.0;
-/// The variable-only family the named-instance test pins: Cantarell ships
-/// only as a variable font, and fontconfig reports its named Bold instance
-/// as a packed `FC_INDEX` the `Face` carries.
-const VARIABLE_FAMILY: &str = "Cantarell";
-
-/// The ppem of `size` points, the cell metrics' conversion.
-fn ppem_at(size: f64) -> Ppem {
-    Ppem::from_px(size * 96.0 / 72.0).expect("the test ppem is usable")
-}
-
-/// The regular face of `family`, or `None` (printed) when the machine
-/// lacks it.
-fn regular_face(family: &str) -> Option<Face> {
-    let book = FontBook::new().expect("the font book opens");
-    if !book.has_family(family) {
-        return None;
-    }
-    let config = FontConfig {
-        family: Some(family.to_owned()),
-        size: SIZE,
-    };
-    let faces = book.family_faces(&config).expect("the family's faces load");
-    Some(faces.regular().clone())
-}
-
-/// The glyph id of `ch` in `face`.
-fn glyph_of(face: &Face, ch: char) -> u16 {
-    face.parse()
-        .expect("the face parses")
-        .charmap()
-        .map(u32::from(ch))
-}
-
-/// A plain request for `ch` of `face` at `ppem`.
-fn request(face: &Face, ch: char, ppem: Ppem) -> GlyphRequest {
-    GlyphRequest::new(
-        face,
-        glyph_of(face, ch),
-        ppem,
-        Synthesis::new(false, false),
-        None,
-    )
-}
-
-/// `f64` to `usize`, the tests' one float-to-int seam (no `as`).
-fn to_usize(value: f64) -> usize {
-    num_traits::cast(value).expect("the test sizes are small")
-}
-
-/// `f64` to `i32`, the tests' other float-to-int seam (no `as`).
-fn to_i32(value: f64) -> i32 {
-    num_traits::cast(value).expect("the test sizes are small")
-}
-
-/// The mask's coverage bytes, row major from the top left, read back
-/// through a canvas blit (see the module comment).
-fn mask_bytes(mask: &CanvasMask) -> Vec<u8> {
-    let width = u32::try_from(mask.width()).expect("mask width fits u32");
-    let height = u32::try_from(mask.height()).expect("mask height fits u32");
-    let mut canvas = Canvas::new(width, height).expect("the mask-sized canvas opens");
-    canvas.draw_mask(mask, 0, 0, CanvasColor::from_rgba(255, 255, 255, 255));
-    let mut bytes = Vec::with_capacity(mask.width() * mask.height());
-    for y in 0..height {
-        for x in 0..width {
-            bytes.push(canvas.pixel(x, y).expect("inside the canvas")[3]);
-        }
-    }
-    bytes
-}
-
-/// The total coverage of a mask: the sum of its coverage bytes.
-fn coverage(mask: &CanvasMask) -> u64 {
-    mask_bytes(mask).iter().map(|byte| u64::from(*byte)).sum()
-}
-
-/// Whether two masks carry the same coverage.
-fn masks_equal(left: &CanvasMask, right: &CanvasMask) -> bool {
-    left.width() == right.width()
-        && left.height() == right.height()
-        && mask_bytes(left) == mask_bytes(right)
-}
-
-/// The columns of `rows` that carry any coverage, as contiguous
-/// `(start, len)` runs.
-fn covered_runs(mask: &CanvasMask, rows: std::ops::Range<usize>) -> Vec<(usize, usize)> {
-    let bytes = mask_bytes(mask);
-    let width = mask.width();
-    let mut runs = Vec::new();
-    let mut start: Option<usize> = None;
-    for column in 0..width {
-        let covered = rows.clone().any(|row| bytes[row * width + column] > 0);
-        match (start, covered) {
-            (None, true) => start = Some(column),
-            (Some(open), false) => {
-                runs.push((open, column - open));
-                start = None;
-            }
-            _ => {}
-        }
-    }
-    if let Some(open) = start {
-        runs.push((open, width - open));
-    }
-    runs
-}
-
-/// The leftmost column of `rows` that carries any coverage.
-fn leftmost_column(mask: &CanvasMask, rows: std::ops::Range<usize>) -> usize {
-    let bytes = mask_bytes(mask);
-    let width = mask.width();
-    for column in 0..width {
-        if rows.clone().any(|row| bytes[row * width + column] > 0) {
-            return column;
-        }
-    }
-    panic!("no covered column in rows {rows:?}");
-}
-
-/// The mask of one rasterized glyph (the tests only rasterize masks here).
-fn mask_of(glyph: &Glyph) -> &CanvasMask {
-    match glyph.image() {
-        GlyphImage::Mask(mask) => mask,
-        other => panic!("expected a mask, got {other:?}"),
-    }
-}
-
-/// 'A' of the test family at the test ppem, through a fresh cache.
-fn rasterized_a() -> (Arc<Glyph>, GlyphRequest) {
-    let face = regular_face(FAMILY).expect("the test family resolves");
-    let request = request(&face, 'A', ppem_at(SIZE));
-    let mut cache = GlyphCache::new();
-    let glyph = cache.rasterize(&request).expect("the glyph rasterizes");
-    (glyph, request)
-}
 
 /// 'A' of the test family rasterizes to a plausible mask above the
 /// baseline, and a second request is a cache hit with the same bytes.
@@ -534,87 +389,6 @@ fn a_placement_transform_scales_and_shifts() {
     );
 }
 
-/// Filling past the entry cap clears the cache, the earlier handed-out
-/// glyphs stay valid through their `Arc`, and the counters show the clear.
-#[test]
-fn the_cache_clears_at_the_entry_cap() {
-    let face = regular_face(FAMILY).expect("the test family resolves");
-    let mut cache = GlyphCache::with_limits(4, usize::MAX);
-    let mut first: Option<Arc<Glyph>> = None;
-    for ch in ['A', 'B', 'C', 'D', 'E', 'F'] {
-        let glyph = cache
-            .rasterize(&request(&face, ch, ppem_at(SIZE)))
-            .expect("the glyph rasterizes");
-        first.get_or_insert(glyph);
-    }
-    assert_eq!(cache.misses(), 6, "six distinct glyphs, no hits");
-    assert_eq!(cache.hits(), 0);
-    assert_eq!(cache.clears(), 1, "the fifth insert cleared the full cache");
-    assert!(cache.len() <= 4, "the fresh generation stays capped");
-
-    // The glyph handed out before the clear still carries its bytes.
-    let first = first.expect("the first glyph was rasterized");
-    let again = cache
-        .rasterize(&request(&face, 'A', ppem_at(SIZE)))
-        .expect("the glyph rasterizes");
-    assert_eq!(cache.misses(), 7, "'A' was cleared, so it rasterizes again");
-    assert!(masks_equal(mask_of(&again), mask_of(&first)));
-    // And it is cached again now.
-    cache
-        .rasterize(&request(&face, 'A', ppem_at(SIZE)))
-        .expect("the glyph rasterizes");
-    assert_eq!(cache.hits(), 1);
-}
-
-/// Filling past the byte budget clears the cache, and the byte accounting
-/// starts over.
-#[test]
-fn the_cache_clears_at_the_byte_budget() {
-    let face = regular_face(FAMILY).expect("the test family resolves");
-    // A large ppem gives each mask a measurable byte cost; the budget is
-    // built from the measured cost, so the test does not guess the hinted
-    // size.
-    let mut probe = GlyphCache::new();
-    let request = request(
-        &face,
-        'A',
-        Ppem::from_px(100.0).expect("the ppem is usable"),
-    );
-    let cost = probe
-        .rasterize(&request)
-        .expect("the glyph rasterizes")
-        .byte_cost();
-    assert!(cost > 0, "the large glyph costs bytes");
-
-    let mut cache = GlyphCache::with_limits(1000, cost * 2 + 1);
-    let first = cache.rasterize(&request).expect("the glyph rasterizes");
-    assert_eq!(cache.clears(), 0, "the first glyph fits");
-    let second = GlyphRequest::new(
-        &face,
-        glyph_of(&face, 'B'),
-        Ppem::from_px(100.0).expect("the ppem is usable"),
-        Synthesis::new(false, false),
-        None,
-    );
-    cache.rasterize(&second).expect("the glyph rasterizes");
-    assert_eq!(cache.clears(), 0, "two glyphs fit the budget");
-    let third = GlyphRequest::new(
-        &face,
-        glyph_of(&face, 'C'),
-        Ppem::from_px(100.0).expect("the ppem is usable"),
-        Synthesis::new(false, false),
-        None,
-    );
-    let _ = cache.rasterize(&third).expect("the glyph rasterizes");
-    assert_eq!(cache.clears(), 1, "the third insert overflowed the budget");
-    assert_eq!(cache.len(), 1, "the byte accounting starts over");
-    assert_eq!(cache.misses(), 3, "three distinct glyphs were rasterized");
-    // The glyph handed out before the clear still carries its bytes, the
-    // same bytes an independent rasterization of the request produces.
-    let fresh = probe.rasterize(&request).expect("the glyph rasterizes");
-    assert!(masks_equal(mask_of(&first), mask_of(&fresh)), "same bytes");
-}
-
 /// A mask result draws into the canvas through `draw_mask`, and a colour
 /// result draws through `draw_image`.
 #[test]
@@ -776,4 +550,33 @@ fn bad_requests_error_instead_of_panic() {
         cache.rasterize(&unknown),
         Err(GlyphError::UnknownInstance { index: 9999, .. })
     ));
+}
+
+/// The layered-colour-outline path returns premultiplied RGBA (swash
+/// composites its COLR layers with the premultiplied-over formula), and
+/// `image_pixmap` takes straight RGBA, so the rasterizer un-premultiplies.
+/// No COLR font is installed on this machine or in CI (Noto Color Emoji is
+/// a CBDT bitmap face), so the conversion itself carries the test: full
+/// alpha passes through, a half-alpha red comes back as straight red, and
+/// a transparent pixel stays all zero.
+#[test]
+fn the_colour_outline_alpha_is_un_premultiplied() {
+    // Full alpha: the premultiplied channels are the straight ones.
+    assert_eq!(
+        premultiplied_to_straight(&[255, 0, 0, 255, 10, 20, 30, 255]),
+        vec![255, 0, 0, 255, 10, 20, 30, 255]
+    );
+    // Half alpha: premultiplied red 128 at alpha 128 comes back as straight
+    // 255 (128 * 255 / 128 rounded = 255).
+    assert_eq!(
+        premultiplied_to_straight(&[128, 64, 0, 128]),
+        vec![255, 128, 0, 255]
+    );
+    // A quarter-alpha channel: 32 * 255 / 64 rounds to 128.
+    assert_eq!(
+        premultiplied_to_straight(&[32, 0, 0, 64]),
+        vec![128, 0, 0, 255]
+    );
+    // Zero alpha stays zero.
+    assert_eq!(premultiplied_to_straight(&[7, 8, 9, 0]), vec![0, 0, 0, 0]);
 }
