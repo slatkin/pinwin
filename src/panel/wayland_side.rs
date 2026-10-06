@@ -27,7 +27,12 @@
 //! the draw passes, metrics, theme and focus state that row 8.1's later
 //! dispatches wire the frames and the tween's wide draw to (row 8.1).
 //! [`frame_log`] the tween's frame log and its presentation-time source
-//! (row 6.3). Until row
+//! (row 6.3). [`present`] is the frames' present step (dispatch D4c) —
+//! the pure planner, the frame input and the executor the configure path
+//! and the loop's repaint hook run; like [`renderer`] it is `pub` while
+//! dispatch D5 has not moved `Panel::start` onto the thread, because a
+//! `pub(crate)` entry with no caller is dead code under `-D warnings` and
+//! no lint suppression is permitted. Until row
 //! 8.1 switches `Panel::start` over, nothing in the crate calls
 //! [`spawn_panel_thread`]: the entry point is `pub` so it stays reachable (a
 //! `pub(crate)` entry with no caller is dead code under `-D warnings`, and
@@ -69,6 +74,7 @@ pub mod commands;
 pub mod crop;
 pub(crate) mod frame_log;
 pub(crate) mod glue;
+pub mod present;
 pub mod renderer;
 pub mod seat;
 pub mod sizing;
