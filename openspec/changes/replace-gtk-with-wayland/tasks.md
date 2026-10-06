@@ -1,0 +1,82 @@
+# Tasks
+
+Gate rule for every task that says "stop and ask": record the user's answer word for word in
+that task. If the user says no, stop the change there. Do not mark the task done, and do not
+start a later group.
+
+## 1. Spikes on niri
+
+- [ ] 1.1 Write the niri patch from design decision 4 on a local niri clone, and build that niri. Write a throwaway layer-shell client with smithay-client-toolkit in a scratch directory outside this repository. Bind a niri key to spawn a client that sends its `XDG_ACTIVATION_TOKEN` to the running spike. Verify: on the patched niri, the key gives the spike surface keyboard focus with no unmap. On stock niri, the key changes nothing. Record both results here.
+- [ ] 1.2 Map the spike surface with no keyboard interactivity, then switch to `on-demand` in the commit after the first buffer. Verify on stock niri: the launch leaves keyboard focus with the window that had it, and a click on the surface still gives it focus. Record the result here.
+- [ ] 1.3 Animate the spike's width over 200 ms at output scale 1.5. Commit the layer size, a viewporter crop and the same buffer in each frame, driven by frame callbacks. Verify: log the frame gaps and record the mean, p95 and maximum here. The spike fails on a frame at the wrong width, a missing frame, or a gap above 1.5 refresh intervals.
+- [ ] 1.4 Gate. If 1.1, 1.2 or 1.3 fails, stop and ask the user how to proceed. Delete the spike client. Verify: this task records each result. If the gate fired, it also records the user's answer.
+
+## 2. Dependencies and the panel thread
+
+- [ ] 2.1 Add smithay-client-toolkit (with its calloop and xkbcommon features), wayland-client, wayland-protocols, tiny-skia, swash, a fontconfig binding and png to `Cargo.toml`. Keep the GTK crates until group 8. Add `wayland libxkbcommon fontconfig ttf-jetbrains-mono-nerd noto-fonts-emoji` to the package list in `.github/workflows/build.yml`, so the font tests from group 4 run in CI. Verify: `cargo build` succeeds and `cargo audit` reports no advisory.
+- [ ] 2.2 Add the panel thread from design decision 2. Write its spawn function, which takes the display name as a parameter. 8.1 calls it from `Panel::start`, so nothing calls it before then. The thread runs a calloop loop that owns the Wayland connection. Carry apply, focus and teardown commands over a calloop channel, and reuse the bounded replies in `src/panel/handshake.rs`. Wrap every callback in the shared guard. Verify: the existing `src/panel/handshake.rs` tests pass. A spawn with a display name that names a missing socket returns `NoDisplay`.
+- [ ] 2.3 Map a closed compositor connection to a dead panel. Verify: a unit test maps a closed-connection event to the dead state. The existing dead-handle tests in `src/panel.rs` cover `NotRunning`.
+- [ ] 2.4 Move the pty read source from GLib to a calloop fd source. Keep the hangup handling and the bounded drain during a tween. Verify: display-free tests feed bytes through a pty pair into the terminal. A hangup removes the source and leaves the fd open.
+
+## 3. Surfaces, outputs and size
+
+- [ ] 3.1 Create the panel layer surface on the `overlay` layer from design decision 3. Anchor it to the top, the bottom and the docked side, with exclusive zone -1, `set_size` and margins. Create the reserve layer surface with the exclusive zone, an empty input region and a transparent buffer one pixel wide. Verify: `cargo build` succeeds. 10.1 checks the docking scenarios on niri.
+- [ ] 3.2 Resolve the panel's output from the first `wl_surface.enter`. Create the reserve on that output. Use the xdg-output logical size in `publish` instead of `gdk::Monitor::geometry`. Complete the start handshake at that point. Verify: `cargo build` succeeds. 10.1 checks the monitor scenarios on niri.
+- [ ] 3.3 Derive the rows from the latest configure height, and the columns from the layout. Push the grid and the pty size only on a layout apply or a new configure height. Verify: a display-free test sends three configures with one height, then one with a new height. The pty receives exactly one resize, for the new height.
+- [ ] 3.4 In `on-demand` mode, map with no keyboard interactivity and switch to `on-demand` after the first buffer. Map `exclusive` and `none` directly. Verify: `cargo build` succeeds. 10.1 checks the keyboard focus scenarios on niri.
+- [ ] 3.5 Port the layout apply path in `src/surfaces.rs` to the layer surfaces: validation, the held gap, covering layouts and side switches. Keep `src/surfaces/gap.rs` as it is. Verify: the existing surfaces tests pass.
+
+## 4. Renderer
+
+- [ ] 4.1 Add the buffer pool of two `wl_shm` buffers. Size each buffer as the logical size times the fractional scale, rounded, with the viewporter destination at the logical size. Fall back to the integer preferred buffer scale, then to 1. Verify: no new test. The pixel tests in 4.3 draw into buffers that this pool sizes.
+- [ ] 4.2 Add the canvas module from design decision 5. It wraps tiny-skia and swaps red and blue at cache time for `ARGB8888`. Verify: a pixel test fills a theme colour and reads the expected blue, green, red and alpha bytes from the buffer.
+- [ ] 4.3 Port these parts to the canvas: the backgrounds, the sprites, the cursor shapes, the bands and the focus accent. The sprites are the block, braille and powerline ones. The bands are the underline and strikethrough. Use the snap rules in `src/render/snap.rs`. Verify: display-free pixel tests, as design decision 10 lists them. At 1.5, a region of one background and full blocks is one colour, and a bar cursor 2 logical pixels wide is 3 device pixels wide. At 1.25, a right-half and a left-half block meet with no seam.
+- [ ] 4.4 Add the font module. Resolve the Ghostty `font-family` and `font-size` with fontconfig, fall back to `monospace 11`, and cache a fallback face per code point. Verify: tests resolve a configured family to a file, resolve a missing config to `monospace`, and find a fallback face for an emoji.
+- [ ] 4.5 Add the glyph module with swash. Shape each cell's cluster, rasterize at the device size with hinting and grayscale antialiasing, and render colour glyphs. If the face lacks bold or italic, synthesize it. Apply the nerd-font constraints as a transform, and cache the glyphs. Place each text origin on the device pixel lattice. Verify: display-free pixel tests cover each scenario of "Cell text on the device pixel lattice".
+- [ ] 4.6 Compute the cell metrics from the font. Verify: a test gives JetBrainsMono Nerd Font 11 the same cell size as the current Pango metrics (9 by 20 in the `snap-text-origins` spike). The `CSI 16 t` reply matches the drawn cell. If swash's cell size differs from 9 by 20, stop and ask the user, because the cell size sets the panel width.
+- [ ] 4.7 Decode kitty PNG images with png. Cache each image scaled to its placement size and output scale, and draw it at its placements. Verify: a pixel test of a placement shows the whole image, so "Images are not clipped" holds.
+- [ ] 4.8 Draw only the rows that changed, from the render state's dirty data. If the pinned libghostty-vt reports only a whole-frame flag, redraw the whole grid on a change. Verify: a test shows that a frame with no change draws and commits nothing. Record in this task which dirty data the pin provides.
+
+## 5. Input
+
+- [ ] 5.1 Feed the XKB keycode, the keysym and the modifiers from the seat into `src/input.rs` and `src/term/keys.rs`. Build the xkbcommon state from design decision 8 for the consumed modifiers, the modifier flag and the unshifted code point. Verify: the existing translation tests pass with keysym input.
+- [ ] 5.2 Add key repeat with the toolkit's calloop repeat and the compositor's `repeat_info`. Send each repeat as `KeyAction::Repeat`, and stop on release and on keyboard leave. Verify: `cargo build` succeeds. 10.1 checks the key repeat scenarios on niri.
+- [ ] 5.3 Map pointer enter, motion, button and axis events to the mouse and scroll encoders. Use `value120` for wheels and continuous values for touchpads. Adjust pointer x by the tween's draw offset. Verify: display-free tests map both axis kinds to scroll units.
+- [ ] 5.4 Drive the accent and the focus reports from keyboard enter and leave. Verify: `cargo build` succeeds. 10.1 checks the accent and focus report scenarios on niri.
+- [ ] 5.5 If the compositor offers cursor-shape, set the default cursor shape on each pointer enter. Verify: `cargo build` succeeds. 10.1 checks "Cursor on enter" on niri.
+
+## 6. Animation
+
+- [ ] 6.1 Drive the tween from frame callbacks, and replace the GLib watchdog with a calloop timer at the duration plus 100 ms. Remove `Anim::allowed` and its read of `gtk-enable-animations`. Verify: the existing tween tests pass, and `grep` finds no `gtk-enable-animations` in `src/`.
+- [ ] 6.2 At the tween's start, draw the grid once into a buffer as wide as the larger width. Commit the size, the margins, the viewporter crop and that buffer in each frame, and move the reserve's zone in the same frames. Without viewporter, copy the crop into a fresh buffer. Verify: a display-free test shows that the crop offset is a whole device pixel at scale 1.5 for both sides.
+- [ ] 6.3 If presentation-time is available, record presentation times in `PINWIN_FRAMELOG`. Otherwise, record callback times. Verify: `cargo build` succeeds. 10.1 checks the `PINWIN_FRAMELOG` summary line on niri.
+- [ ] 6.4 Update the README behaviour section: the GTK animation setting has no effect, and a duration of 0 snaps. Verify: the README names the zero duration as the only way to snap.
+
+## 7. Focus through xdg-activation
+
+- [ ] 7.1 Add the `ActivationToken` newtype with a fallible constructor for 1..=255 bytes of visible ASCII. Export it from the crate. Verify: unit tests accept a valid token and reject an empty token, 256 bytes, a space, a newline and a non-ASCII byte.
+- [ ] 7.2 Change `Panel::request_focus` to take an `ActivationToken`. In `on-demand` mode, send `xdg_activation_v1.activate` for the panel surface. In `none` and `exclusive` mode, or without xdg-activation, return `Ok(())` and do nothing. Delete `remap_for_focus` and the second-map handling. Verify: a display-free test covers the `none` mode no-op. `grep` finds no remap code in `src/`.
+- [ ] 7.3 Change the focus socket request to `focus <token>\n`. Make the listener parse the token and answer `error\n` for a request without one. Raise the request size bound to fit a 255-byte token. Verify: protocol tests over a socket pair cover a valid token, a missing token and an oversized line.
+- [ ] 7.4 Make `pinwin --focus` read `XDG_ACTIVATION_TOKEN` and build the token before it connects. If the token is missing or invalid, print a message and exit 2. Verify: tests cover both cases, and the "No token" scenario behaves as written.
+- [ ] 7.5 Update the usage block in `src/main.rs`, the README focus section and the rustdoc on `Panel::request_focus`. Name the key binding example, the niri patch and the stale-token caveat. Verify: `cargo doc` builds with no warnings, and the README shows the new call.
+
+## 8. Switch over and remove GTK
+
+- [ ] 8.1 Switch `Panel` to the panel thread. Delete `src/panel/gtk_side.rs`, the GSK and cairo painters, `src/render/parity.rs`, `src/render/texture.rs`, the GDK input wiring and the GLib pty source. Remove the GTK, cairo, Pango and gdk-pixbuf code from the other modules that design decision 11 names, and replace the GLib call in `src/fontconfig.rs`. Remove gtk4, gdk4, gtk4-layer-shell, pango, pangocairo, cairo-rs and gdk-pixbuf from `Cargo.toml`. Replace the demo's `glib::base64_encode` with a short encoder. Verify: `cargo build`, `cargo build --examples`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo audit`, `cargo nextest run` and `make check-code-file-lines` all pass.
+- [ ] 8.2 Remove `gtk4` and `gtk4-layer-shell` from the package list in `.github/workflows/build.yml`. Add a step that lists the `pinwin` binary's dynamic dependencies with `ldd` and fails on a forbidden library. Verify: the step passes on the new binary, and the "Dynamic dependencies" scenario holds.
+- [ ] 8.3 Update `README.md` and `AGENTS.md`: the install requirements, the module structure, the architecture, the `NoDisplay` description and the known caveats. Remove the parked GTK thread from both. Verify: `grep -n GTK README.md AGENTS.md` shows only historical mentions.
+- [ ] 8.4 Set the crate version to 0.2.0, and replace the `gtk4` keyword in `Cargo.toml`. Verify: `cargo build` succeeds and `Cargo.toml` shows 0.2.0.
+
+## 9. niri upstream
+
+- [ ] 9.1 Prepare the niri patch from 1.1 as a branch on a niri fork. If niri's test suite covers xdg-activation, add a test there. Verify: niri's own `cargo test` passes on the branch.
+- [ ] 9.2 Stop and ask the user before opening the pull request. With the user's approval, open it against `niri-wm/niri`. Verify: `gh pr view <n> --repo niri-wm/niri --json url,state` shows the open pull request.
+
+## 10. Integration on niri
+
+- [ ] 10.1 Run `pinwin` and the demo (also with `DEMO_DENSE=1`) on niri at scales 1 and 1.5. Walk through launch, docking, workspace switches, both animation directions, the accent, kitty images and cleanup at command exit. Verify: each related scenario in `specs/pinwin-panel/spec.md` behaves as written. These include the scenarios that groups 3, 5 and 6 leave to this task: "Left docking", "Right docking", "Vertical insets" and "Negative gutter"; with two outputs, "Opens on the focused monitor" and "Other monitors unaffected"; "No focus steal on launch", "Opt-in keyboard focus", "Click to type" and "Click away"; "Covering layout holds the gap", "Side switch moves the gap", "Covering expand moves no tiles" and "Covering shrink moves no tiles"; "Key disambiguation", each scenario of "Key repeat follows the compositor" (with niri's repeat rate set to 0 for the last one), "Mouse click reported in cells" and "Cursor on enter"; "Accent appears while focused", "Accent disabled" and "Focus reports"; each scenario of "Animated width transition", "Exact final width" and "Interrupting an animation"; and one `PINWIN_FRAMELOG=1` summary line per tween. Record any failure here.
+- [ ] 10.2 Show the same text in Ghostty and in pinwin at scales 1 and 1.5, and take screenshots of both. Verify: this task records the glyph differences for the user.
+- [ ] 10.3 On the laptop where issue #4 stuttered, measure the p95 time of a full-grid redraw and run a tween with `PINWIN_FRAMELOG=1`. Compare against the GPU trigger in the design. If the trigger fires, stop and ask the user. Verify: this task records the numbers.
+- [ ] 10.4 On the patched niri, bind a key to `pinwin --focus` and press it while a size-dependent TUI runs. Record the panel at 121 fps. Verify: the panel gets focus. No recorded frame shows the panel missing or at another size, and the TUI receives no `SIGWINCH`. On stock niri, the key changes nothing on screen. Record both results here.
+- [ ] 10.5 Count the `pinwin` binary's shared libraries and their total size. Verify: this task records both numbers next to today's 113 libraries and about 115 MB.
+- [ ] 10.6 Stop and ask the user before commenting on issue #19. With the user's approval, comment with a link to this change and close the issue. Verify: `gh issue view 19 --json state` shows the issue closed.
