@@ -18,8 +18,9 @@
 //! The bound session — the sctk handlers, the two layer surfaces of row 3.1
 //! and the grid sizing of row 3.3 — lives in the submodules beside this
 //! lifecycle plumbing: [`state`] holds the dispatch state, [`surfaces`] the
-//! surface geometry and [`sizing`] the pure size decisions. Until row 8.1
-//! switches `Panel::start` over, nothing in the crate calls
+//! surface geometry, [`sizing`] the pure size decisions, [`commands`] the
+//! command-channel handling and [`watchdog`] the startup watchdog. Until row
+//! 8.1 switches `Panel::start` over, nothing in the crate calls
 //! [`spawn_panel_thread`]: the entry point is `pub` so it stays reachable (a
 //! `pub(crate)` entry with no caller is dead code under `-D warnings`, and
 //! no lint suppression is permitted). Rows 3.5 and 7.2 grow the publish and
@@ -35,10 +36,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
-use std::time::Duration;
 
 use calloop::channel::{self, Channel};
-use calloop::timer::{TimeoutAction, Timer};
+use calloop::timer::Timer;
 use calloop_wayland_source::WaylandSource;
 use wayland_client::Connection;
 
@@ -51,9 +51,11 @@ use super::PinwinError;
 use super::Startup;
 use super::handshake::{APPLY_WAIT, Handshake, StartOutcome, wait_for_apply, wait_for_focus};
 
+pub(crate) mod commands;
 pub mod sizing;
 pub(crate) mod state;
 mod surfaces;
+pub(crate) mod watchdog;
 
 use state::{BindFailure, PanelState};
 
@@ -332,35 +334,6 @@ fn run_thread(
     }
 }
 
-/// The startup watchdog's bound: the 200 ms the GTK side's startup watchdog
-/// polls with (`gtk_side.rs`'s `timeout_add_local`), the same bound a pending
-/// start gets here.
-const START_WATCHDOG: Duration = Duration::from_millis(200);
-
-/// The watchdog's decision at one fire: a handshake still pending at the
-/// deadline failed — the startup path wedged before the panel went live —
-/// and reports `Internal` like the GTK side's watchdog; a resolved one
-/// reports nothing.
-fn watchdog_report(resolved: bool) -> Option<StartOutcome> {
-    if resolved {
-        None
-    } else {
-        Some(StartOutcome::Internal)
-    }
-}
-
-/// One watchdog fire (D5 boundary): fail a handshake still pending at the
-/// deadline. Runs under [`guard_always`], not [`guard`]: a latch from a
-/// panic elsewhere in the startup path is exactly the case the watchdog
-/// must still report, the way the GTK side's watchdog's `Err` arm does.
-fn on_watchdog_tick(handshake: &Handshake, poisoned: &Poisoned) {
-    let _ = guard_always(poisoned, || {
-        if let Some(outcome) = watchdog_report(handshake.resolved()) {
-            handshake.report(outcome);
-        }
-    });
-}
-
 /// The calloop loop (D2): the command channel and the connection's event
 /// queue as sources, dispatched until a teardown (or a closed command
 /// channel) ends the loop, or a dispatch error — a closed compositor
@@ -383,22 +356,27 @@ fn run_loop(
         .map_err(calloop::Error::from)?;
 
     handle.insert_source(commands, |event, (), state| {
-        state::on_command_event(state, event);
+        commands::on_command_event(state, event);
     })?;
 
-    // The startup watchdog (the GTK side's startup watchdog): a one-shot
-    // calloop timer that fails a start handshake still pending after the GTK
-    // side's bound. Without it a compositor that never completes an output's
-    // description would park the loop forever with the host blocked in
-    // `wait_for_start`. The fire either reports `Internal` — which resolves
-    // the handshake — or finds it already resolved and reports nothing;
-    // either way the timer removes itself with the fire.
+    // The startup watchdog ([`watchdog`]), two timers where the GTK side's
+    // one repeating `timeout_add_local` folds both duties together: the
+    // repeating 200 ms poll reports `Internal` only on a latched shared
+    // flag (a panic in the startup path) and never fails a slow start,
+    // because start resolution depends on compositor events after the bind
+    // (D3) that a busy or cold compositor can delay past any short bound;
+    // the one-shot hard deadline at the apply reply's wedge bound fails a
+    // start that never completes — a compositor that never sends the panel
+    // output's xdg-output logical size — with `NoDisplay`. Both fires tear
+    // the panel down the way the GTK side's watchdog closes the glue and
+    // quits the loop.
     handle.insert_source(
-        Timer::from_duration(START_WATCHDOG),
-        |_, &mut (), state: &mut PanelState| {
-            on_watchdog_tick(&state.handshake, &state.poisoned);
-            TimeoutAction::Drop
-        },
+        Timer::from_duration(watchdog::START_WATCHDOG),
+        |_, &mut (), state| watchdog::on_poll_tick(state),
+    )?;
+    handle.insert_source(
+        Timer::from_duration(watchdog::DEADLINE),
+        |_, &mut (), state| watchdog::on_deadline_tick(state),
     )?;
 
     loop {
@@ -490,57 +468,6 @@ mod tests {
             live: AtomicBool::new(true),
             keyboard: Keyboard::OnDemand,
         })
-    }
-
-    /// The watchdog's decision: a handshake still pending at the deadline
-    /// fails `Internal`, a resolved one reports nothing.
-    #[test]
-    fn the_watchdog_only_fails_a_pending_handshake() {
-        assert_eq!(watchdog_report(false), Some(StartOutcome::Internal));
-        assert_eq!(watchdog_report(true), None);
-    }
-
-    /// Drive one watchdog tick through a real calloop loop and timer source,
-    /// the wiring [`run_loop`] uses, without a display (`port-to-rust` D10).
-    fn run_watchdog_tick(handshake: &Handshake) {
-        let poisoned = Poisoned::new();
-        let mut event_loop = calloop::EventLoop::<()>::try_new().expect("test loop");
-        event_loop
-            .handle()
-            .insert_source(Timer::from_duration(START_WATCHDOG), |_, &mut (), ()| {
-                on_watchdog_tick(handshake, &poisoned);
-                TimeoutAction::Drop
-            })
-            .expect("insert the watchdog");
-        event_loop
-            .dispatch(Some(Duration::from_millis(250)), &mut ())
-            .expect("dispatch");
-    }
-
-    /// A watchdog fire on a handshake still pending at the deadline fails
-    /// the start `Internal` through the waiting channel.
-    #[test]
-    fn a_watchdog_fire_fails_a_pending_start() {
-        let (tx, rx) = mpsc::channel();
-        let handshake = Handshake::new(tx);
-        run_watchdog_tick(&handshake);
-        assert_eq!(wait_for_start(&rx), Err(PinwinError::Internal));
-    }
-
-    /// A watchdog fire on a handshake already resolved adds no report: the
-    /// start result already delivered stays the only one, and the timer
-    /// removes itself with the fire.
-    #[test]
-    fn a_watchdog_fire_leaves_a_resolved_start_alone() {
-        let (tx, rx) = mpsc::channel();
-        let handshake = Handshake::new(tx);
-        handshake.report(StartOutcome::Started);
-        run_watchdog_tick(&handshake);
-        assert_eq!(
-            rx.try_recv().expect("the start result"),
-            StartOutcome::Started
-        );
-        assert!(rx.try_recv().is_err(), "the watchdog adds no report");
     }
 
     /// A spawn whose display name names a socket that does not exist reports

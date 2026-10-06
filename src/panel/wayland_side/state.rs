@@ -24,7 +24,6 @@ use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use calloop::channel::Event;
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, Region};
 use smithay_client_toolkit::delegate_dispatch2;
 use smithay_client_toolkit::delegate_registry;
@@ -57,7 +56,12 @@ pub(crate) struct Session {
     compositor: CompositorState,
     shell: LayerShell,
     shm: Shm,
-    surfaces: PanelSurfaces,
+    /// The two layer surfaces, `None` once the panel is torn down: the
+    /// teardown drops them — the panel leaves the screen at once — and with
+    /// them every configure and pty push path, while the connection and the
+    /// registry/output handlers it still dispatches to stay alive until the
+    /// loop ends.
+    surfaces: Option<PanelSurfaces>,
     /// The output the panel's first `wl_surface.enter` named (D3), whose
     /// xdg-output logical size is still awaited.
     pending_output: Option<wl_output::WlOutput>,
@@ -152,7 +156,7 @@ impl PanelState {
             compositor,
             shell,
             shm,
-            surfaces,
+            surfaces: Some(surfaces),
             pending_output: None,
             resolved: None,
         });
@@ -166,6 +170,20 @@ impl PanelState {
     pub(crate) fn connection_closed(&mut self) {
         self.inner.live.store(false, Ordering::Relaxed);
         self.handshake.report(StartOutcome::NoDisplay);
+    }
+
+    /// Tear the panel down: drop the two layer surfaces and end the loop.
+    /// The teardown command, the closed command channel and the startup
+    /// watchdog's fire all end here, so the panel leaves the screen at once
+    /// and no later configure can push a pty size — the only push path runs
+    /// through the configure handling the dropped surfaces take with them.
+    /// Nothing here can panic, so the stop relays call it outside the guard
+    /// and the loop still ends on a latched flag.
+    pub(crate) fn tear_down(&mut self) {
+        if let Some(session) = self.session.as_mut() {
+            session.surfaces = None;
+        }
+        self.done = true;
     }
 
     /// The panel surface entered an output (D3): the first enter names the
@@ -203,6 +221,12 @@ impl PanelState {
         let Some(info) = session.outputs.info(&output) else {
             return;
         };
+        // A torn-down session (the watchdog's fire dropped the surfaces)
+        // attaches no reserve and completes no handshake: its start already
+        // failed and its loop is already ending.
+        let Some(surfaces) = session.surfaces.as_mut() else {
+            return;
+        };
         // A logical size of zero is a compositor that has not decided its
         // layout yet: the same retry as a missing info.
         let Some((width, height)) = info.logical_size else {
@@ -227,7 +251,7 @@ impl PanelState {
                 Some("pinwin-reserve"),
                 Some(&output),
             );
-            session.surfaces.attach_reserve(reserve, region);
+            surfaces.attach_reserve(reserve, region);
         }
         session.pending_output = None;
         session.resolved = Some(size);
@@ -247,12 +271,17 @@ impl PanelState {
         let Some(session) = &mut self.session else {
             return;
         };
+        // A torn-down session has no surfaces left, so no late configure can
+        // reach the pty push.
+        let Some(surfaces) = session.surfaces.as_mut() else {
+            return;
+        };
         let (width, height) = configure.new_size;
-        if session.surfaces.is_panel(layer) {
-            session.surfaces.panel_configured(width, height);
+        if surfaces.is_panel(layer) {
+            surfaces.panel_configured(width, height);
             self.configure_grid(height, &mut |grid| apply_pty_size(fd, grid));
-        } else if session.surfaces.is_reserve(layer) {
-            session.surfaces.reserve_configured(width, height);
+        } else if surfaces.is_reserve(layer) {
+            surfaces.reserve_configured(width, height);
         }
     }
 
@@ -274,15 +303,19 @@ impl PanelState {
         let Some(session) = &mut self.session else {
             return;
         };
-        if session.surfaces.is_panel(layer) {
+        // A torn-down session has no surfaces left to close.
+        let Some(surfaces) = session.surfaces.as_mut() else {
+            return;
+        };
+        if surfaces.is_panel(layer) {
             // The compositor destroyed the panel: the panel is dead (D2).
             self.inner.live.store(false, Ordering::Relaxed);
             // A resolved handshake drops this; a pending one fails, the same
             // mapping a loop-returned thread reports.
             self.handshake.report(StartOutcome::NoDisplay);
             self.done = true;
-        } else if session.surfaces.is_reserve(layer) {
-            session.surfaces.reserve_closed();
+        } else if surfaces.is_reserve(layer) {
+            surfaces.reserve_closed();
         }
     }
 }
@@ -303,82 +336,6 @@ fn apply_pty_size(fd: RawFd, grid: Grid) {
         return;
     };
     let _ = apply_winsize(fd, i32::from(grid.cols()), rows, cell_w, cell_h);
-}
-
-/// The command channel's callback (D5 boundary): a callback is a boundary
-/// like a GTK closure, so ordinary commands run under the shared [`guard`]
-/// and a latched panel runs no more glue code. The stop relays — a teardown
-/// and a closed command channel — must run even on a latched flag (D5):
-/// skipping them would drop the teardown's reply (the host's drop waits the
-/// whole reply bound) and never end the loop, leaking the thread and its
-/// Wayland connection.
-pub(crate) fn on_command_event(state: &mut PanelState, event: Event<super::PanelCommand>) {
-    // The latch is cloned first: the guard's borrow and the command
-    // handling must not alias the same `PanelState`.
-    let poisoned = state.poisoned.clone();
-    match event {
-        // The teardown is a stop relay, not ordinary glue (D5):
-        // `guard_always` runs it even on a latched flag.
-        Event::Msg(super::PanelCommand::Teardown { reply }) => {
-            let _ = guard_always(&poisoned, || {
-                handle_command(state, super::PanelCommand::Teardown { reply });
-            });
-        }
-        Event::Msg(command) => {
-            let _ = guard(&poisoned, || handle_command(state, command));
-        }
-        // Every sender is gone (the host dropped the handle without a
-        // teardown): end the thread the same way a teardown does. A plain
-        // store cannot panic, so it needs no guard at all.
-        Event::Closed => state.done = true,
-    }
-}
-
-/// One posted command (D2): the guarded arms mirror the GTK side's
-/// dispatched glue, each answering through the bounded reply the command
-/// carried.
-fn handle_command(state: &mut PanelState, command: super::PanelCommand) {
-    match command {
-        super::PanelCommand::Apply {
-            layout,
-            duration_ms,
-            reply,
-        } => {
-            let _ = reply.send(apply_without_publish(layout, duration_ms));
-        }
-        super::PanelCommand::Focus { reply } => {
-            let _ = reply.send(focus_without_activation());
-        }
-        super::PanelCommand::Teardown { reply } => {
-            // A stop relay, not ordinary glue (D5): the reply and the loop's
-            // end must happen even on a latched flag, or a dead panel
-            // strands the host's drop for the whole reply bound.
-            state.done = true;
-            let scratch = Poisoned::new();
-            let _ = guard_always(&scratch, || {
-                let _ = reply.send(());
-            });
-        }
-    }
-}
-
-/// The apply answer while the thread has no publish path yet (row 3.5
-/// replaces this with the validated publish of the surfaces — validation,
-/// the held gap, covering layouts and side switches — the shape of the GTK
-/// side's `dispatch_apply`): the layout verdict needs the publish path, so
-/// the answer stays the not-live lifecycle state until then.
-fn apply_without_publish(
-    _layout: crate::layout::Layout,
-    _duration_ms: u32,
-) -> crate::surfaces::PublishOutcome {
-    crate::surfaces::PublishOutcome::NotLive
-}
-
-/// The focus answer while the thread has no xdg-activation request yet (row
-/// 7.2 replaces this with the activation call of decision 4): the same
-/// not-live lifecycle state as [`apply_without_publish`].
-fn focus_without_activation() -> super::super::handshake::FocusOutcome {
-    super::super::handshake::FocusOutcome::NotLive
 }
 
 impl CompositorHandler for PanelState {
@@ -427,7 +384,8 @@ impl CompositorHandler for PanelState {
             let is_panel = self
                 .session
                 .as_ref()
-                .is_some_and(|session| session.surfaces.is_panel_surface(surface));
+                .and_then(|session| session.surfaces.as_ref())
+                .is_some_and(|surfaces| surfaces.is_panel_surface(surface));
             if is_panel {
                 self.on_panel_enter(output, qh);
             }
@@ -635,106 +593,6 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "the closed connection adds no second report"
-        );
-    }
-
-    /// An apply posted to a thread without a publish path is answered
-    /// `NotLive` through the same bounded reply (`NotRunning`), never a hang.
-    #[test]
-    fn an_apply_without_a_publish_path_is_not_running() {
-        let (tx, _rx) = mpsc::channel();
-        let mut state = headless_state(Handshake::new(tx));
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        handle_command(
-            &mut state,
-            super::super::PanelCommand::Apply {
-                layout: startup().layout,
-                duration_ms: 0,
-                reply: reply_tx,
-            },
-        );
-        assert_eq!(
-            crate::panel::handshake::wait_for_apply(&reply_rx, std::time::Duration::from_secs(1)),
-            Err(crate::panel::PinwinError::NotRunning)
-        );
-        assert!(!state.done, "an apply does not end the thread");
-    }
-
-    /// A focus request posted to a thread without an activation path is
-    /// answered `NotLive` through the same bounded reply (`NotRunning`).
-    #[test]
-    fn a_focus_request_without_an_activation_path_is_not_running() {
-        let (tx, _rx) = mpsc::channel();
-        let mut state = headless_state(Handshake::new(tx));
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        handle_command(
-            &mut state,
-            super::super::PanelCommand::Focus { reply: reply_tx },
-        );
-        assert_eq!(
-            crate::panel::handshake::wait_for_focus(&reply_rx, std::time::Duration::from_secs(1)),
-            Err(crate::panel::PinwinError::NotRunning)
-        );
-    }
-
-    /// A teardown command ends the loop state and answers through the
-    /// bounded reply, even on a latched flag (D5's stop relay): the host's
-    /// drop must not strand. The test drives the real callback path
-    /// ([`on_command_event`], outer guard included) — a `handle_command`
-    /// call alone would skip the short-circuiting outer guard that hid this
-    /// relay once.
-    #[test]
-    fn a_teardown_command_ends_the_thread_state() {
-        let (tx, _rx) = mpsc::channel();
-        let mut state = headless_state(Handshake::new(tx));
-        state.poisoned = Poisoned::latched();
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        on_command_event(
-            &mut state,
-            Event::Msg(super::super::PanelCommand::Teardown { reply: reply_tx }),
-        );
-        assert!(state.done, "the loop ends");
-        assert_eq!(
-            reply_rx.recv_timeout(std::time::Duration::from_secs(1)),
-            Ok(()),
-            "the teardown replies even on a latched flag"
-        );
-    }
-
-    /// A closed command channel ends the loop even on a latched flag (D5's
-    /// stop relay): a swallowed `Closed` would leak the thread and its
-    /// Wayland connection after a plain handle drop.
-    #[test]
-    fn a_closed_command_channel_ends_the_thread_even_when_latched() {
-        let (tx, _rx) = mpsc::channel();
-        let mut state = headless_state(Handshake::new(tx));
-        state.poisoned = Poisoned::latched();
-        on_command_event(&mut state, Event::Closed);
-        assert!(state.done, "the closed channel ends the loop");
-    }
-
-    /// An ordinary command stays under the short-circuiting guard (D5): on
-    /// a latched flag it never runs and its reply channel closes empty,
-    /// while the loop keeps going.
-    #[test]
-    fn a_latched_flag_drops_an_ordinary_command() {
-        let (tx, _rx) = mpsc::channel();
-        let mut state = headless_state(Handshake::new(tx));
-        state.poisoned = Poisoned::latched();
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        on_command_event(
-            &mut state,
-            Event::Msg(super::super::PanelCommand::Apply {
-                layout: startup().layout,
-                duration_ms: 0,
-                reply: reply_tx,
-            }),
-        );
-        assert!(!state.done, "an ordinary command does not end the thread");
-        assert_eq!(
-            reply_rx.recv_timeout(std::time::Duration::from_millis(100)),
-            Err(mpsc::RecvTimeoutError::Disconnected),
-            "the guarded command never ran"
         );
     }
 
