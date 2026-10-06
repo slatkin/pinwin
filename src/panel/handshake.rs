@@ -20,27 +20,17 @@ use super::error::PinwinError;
 /// the host thread forever (D5).
 pub(crate) const APPLY_WAIT: Duration = Duration::from_secs(5);
 
-/// The start handshake's outcome, sent once from the GTK side.
+/// The start handshake's outcome, sent once from the panel thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StartOutcome {
     /// The panel is on screen with live metrics.
     Started,
-    /// GTK or wlr-layer-shell is unavailable (or the loop returned before the
-    /// panel went live, as `glue.c` did): `PinwinError::NoDisplay`.
+    /// The Wayland connection or a required global is unavailable (or the
+    /// loop returned before the panel went live): `PinwinError::NoDisplay`.
     NoDisplay,
-    /// The GTK side failed unexpectedly (a caught panic during startup):
+    /// The panel side failed unexpectedly (a caught panic during startup):
     /// `PinwinError::Internal`.
     Internal,
-}
-
-impl From<crate::surfaces::InitFailure> for StartOutcome {
-    fn from(failure: crate::surfaces::InitFailure) -> Self {
-        match failure {
-            crate::surfaces::InitFailure::GtkInit | crate::surfaces::InitFailure::LayerShell => {
-                StartOutcome::NoDisplay
-            }
-        }
-    }
 }
 
 /// The one-shot start handshake: exactly one report reaches the waiting host,
@@ -179,15 +169,6 @@ mod tests {
         assert_eq!(
             map_start(StartOutcome::Internal),
             Err(PinwinError::Internal)
-        );
-        // GTK init and layer-shell failures both degrade to NoDisplay.
-        assert_eq!(
-            map_start(crate::surfaces::InitFailure::GtkInit.into()),
-            Err(PinwinError::NoDisplay)
-        );
-        assert_eq!(
-            map_start(crate::surfaces::InitFailure::LayerShell.into()),
-            Err(PinwinError::NoDisplay)
         );
     }
 
