@@ -245,11 +245,17 @@ impl Panel {
     /// activation request could not gain focus there anyway. The keyboard
     /// mode itself is fixed at start time; the request never changes it.
     ///
+    /// Until the panel thread replaces the GTK thread (rows 8.1 and 8.2 of
+    /// the `replace-gtk-with-wayland` change), the request is accepted and
+    /// does nothing: no activation request reaches the compositor, so the
+    /// panel does not get the keyboard this way.
+    ///
     /// The token is the one-use permission a compositor gives a program it
     /// launches; the library owns no transport for the request, the host
     /// decides how a request and its token reach it. Taken by reference:
     /// the request carries the token to the panel side, it does not consume
     /// it, and the host may reuse the token it built.
+    // TEMPORARY (replace-gtk-with-wayland 8.1)
     pub fn request_focus(&self, token: &ActivationToken) -> Result<(), PinwinError> {
         request_focus_via_inner(&self.inner, token)
     }

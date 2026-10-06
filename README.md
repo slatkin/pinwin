@@ -57,7 +57,12 @@ while the reservation stays where the last pushing layout put it.
 `request_focus(&ActivationToken::new(token)?)` asks the compositor to give
 the panel keyboard focus with an xdg-activation token; `ActivationToken` is
 re-exported from the crate root and validates the token before any request
-is made. Dropping the handle closes the panel and cancels any running
+is made. Until the panel thread replaces the GTK thread (rows 8.1 and 8.2
+of the `replace-gtk-with-wayland` change), the request is accepted and does
+nothing: no activation request reaches the compositor, so the panel does
+not get the keyboard this way.
+<!-- remove when replace-gtk-with-wayland row 8.1 lands -->
+Dropping the handle closes the panel and cancels any running
 animation. The library never closes the fd and never exits the host.
 
 ```rust
@@ -161,6 +166,11 @@ compositor sets for a process it launches from a key binding. A token is
 that is not a valid token, the client prints a message and exits 2 without
 contacting any instance. The host passes the token to its panel's focus
 request, which asks the compositor to focus the panel through xdg-activation.
+Until the panel thread replaces the GTK thread (rows 8.1 and 8.2 of the
+`replace-gtk-with-wayland` change), that request is accepted and does
+nothing: the compositor sees no activation, so the panel does not get the
+keyboard this way.
+<!-- remove when replace-gtk-with-wayland row 8.1 lands -->
 
 On-demand focus through xdg-activation needs a compositor that honours the
 request for layer surfaces. Stock niri ignores it for layer surfaces; a niri
