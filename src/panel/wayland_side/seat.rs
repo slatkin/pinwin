@@ -1,9 +1,10 @@
 //! The seat side of the wayland panel thread (replace-gtk-with-wayland D8,
-//! row 5.1): the keyboard half — the key events the toolkit's
+//! rows 5.1 to 5.5): the keyboard half — the key events the toolkit's
 //! `KeyboardHandler` delivers are translated into the same [`KeyInput`] the
 //! GDK path's `src/input.rs` builds and pushed into the terminal's key
-//! encoder. The pointer and focus halves arrive with rows 5.3 and 5.4; row
-//! 8.1 wires the dispatch state to the hooks here.
+//! encoder — plus the pointer half (row 5.3) and the keyboard focus half
+//! (row 5.4) behind the same links, and the cursor-shape hook (row 5.5).
+//! Row 8.1 wires the dispatch state to the hooks here.
 //!
 //! The hooks take the pieces the row 8.1 dispatch hands them (the toolkit's
 //! `KeyEvent`, `RawModifiers`, keymap string) and hold no Wayland objects of
@@ -14,23 +15,28 @@
 //! runs its body through the shared [`crate::guard`] with the panel's shared
 //! latch, the way the GDK path's controller closures do.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, Modifiers as SctkModifiers, RawModifiers, RepeatInfo,
 };
+use smithay_client_toolkit::seat::pointer::PointerEventKind;
 
 use crate::guard::{Poisoned, guard};
 use crate::term::Terminal;
 
+pub mod cursor;
 pub mod keyboard;
+pub mod pointer;
 pub mod xkb;
 
+use pointer::PointerSide;
+
 /// The keyboard hooks' links: the terminal the key encoder pushes into and
-/// the panel's shared D5 latch. The pointer and focus rows bring their own
-/// links — the draw offset and the focused flag are theirs — and the row 8.1
-/// wiring assembles both from the panel state.
+/// the panel's shared D5 latch. They are the keyboard view of the fuller
+/// [`SeatLinks`], which [`SeatLinks::keyboard`] derives, so the row 8.1
+/// wiring carries one links value for all three seat halves.
 #[derive(Clone)]
 pub struct KeyboardLinks {
     /// The terminal the encoders push into.
@@ -47,28 +53,74 @@ impl std::fmt::Debug for KeyboardLinks {
     }
 }
 
-/// The seat side's keyboard hooks (row 5.1): one type the row 8.1 dispatch
-/// delegates the toolkit's keyboard events to.
+/// The seat hooks' links, the GDK path's [`crate::input::InputLinks`] twin:
+/// everything the hooks reach outside this module. The row 8.1 wiring
+/// assembles one value from the panel state; the pointer and focus hooks
+/// take the whole set, the keyboard hooks the terminal and the latch
+/// through [`KeyboardLinks`].
+#[derive(Clone)]
+pub struct SeatLinks {
+    /// The terminal the encoders push into.
+    pub terminal: Rc<RefCell<Terminal>>,
+    /// The anim row's draw offset: the drawing shift that keeps the grid
+    /// against the docked edge while the surface animates; pointer x is
+    /// adjusted by it, like the GDK path's `on_mouse`.
+    pub draw_offset: Rc<dyn Fn() -> f64>,
+    /// Whether the panel holds keyboard focus; the renderer reads it for
+    /// the focus accent (`g_focused`).
+    pub focused: Rc<Cell<bool>>,
+    /// Queue a redraw of the panel's surface.
+    pub queue_draw: Rc<dyn Fn()>,
+    /// Latched when a hook body panicked (D5); the panel consults it.
+    pub poisoned: Poisoned,
+}
+
+impl std::fmt::Debug for SeatLinks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeatLinks")
+            .field("focused", &self.focused)
+            .field("poisoned", &self.poisoned)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SeatLinks {
+    /// The keyboard hooks' view of the links: the terminal and the latch.
+    #[must_use]
+    pub fn keyboard(&self) -> KeyboardLinks {
+        KeyboardLinks {
+            terminal: Rc::clone(&self.terminal),
+            poisoned: self.poisoned.clone(),
+        }
+    }
+}
+
+/// The seat side's hooks (rows 5.1 to 5.5): one type the row 8.1 dispatch
+/// delegates the toolkit's keyboard and pointer events to.
 #[derive(Debug)]
 pub struct SeatSide {
-    links: KeyboardLinks,
+    links: SeatLinks,
     keyboard: keyboard::KeyboardSide,
+    pointer: PointerSide,
 }
 
 impl SeatSide {
-    /// A seat side's keyboard half over the panel's links.
+    /// A seat side over the panel's links. The keyboard half starts with no
+    /// keymap and no modifiers held, the pointer half with no cursor-shape
+    /// device (row 5.5's [`SeatSide::bind_cursor_shape`] installs one).
     #[must_use]
-    pub fn new(links: KeyboardLinks) -> Self {
+    pub fn new(links: SeatLinks) -> Self {
         SeatSide {
             links,
             keyboard: keyboard::KeyboardSide::new(),
+            pointer: PointerSide::default(),
         }
     }
 
-    /// The links the hooks reach the terminal through.
+    /// The keyboard hooks' view of the links: the terminal and the latch.
     #[must_use]
-    pub fn links(&self) -> &KeyboardLinks {
-        &self.links
+    pub fn keyboard_links(&self) -> KeyboardLinks {
+        self.links.keyboard()
     }
 
     /// One keymap update (row 5.1): the seat's own xkb keymap and state
@@ -129,6 +181,16 @@ impl SeatSide {
         let _ = guard(&poisoned, || {
             self.keyboard.left();
         });
+    }
+
+    /// One toolkit pointer event (row 5.3): `kind` and `position` come from
+    /// the `PointerEvent` the toolkit's `PointerHandler` delivers, one call
+    /// per event of a frame. The translation and its terminal pushes run
+    /// under the shared guard (D5); the modifiers are the keyboard side's
+    /// last report, since Wayland pointer events carry none.
+    pub fn pointer_frame(&mut self, kind: &PointerEventKind, position: (f64, f64)) {
+        let mods = self.keyboard.mods();
+        self.pointer.frame(kind, position, &self.links, mods);
     }
 
     /// One `repeat_info` update (row 5.2): the compositor's rate decides
@@ -211,7 +273,7 @@ xkb_keymap {
     /// The seat fixture: a seat side over a real display-free terminal
     /// (40x24 at 8x16), the links to reach the terminal with, and the pty
     /// bytes it wrote.
-    type SeatFixture = (SeatSide, KeyboardLinks, Arc<Mutex<Vec<u8>>>);
+    type SeatFixture = (SeatSide, SeatLinks, Arc<Mutex<Vec<u8>>>);
 
     fn seat_side() -> SeatFixture {
         let writes = Arc::new(Mutex::new(Vec::new()));
@@ -222,8 +284,11 @@ xkb_keymap {
             || (),
         );
         assert!(terminal.push_size(40, 24, 8, 16));
-        let links = KeyboardLinks {
+        let links = SeatLinks {
             terminal: Rc::new(RefCell::new(terminal)),
+            draw_offset: Rc::new(|| 0.0),
+            focused: Rc::new(Cell::new(false)),
+            queue_draw: Rc::new(|| ()),
             poisoned: GuardPoisoned::new(),
         };
         (SeatSide::new(links.clone()), links, writes)
@@ -300,6 +365,57 @@ xkb_keymap {
         assert_eq!(take(&writes), Vec::new());
     }
 
+    /// A pointer frame flows through the seat side into the pty (row 5.3):
+    /// the press reports in SGR cells, and the keyboard side's held
+    /// modifiers reach the report the way the GDK path's
+    /// `current_event_state` fed them.
+    #[test]
+    fn a_pointer_frame_reaches_the_pty_with_the_held_modifiers() {
+        let (mut seat, links, writes) = seat_side();
+        links
+            .terminal
+            .borrow_mut()
+            .push_pty_data(b"\x1b[?1003h\x1b[?1006h");
+        seat.keymap_updated(TEST_KEYMAP);
+        seat.modifiers_updated(RawModifiers::default(), 0, SctkModifiers::default());
+        seat.pointer_frame(&press_kind(0x110), (50.0, 20.0));
+        assert_eq!(take(&writes), b"\x1b[<0;7;2M");
+
+        // The held shift reaches the release report (the SGR shift bit).
+        seat.modifiers_updated(
+            RawModifiers {
+                depressed: 1,
+                latched: 0,
+                locked: 0,
+            },
+            0,
+            SctkModifiers {
+                shift: true,
+                ..SctkModifiers::default()
+            },
+        );
+        seat.pointer_frame(&release_kind(0x110), (50.0, 20.0));
+        assert_eq!(take(&writes), b"\x1b[<4;7;2m");
+    }
+
+    /// One toolkit pointer press for the seat-side tests.
+    fn press_kind(button: u32) -> PointerEventKind {
+        PointerEventKind::Press {
+            time: 0,
+            button,
+            serial: 0,
+        }
+    }
+
+    /// One toolkit pointer release for the seat-side tests.
+    fn release_kind(button: u32) -> PointerEventKind {
+        PointerEventKind::Release {
+            time: 0,
+            button,
+            serial: 0,
+        }
+    }
+
     /// A panicking hook body is caught and latches the shared flag (D5), and
     /// a latched side runs no further hooks.
     #[test]
@@ -313,8 +429,11 @@ xkb_keymap {
         );
         assert!(terminal.push_size(40, 24, 8, 16));
         let poisoned = GuardPoisoned::new();
-        let links = KeyboardLinks {
+        let links = SeatLinks {
             terminal: Rc::new(RefCell::new(terminal)),
+            draw_offset: Rc::new(|| 0.0),
+            focused: Rc::new(Cell::new(false)),
+            queue_draw: Rc::new(|| ()),
             poisoned: poisoned.clone(),
         };
         let mut seat = SeatSide::new(links);
