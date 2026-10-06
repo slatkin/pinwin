@@ -196,6 +196,15 @@ impl TweenDriver {
         self.running.is_some()
     }
 
+    /// Whether the running tween carries a frame log (row 6.3): the caller
+    /// requests presentation feedback only for a tween that feeds one, so
+    /// an unlogged tween's samples are never requested just to be dropped
+    /// by the generation filter.
+    #[must_use]
+    pub(crate) fn has_log(&self) -> bool {
+        self.frame_log.is_some()
+    }
+
     /// The panel's current pixel width: the running tween's eased width,
     /// else the applied width ([`crate::anim::Anim::current_px`]). A retarget
     /// reads this as its `from_px`.

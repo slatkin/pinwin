@@ -481,3 +481,23 @@ fn the_presentation_feed_follows_the_generation() {
         "the stale generation is dropped, the running one records"
     );
 }
+
+/// The frame-log gate (row 6.3): a begin whose log is `Some` carries it —
+/// the caller requests presentation feedback only then — and a begin
+/// without one holds none; the stop takes the log away.
+#[test]
+fn the_driver_holds_a_frame_log_only_while_one_was_begun() {
+    let mut driver = TweenDriver::default();
+    assert!(!driver.has_log(), "no tween, no log");
+
+    let t0 = Instant::now();
+    let _ = driver.begin(0, 100, 100, t0, None);
+    assert!(!driver.has_log(), "a begin without a log holds none");
+
+    let log = FrameLog::begin(true, false).expect("an enabled callback log");
+    let _ = driver.begin(0, 100, 100, t0, Some(log));
+    assert!(driver.has_log(), "the begun log is held");
+
+    driver.cancel();
+    assert!(!driver.has_log(), "the stop took the log away");
+}

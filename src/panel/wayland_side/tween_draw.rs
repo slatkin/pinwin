@@ -463,13 +463,17 @@ impl PanelState {
             return;
         };
         surfaces.request_frame(&session.qh);
-        session.presentation.feedback(
-            surfaces.panel_wl_surface(),
-            &session.qh,
-            self.tween.generation(),
-        );
+        // The presentation feedback feeds only a frame log (row 6.3): with
+        // no log the generation filter would drop every sample, so no
+        // request is made and the log rides on the callbacks' times alone.
+        if self.tween.has_log() {
+            session.presentation.feedback(
+                surfaces.panel_wl_surface(),
+                &session.qh,
+                self.tween.generation(),
+            );
+        }
     }
-
     /// The tween's finish action (row 6.1, wired in row 6.2): the stop
     /// relay first — drop the wide cache, lift the sizing defer and push
     /// the deferred grid once through the sizing path, the new columns
@@ -494,13 +498,7 @@ impl PanelState {
             reserve_side: self.held.side(),
             reserve_zone: self.held.zone(),
         };
-        if let Some(surfaces) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.surfaces.as_mut())
-        {
-            surfaces.apply_geometry(&geometry);
-        }
+        self.write_geometry(geometry);
     }
 }
 
