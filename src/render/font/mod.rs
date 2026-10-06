@@ -12,11 +12,19 @@
 //! with a proportional face, and the port keeps the `monospace` fallback the
 //! "No Ghostty config" scenario promises (D6).
 //!
-//! Face bytes are held as `Arc<[u8]>`: pure Rust (no memory-mapping crate, no
-//! unsafe), cheap to clone between the four style faces, and exactly the
-//! shared ownership swash's `FontRef` borrows want. The largest font on a
-//! normal system is the colour-emoji face at roughly 10 MB, read once per
-//! fallback family in use.
+//! Face bytes are held as `Arc<[u8]>`: pure Rust (no memory-mapping crate),
+//! cheap to clone between the four style faces, and exactly the shared
+//! ownership swash's `FontRef` borrows want. The largest font on a normal
+//! system is the colour-emoji face at roughly 10 MB, read once per fallback
+//! family in use. The one `unsafe` seam is the charset probe behind the
+//! fallback lookup (the `fontconfig` wrapper exposes no charset accessor);
+//! it only reads fontconfig's own data.
+//!
+//! The fallback lookup must not run per frame: row 4.5 (the glyph unit)
+//! resolves a cell's code points through [`FontBook::fallback_face`], which
+//! caches the answer — found or not found — per code point, so a repeated
+//! code point costs a map hit and a new one at most one fontconfig sort
+//! (milliseconds) plus one file read.
 
 mod book;
 mod error;

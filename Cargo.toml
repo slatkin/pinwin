@@ -59,6 +59,11 @@ calloop-wayland-source = "0.4"
 tiny-skia = "0.12"
 swash = "0.2"
 fontconfig = "0.11"
+# The `fontconfig` wrapper exposes no charset accessor; the fallback lookup
+# decides coverage from the candidate patterns' own `charset` property
+# through the underlying -sys crate (already linked as the wrapper's
+# dependency, same version).
+yeslogic-fontconfig-sys = "6"
 png = "0.18"
 
 # The renderer's one f64-to-integer seam (`render::geom::device_px`):
