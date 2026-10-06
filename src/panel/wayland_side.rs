@@ -47,6 +47,7 @@ use calloop::timer::Timer;
 use calloop_wayland_source::WaylandSource;
 use wayland_client::Connection;
 
+use crate::activation::ActivationToken;
 use crate::guard::{Poisoned, guard, guard_always};
 use crate::layout::{CellSize, Layout};
 use crate::surfaces::PublishOutcome;
@@ -56,6 +57,7 @@ use super::PinwinError;
 use super::Startup;
 use super::handshake::{APPLY_WAIT, Handshake, StartOutcome, wait_for_apply, wait_for_focus};
 
+pub(crate) mod activation;
 pub(crate) mod apply;
 pub mod buffers;
 pub mod commands;
@@ -87,10 +89,13 @@ pub(crate) enum PanelCommand {
         /// The bounded reply the host waits on.
         reply: mpsc::SyncSender<PublishOutcome>,
     },
-    /// Request keyboard focus, answered with `()` (replace-gtk-with-wayland
-    /// D4: the compositor's choice is invisible to the client, so the reply
-    /// only says the request was made).
+    /// Request keyboard focus by activating the panel surface with `token`
+    /// (row 7.2), answered with `()` (replace-gtk-with-wayland D4: the
+    /// compositor's choice is invisible to the client, so the reply only
+    /// says the request was made).
     Focus {
+        /// The token the request passes to the compositor.
+        token: ActivationToken,
         /// The bounded reply the host waits on.
         reply: mpsc::SyncSender<()>,
     },
@@ -187,25 +192,31 @@ impl PanelThread {
     /// Post a keyboard-focus request and wait for its bounded reply. The
     /// keyboard-mode short-circuit stays with the host's handle: the mode is
     /// fixed at start time and recorded on the handle state, so the host
-    /// decides whether anything is posted at all.
+    /// decides whether anything is posted at all. On the thread, the token
+    /// reaches the compositor as an xdg-activation request for the panel
+    /// surface (row 7.2, D4) — or as a no-op when the mode is not
+    /// `on-demand` or the compositor offers no xdg-activation.
     ///
     /// # Errors
     /// `NotRunning` on a dead panel, `Internal` on a caught panic or a
     /// wedged or ended thread.
-    pub fn request_focus(&self) -> Result<(), PinwinError> {
-        match guard(&self.inner.poisoned, || self.post_focus()) {
+    pub fn request_focus(&self, token: &ActivationToken) -> Result<(), PinwinError> {
+        match guard(&self.inner.poisoned, || self.post_focus(token)) {
             Ok(result) => result,
             Err(_) => Err(PinwinError::Internal),
         }
     }
 
     /// The unguarded body of [`PanelThread::request_focus`].
-    fn post_focus(&self) -> Result<(), PinwinError> {
+    fn post_focus(&self, token: &ActivationToken) -> Result<(), PinwinError> {
         if !self.inner.live.load(Ordering::Relaxed) {
             return Err(PinwinError::NotRunning);
         }
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        let _ = self.commands.send(PanelCommand::Focus { reply: reply_tx });
+        let _ = self.commands.send(PanelCommand::Focus {
+            token: token.clone(),
+            reply: reply_tx,
+        });
         wait_for_focus(&reply_rx, APPLY_WAIT)
     }
 
