@@ -8,7 +8,7 @@ use crate::fontconfig::ThemeColours;
 use crate::guard::Poisoned;
 use crate::layout::Accent;
 use crate::render::canvas::{Canvas, CanvasColor};
-use crate::render::geom::{FrameInput, PainterMetrics, device_px};
+use crate::render::geom::{DeviceRect, FrameInput, PainterMetrics, device_px};
 use crate::render::image_pass::ImagePass;
 use crate::render::painter::paint_frame;
 use crate::render::text_pass::test_support;
@@ -377,6 +377,21 @@ fn frame(focused: bool, accent: Option<Accent>, draw_offset: f64, scale: f64) ->
     FrameInput::new(64, 64, device, device, draw_offset, focused, THEME, accent)
 }
 
+/// An 8-column, 6-row terminal at the 8x16 cell pitch the other render
+/// tests use: a 64x96 logical frame.
+fn terminal_6_rows() -> Terminal {
+    let mut terminal = Terminal::new(Poisoned::new(), NullSink, NoDecoder, || {});
+    assert!(terminal.push_size(8, 6, 8, 16));
+    terminal
+}
+
+/// Frame input for a 64x96 logical frame — the 8x6 terminal — at scale 1.
+fn frame_6_rows(focused: bool) -> FrameInput {
+    let device_w = u32::try_from(device_px(f64::from(64))).expect("frame fits u32");
+    let device_h = u32::try_from(device_px(f64::from(96))).expect("frame fits u32");
+    FrameInput::new(64, 96, device_w, device_h, 0.0, focused, THEME, None)
+}
+
 /// The test theme, distinct from every colour the tests draw.
 const THEME: ThemeColours = ThemeColours {
     background: [10, 20, 30],
@@ -471,6 +486,90 @@ fn a_frame_that_cannot_open_degrades_and_reports_full_damage() {
         Some([30, 20, 10, 255]),
         "the theme background"
     );
+}
+
+/// The repaint band, pinned in pixels: one dirty row repaints exactly
+/// that row and its two spill neighbours — the sentinel the test paints
+/// into every row band beforehand is erased by the repaint exactly where
+/// the repaint reaches, and survives one row past the neighbours — and
+/// the damage stays the changed row's band alone.
+#[test]
+fn a_partial_frame_repaints_exactly_the_row_and_its_two_neighbours() {
+    let Some(mut test) = test_support::text_pass() else {
+        return;
+    };
+    let mut terminal = terminal_6_rows();
+    // The cursor hidden and parked in the third row before the first
+    // frame: its hide and its move are consumed by the everything frame,
+    // so the later partial frame's change set is the written row alone.
+    terminal.push_pty_data(b"\x1b[?25l\x1b[3;1H");
+    let frame = frame_6_rows(false);
+    let (w, h) = frame.device_size();
+    let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
+    let mut images = ImagePass::new();
+    let mut gate = FrameGate::new();
+
+    // The first frame establishes the canvas.
+    let outcome = paint_frame_gated(
+        &mut canvas,
+        &metrics(1.0),
+        &frame,
+        &mut terminal,
+        &mut test.pass,
+        &mut images,
+        &mut gate,
+        false,
+    );
+    assert_ne!(outcome, FrameOutcome::Clean, "the first frame draws");
+
+    // A sentinel in every row band: what the partial frame leaves alone
+    // keeps it, what it repaints loses it.
+    let sentinel = CanvasColor::from_rgba(255, 0, 255, 255);
+    for row in 0..6 {
+        canvas.fill_rect(0, row * 16, 64, 16, sentinel);
+    }
+
+    // One row changes: the pty writes an `X` at the parked cursor, in
+    // the third row.
+    terminal.push_pty_data(b"X");
+
+    let outcome = paint_frame_gated(
+        &mut canvas,
+        &metrics(1.0),
+        &frame,
+        &mut terminal,
+        &mut test.pass,
+        &mut images,
+        &mut gate,
+        false,
+    );
+    assert_eq!(
+        outcome,
+        FrameOutcome::Damage(Damage::from_rects(vec![
+            DeviceRect::new(0, 32, 64, 16).expect("the changed row's band")
+        ])),
+        "the damage is the changed row's band alone"
+    );
+
+    // Repainted: exactly the changed row and its two neighbours — the
+    // sentinel erased there, one row past the neighbours it survives.
+    // Sampled away from the `X` in column 0, where its ink and its spill
+    // cannot reach.
+    let column = 40;
+    for row in 1..=3 {
+        assert_ne!(
+            canvas.pixel(column, row * 16 + 8),
+            Some([255, 0, 255, 255]),
+            "row {row} was repainted"
+        );
+    }
+    for row in [0, 4, 5] {
+        assert_eq!(
+            canvas.pixel(column, row * 16 + 8),
+            Some([255, 0, 255, 255]),
+            "row {row} was not repainted"
+        );
+    }
 }
 
 /// The partial path paints the same pixels as the always-full path: the

@@ -107,7 +107,9 @@ impl RowSet {
     /// The set plus one row above and below each of its rows, clamped to
     /// the grid — the repaint region of the partial pass (the spill rule
     /// in the module comment). Every row of the set is in range, so each
-    /// contributes at least itself: the result is never empty.
+    /// contributes at least itself: the result is never empty. The gate's
+    /// plan applies the expansion exactly once, when it builds
+    /// [`FramePlan::Rows`]; the painter draws the set as it is.
     #[must_use]
     pub(crate) fn expanded(&self, grid_rows: i32) -> Self {
         let mut rows = Vec::new();
@@ -478,9 +480,10 @@ struct BeginFrame {
 /// caller reports the changed rows' bands as the damage; the spill
 /// neighbours are repainted with their own unchanged pixels.
 ///
-/// The region is `repaint` plus one row above and below each row, clamped
-/// to the grid (the spill rule in the module comment). The walk filter
-/// clips every cell pass at once — they all share the frame walk.
+/// The region is `repaint` as the gate's plan built it — the changed rows
+/// plus one neighbour above and below each, clamped to the grid, expanded
+/// exactly once ([`FrameGate::plan`]). The walk filter clips every cell
+/// pass at once — they all share the frame walk.
 fn paint_rows(
     canvas: &mut Canvas,
     metrics: &PainterMetrics,
@@ -490,9 +493,7 @@ fn paint_rows(
     repaint: &RowSet,
     offset: i32,
 ) {
-    let grid_rows = i32::from(terminal.rows());
-    let expanded = repaint.expanded(grid_rows);
-    let bands: Vec<DeviceRect> = expanded
+    let bands: Vec<DeviceRect> = repaint
         .rows()
         .iter()
         .map(|&row| row_band(metrics, frame, row))
@@ -506,7 +507,7 @@ fn paint_rows(
     }
 
     // The cell layers in the full draw's order, clipped by the walk filter.
-    terminal.frame_walk_rows(expanded.rows());
+    terminal.frame_walk_rows(repaint.rows());
     bg::paint(canvas, metrics, frame, terminal, offset);
     terminal.frame_rewind();
     sprite::paint(canvas, metrics, frame, terminal, offset);
@@ -518,7 +519,7 @@ fn paint_rows(
     // is clean keeps the pixels an earlier frame drew for it.
     let draw_cursor = terminal
         .cursor()
-        .is_some_and(|cursor| expanded.contains(cursor.y));
+        .is_some_and(|cursor| repaint.contains(cursor.y));
     if draw_cursor {
         cursor::paint(canvas, metrics, terminal, offset, &cursor_text, text);
     }
