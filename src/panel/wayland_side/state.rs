@@ -39,15 +39,17 @@ use wayland_client::protocol::{wl_output, wl_surface};
 use wayland_client::{Connection, QueueHandle};
 
 use crate::guard::{Poisoned, guard, guard_always};
-use crate::layout::{CellSize, OutputSize};
+use crate::layout::{CellSize, Layout, OutputSize};
 use crate::pty::apply_winsize;
 use crate::surfaces::gap::{HeldGap, start_held_gap};
 
 use super::super::handshake::{Handshake, StartOutcome};
 use super::Startup;
+use super::apply::SurfaceGeometry;
 use super::buffers::{Scale, viewport_destination};
 use super::sizing::{Grid, Sizing};
-use super::surfaces::{PanelSurfaces, SurfaceId};
+use super::surfaces::{PanelSurfaces, SurfaceId, panel_margins};
+use super::tween::TweenDriver;
 
 /// The globals and surfaces one bound panel thread session holds (D2). The
 /// fields live here and not on [`PanelState`] because every one of them needs
@@ -101,6 +103,15 @@ pub(crate) struct PanelState {
     /// its own strip, a covering start holds zero — and moved only by a
     /// validated apply (row 3.5, `crate::surfaces::gap`).
     pub(crate) held: HeldGap,
+    /// The applied layout (row 3.5): the last staged apply's layout, whose
+    /// side and gutters the tween's finish geometry reads. A tween only runs
+    /// between layouts that match in side and left/right gutters, so the
+    /// finish restores the applied margins exactly.
+    pub(crate) applied: Layout,
+    /// The width tween's driver (row 6.1, [`super::tween`]): the frame
+    /// callbacks and the watchdog timer drive it from row 6.2's animated
+    /// apply on.
+    pub(crate) tween: TweenDriver,
     pub(crate) session: Option<Session>,
 }
 
@@ -134,6 +145,8 @@ impl PanelState {
             cell,
             sizing: Sizing::new(startup.layout.cols(), cell),
             held: start_held_gap(startup.layout, cell.width().get()),
+            applied: startup.layout,
+            tween: TweenDriver::default(),
             session: None,
         }
     }
@@ -189,6 +202,33 @@ impl PanelState {
     pub(crate) fn connection_closed(&mut self) {
         self.inner.live.store(false, Ordering::Relaxed);
         self.handshake.report(StartOutcome::NoDisplay);
+    }
+
+    /// The tween's finish action (row 6.1): apply the target width through
+    /// the same path a plain apply writes its geometry, so a watchdog fire
+    /// leaves the panel at the target width exactly like the GTK watchdog's
+    /// `on_finish`. The geometry comes from the applied layout and the held
+    /// gap: a tween only runs between layouts that match in side and
+    /// left/right gutters, and the apply that began it staged the rest. The
+    /// stop relay — the frame-cache drop, the deferred grid push and the pty
+    /// tween flag — joins here when rows 6.2 and 8.1 move those onto this
+    /// thread. The headless core has no session, so the write is exercised
+    /// only on niri (row 10.1).
+    pub(crate) fn tween_finished(&mut self, target_px: i32) {
+        let geometry = SurfaceGeometry {
+            panel_side: self.applied.side(),
+            panel_margins: panel_margins(self.applied),
+            panel_width: Some(target_px),
+            reserve_side: self.held.side(),
+            reserve_zone: self.held.zone(),
+        };
+        if let Some(surfaces) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.surfaces.as_mut())
+        {
+            surfaces.apply_geometry(&geometry);
+        }
     }
 
     /// Tear the panel down: drop the two layer surfaces and end the loop.
@@ -436,8 +476,9 @@ impl CompositorHandler for PanelState {
         _surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
-        // The tween's frame callbacks arrive here (row 6.1); no frames are
-        // requested yet.
+        // The tween's frame callbacks arrive here; row 6.2 wires them to the
+        // driver in [`super::tween`] — each callback maps to
+        // `TweenDriver::frame`, and a running tween requests the next one.
     }
 
     fn surface_enter(
@@ -576,7 +617,7 @@ delegate_dispatch2!(PanelState);
 
 #[cfg(test)]
 mod tests {
-    use super::super::surfaces::{panel_anchor, panel_margins};
+    use super::super::surfaces::panel_anchor;
     use super::*;
     use crate::guard::Poisoned as GuardPoisoned;
     use crate::layout::{Keyboard, Side};

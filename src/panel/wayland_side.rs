@@ -19,8 +19,9 @@
 //! and the grid sizing of row 3.3 — lives in the submodules beside this
 //! lifecycle plumbing: [`state`] holds the dispatch state, [`surfaces`] the
 //! surface geometry, [`sizing`] the pure size decisions, [`apply`] the layout
-//! apply (row 3.5), [`commands`] the command-channel handling and
-//! [`watchdog`] the startup watchdog. Until row
+//! apply (row 3.5), [`commands`] the command-channel handling,
+//! [`watchdog`] the startup watchdog and [`tween`] the width tween's driver
+//! (row 6.1). Until row
 //! 8.1 switches `Panel::start` over, nothing in the crate calls
 //! [`spawn_panel_thread`]: the entry point is `pub` so it stays reachable (a
 //! `pub(crate)` entry with no caller is dead code under `-D warnings`, and
@@ -59,6 +60,7 @@ pub mod seat;
 pub mod sizing;
 pub(crate) mod state;
 mod surfaces;
+pub mod tween;
 pub(crate) mod watchdog;
 
 use state::{BindFailure, PanelState};
@@ -391,6 +393,13 @@ fn run_loop(
         // `None`: park until the command channel or the connection wakes the
         // loop, like the parked GTK thread's main context.
         event_loop.dispatch(None, state)?;
+        // The tween's watchdog (row 6.1, [`tween`]): the timer lives only
+        // while a tween runs — armed here after each dispatch at the
+        // driver's pending deadline, replaced when a retarget moves the
+        // deadline, and dropped by its own fire once the tween is gone or
+        // expired. A begin inside a dispatch leaves the deadline pending,
+        // which the next iteration arms.
+        tween::arm_watchdog(&handle, state);
     }
 }
 

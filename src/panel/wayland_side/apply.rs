@@ -141,6 +141,7 @@ impl PanelState {
             return Err(PublishOutcome::InvalidLayout);
         };
         self.held = staged.held_gap;
+        self.applied = staged.layout;
         self.sizing.apply_columns(staged.layout.cols(), push);
         Ok(surface_geometry(&staged, self.cell))
     }

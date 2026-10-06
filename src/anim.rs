@@ -151,6 +151,21 @@ impl Tween {
         self.active
     }
 
+    /// The tween's current eased width: `from_px` until the first tick, then
+    /// the last eased frame (`a.cur_px`). The wayland driver's retargets
+    /// read it as their `from_px`.
+    #[must_use]
+    pub fn current_px(&self) -> i32 {
+        self.cur_px
+    }
+
+    /// The tween's target width in pixels (`a.to_px`): what the stop paths
+    /// apply when the tween finishes.
+    #[must_use]
+    pub fn target_px(&self) -> i32 {
+        self.to_px
+    }
+
     /// Advance to `now_us`. The first call stamps the tween's start time, so
     /// the first frame is exactly `from_px`.
     // Approved per-instance (#13): microsecond timestamps are tiny against
