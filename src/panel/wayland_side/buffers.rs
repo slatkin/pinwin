@@ -206,6 +206,24 @@ impl Scale {
         }
     }
 
+    /// Set the viewport source of one surface's viewport, in buffer (device)
+    /// pixels (row 6.2): the compositor maps this rectangle onto the
+    /// destination, and whole device pixels encode exactly as `wl_fixed`
+    /// ([`CropRect::wl_fixed`] pins it). Without a viewport, a no-op.
+    pub(crate) fn set_source(&mut self, id: SurfaceId, x: i32, y: i32, w: i32, h: i32) {
+        if let Some(viewport) = &self.surface_mut(id).viewport {
+            viewport.set_source(f64::from(x), f64::from(y), f64::from(w), f64::from(h));
+        }
+    }
+
+    /// Whether the panel surface has a viewport (D1): the tween's frames
+    /// present the cached wide buffer through it, or copy each frame's crop
+    /// into a fresh buffer without one (row 6.2).
+    #[must_use]
+    pub fn panel_viewporter(&self) -> bool {
+        self.viewporter.is_some() && self.panel.viewport.is_some()
+    }
+
     /// Destroy the per-surface fractional-scale and viewport objects of one
     /// surface, before the surface that owns them goes away: both protocol
     /// objects are destructors, so dropping them sends their `destroy`

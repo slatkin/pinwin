@@ -157,7 +157,9 @@ pub(crate) fn staged_publish(
 /// mutates the held gap, so a covering excursion's shrink-back — whose
 /// target strip equals the held one — holds the gap still, while a pure
 /// pushing expand, whose strip is new, reflows the tiles alongside.
-pub(super) fn gap_tween_decision(
+/// `pub(crate)`: the wayland apply's staging half reads the same decision
+/// (replace-gtk-with-wayland row 6.2), so it stays stated once here.
+pub(crate) fn gap_tween_decision(
     gap_rests_at: i32,
     animate: bool,
     layout: Layout,

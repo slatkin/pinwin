@@ -79,6 +79,14 @@ pub struct Sizing {
     cell: CellSize,
     stage: Stage,
     pushed: Option<Grid>,
+    /// The columns of the grid the terminal runs: updated only when a push
+    /// actually lands, so a deferred apply's recorded columns do not move
+    /// it. The tween's wide draw reads it.
+    live: NonZeroU16,
+    /// The defer mode (row 6.2): while a width tween runs, the pushes wait
+    /// for the tween's finish. Default off, so the row 3.3 and 3.5
+    /// decisions are unchanged.
+    deferred: bool,
 }
 
 impl Sizing {
@@ -94,6 +102,38 @@ impl Sizing {
             cell,
             stage: Stage::AwaitingHeight,
             pushed: None,
+            live: cols,
+            deferred: false,
+        }
+    }
+
+    /// The defer mode (row 6.2): while a width tween runs, the grid and pty
+    /// push waits for the tween's finish — an animated apply and a mid-tween
+    /// configure record their inputs (the columns and the height) without
+    /// deriving or pushing, and the finish pushes once from the latest of
+    /// both. The same gate the GTK path's `apply_size` applies with
+    /// `!anim.active()`, moved onto the sizing the push runs through.
+    pub fn defer_pushes(&mut self, deferred: bool) {
+        self.deferred = deferred;
+    }
+
+    /// The columns of the grid the terminal runs: the last pushed grid's,
+    /// or the startup layout's before the first push. The tween's wide draw
+    /// reads this — the grid on screen during a tween is the last pushed
+    /// one, which the deferred applies have not changed.
+    #[must_use]
+    pub fn live_cols(&self) -> NonZeroU16 {
+        self.live
+    }
+
+    /// The latest configure height, in logical pixels (D3); `None` before
+    /// the first configure. The tween's wide draw reads it for the crop's
+    /// height.
+    #[must_use]
+    pub fn height(&self) -> Option<u32> {
+        match self.stage {
+            Stage::AwaitingHeight => None,
+            Stage::Running { height } => Some(height),
         }
     }
 
@@ -125,12 +165,18 @@ impl Sizing {
         let Some(rows) = rows_for_height(height, self.cell) else {
             return;
         };
+        self.stage = Stage::Running { height };
+        if self.deferred {
+            // The tween's finish derives and pushes once from the latest
+            // height (row 6.2); this configure only records the input.
+            return;
+        }
         let grid = Grid::new(self.cols.get(), rows, self.cell);
         if self.pushed != Some(grid) {
             push(grid);
             self.pushed = Some(grid);
+            self.live = NonZeroU16::new(grid.cols).unwrap_or(self.live);
         }
-        self.stage = Stage::Running { height };
     }
 
     /// A layout apply of a layout with `cols` columns (D3): the columns come
@@ -141,6 +187,11 @@ impl Sizing {
     /// derives with them.
     pub fn apply_columns(&mut self, cols: NonZeroU16, push: &mut dyn FnMut(Grid)) {
         self.cols = cols;
+        if self.deferred {
+            // The same defer as `configure`'s: the finish derives and
+            // pushes once from the recorded columns and height (row 6.2).
+            return;
+        }
         let Stage::Running { height } = self.stage else {
             return;
         };
@@ -151,6 +202,7 @@ impl Sizing {
         if self.pushed != Some(grid) {
             push(grid);
             self.pushed = Some(grid);
+            self.live = NonZeroU16::new(grid.cols).unwrap_or(self.live);
         }
     }
 }
@@ -302,5 +354,68 @@ mod tests {
 
         assert_eq!(started.pushed, from_scratch.pushed);
         assert_eq!(pushed.grids.len(), 1);
+    }
+
+    /// The defer mode (row 6.2): while it is on, an animated apply and a
+    /// mid-tween configure record their inputs without deriving or pushing,
+    /// and the finish's plain `apply_columns` pushes once from the latest
+    /// of both — the new columns, the rows of the latest configure height.
+    #[test]
+    fn the_defer_mode_records_inputs_and_the_finish_pushes_once() {
+        let mut sizing = Sizing::started(cols(40), cell(9, 16), 1080);
+        let mut pushed = Recorder::default();
+
+        sizing.defer_pushes(true);
+        sizing.apply_columns(cols(120), &mut |grid| pushed.push(grid));
+        assert!(pushed.grids.is_empty(), "a deferred apply pushes nothing");
+        sizing.configure(1040, &mut |grid| pushed.push(grid));
+        assert!(
+            pushed.grids.is_empty(),
+            "a deferred configure pushes nothing"
+        );
+
+        // The live columns stay the last pushed ones while the pushes wait.
+        assert_eq!(sizing.live_cols(), cols(40));
+        assert_eq!(sizing.height(), Some(1040), "the height is recorded");
+
+        // The finish lifts the defer and pushes once.
+        sizing.defer_pushes(false);
+        sizing.apply_columns(cols(120), &mut |grid| pushed.push(grid));
+        assert_eq!(pushed.grids.len(), 1, "the finish pushes once");
+        assert_eq!(pushed.grids[0].cols(), 120, "the tweened columns");
+        assert_eq!(
+            pushed.grids[0].rows(),
+            1040 / 16,
+            "the latest height's rows"
+        );
+        assert_eq!(sizing.live_cols(), cols(120));
+
+        // A configure repeating the pushed grid still pushes nothing.
+        sizing.configure(1040, &mut |grid| pushed.push(grid));
+        assert_eq!(pushed.grids.len(), 1);
+    }
+
+    /// The live columns before the first push are the recorded ones, and a
+    /// deferred apply that cannot derive (no height yet) still records.
+    #[test]
+    fn live_cols_follow_the_pushed_grid_and_the_record_before_it() {
+        let mut sizing = Sizing::new(cols(40), cell(9, 16));
+        assert_eq!(sizing.live_cols(), cols(40));
+        assert_eq!(sizing.height(), None, "no configure, no height");
+
+        sizing.defer_pushes(true);
+        sizing.apply_columns(cols(60), &mut |_grid| panic!("no push"));
+        assert_eq!(
+            sizing.live_cols(),
+            cols(40),
+            "the push is still the old one"
+        );
+
+        sizing.configure(1080, &mut |_grid| panic!("no push"));
+        sizing.defer_pushes(false);
+        let mut pushed = Recorder::default();
+        sizing.apply_columns(cols(60), &mut |grid| pushed.push(grid));
+        assert_eq!(pushed.grids.len(), 1, "the finish derives and pushes");
+        assert_eq!(pushed.grids[0].cols(), 60);
     }
 }

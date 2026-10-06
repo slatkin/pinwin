@@ -39,6 +39,7 @@ use calloop::{LoopHandle, RegistrationToken};
 
 use crate::anim::{Advance, Tween};
 use crate::guard::guard;
+use crate::layout::Layout;
 
 use super::state::PanelState;
 
@@ -260,6 +261,23 @@ impl TweenDriver {
     }
 }
 
+/// Whether a layout apply animates (row 6.2): the GTK path's
+/// [`crate::surfaces::should_animate`] rule, read against the applied
+/// layout — a positive duration between layouts that match in side and
+/// left and right gutters animates, because those move the reservation's
+/// side; a covering-only change animates so a pushing retarget at the same
+/// width can ease its gap back (overlay-expand D3). The duration clamp to
+/// 1000 ms happens here, at the begin, as `pinwin_api.c` did upstream. The
+/// library reads no desktop animation setting: the host's duration is the
+/// only control.
+#[must_use]
+pub fn should_animate(duration_ms: u32, applied: &Layout, requested: &Layout) -> bool {
+    duration_ms > 0
+        && requested.side() == applied.side()
+        && requested.left() == applied.left()
+        && requested.right() == applied.right()
+}
+
 /// The run loop's watchdog arming (row 6.1): when a running tween's deadline
 /// is not the one the live timer is armed at, remove the stale timer and arm
 /// a fresh one-shot timer at the deadline. The timer's callback is
@@ -296,7 +314,12 @@ pub(crate) fn on_watchdog_tick(state: &mut PanelState) -> TimeoutAction {
         WatchdogStep::Pending { remaining } => TimeoutAction::ToDuration(remaining),
         WatchdogStep::Expired(target_px) => {
             let poisoned = state.poisoned.clone();
-            let _ = guard(&poisoned, || state.tween_finished(target_px));
+            let fd = state.startup.fd;
+            let _ = guard(&poisoned, || {
+                state.tween_finished(target_px, &mut |grid| {
+                    super::state::apply_pty_size(fd, grid);
+                });
+            });
             TimeoutAction::Drop
         }
     }
@@ -310,7 +333,7 @@ mod tests {
     use std::sync::mpsc;
 
     use crate::guard::Poisoned;
-    use crate::layout::{CellSize, Keyboard, Layout, Side};
+    use crate::layout::{CellSize, Keyboard, Side};
     use crate::panel::handshake::Handshake;
 
     use super::super::{Inner, Startup};
@@ -611,5 +634,53 @@ mod tests {
             .expect("dispatch");
         assert!(!state.tween.is_active());
         assert!(!state.done, "an idle watchdog does not end the loop");
+    }
+
+    /// The animate decision is the GTK path's `should_animate` rule read
+    /// against the applied layout: a positive duration between layouts that
+    /// match in side and left and right gutters animates; a zero duration,
+    /// a side switch and a gutter change snap.
+    #[test]
+    fn the_animate_decision_follows_the_gtk_rule() {
+        fn layout(side: Side, cols: u16, left: i32, right: i32) -> Layout {
+            Layout::new(
+                side,
+                std::num::NonZeroU16::new(cols).expect("test columns"),
+                0,
+                0,
+                left,
+                right,
+            )
+        }
+        let applied = layout(Side::Left, 40, 0, 12);
+
+        assert!(
+            should_animate(200, &applied, &applied),
+            "an identity applies"
+        );
+        assert!(
+            should_animate(200, &applied, &layout(Side::Left, 120, 0, 12)),
+            "a column change at the same side and gutters animates"
+        );
+        assert!(
+            should_animate(200, &applied, &layout(Side::Left, 120, 0, 12).covering()),
+            "a covering-only change animates so the gap can ease back"
+        );
+        assert!(
+            !should_animate(0, &applied, &layout(Side::Left, 120, 0, 12)),
+            "a zero duration snaps"
+        );
+        assert!(
+            !should_animate(200, &applied, &layout(Side::Right, 120, 0, 12)),
+            "a side switch snaps"
+        );
+        assert!(
+            !should_animate(200, &applied, &layout(Side::Left, 120, 4, 12)),
+            "a left-gutter change snaps"
+        );
+        assert!(
+            !should_animate(200, &applied, &layout(Side::Left, 120, 0, 4)),
+            "a right-gutter change snaps"
+        );
     }
 }

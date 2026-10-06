@@ -24,17 +24,19 @@
 
 use std::num::NonZeroU16;
 
-use smithay_client_toolkit::compositor::Region;
+use smithay_client_toolkit::compositor::{FrameCallbackData, Region};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, LayerSurface};
+use smithay_client_toolkit::shm::slot::Buffer;
 use smithay_client_toolkit::shm::{CreatePoolError, Shm};
+use wayland_client::QueueHandle;
 use wayland_client::protocol::wl_surface;
 
 use crate::layout::{CellSize, Keyboard, Layout, Side};
 use crate::surfaces::gap::start_held_gap;
 
 use super::apply::SurfaceGeometry;
-use super::buffers::BufferPool;
+use super::buffers::{BufferPool, BufferPoolError};
 
 /// Which of the panel thread's surfaces a `wl_surface` is: the user data the
 /// surfaces are created with, so the compositor handlers can tell the panel's
@@ -226,14 +228,7 @@ impl PanelSurfaces {
 
         // The first buffer mapped the panel: the `on-demand` switch runs in
         // the commit after it, exactly once (D3, spike row 1.2).
-        if !self.switched_to_on_demand {
-            self.switched_to_on_demand = true;
-            let target = post_buffer_interactivity(self.keyboard);
-            if target != map_interactivity(self.keyboard) {
-                self.panel.set_keyboard_interactivity(target);
-                self.panel.commit();
-            }
-        }
+        self.switch_to_on_demand();
     }
 
     /// One configure of the reserve surface: fill the surface with a
@@ -305,6 +300,110 @@ impl PanelSurfaces {
                 .set_anchor(panel_anchor(geometry.reserve_side));
             reserve.surface.set_exclusive_zone(geometry.reserve_zone);
             reserve.surface.commit();
+        }
+    }
+
+    /// The tween frame's panel writes (row 6.2): `set_size` at the eased
+    /// width — the height stays the compositor's, between the anchors.
+    /// The anchors are not written: a tween never changes side.
+    pub(crate) fn tween_panel_size(&mut self, width: i32) {
+        if let Ok(width) = u32::try_from(width) {
+            self.panel.set_size(width, 0);
+        }
+    }
+
+    /// The tween frame's margin write (row 6.2): the tweening layout's
+    /// margins, whose top and bottom may change while the horizontal ones
+    /// cannot (the animate rule pins side and gutters).
+    pub(crate) fn tween_panel_margins(&mut self, margins: (i32, i32, i32, i32)) {
+        let (top, right, bottom, left) = margins;
+        self.panel.set_margin(top, right, bottom, left);
+    }
+
+    /// The tween frame's reserve writes (row 6.2): the held-gap rule's side
+    /// and exclusive zone, committed at once, so the zone moves with the
+    /// panel in the same frames (D7). The anchor is written with the zone
+    /// because the rule's side and the committed one must not drift, even
+    /// though a tween never changes side.
+    pub(crate) fn tween_reserve(&mut self, side: Side, zone: i32) {
+        let Some(reserve) = &self.reserve else {
+            return;
+        };
+        reserve.surface.set_anchor(panel_anchor(side));
+        reserve.surface.set_exclusive_zone(zone);
+        reserve.surface.commit();
+    }
+
+    /// Attach `buffer` to the panel surface (row 6.2): the cached wide
+    /// buffer, re-attached every tween frame. A refused activate leaves the
+    /// previous attach in place; the commit below still presents it.
+    pub(crate) fn tween_attach(&mut self, buffer: &Buffer) {
+        let _ = buffer.attach_to(self.panel.wl_surface());
+    }
+
+    /// A fresh pool buffer at the crop size for the no-viewporter fallback
+    /// (row 6.2): the caller copies the frame's crop into the returned
+    /// bytes and attaches the buffer. The pool is queue-bound, so this runs
+    /// only in the live session.
+    ///
+    /// # Errors
+    /// The pool could not provide the buffer: the caller skips the frame,
+    /// and the next one or the watchdog retries.
+    pub(crate) fn tween_fresh_buffer(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<(Buffer, &mut [u8]), BufferPoolError> {
+        self.pool.buffer(width, height)
+    }
+
+    /// The pool, for the wide cache's one upload at the tween's start
+    /// (row 6.2): the cache keeps the buffer it is uploaded into.
+    pub(crate) fn pool_mut(&mut self) -> &mut BufferPool {
+        &mut self.pool
+    }
+
+    /// Damage the panel's buffer rectangle and commit the frame (row 6.2):
+    /// the whole presented buffer is damaged, because every frame moves the
+    /// crop. A size past `i32` damages nothing — the commit still presents.
+    pub(crate) fn tween_present(&mut self, width: u32, height: u32) {
+        if let (Ok(width), Ok(height)) = (i32::try_from(width), i32::try_from(height)) {
+            self.panel.wl_surface().damage_buffer(0, 0, width, height);
+        }
+        self.panel.commit();
+    }
+
+    /// Request the panel surface's next `wl_surface.frame` callback (row
+    /// 6.2): the compositor completes it when the next frame is due, and
+    /// the callback drives the tween's next eased width.
+    pub(crate) fn request_frame(&self, qh: &QueueHandle<super::state::PanelState>) {
+        let surface = self.panel.wl_surface();
+        surface.frame(qh, FrameCallbackData(surface.clone()));
+    }
+
+    /// One panel configure while a tween runs (row 6.2): the tween frames
+    /// own the panel surface's size, viewport and buffer commits until the
+    /// tween finishes, so this configure runs the `on-demand` switch only —
+    /// the buffer it would otherwise have followed may have been a tween
+    /// frame's. The grid sizing the caller drives records the height; the
+    /// defer mode holds its push until the finish.
+    pub(crate) fn panel_configured_under_tween(&mut self) {
+        self.switch_to_on_demand();
+    }
+
+    /// The `on-demand` switch (D3), run once after the first buffer commit —
+    /// whichever path committed that buffer: the placeholder path on a plain
+    /// configure, or a tween frame's buffer on a configure that arrives while
+    /// a tween owns the commits.
+    fn switch_to_on_demand(&mut self) {
+        if self.switched_to_on_demand {
+            return;
+        }
+        self.switched_to_on_demand = true;
+        let target = post_buffer_interactivity(self.keyboard);
+        if target != map_interactivity(self.keyboard) {
+            self.panel.set_keyboard_interactivity(target);
+            self.panel.commit();
         }
     }
 }
