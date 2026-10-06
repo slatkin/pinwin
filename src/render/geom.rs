@@ -46,6 +46,21 @@ pub fn device_px(value: f64) -> i32 {
     num_traits::cast(clamped).unwrap_or(0)
 }
 
+/// Convert one device-space value to the `f32` the canvas' fractional
+/// primitives take — the f64-to-f32 half of the cast seam (D5). The input
+/// keeps its fractional part (the focus accent's inset stroke is not
+/// snapped), so this only narrows the type: a value that is not a number
+/// becomes 0, and one outside the `f32` range clamps to the nearest end —
+/// a canvas that large cannot exist, so the clamped value never reaches a
+/// draw.
+#[must_use]
+pub fn device_f32(value: f64) -> f32 {
+    let clamped = if value.is_finite() { value } else { 0.0 };
+    // The finite value fits an f32's magnitude range at canvas sizes, so
+    // the conversion cannot fail. Qualified like `device_px`.
+    num_traits::cast(clamped).unwrap_or(0.0)
+}
+
 /// A rectangle in device pixels (D5): the integer form the canvas
 /// primitives take. The fields are private; [`PainterMetrics`] is the
 /// constructor, so a `DeviceRect` always carries non-negative extents
@@ -108,22 +123,25 @@ impl DeviceRect {
 pub struct PainterMetrics {
     cell_w: f64,
     cell_h: f64,
+    ascent: f64,
     scale: OutputScale,
 }
 
 impl PainterMetrics {
-    /// Metrics for a cell pitch in logical pixels at `scale`. `None` when a
-    /// pitch is not finite and positive — a cell no terminal could have. A
-    /// `scale` that is not positive and finite falls back to 1, like
-    /// `OutputScale::new` does.
+    /// Metrics for a cell pitch and a font ascent in logical pixels at
+    /// `scale`. `None` when a pitch is not finite and positive — a cell no
+    /// terminal could have. A non-finite ascent falls back to 0, which only
+    /// moves the underline band to the cell's top. A `scale` that is not
+    /// positive and finite falls back to 1, like `OutputScale::new` does.
     #[must_use]
-    pub fn new(cell_w: f64, cell_h: f64, scale: f64) -> Option<Self> {
+    pub fn new(cell_w: f64, cell_h: f64, ascent: f64, scale: f64) -> Option<Self> {
         if !cell_w.is_finite() || !cell_h.is_finite() || cell_w <= 0.0 || cell_h <= 0.0 {
             return None;
         }
         Some(PainterMetrics {
             cell_w,
             cell_h,
+            ascent: if ascent.is_finite() { ascent } else { 0.0 },
             scale: OutputScale::new(scale),
         })
     }
@@ -138,6 +156,19 @@ impl PainterMetrics {
     #[must_use]
     pub fn cell_h(&self) -> f64 {
         self.cell_h
+    }
+
+    /// The font ascent, in logical pixels: the anchor the underline band
+    /// hangs from.
+    #[must_use]
+    pub fn ascent(&self) -> f64 {
+        self.ascent
+    }
+
+    /// The scale the frame snaps at, in device pixels per logical pixel.
+    #[must_use]
+    pub fn scale(&self) -> f64 {
+        self.scale.get()
     }
 
     /// The snapped device rectangle of the cell at `(col, row)` (D5): the
@@ -362,7 +393,7 @@ mod tests {
     use crate::render::canvas::Canvas;
 
     fn metrics(cell_w: f64, cell_h: f64, scale: f64) -> PainterMetrics {
-        PainterMetrics::new(cell_w, cell_h, scale).expect("test metrics are valid")
+        PainterMetrics::new(cell_w, cell_h, 12.0, scale).expect("test metrics are valid")
     }
 
     /// The cast seam rounds floating-point dust off a snapped device edge,
@@ -393,21 +424,30 @@ mod tests {
         assert!(DeviceRect::new(1, 2, 3, 0).expect("valid").is_empty());
     }
 
-    /// Cell metrics refuse a pitch no terminal could have, and a degenerate
-    /// scale falls back to 1 like the snap rules do.
+    /// Cell metrics refuse a pitch no terminal could have, keep a
+    /// degenerate ascent at 0, and let a degenerate scale fall back to 1
+    /// like the snap rules do.
     #[test]
     fn painter_metrics_refuse_degenerate_pitches() {
-        assert!(PainterMetrics::new(0.0, 20.0, 1.0).is_none());
-        assert!(PainterMetrics::new(9.0, -1.0, 1.0).is_none());
-        assert!(PainterMetrics::new(f64::NAN, 20.0, 1.0).is_none());
-        assert!(PainterMetrics::new(f64::INFINITY, 20.0, 1.0).is_none());
+        assert!(PainterMetrics::new(0.0, 20.0, 12.0, 1.0).is_none());
+        assert!(PainterMetrics::new(9.0, -1.0, 12.0, 1.0).is_none());
+        assert!(PainterMetrics::new(f64::NAN, 20.0, 12.0, 1.0).is_none());
+        assert!(PainterMetrics::new(f64::INFINITY, 20.0, 12.0, 1.0).is_none());
         let m = metrics(9.0, 20.0, 0.0);
         assert_eq!(m.cell_w(), 9.0);
         assert_eq!(m.cell_h(), 20.0);
+        assert_eq!(m.ascent(), 12.0);
+        assert_eq!(m.scale(), 1.0, "the degenerate scale fell back to 1");
         assert_eq!(
             m.cell_rect(0, 0).w(),
             9,
             "the degenerate scale fell back to 1"
+        );
+        let unsteady = PainterMetrics::new(9.0, 20.0, f64::NAN, 1.0).expect("valid");
+        assert_eq!(
+            unsteady.ascent(),
+            0.0,
+            "a non-finite ascent falls back to 0"
         );
     }
 
