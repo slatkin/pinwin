@@ -27,10 +27,12 @@ use crate::guard::{Poisoned, guard};
 use crate::term::Terminal;
 
 pub mod cursor;
+pub mod focus;
 pub mod keyboard;
 pub mod pointer;
 pub mod xkb;
 
+use focus::FocusSide;
 use pointer::PointerSide;
 
 /// The keyboard hooks' links: the terminal the key encoder pushes into and
@@ -102,6 +104,7 @@ pub struct SeatSide {
     links: SeatLinks,
     keyboard: keyboard::KeyboardSide,
     pointer: PointerSide,
+    focus: FocusSide,
 }
 
 impl SeatSide {
@@ -111,6 +114,7 @@ impl SeatSide {
     #[must_use]
     pub fn new(links: SeatLinks) -> Self {
         SeatSide {
+            focus: FocusSide::new(links.clone()),
             links,
             keyboard: keyboard::KeyboardSide::new(),
             pointer: PointerSide::default(),
@@ -175,12 +179,22 @@ impl SeatSide {
         });
     }
 
-    /// The keyboard left the surface (row 5.2): the repeat stops.
+    /// The keyboard entered the surface (row 5.4): the focus accent's flag
+    /// goes up, the redraw queues it into the next frame and the focus gain
+    /// is reported — the triggers the GDK path's focus controller had.
+    pub fn keyboard_entered(&mut self) {
+        self.focus.entered();
+    }
+
+    /// The keyboard left the surface (rows 5.2 and 5.4): the repeat stops
+    /// and the focus accent comes down with its focus-loss report — the two
+    /// halves of the one `wl_keyboard.leave` event.
     pub fn keyboard_left(&mut self) {
         let poisoned = self.links.poisoned.clone();
         let _ = guard(&poisoned, || {
             self.keyboard.left();
         });
+        self.focus.left();
     }
 
     /// One toolkit pointer event (row 5.3): `kind` and `position` come from
@@ -363,6 +377,43 @@ xkb_keymap {
         let (mut seat, _links, writes) = seat_side();
         seat.key_pressed(&key_event(RAW_Q, 0x71));
         assert_eq!(take(&writes), Vec::new());
+    }
+
+    /// Keyboard enter and leave drive the accent and the focus reports
+    /// through the seat side (row 5.4): the enter turns the focused flag on
+    /// and reports the gain, the leave clears it, reports the loss and stops
+    /// a running repeat.
+    #[test]
+    fn keyboard_enter_and_leave_drive_the_accent_and_the_reports() {
+        let (mut seat, links, writes) = seat_side();
+        links
+            .terminal
+            .borrow_mut()
+            .push_pty_data(b"\x1b[>11u\x1b[?1004h");
+        seat.keymap_updated(TEST_KEYMAP);
+        seat.repeat_info_updated(&RepeatInfo::Repeat {
+            rate: std::num::NonZeroU32::new(25).expect("test rate"),
+            delay: 250,
+        });
+        seat.modifiers_updated(RawModifiers::default(), 0, SctkModifiers::default());
+
+        // The enter: the accent's flag goes up and the child learns of the
+        // focus gain.
+        seat.keyboard_entered();
+        assert!(links.focused.get(), "the enter set the flag");
+        assert_eq!(take(&writes), b"\x1b[I");
+
+        // A press repeats until the leave, which also drops the accent.
+        seat.key_pressed(&key_event(RAW_Q, 0x71));
+        seat.key_repeated(&key_event(RAW_Q, 0x71));
+        seat.keyboard_left();
+        seat.key_repeated(&key_event(RAW_Q, 0x71));
+        assert!(!links.focused.get(), "the leave cleared the flag");
+        assert_eq!(
+            take(&writes),
+            b"\x1b[113u\x1b[113;1:2u\x1b[O",
+            "press, repeat, then the leave's focus-loss report"
+        );
     }
 
     /// A pointer frame flows through the seat side into the pty (row 5.3):
