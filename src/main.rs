@@ -7,7 +7,10 @@
 //! PINWIN_ACCENT=on|off PINWIN_ACCENT_COLOR=#RRGGBB PINWIN_ACCENT_WIDTH=2
 //! PINWIN_NAME=default
 //! pinwin htop
-//! pinwin --focus [name]
+//! pinwin --focus [name]   # asks for keyboard focus with the activation
+//!                         # token in $XDG_ACTIVATION_TOKEN, which the
+//!                         # compositor sets when a key binding spawns it;
+//!                         # without it, exit 2
 //! ```
 //!
 //! A thin host over the library API ([`pinwin::panel`]), the port of
@@ -25,6 +28,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
+use pinwin::activation::ActivationToken;
 use pinwin::layout::{Layout, Side};
 use pinwin::panel::{Panel, PinwinError, Startup};
 
@@ -162,15 +166,27 @@ fn child_exec(child: &ChildCommand) -> ! {
     unsafe { libc::_exit(127) }
 }
 
-/// The `--focus` client side (keyboard-focus-request row 3.5): ask the host
-/// that owns the name's socket for focus and report the reply. `ok` exits 0,
-/// a missing or failing host exits 1, and an environment error — an unusable
-/// socket path — exits 2 like the other environment errors.
-fn run_focus_client(name: Option<InstanceName>) -> i32 {
+/// The `--focus` client side (keyboard-focus-request row 3.5, the token
+/// protocol of replace-gtk-with-wayland D4): build the activation token
+/// from `get` — `XDG_ACTIVATION_TOKEN` in [`run`] — and only then ask the
+/// host that owns the name's socket for focus and report the reply. A
+/// missing or invalid token exits 2 without contacting any instance; `ok`
+/// exits 0, a missing or failing host exits 1, and an environment error —
+/// an unusable socket path — exits 2 like the other environment errors.
+fn run_focus_client(name: Option<InstanceName>, get: impl Fn(&str) -> Option<String>) -> i32 {
+    // The token comes first: without one there is nothing to ask for, and
+    // no instance is contacted (the spec's "No token" scenario).
+    let token = match settings::read_focus_token(get) {
+        Ok(token) => token,
+        Err(message) => {
+            eprintln!("{message}");
+            return 2;
+        }
+    };
     let name = name.unwrap_or_else(InstanceName::default_instance);
     let result = ipc::socket_path_from_env(&name)
         .map_err(FocusError::Environment)
-        .and_then(|path| ipc::focus_client(&path));
+        .and_then(|path| ipc::focus_client(&path, &token));
     match result {
         Ok(()) => 0,
         Err(FocusError::Environment(message)) => {
@@ -203,10 +219,16 @@ fn run() -> i32 {
             return 2;
         }
     };
-    // The focus client asks the host that owns the name's socket for focus
-    // and reports the reply (keyboard-focus-request row 3.5).
+    // The focus client builds its token from the environment before it
+    // contacts any instance (replace-gtk-with-wayland D4), then asks the
+    // host that owns the name's socket for focus and reports the reply
+    // (keyboard-focus-request row 3.5).
     let command = match mode {
-        Mode::Focus { name } => return run_focus_client(name),
+        Mode::Focus { name } => {
+            return run_focus_client(name, |name| {
+                env::var_os(name).map(|value| value.to_string_lossy().into_owned())
+            });
+        }
         Mode::Host { command } => command,
     };
     let command = if command.is_empty() {
@@ -311,20 +333,16 @@ fn run() -> i32 {
     // `Panel::apply_layout` — and ends within one accept
     // poll of the shutdown flag the main thread sets once the child exits.
     // The socket file goes with it: the host removes the file it created.
-    //
-    // Row 7.3 replaces this placeholder: the focus socket's request line
-    // does not carry a token yet, so the listener reuses one fixed token
-    // until then (replace-gtk-with-wayland row 7.2).
-    let focus_token = match pinwin::ActivationToken::new("pinwin-focus-request") {
-        Ok(token) => token,
-        // The placeholder is a literal known valid; a rejection here is a
-        // bug in it, not a runtime condition.
-        Err(_) => return 1,
-    };
+    // The request line carries the client's activation token, which goes
+    // to the panel's xdg-activation request (replace-gtk-with-wayland D4).
     let shutdown = AtomicBool::new(false);
     let status = std::thread::scope(|scope| {
         scope.spawn(|| {
-            ipc::serve_focus_requests(&listener, &|| panel.request_focus(&focus_token), &shutdown);
+            ipc::serve_focus_requests(
+                &listener,
+                &|token: &ActivationToken| panel.request_focus(token),
+                &shutdown,
+            );
         });
         let status = wait_for_child(pid);
         shutdown.store(true, Ordering::Relaxed);
@@ -378,6 +396,29 @@ mod tests {
         assert_eq!(child_exit_status(1), 1);
         // Killed by SIGKILL (signal 9).
         assert_eq!(child_exit_status(9), 1);
+    }
+
+    /// The `--focus` client reads the token before it contacts any
+    /// instance: a missing token exits 2 even when no instance answers (a
+    /// connect would exit 1), an invalid token exits 2, and a valid token
+    /// with no listener exits 1. The environment is injected, so the test
+    /// never touches the process environment; the name has no listener.
+    #[test]
+    fn the_focus_client_reads_the_token_before_it_connects() {
+        let name = Some(InstanceName::parse("--focus", "no-such-instance").expect("valid"));
+        let none = |_: &str| None;
+
+        // No token: exit 2, no instance contacted (that would be exit 1).
+        assert_eq!(run_focus_client(name.clone(), none), 2);
+
+        // An invalid token: exit 2 as well.
+        let spaced = |_: &str| Some("niri spawn".to_owned());
+        assert_eq!(run_focus_client(name.clone(), spaced), 2);
+
+        // A valid token with no listener on the name: the request is not
+        // answered, exit 1.
+        let valid = |_: &str| Some("niri-spawn:pinwin-172839".to_owned());
+        assert_eq!(run_focus_client(name, valid), 1);
     }
 
     /// The exec arguments are the C strings of the command, with the pointer

@@ -11,6 +11,7 @@
 
 use std::num::NonZeroU16;
 
+use pinwin::activation::{ActivationToken, ActivationTokenError};
 use pinwin::layout::{Accent, Keyboard};
 
 use crate::ipc::InstanceName;
@@ -105,6 +106,26 @@ fn instance_name(raw: Option<&str>) -> Result<InstanceName, String> {
         None => Ok(InstanceName::default_instance()),
         Some(raw) => InstanceName::parse("PINWIN_NAME", raw),
     }
+}
+
+/// `XDG_ACTIVATION_TOKEN` for the `--focus` client (replace-gtk-with-wayland
+/// D4): the activation token the compositor set for this process when it
+/// launched it from a key binding. Unset is an error (the variable is the
+/// only source); a set value must build an [`ActivationToken`]. The error
+/// names the variable and the reason — never the token's value — because a
+/// token is a one-use permission, not a diagnostic.
+pub(crate) fn read_focus_token(
+    get: impl Fn(&str) -> Option<String>,
+) -> Result<ActivationToken, String> {
+    let Some(raw) = get("XDG_ACTIVATION_TOKEN") else {
+        return Err(
+            "pinwin: XDG_ACTIVATION_TOKEN: not set — the compositor sets it for a \
+             process it launches from a key binding"
+                .to_owned(),
+        );
+    };
+    ActivationToken::new(&raw)
+        .map_err(|error: ActivationTokenError| format!("pinwin: XDG_ACTIVATION_TOKEN: {error}"))
 }
 
 /// Read the whole environment contract into [`Settings`]. `get` returns the
@@ -290,6 +311,39 @@ mod tests {
         // A keyboard mode that the type cannot express is still an env error.
         let map = HashMap::from([("PINWIN_KEYBOARD".to_owned(), "sometimes".to_owned())]);
         assert!(call(&map).is_err());
+    }
+
+    /// `XDG_ACTIVATION_TOKEN` builds the client's token: unset is an error
+    /// naming the variable, an empty or otherwise invalid value is an error
+    /// naming the variable and the reason (never the value), and a valid
+    /// value builds the token.
+    #[test]
+    fn read_focus_token_reads_the_activation_token() {
+        // Unset: the error names the variable and says it is not set.
+        let error = read_focus_token(|_| None).expect_err("unset");
+        assert!(
+            error.contains("pinwin: XDG_ACTIVATION_TOKEN:") && error.contains("not set"),
+            "error = {error}"
+        );
+
+        // An empty value, a space, a control character and a too-long value
+        // are rejected; the message names the variable and the reason, and
+        // never repeats the value.
+        for raw in ["", "niri spawn", "niri-spawn:1\n", &"a".repeat(256)] {
+            let error = read_focus_token(|_| Some(raw.to_owned())).expect_err(raw);
+            assert!(
+                error.starts_with("pinwin: XDG_ACTIVATION_TOKEN: "),
+                "raw = {raw:?}, error = {error}"
+            );
+            if !raw.is_empty() {
+                assert!(!error.contains(raw), "the error must not echo the value");
+            }
+        }
+
+        // A valid value builds the token.
+        let token =
+            read_focus_token(|_| Some("niri-spawn:pinwin-172839".to_owned())).expect("valid");
+        assert_eq!(token.as_str(), "niri-spawn:pinwin-172839");
     }
 
     /// `PINWIN_NAME` parses into the validated instance name: unset is the
