@@ -2,9 +2,7 @@
 //! tests, ported with their expectations unchanged. The numbers are pure
 //! f64 arithmetic — no font, no display (replace-gtk-with-wayland D10).
 
-use super::{
-    InkBox, NerdGlyph, NerdMetrics, constrain, constrain as _, ink_to_cell_frame, placement,
-};
+use super::{InkBox, NerdGlyph, NerdMetrics, constrain, ink_to_cell_frame, placement};
 use crate::fontconfig::FontConfig;
 use crate::nerd_font::{Align, Constraint, Height, Size, constraint};
 use crate::render::cell_metrics::measure;
@@ -126,7 +124,7 @@ mod bridge {
     /// The size in points the tests run at: the Ghostty default 11.
     const SIZE: f64 = 11.0;
     /// nf-cod-lightbulb, a Nerd Font icon the text pass owns: the table
-    /// constrains it (FitCover1, icon height, centred) and the terminal
+    /// constrains it (`FitCover1`, icon height, centred) and the terminal
     /// face carries the glyph.
     const ICON_CP: u32 = 0xEA61;
 
@@ -155,7 +153,9 @@ mod bridge {
                 num_traits::cast(mask.height()).expect("the mask height fits f64"),
             ),
             GlyphImage::Color(pixmap) => (f64::from(pixmap.width()), f64::from(pixmap.height())),
-            other => panic!("expected a rasterized image, got {other:?}"),
+            other @ GlyphImage::Empty => {
+                panic!("expected a rasterized image, got {other:?}")
+            }
         }
     }
 
