@@ -210,24 +210,48 @@ fn a_kept_retarget_moves_the_layout_and_gap_state() {
 
 /// A fresh holder draws the live grid into the wide canvas through the
 /// render state and plans its begin frame — the seam row 8.1 fills,
-/// driven here with the test rig's painter pieces (font-gated, like the
-/// crop module's draw tests).
+/// driven here with the thread's renderer over the test family
+/// (font-gated, like the crop module's draw tests).
 #[test]
 fn a_fresh_holder_draws_from_the_render_state() {
-    use crate::render::text_pass::test_support::{self, Rig};
+    use crate::fontconfig::FontConfig;
+    use crate::guard::Poisoned;
+    use crate::panel::wayland_side::renderer::FontSetup;
+    use crate::render::font::FontBook;
+    use crate::render::text_pass::test_support;
+    use crate::term::{PngDecoder, PtySink, Terminal};
 
-    let Some(rig) = Rig::new() else { return };
-    let mut terminal = rig.terminal(rig.cell_h);
+    struct NullSink;
+    impl PtySink for NullSink {
+        fn write_pty(&mut self, _data: &[u8]) {}
+    }
+    struct NoDecoder;
+    impl PngDecoder for NoDecoder {
+        fn decode_png(&mut self, _data: &[u8]) -> Option<crate::term::DecodedPng> {
+            None
+        }
+    }
+
+    let book = FontBook::new().expect("the font book opens");
+    if !book.has_family(test_support::FAMILY) {
+        println!("skipped: {} is not installed", test_support::FAMILY);
+        return;
+    }
+    let config = FontConfig {
+        family: Some(test_support::FAMILY.to_owned()),
+        size: test_support::SIZE,
+    };
+    let setup = FontSetup::resolve_over(book, &config).expect("the family resolves");
+    let cell = setup.cell().expect("the cell fits");
+    let renderer =
+        Renderer::new(setup, 1.5, test_support::THEME, None).expect("the renderer builds");
+
+    let mut terminal = Terminal::new(Poisoned::new(), NullSink, NoDecoder, || {});
+    assert!(terminal.push_size(8, 4, cell.width().get(), cell.height().get()));
     terminal.push_pty_data(test_support::HIDE_CURSOR);
-    let metrics = rig.metrics(1.5, rig.cell_h);
     let mut render = TweenRender {
         terminal: Rc::new(RefCell::new(terminal)),
-        text: rig.test.pass,
-        images: ImagePass::new(),
-        metrics,
-        theme: test_support::THEME,
-        accent: None,
-        focused: false,
+        renderer: Rc::new(RefCell::new(renderer)),
     };
 
     // A 40 -> 120 column tween at a 9 px cell: the grid drawn is the

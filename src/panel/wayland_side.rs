@@ -23,6 +23,9 @@
 //! [`watchdog`] the startup watchdog, [`tween`] the width tween's driver
 //! (row 6.1), [`crop`] the tween's crop plan and wide buffer (row 6.2),
 //! [`tween_draw`] the tween's holder and frame glue (row 6.2) and
+//! [`renderer`] the thread's font setup and renderer — the one owner of
+//! the draw passes, metrics, theme and focus state that row 8.1's later
+//! dispatches wire the frames and the tween's wide draw to (row 8.1).
 //! [`frame_log`] the tween's frame log and its presentation-time source
 //! (row 6.3). Until row
 //! 8.1 switches `Panel::start` over, nothing in the crate calls

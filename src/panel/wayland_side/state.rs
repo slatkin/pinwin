@@ -131,8 +131,9 @@ pub(crate) struct PanelState {
     /// dropped when the tween stops.
     pub(crate) tween_draw: Option<TweenDraw>,
     /// The render state the tween's wide draw reads (row 6.2,
-    /// [`super::tween_draw`]): row 8.1 fills it when the terminal and the
-    /// painter move onto this thread; until then an animated apply snaps.
+    /// [`super::tween_draw`]): the terminal and the handle to the thread's
+    /// one renderer. Row 8.1 fills it when both move onto this thread;
+    /// until then an animated apply snaps.
     pub(crate) render: Option<TweenRender>,
     pub(crate) session: Option<Session>,
 }

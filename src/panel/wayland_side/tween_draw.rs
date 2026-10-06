@@ -38,15 +38,12 @@ use std::rc::Rc;
 
 use smithay_client_toolkit::shm::slot::Buffer;
 
-use crate::fontconfig::ThemeColours;
-use crate::layout::{Accent, Layout, Side};
+use crate::layout::{Layout, Side};
 use crate::render::canvas::Canvas;
-use crate::render::geom::PainterMetrics;
-use crate::render::image_pass::ImagePass;
-use crate::render::text_pass::TextPass;
 
 use super::buffers::{BufferPool, FractionalScale};
-use super::crop::{CropFrame, CropRect, TweenCrop, draw_wide, frame_geometry, upload_wide};
+use super::crop::{CropFrame, CropRect, TweenCrop, frame_geometry, upload_wide};
+use super::renderer::Renderer;
 
 mod frames;
 
@@ -55,32 +52,30 @@ pub(crate) use frames::on_tween_frame;
 #[cfg(test)]
 mod tests;
 
-/// The render state the tween's wide draw reads (row 6.2, D7): the terminal
-/// the grid is drawn from and the painter passes it draws with, plus the
-/// metrics, theme, accent and focus flag the frame carries. Row 8.1 moves
-/// the terminal and the painter onto this thread and fills this; until then
-/// it is `None` on the panel state and an animated apply snaps — a tween
-/// without a drawn wide buffer has nothing to present, and nothing runs
-/// this thread before row 8.1 switches `Panel::start` over. The fields are
-/// `pub(crate)`: the bundle is row 8.1's to assemble, and the D6
-/// field-privacy rule guards the crate's public API, not this internal one.
+/// The render state the tween's wide draw reads (row 6.2, D7): the
+/// terminal whose grid is drawn from — the one render piece the thread
+/// owns outside the renderer — and a handle to the thread's one
+/// [`Renderer`], which owns the text pass, the image pass, the metrics,
+/// the theme, the accent and the focus flag the wide draw reads. There is
+/// exactly one text pass and one image pass per thread: the renderer is
+/// their only owner, and the wide draw borrows them through the handle
+/// for the one draw of a fresh tween's cache (the borrow cannot contend:
+/// the renderer is borrowed only here and by the live frames outside a
+/// tween, sequentially on the one thread). Row 8.1 fills the state's
+/// bundle when the terminal and the renderer move onto this thread; until
+/// then it is `None` on the panel state and an animated apply snaps — a
+/// tween without a drawn wide buffer has nothing to present, and nothing
+/// runs this thread before row 8.1 switches `Panel::start` over. The
+/// fields are `pub(crate)`: the bundle is row 8.1's to assemble, and the
+/// D6 field-privacy rule guards the crate's public API, not this internal
+/// one.
 pub(crate) struct TweenRender {
     /// The terminal whose grid the wide draw paints. Shared, because the
     /// seat and the pty source that join this thread in row 8.1 hold the
     /// same terminal.
     pub(crate) terminal: Rc<RefCell<crate::term::Terminal>>,
-    pub(crate) text: TextPass,
-    pub(crate) images: ImagePass,
-    /// One `PainterMetrics` serves the wide draw and every later frame
-    /// draw: the cell pitch and ascent measured from the font (row 4.6) at
-    /// the output scale.
-    pub(crate) metrics: PainterMetrics,
-    pub(crate) theme: ThemeColours,
-    pub(crate) accent: Option<Accent>,
-    /// Whether the panel holds keyboard focus; the wide draw paints the
-    /// focus accent from it. The seat wiring row 8.1 assembles updates it
-    /// on keyboard enter and leave.
-    pub(crate) focused: bool,
+    /// The thread's one renderer, borrowed for the wide draw.
+    pub(crate) renderer: Rc<RefCell<Renderer>>,
 }
 
 /// One commit action of a tween frame, in the order the frame commits it
@@ -203,16 +198,11 @@ impl TweenDraw {
         render: &mut TweenRender,
     ) -> Option<Self> {
         let draw = crop.wide_draw(height, grid_px, scale)?;
-        let canvas = draw_wide(
-            draw,
-            &render.metrics,
-            render.focused,
-            render.theme,
-            render.accent,
-            &mut render.terminal.borrow_mut(),
-            &mut render.text,
-            &mut render.images,
-        )?;
+        // The renderer is the bundle's other half: its passes, metrics,
+        // theme, accent and focus flag are what the wide draw reads. The
+        // borrow cannot contend — see [`TweenRender`].
+        let mut renderer = render.renderer.borrow_mut();
+        let canvas = renderer.paint_wide(draw, &mut render.terminal.borrow_mut())?;
         Some(TweenDraw {
             crop,
             canvas,
