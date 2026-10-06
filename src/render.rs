@@ -29,6 +29,9 @@ pub use images::PixbufDecoder;
 
 pub(crate) use snap::OutputScale;
 
+/// The canvas the grid painter draws a frame into, from row 4.3 on (D5):
+/// GTK-free, pixel tests without a display.
+pub mod canvas;
 mod images;
 mod metrics;
 mod node_cursor;
