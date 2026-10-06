@@ -17,39 +17,39 @@
 //! GTK-free (`replace-gtk-with-wayland` D10); private to the painter, whose
 //! frame pass calls it last, on top of every grid layer.
 
-use super::canvas::{Canvas, CanvasColor};
-use super::geom::{DeviceRect, FrameInput, PainterMetrics, device_f32};
+use super::canvas::Canvas;
+use super::geom::{DeviceRect, FrameAccent, FrameInput, PainterMetrics, device_f32};
 
 /// Draw the focus accent for `frame`, if the frame is focused and an accent
 /// is configured. `metrics` supplies the output scale the accent's logical
 /// stroke width is converted with.
 pub(super) fn paint(canvas: &mut Canvas, frame: &FrameInput, metrics: &PainterMetrics) {
-    let Some(color) = bands_color(frame) else {
+    let Some(accent) = frame.accent() else {
         return;
     };
-    let Some(bands) = bands(frame, metrics) else {
+    if !frame.focused() {
+        return;
+    }
+    let Some(bands) = bands(frame, metrics, accent) else {
         return;
     };
     for (x, y, w, h) in bands {
-        canvas.fill_rect_f32(x, y, w, h, color);
+        canvas.fill_rect_f32(x, y, w, h, accent.color());
     }
-}
-
-/// The accent colour, when the frame is focused and an accent is
-/// configured — the gate [`paint`] and [`paint_rows`] share.
-fn bands_color(frame: &FrameInput) -> Option<CanvasColor> {
-    let accent = frame.accent()?;
-    frame.focused().then_some(accent.color())
 }
 
 /// The four accent bands of [`paint`], as `(x, y, w, h)` device f32
 /// rectangles — the one place the band geometry is written, so the full
-/// and the partial draw cannot drift.
-fn bands(frame: &FrameInput, metrics: &PainterMetrics) -> Option<[(f32, f32, f32, f32); 4]> {
+/// and the partial draw cannot drift. The caller has checked that the
+/// frame carries an accent and passes it in.
+fn bands(
+    frame: &FrameInput,
+    metrics: &PainterMetrics,
+    accent: FrameAccent,
+) -> Option<[(f32, f32, f32, f32); 4]> {
     let (device_w, device_h) = frame.device_size();
     let (device_w, device_h) = to_f32_pair(device_w, device_h)?;
-    let stroke = f32::from(frame.accent().expect("the caller checked").width().get())
-        * device_f32(metrics.scale());
+    let stroke = f32::from(accent.width().get()) * device_f32(metrics.scale());
     Some([
         (0.0, 0.0, device_w, stroke),
         (0.0, device_h - stroke, device_w, stroke),
@@ -75,13 +75,13 @@ pub(super) fn paint_rows(
     if !frame.focused() {
         return;
     }
-    if frame.accent().is_none() {
-        return;
-    }
-    let Some(bands) = bands(frame, metrics) else {
+    let Some(accent) = frame.accent() else {
         return;
     };
-    let color = frame.accent().expect("checked above").color();
+    let color = accent.color();
+    let Some(bands) = bands(frame, metrics, accent) else {
+        return;
+    };
     for row in rows {
         for (x, y, w, h) in bands {
             // The intersection of the row rectangle and the band: empty in
