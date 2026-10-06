@@ -44,6 +44,7 @@
 //! [`crate::guard`] helpers, latching the panel's one shared poisoned flag —
 //! the same rule [`super::gtk_side`] applies to its GTK closures.
 
+use std::cell::Cell;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -360,11 +361,14 @@ fn run_thread(
         handshake.report(StartOutcome::Internal);
         return;
     };
-    let (terminal, repaint, pty) = glue::byte_path(poisoned.clone(), startup.fd, cell);
+    let (terminal, repaint, stale_px, pty) = glue::byte_path(poisoned.clone(), startup.fd, cell);
+    let draw_offset = Rc::new(Cell::new(0.0));
 
     let mut state = PanelState::headless(handshake.clone(), poisoned.clone(), inner, startup, cell);
     state.terminal = Some(Rc::clone(&terminal));
     state.repaint = Rc::clone(&repaint);
+    state.stale_grid_px = stale_px;
+    state.draw_offset = draw_offset;
     state.render = Some(tween_draw::TweenRender { terminal, renderer });
     // The bind runs under the panel's shared latch: a panic in it latches
     // and reports `Internal` (D5), a missing required global reports

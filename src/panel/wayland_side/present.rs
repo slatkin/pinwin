@@ -254,8 +254,8 @@ impl PanelState {
     /// sizing, the renderer's gated draw, then the plan's requests — the
     /// pool slot at the device size, the full canvas copied into its bytes,
     /// the buffer attached, one `damage_buffer` per planned rectangle and
-    /// the commit. The stale pre-resize width is not recorded yet; the
-    /// offset shift reads the live grid alone until the widen record lands.
+    /// the commit. The stale pre-resize width keys the docked-edge offset
+    /// until the terminal produces output for the new width.
     pub fn draw_frame_at(&mut self, width: u32, height: u32) -> ServiceOutcome {
         let Some(render) = self.render.clone() else {
             return ServiceOutcome::Idle;
@@ -266,6 +266,7 @@ impl PanelState {
         let scale = session.scale.resolved();
         let live_grid_px =
             super::surfaces::grid_width_px(self.sizing.live_cols(), self.cell).unwrap_or(0);
+        let stale_grid_px = self.stale_grid_px.get();
         let side = self.applied.side();
         let (focused, theme, accent) = {
             let renderer = render.renderer.borrow();
@@ -276,13 +277,17 @@ impl PanelState {
             scale,
             side,
             live_grid_px,
-            0,
+            stale_grid_px,
             focused,
             theme,
             accent,
         ) else {
             return ServiceOutcome::Idle;
         };
+        // The offset the pointer mapping adjusts pointer x by (the seat
+        // links' shared cell): the one snapped value the frame and the
+        // mapping share.
+        self.draw_offset.set(input.draw_offset());
         let outcome = render
             .renderer
             .borrow_mut()

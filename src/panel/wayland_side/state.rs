@@ -130,6 +130,17 @@ pub(crate) struct PanelState {
     /// live draws build from. `None` before the first configure, which is
     /// when no live frame exists yet.
     pub(crate) panel_size: Option<(u32, u32)>,
+    /// The pixel width of the stale pre-resize grid still on screen after
+    /// a widening push (dispatch D4c, the GTK path's `note_grid_widened`):
+    /// the drawn grid the docked-edge offset keys against until the
+    /// terminal produces output for the new width, which clears it. Shared
+    /// with the byte path's output closure, which clears it.
+    pub(crate) stale_grid_px: Rc<Cell<i32>>,
+    /// The docked-edge draw offset the latest drawn frame used, snapped to
+    /// a whole device pixel (dispatch D4c): the value the pointer mapping
+    /// adjusts pointer x by, published per frame through the seat links'
+    /// shared cell.
+    pub(crate) draw_offset: Rc<Cell<f64>>,
     pub(crate) sizing: Sizing,
     /// The held gap the reserve surface draws (overlay-expand D2, D5):
     /// seeded from the startup layout's own choice — a pushing start holds
@@ -188,6 +199,8 @@ impl PanelState {
             terminal: None,
             repaint: Rc::new(Cell::new(false)),
             panel_size: None,
+            stale_grid_px: Rc::new(Cell::new(0)),
+            draw_offset: Rc::new(Cell::new(0.0)),
             sizing: Sizing::new(startup.layout.cols(), cell),
             held: start_held_gap(startup.layout, cell.width().get()),
             applied: startup.layout,

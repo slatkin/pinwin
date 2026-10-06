@@ -77,19 +77,23 @@ pub(crate) fn thread_renderer(
 }
 
 /// The thread's byte path (row 8.1): the shared terminal, the repaint flag
-/// its callbacks latch, and the pty the writer and the fd slot come from.
-/// The terminal is shared as an `Rc<RefCell<_>>` because the seat links and
-/// the tween's render bundle hold clones, and the pty read source feeds it
-/// from the same thread.
+/// its callbacks latch, the stale pre-resize grid width its output clears,
+/// and the pty the writer and the fd slot come from. The terminal is
+/// shared as an `Rc<RefCell<_>>` because the seat links and the tween's
+/// render bundle hold clones, and the pty read source feeds it from the
+/// same thread.
 ///
-/// The `queue_draw` closure runs inside the terminal's callbacks: it sets
+/// The `queue_draw` closure runs inside the terminal's callbacks: it clears
+/// the stale grid record — the terminal produced output, so the drawn grid
+/// is the live one again (the GTK path's `note_terminal_output`) — and sets
 /// the repaint flag, which the loop reads and clears after each dispatch —
 /// the draw step turns the flag into a frame.
-pub(crate) fn byte_path(
-    poisoned: Poisoned,
-    fd: RawFd,
-    cell: CellSize,
-) -> (Rc<RefCell<Terminal>>, Rc<Cell<bool>>, Pty) {
+/// The byte path's return: the shared terminal, the repaint flag its
+/// callbacks latch, the stale pre-resize record its output clears, and the
+/// pty the writer and the fd slot come from.
+pub(crate) type BytePath = (Rc<RefCell<Terminal>>, Rc<Cell<bool>>, Rc<Cell<i32>>, Pty);
+
+pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd, cell: CellSize) -> BytePath {
     // The pty winsize's pixel fields (the glib paths' input): a measured
     // cell is positive, so the conversion cannot fail; the fallback keeps
     // the fields positive rather than panicking (D5).
@@ -97,16 +101,21 @@ pub(crate) fn byte_path(
     let cell_h = u32::try_from(cell.height().get()).unwrap_or(1);
     let pty = Pty::new(poisoned.clone(), fd, cell_w, cell_h);
     let repaint = Rc::new(Cell::new(false));
+    let stale_grid_px = Rc::new(Cell::new(0));
     let terminal = Rc::new(RefCell::new(Terminal::new(
         poisoned,
         pty.writer(),
         PngCrateDecoder,
         {
             let repaint = Rc::clone(&repaint);
-            move || repaint.set(true)
+            let stale = Rc::clone(&stale_grid_px);
+            move || {
+                stale.set(0);
+                repaint.set(true);
+            }
         },
     )));
-    (terminal, repaint, pty)
+    (terminal, repaint, stale_grid_px, pty)
 }
 
 impl PanelState {
@@ -120,8 +129,9 @@ impl PanelState {
     pub(crate) fn grid_sink(&self) -> impl FnMut(Grid) + 'static {
         let terminal = self.terminal.clone();
         let repaint = Rc::clone(&self.repaint);
+        let stale = Rc::clone(&self.stale_grid_px);
         let fd = self.startup.fd;
-        move |grid| push_grid(terminal.as_ref(), &repaint, fd, grid)
+        move |grid| push_grid(terminal.as_ref(), &repaint, stale.as_ref(), fd, grid)
     }
 }
 
@@ -129,11 +139,15 @@ impl PanelState {
 /// path's `apply_size` order: the terminal first — a terminal that cannot
 /// be allocated leaves the previous grid and the pty winsize in place —
 /// then the winsize with `SIGWINCH`, then the repaint request the
-/// post-resize repaint needs. The terminal's own output latches the same
-/// flag later, when the vt answers the new width.
+/// post-resize repaint needs. A widening push also records the previous
+/// grid's pixel width as the stale pre-resize content still on screen (the
+/// vt does not rewrap), the narrowest since the last terminal output; the
+/// terminal's own output latches the same flag later and clears the
+/// record, when the vt answers the new width.
 fn push_grid(
     terminal: Option<&Rc<RefCell<Terminal>>>,
     repaint: &Cell<bool>,
+    stale: &Cell<i32>,
     fd: RawFd,
     grid: Grid,
 ) {
@@ -143,6 +157,7 @@ fn push_grid(
         return;
     };
     if let Some(terminal) = terminal {
+        let previous_cols = terminal.borrow().cols();
         let pushed = terminal.borrow_mut().push_size(
             i32::from(grid.cols()),
             rows,
@@ -151,6 +166,19 @@ fn push_grid(
         );
         if !pushed {
             return;
+        }
+        if i32::from(grid.cols()) > i32::from(previous_cols)
+            && let Some(previous_px) = i32::from(previous_cols).checked_mul(grid.cell_width())
+        {
+            // The narrowest stale width wins: a widening after a widening
+            // without any output in between keeps the narrower of the two
+            // (the GTK path's `note_grid_widened`).
+            let current = stale.get();
+            stale.set(if current > 0 {
+                current.min(previous_px)
+            } else {
+                previous_px
+            });
         }
     }
     apply_pty_size(fd, grid);
@@ -165,6 +193,7 @@ mod tests {
     use crate::layout::{Keyboard, Layout, OutputSize, Side};
     use crate::panel::PinwinError;
     use crate::panel::handshake::{Handshake, map_start};
+    use crate::panel::wayland_side::sizing::Sizing;
     use crate::pty::attach_calloop;
     use crate::render::font::FontBook;
     use crate::render::text_pass::test_support;
@@ -300,7 +329,7 @@ mod tests {
     #[test]
     fn the_byte_path_shares_one_flag_between_the_terminal_and_the_state() {
         let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
-        let (terminal, repaint, _pty) = byte_path(Poisoned::new(), -1, cell);
+        let (terminal, repaint, _stale, _pty) = byte_path(Poisoned::new(), -1, cell);
         assert!(
             terminal.borrow_mut().push_size(8, 4, 9, 16),
             "the test grid pushes"
@@ -312,6 +341,50 @@ mod tests {
             repaint.get(),
             "the terminal's output latched the repaint flag"
         );
+    }
+
+    /// The stale pre-resize record follows the widen rule (dispatch D4c,
+    /// the GTK path's `note_grid_widened`): a widening push records the
+    /// previous grid's pixel width, a widening after a widening without
+    /// output in between keeps the narrower of the two, and the terminal's
+    /// output clears it and latches the repaint flag.
+    #[test]
+    fn the_byte_path_records_and_clears_the_widened_grid() {
+        let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
+        let (terminal, repaint, stale, _pty) = byte_path(Poisoned::new(), -1, cell);
+        assert!(
+            terminal.borrow_mut().push_size(40, 4, 9, 16),
+            "the test grid pushes"
+        );
+        assert_eq!(stale.get(), 0, "no widen recorded yet");
+
+        // A grid of `cols` columns at the test cell, the way the sizing
+        // derives one for a configure.
+        let grid_of = |cols: u16| {
+            let mut sizing = Sizing::new(NonZeroU16::new(cols).expect("cols"), cell);
+            let mut out = None;
+            sizing.configure(64, &mut |grid| out = Some(grid));
+            out.expect("the configure pushes")
+        };
+        // A widening push from 40 to 120 columns records 40 * 9.
+        let push = |cols: u16, stale: &Cell<i32>, repaint: &Cell<bool>| {
+            push_grid(Some(&terminal), repaint, stale, -1, grid_of(cols));
+        };
+        push(120, stale.as_ref(), repaint.as_ref());
+        assert_eq!(stale.get(), 360, "the previous grid's pixel width");
+        assert!(repaint.get(), "the push latched the repaint flag");
+
+        // A widening after a widening without output in between keeps the
+        // narrower of the two stale widths.
+        repaint.set(false);
+        push(200, stale.as_ref(), repaint.as_ref());
+        assert_eq!(stale.get(), 360, "the narrower stale width wins");
+
+        // The terminal's output clears the record and latches the repaint
+        // flag: the drawn grid is the live one again.
+        terminal.borrow_mut().push_pty_data(b"hi");
+        assert_eq!(stale.get(), 0, "the output cleared the record");
+        assert!(repaint.get(), "the output latched the repaint flag");
     }
 
     /// A connected pty pair (master, slave): the master is the panel-side
@@ -369,7 +442,7 @@ mod tests {
 
         let (master, mut slave) = pty_pair();
         let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
-        let (terminal, repaint, pty) = byte_path(Poisoned::new(), master.as_raw_fd(), cell);
+        let (terminal, repaint, _stale, pty) = byte_path(Poisoned::new(), master.as_raw_fd(), cell);
         assert!(
             terminal.borrow_mut().push_size(8, 4, 9, 16),
             "the test grid pushes"
@@ -418,9 +491,17 @@ mod tests {
     /// A headless state wired to the thread's byte path over a real pty
     /// master: the production sink pushes the terminal grid and the pty
     /// winsize through it (D10 — the compositor paths stay out).
-    fn state_over_pty(
-        master: &std::fs::File,
-    ) -> (PanelState, Rc<RefCell<Terminal>>, Rc<Cell<bool>>, Pty) {
+    /// The state-over-pty fixture's return: the headless state wired to
+    /// the thread's byte path pieces over a real pty master.
+    type StateOverPty = (
+        PanelState,
+        Rc<RefCell<Terminal>>,
+        Rc<Cell<bool>>,
+        Rc<Cell<i32>>,
+        Pty,
+    );
+
+    fn state_over_pty(master: &std::fs::File) -> StateOverPty {
         let startup = Startup {
             fd: master.as_raw_fd(),
             layout: layout(Side::Left, 40, 0, 0, 0, 0),
@@ -428,7 +509,7 @@ mod tests {
             accent: None,
         };
         let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
-        let (terminal, repaint, pty) = byte_path(Poisoned::new(), startup.fd, cell);
+        let (terminal, repaint, stale_px, pty) = byte_path(Poisoned::new(), startup.fd, cell);
         let mut state = PanelState::headless(
             Handshake::new(mpsc::channel().0),
             Poisoned::new(),
@@ -438,7 +519,8 @@ mod tests {
         );
         state.terminal = Some(Rc::clone(&terminal));
         state.repaint = Rc::clone(&repaint);
-        (state, terminal, repaint, pty)
+        state.stale_grid_px = Rc::clone(&stale_px);
+        (state, terminal, repaint, stale_px, pty)
     }
 
     /// Read back the master's winsize.
@@ -510,7 +592,7 @@ mod tests {
     fn one_apply_pushes_the_winsize_and_the_terminal_grid_once() {
         let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");
         block_sigwinch();
-        let (mut state, terminal, repaint, _pty) = state_over_pty(&master);
+        let (mut state, terminal, repaint, _stale, _pty) = state_over_pty(&master);
         state.sizing.configure(1080, &mut |_| {});
         let target = layout(Side::Left, 120, 0, 0, 0, 0);
 
@@ -549,7 +631,7 @@ mod tests {
     fn a_deferred_tween_end_push_pushes_the_winsize_and_the_grid_once() {
         let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");
         block_sigwinch();
-        let (mut state, terminal, repaint, _pty) = state_over_pty(&master);
+        let (mut state, terminal, repaint, _stale, _pty) = state_over_pty(&master);
         state.sizing.configure(1080, &mut |_| {});
 
         let mut sink = state.grid_sink();
@@ -579,7 +661,7 @@ mod tests {
     fn a_snap_during_a_tween_pushes_the_winsize_and_the_grid_once() {
         let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");
         block_sigwinch();
-        let (mut state, terminal, repaint, _pty) = state_over_pty(&master);
+        let (mut state, terminal, repaint, _stale, _pty) = state_over_pty(&master);
         state.sizing.configure(1080, &mut |_| {});
 
         let mut sink = state.grid_sink();
