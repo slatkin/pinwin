@@ -54,14 +54,10 @@ default; `Layout::covering` opts a layout into covering the tiled windows
 while the reservation stays where the last pushing layout put it.
 `apply_layout` and `apply_layout_animated` are methods on the handle;
 `apply_layout_animated` clamps its duration to 1000 ms.
-`request_focus(&ActivationToken::new(token)?)` asks the compositor to give
+`request_focus(ActivationToken::new(token)?)` asks the compositor to give
 the panel keyboard focus with an xdg-activation token; `ActivationToken` is
 re-exported from the crate root and validates the token before any request
-is made. Until the panel thread replaces the GTK thread (rows 8.1 and 8.2
-of the `replace-gtk-with-wayland` change), the request is accepted and does
-nothing: no activation request reaches the compositor, so the panel does
-not get the keyboard this way.
-<!-- remove when replace-gtk-with-wayland row 8.1 lands -->
+is made.
 Dropping the handle closes the panel and cancels any running
 animation. The library never closes the fd and never exits the host.
 
@@ -164,17 +160,8 @@ The client reads the activation token from `XDG_ACTIVATION_TOKEN`, which the
 compositor sets for a process it launches from a key binding. A token is
 1..=255 bytes of visible ASCII. With the variable unset, or with a value
 that is not a valid token, the client prints a message and exits 2 without
-contacting any instance. Until the GTK libraries are unlinked (rows 8.1 and
-8.2), the variable is always unset for a real `pinwin --focus`: the GTK
-libraries consume `XDG_ACTIVATION_TOKEN` before `main` runs, so the client
-always exits 2.
-<!-- remove when replace-gtk-with-wayland row 8.1 lands --> The host passes the token to its panel's focus
+contacting any instance. The host passes the token to its panel's focus
 request, which asks the compositor to focus the panel through xdg-activation.
-Until the panel thread replaces the GTK thread (rows 8.1 and 8.2 of the
-`replace-gtk-with-wayland` change), that request is accepted and does
-nothing: the compositor sees no activation, so the panel does not get the
-keyboard this way.
-<!-- remove when replace-gtk-with-wayland row 8.1 lands -->
 
 On-demand focus through xdg-activation needs a compositor that honours the
 request for layer surfaces. Stock niri ignores it for layer surfaces; a niri

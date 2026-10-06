@@ -13,11 +13,6 @@
 //!                         # without it, exit 2
 //! ```
 //!
-// TEMPORARY (replace-gtk-with-wayland 8.1)
-//! Until the GTK libraries are unlinked (rows 8.1 and 8.2), the program
-//! cannot see the compositor's token: the GTK libraries consume
-//! `XDG_ACTIVATION_TOKEN` before `main` runs, so `--focus` exits 2.
-//!
 //! A thin host over the library API ([`pinwin::panel`]), the port of
 //! `host/main.c` (port-to-rust D8): it owns the pty, the child's environment
 //! and the process lifetime; the library owns the panel. The pure parts live
