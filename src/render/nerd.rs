@@ -28,6 +28,8 @@
 //! renders the same way in every cell.
 
 use crate::nerd_font::{Align, Constraint, Height, Size};
+use crate::render::cell_metrics::CellMetrics;
+use crate::render::glyph::{Glyph, GlyphImage, PlacementTransform};
 
 #[cfg(test)]
 mod tests;
@@ -165,6 +167,184 @@ impl NerdMetrics {
     pub fn cell_h(self) -> f64 {
         self.cell_h
     }
+
+    /// The same metrics at another output scale: every field multiplied by
+    /// `scale`. A `scale` that is not positive and finite falls back to 1,
+    /// like `OutputScale::new` does. The values stay unsnapped — the spec
+    /// requires the transform to be identical in every cell at one scale,
+    /// so no per-cell or per-row snapping may enter it.
+    #[must_use]
+    pub fn scaled(self, scale: f64) -> Self {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        NerdMetrics {
+            face_w: self.face_w * scale,
+            face_h: self.face_h * scale,
+            face_y: self.face_y * scale,
+            icon_h: self.icon_h * scale,
+            icon_h_single: self.icon_h_single * scale,
+            cell_w: self.cell_w * scale,
+            cell_h: self.cell_h * scale,
+        }
+    }
+
+    /// The metrics [`CellMetrics`] carries, in logical pixels, scaled to
+    /// `scale` device pixels per logical pixel (see [`Self::scaled`]). The
+    /// logical values are whole pixels except the face and icon boxes, so
+    /// the device values carry the fractional part a fractional scale
+    /// produces — exactly what the constraints must work against.
+    #[must_use]
+    pub fn from_cell_metrics(metrics: &CellMetrics, scale: f64) -> Option<Self> {
+        let (cell_w, cell_h) = metrics.cell_size();
+        Self::new(
+            metrics.face_w(),
+            metrics.face_h(),
+            metrics.face_y(),
+            metrics.icon_h(),
+            metrics.icon_h_single(),
+            cell_w,
+            cell_h,
+        )
+        .map(|logical| logical.scaled(scale))
+    }
+}
+
+/// A rasterized glyph's ink box, relative to the baseline, y up, in device
+/// pixels: the box the unconstrained rasterization produced (see
+/// [`Glyph::placement`] for the y-up convention). The input to
+/// [`placement`] and [`ink_to_cell_frame`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InkBox {
+    left: f64,
+    bottom: f64,
+    width: f64,
+    height: f64,
+}
+
+impl InkBox {
+    /// A box from its parts (the tests use it).
+    #[must_use]
+    pub fn new(left: f64, bottom: f64, width: f64, height: f64) -> Self {
+        InkBox {
+            left,
+            bottom,
+            width,
+            height,
+        }
+    }
+
+    /// The ink box of a rasterized [`Glyph`]: the placement's left and top
+    /// edges and the image's size. An empty glyph (a space, or a render
+    /// miss) has a zero box.
+    #[must_use]
+    pub fn from_glyph(glyph: &Glyph) -> Self {
+        let (width, height) = match glyph.image() {
+            GlyphImage::Empty => (0.0, 0.0),
+            GlyphImage::Mask(mask) => {
+                // A mask's pixel count cannot approach the f64 precision
+                // limit; the fallback is unreachable for a real mask.
+                (
+                    num_traits::cast::<usize, f64>(mask.width()).unwrap_or(0.0),
+                    num_traits::cast::<usize, f64>(mask.height()).unwrap_or(0.0),
+                )
+            }
+            GlyphImage::Color(pixmap) => (f64::from(pixmap.width()), f64::from(pixmap.height())),
+        };
+        let placement = glyph.placement();
+        InkBox {
+            left: f64::from(placement.left()),
+            bottom: f64::from(placement.top()) - height,
+            width,
+            height,
+        }
+    }
+
+    /// The box's left edge, right of the baseline origin.
+    #[must_use]
+    pub fn left(self) -> f64 {
+        self.left
+    }
+
+    /// The box's bottom edge, above the baseline (negative when the glyph
+    /// descends below it).
+    #[must_use]
+    pub fn bottom(self) -> f64 {
+        self.bottom
+    }
+
+    /// The box's width.
+    #[must_use]
+    pub fn width(self) -> f64 {
+        self.width
+    }
+
+    /// The box's height.
+    #[must_use]
+    pub fn height(self) -> f64 {
+        self.height
+    }
+}
+
+/// Convert a baseline-relative ink box into the cell-bottom-left frame
+/// [`constrain`] works in: the box's bottom edge sits `baseline` device
+/// pixels above the cell's bottom, and its left edge is already measured
+/// from the cell's left edge. The one conversion between the two frames of
+/// the module doc.
+fn ink_to_cell_frame(ink: &InkBox, baseline: f64) -> NerdGlyph {
+    NerdGlyph::new(
+        ink.left(),
+        ink.bottom() + baseline,
+        ink.width(),
+        ink.height(),
+    )
+}
+
+/// The placement transform one constrained glyph rasterizes with: the
+/// constraint's target box, computed in the cell-bottom-left frame, turned
+/// into the scale-and-offset swash applies to the outline before
+/// rasterizing (`x' = sx*x + ox`, `y' = sy*y + oy`, baseline-relative, y
+/// up — the same frame [`PlacementTransform`] documents).
+///
+/// `None` when the constraint neither sizes nor positions the glyph (the
+/// glyph draws at its natural placement), when the ink box is empty (a
+/// space or a render miss has nothing to place), or when the constrained
+/// box or the transform degenerates — a non-finite or unquantizable value,
+/// which validated metrics and a cell-sized constraint cannot produce and
+/// which degrades to the unconstrained draw rather than failing the frame.
+#[must_use]
+pub fn placement(
+    constraint: &Constraint,
+    metrics: &NerdMetrics,
+    baseline: f64,
+    constraint_width: u32,
+    ink: &InkBox,
+) -> Option<PlacementTransform> {
+    if !constraint.does_anything() {
+        return None;
+    }
+    if ink.width() <= 0.0 || ink.height() <= 0.0 {
+        return None;
+    }
+    let constrained = constrain(
+        constraint,
+        metrics,
+        ink_to_cell_frame(ink, baseline),
+        constraint_width,
+    );
+    if constrained.width() <= 0.0 || constrained.height() <= 0.0 {
+        return None;
+    }
+    // The scale maps the unconstrained ink box onto the constrained box;
+    // the offsets then move the scaled box into place. Both are
+    // baseline-relative y up, the frame the outline transform applies in.
+    let scale_x = constrained.width() / ink.width();
+    let scale_y = constrained.height() / ink.height();
+    let offset_x = constrained.x() - scale_x * ink.left();
+    let offset_y = constrained.y() - baseline - scale_y * ink.bottom();
+    PlacementTransform::new(scale_x, scale_y, offset_x, offset_y).ok()
 }
 
 fn max(a: f64, b: f64) -> f64 {
