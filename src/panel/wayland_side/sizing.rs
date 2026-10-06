@@ -9,11 +9,12 @@
 //! applies the winsize to the host's master fd, and a test records the pushes
 //! instead (`port-to-rust` D10 — no display, no real pty).
 //!
-//! The cell metrics come from the font module (replace-gtk-with-wayland
-//! row 4.6), which computes them before the panel thread binds its surfaces,
-//! so every configure the thread sees already has metrics. Until that row
-//! lands, [`Sizing::set_metrics`] is the seam: a configure without metrics
-//! records nothing and pushes nothing.
+//! The cell metrics are a startup input (replace-gtk-with-wayland D3): the
+//! start command carries them — row 4.6's font module will compute them
+//! before the panel thread binds its surfaces — so [`Sizing::new`] requires
+//! them and a metrics-less state is unrepresentable. A sizing that silently
+//! derived nothing would never size the pty, which is the bug this guards
+//! against.
 
 use std::num::NonZeroU16;
 
@@ -62,8 +63,8 @@ impl Grid {
 /// Whether the panel has seen a configure yet, and which height it named.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
-    /// No configure has arrived, or the last one had no metrics to derive
-    /// from: the next configure applies the startup layout.
+    /// No configure has arrived: the next configure applies the startup
+    /// layout.
     AwaitingHeight,
     /// The latest configure's height, in surface-local logical pixels.
     Running { height: u32 },
@@ -75,19 +76,22 @@ enum Stage {
 #[derive(Clone, Copy, Debug)]
 pub struct Sizing {
     cols: NonZeroU16,
-    cell: Option<CellSize>,
+    cell: CellSize,
     stage: Stage,
     pushed: Option<Grid>,
 }
 
 impl Sizing {
-    /// The state before the first configure: the startup layout's columns and
-    /// no metrics yet.
+    /// The state before the first configure: the startup layout's columns
+    /// and the startup cell metrics the start command carries (row 4.6
+    /// computes them before the thread binds its surfaces). The metrics are
+    /// required: without them no configure could ever derive a grid, which
+    /// would leave the panel silently unmapped and the pty unsized.
     #[must_use]
-    pub fn new(cols: NonZeroU16) -> Self {
+    pub fn new(cols: NonZeroU16, cell: CellSize) -> Self {
         Sizing {
             cols,
-            cell: None,
+            cell,
             stage: Stage::AwaitingHeight,
             pushed: None,
         }
@@ -100,20 +104,10 @@ impl Sizing {
     /// decision produces.
     #[must_use]
     pub fn started(cols: NonZeroU16, cell: CellSize, height: u32) -> Self {
-        let mut sizing = Self::new(cols);
-        sizing.set_metrics(cell);
+        let mut sizing = Self::new(cols, cell);
         let mut sink = |_: Grid| {};
         sizing.configure(height, &mut sink);
         sizing
-    }
-
-    /// Record the cell metrics (replace-gtk-with-wayland row 4.6 feeds this).
-    /// No push happens here: the grid and the pty change only on a layout
-    /// apply or a new configure height (D3), and the font module computes the
-    /// metrics before the thread binds its surfaces, so every configure
-    /// already sees them.
-    pub fn set_metrics(&mut self, cell: CellSize) {
-        self.cell = Some(cell);
     }
 
     /// One layer-surface configure at `height` (D3). The first configure
@@ -122,23 +116,16 @@ impl Sizing {
     /// when its height is new and the derived grid differs from the pushed
     /// one. A configure that repeats the previous height never pushes, however
     /// often the compositor sends it.
-    ///
-    /// Without cell metrics the configure is only a promise: the stage stays
-    /// `AwaitingHeight`, so a later configure (or the metrics themselves
-    /// arriving before one) derives and pushes then.
     pub fn configure(&mut self, height: u32, push: &mut dyn FnMut(Grid)) {
         if let Stage::Running { height: previous } = self.stage
             && previous == height
         {
             return;
         }
-        let Some(cell) = self.cell else {
+        let Some(rows) = rows_for_height(height, self.cell) else {
             return;
         };
-        let Some(rows) = rows_for_height(height, cell) else {
-            return;
-        };
-        let grid = Grid::new(self.cols.get(), rows, cell);
+        let grid = Grid::new(self.cols.get(), rows, self.cell);
         if self.pushed != Some(grid) {
             push(grid);
             self.pushed = Some(grid);
@@ -157,13 +144,10 @@ impl Sizing {
         let Stage::Running { height } = self.stage else {
             return;
         };
-        let Some(cell) = self.cell else {
+        let Some(rows) = rows_for_height(height, self.cell) else {
             return;
         };
-        let Some(rows) = rows_for_height(height, cell) else {
-            return;
-        };
-        let grid = Grid::new(cols.get(), rows, cell);
+        let grid = Grid::new(cols.get(), rows, self.cell);
         if self.pushed != Some(grid) {
             push(grid);
             self.pushed = Some(grid);
@@ -235,8 +219,7 @@ mod tests {
     /// same height push nothing.
     #[test]
     fn the_first_configure_applies_the_startup_grid() {
-        let mut sizing = Sizing::new(cols(40));
-        sizing.set_metrics(cell(9, 16));
+        let mut sizing = Sizing::new(cols(40), cell(9, 16));
         let mut pushed = Recorder::default();
 
         sizing.configure(1080, &mut |grid| pushed.push(grid));
@@ -282,8 +265,7 @@ mod tests {
     /// with the applied ones.
     #[test]
     fn an_apply_before_the_first_configure_records_the_columns() {
-        let mut sizing = Sizing::new(cols(40));
-        sizing.set_metrics(cell(9, 16));
+        let mut sizing = Sizing::new(cols(40), cell(9, 16));
         let mut pushed = Recorder::default();
 
         sizing.apply_columns(cols(60), &mut |grid| pushed.push(grid));
@@ -292,26 +274,6 @@ mod tests {
         sizing.configure(1080, &mut |grid| pushed.push(grid));
         assert_eq!(pushed.grids.len(), 1, "the next configure derives");
         assert_eq!(pushed.grids[0].cols(), 60, "with the applied columns");
-    }
-
-    /// A configure without metrics records nothing and pushes nothing; once
-    /// the metrics exist, the next configure derives and pushes.
-    #[test]
-    fn a_configure_without_metrics_waits_for_them() {
-        let mut sizing = Sizing::new(cols(40));
-        let mut pushed = Recorder::default();
-
-        sizing.configure(1080, &mut |grid| pushed.push(grid));
-        assert!(pushed.grids.is_empty(), "no metrics, no push");
-
-        sizing.set_metrics(cell(9, 16));
-        sizing.configure(1080, &mut |grid| pushed.push(grid));
-        assert_eq!(
-            pushed.grids.len(),
-            1,
-            "the metrics arrive, the push follows"
-        );
-        assert_eq!(pushed.grids[0].rows(), 1080 / 16);
     }
 
     /// The rows floor at one complete row, like the GTK path's
@@ -334,8 +296,7 @@ mod tests {
     #[test]
     fn started_matches_the_startup_apply() {
         let started = Sizing::started(cols(40), cell(9, 16), 1080);
-        let mut from_scratch = Sizing::new(cols(40));
-        from_scratch.set_metrics(cell(9, 16));
+        let mut from_scratch = Sizing::new(cols(40), cell(9, 16));
         let mut pushed = Recorder::default();
         from_scratch.configure(1080, &mut |grid| pushed.push(grid));
 

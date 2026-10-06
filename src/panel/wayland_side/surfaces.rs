@@ -136,7 +136,7 @@ pub(crate) struct PanelSurfaces {
     pool: SlotPool,
     layout: Layout,
     keyboard: Keyboard,
-    cell: Option<CellSize>,
+    cell: CellSize,
     /// The size the panel's transparent buffer was last attached at, so a
     /// repeated configure at the same size does not re-attach it.
     panel_buffer_size: Option<(u32, u32)>,
@@ -155,9 +155,9 @@ impl PanelSurfaces {
     /// interactivity. The initial commit with no buffer asks the compositor
     /// for the first configure.
     ///
-    /// `cell` is the measured cell metrics; when they are still unknown the
-    /// `set_size` is skipped (no width to ask for) until the font module
-    /// supplies them (replace-gtk-with-wayland row 4.6).
+    /// `cell` is the measured cell metrics the start command carried (row
+    /// 4.6's font module will compute them): a required input, because a
+    /// panel without them cannot ask for its width and would never map.
     ///
     /// # Errors
     /// The shared memory pool for the placeholder buffers could not be
@@ -168,16 +168,14 @@ impl PanelSurfaces {
         shm: &Shm,
         layout: Layout,
         keyboard: Keyboard,
-        cell: Option<CellSize>,
+        cell: CellSize,
     ) -> Result<Self, CreatePoolError> {
         panel.set_anchor(panel_anchor(layout.side()));
         panel.set_exclusive_zone(-1);
         let (top, right, bottom, left) = panel_margins(layout);
         panel.set_margin(top, right, bottom, left);
         panel.set_keyboard_interactivity(map_interactivity(keyboard));
-        if let Some(cell) = cell {
-            apply_panel_width(&panel, layout.cols(), cell);
-        }
+        apply_panel_width(&panel, layout.cols(), cell);
         panel.commit();
         let pool = SlotPool::new(1, shm)?;
         Ok(PanelSurfaces {
@@ -201,13 +199,9 @@ impl PanelSurfaces {
     /// configure whose size the transparent buffer then fills.
     pub fn attach_reserve(&mut self, reserve: LayerSurface, region: Region) {
         reserve.set_anchor(panel_anchor(self.layout.side()));
-        // No metrics yet: the panel width is unknown, so the pushing strip is
-        // unknown too and reserves nothing until the font module supplies the
-        // metrics (replace-gtk-with-wayland row 4.6).
-        let zone = self
-            .cell
-            .map_or(0, |cell| startup_reserve_zone(self.layout, cell));
-        reserve.set_exclusive_zone(zone);
+        // The startup held gap (overlay-expand D5): the pushing strip is the
+        // layout's side geometry around the panel's pixel width.
+        reserve.set_exclusive_zone(startup_reserve_zone(self.layout, self.cell));
         reserve.set_size(1, 0);
         // The reserve takes no input (D3): an empty region covers no point.
         reserve.set_input_region(Some(region.wl_region()));

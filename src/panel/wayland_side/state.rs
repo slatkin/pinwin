@@ -40,7 +40,7 @@ use wayland_client::protocol::{wl_output, wl_surface};
 use wayland_client::{Connection, QueueHandle};
 
 use crate::guard::{Poisoned, guard, guard_always};
-use crate::layout::OutputSize;
+use crate::layout::{CellSize, OutputSize};
 use crate::pty::apply_winsize;
 
 use super::super::handshake::{Handshake, StartOutcome};
@@ -78,6 +78,11 @@ pub(crate) struct PanelState {
     pub(crate) done: bool,
     pub(crate) inner: Arc<super::Inner>,
     startup: Startup,
+    /// The measured cell metrics the start command carried (D3): the
+    /// surfaces' width and the grid derivation both need them from the
+    /// first configure, so a required startup input instead of a later
+    /// arrival.
+    cell: CellSize,
     sizing: Sizing,
     session: Option<Session>,
 }
@@ -93,12 +98,15 @@ pub(crate) enum BindFailure {
 impl PanelState {
     /// The display-free core, before the session is bound (D10): the command
     /// tests and the pre-bind window of [`super::run_thread`] both start
-    /// here.
+    /// here. `cell` is the measured cell metrics the start command carried
+    /// (D3); without them no configure could derive a grid and the panel
+    /// would silently never map, so they are a required input.
     pub(crate) fn headless(
         handshake: Handshake,
         poisoned: Poisoned,
         inner: Arc<super::Inner>,
         startup: Startup,
+        cell: CellSize,
     ) -> Self {
         PanelState {
             poisoned,
@@ -106,7 +114,8 @@ impl PanelState {
             done: false,
             inner,
             startup,
-            sizing: Sizing::new(startup.layout.cols()),
+            cell,
+            sizing: Sizing::new(startup.layout.cols(), cell),
             session: None,
         }
     }
@@ -134,7 +143,7 @@ impl PanelState {
             &shm,
             self.startup.layout,
             self.startup.keyboard,
-            None,
+            self.cell,
         )
         .map_err(|_pool| BindFailure::Internal)?;
         self.session = Some(Session {
@@ -232,13 +241,16 @@ impl PanelState {
     /// maps the surface and drives the grid sizing; the reserve's maps the
     /// reservation.
     fn on_configure(&mut self, layer: &LayerSurface, configure: &LayerSurfaceConfigure) {
+        // The pty fd the pushes reach: copied before the session borrow, the
+        // way the push closure below captures it.
+        let fd = self.startup.fd;
         let Some(session) = &mut self.session else {
             return;
         };
         let (width, height) = configure.new_size;
         if session.surfaces.is_panel(layer) {
             session.surfaces.panel_configured(width, height);
-            self.configure_grid(height);
+            self.configure_grid(height, &mut |grid| apply_pty_size(fd, grid));
         } else if session.surfaces.is_reserve(layer) {
             session.surfaces.reserve_configured(width, height);
         }
@@ -246,12 +258,12 @@ impl PanelState {
 
     /// The grid size decision for one configure height (D3, row 3.3): the
     /// rows derive from the height, the columns from the applied layout, and
-    /// the push goes to the pty only when the derived grid changed.
-    fn configure_grid(&mut self, height: u32) {
-        let fd = self.startup.fd;
-        self.sizing.configure(height, &mut |grid: Grid| {
-            apply_pty_size(fd, grid);
-        });
+    /// the push goes to the supplied sink — the pty winsize in production —
+    /// only when the derived grid changed. The sink is a parameter so the
+    /// display-free tests can observe the pushes the state drives
+    /// (`port-to-rust` D10).
+    fn configure_grid(&mut self, height: u32, push: &mut dyn FnMut(Grid)) {
+        self.sizing.configure(height, push);
     }
 
     /// The compositor closed a layer surface. The panel's surface ending is
@@ -563,6 +575,12 @@ mod tests {
         }
     }
 
+    /// The startup cell metrics the tests carry, the way a start command
+    /// would (D3): required, because a metrics-less state never pushes.
+    fn cell() -> CellSize {
+        CellSize::new(9, 16).expect("test cell size is non-zero")
+    }
+
     /// A live handle state like a started panel's, for the thread-side
     /// tests.
     fn live_inner() -> Arc<super::super::Inner> {
@@ -575,7 +593,7 @@ mod tests {
     }
 
     fn headless_state(handshake: Handshake) -> PanelState {
-        PanelState::headless(handshake, Poisoned::new(), live_inner(), startup())
+        PanelState::headless(handshake, Poisoned::new(), live_inner(), startup(), cell())
     }
 
     /// A closed compositor connection maps the panel onto the dead state
@@ -721,17 +739,26 @@ mod tests {
     }
 
     /// The panel's configure drives the grid sizing through the real push
-    /// seam (row 3.3): the pushes the sizing decides reach the pty winsize
-    /// path. The display-free window into that is the sizing state's own
-    /// decision, already tested in [`super::super::sizing`]; here the state's
-    /// configure delegates to it.
+    /// seam (row 3.3): the startup metrics the start command carries reach
+    /// the state's sizing, so a configure derives and pushes the startup grid
+    /// through the state's [`PanelState::configure_grid`]. The pushes the
+    /// sizing decides are observed through the same sink the pty winsize
+    /// path fills in production.
     #[test]
-    fn the_state_configures_the_sizing() {
+    fn a_configure_with_the_startup_metrics_pushes_the_startup_grid() {
         let (tx, _rx) = mpsc::channel();
         let mut state = headless_state(Handshake::new(tx));
-        // No metrics and no session: a configure records nothing and must
-        // not panic (D10's degenerate path).
-        state.configure_grid(1080);
+        let mut pushed: Vec<Grid> = Vec::new();
+        state.configure_grid(1080, &mut |grid| pushed.push(grid));
+        assert_eq!(pushed.len(), 1, "the configure pushes the startup grid");
+        let grid = pushed[0];
+        assert_eq!(grid.cols(), 40, "the columns come from the startup layout");
+        assert_eq!(grid.rows(), 1080 / 16, "the rows come from the height");
+        assert_eq!(
+            (grid.cell_width(), grid.cell_height()),
+            (9, 16),
+            "the startup metrics reached the sizing"
+        );
     }
 
     /// The pure anchor and margin mappings the bind applies are the
