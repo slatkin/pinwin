@@ -24,21 +24,17 @@ use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, Region};
-use smithay_client_toolkit::delegate_dispatch2;
-use smithay_client_toolkit::delegate_registry;
-use smithay_client_toolkit::output::{OutputHandler, OutputState};
-use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
-use smithay_client_toolkit::registry_handlers;
+use smithay_client_toolkit::compositor::{CompositorState, Region};
+use smithay_client_toolkit::output::OutputState;
+use smithay_client_toolkit::registry::RegistryState;
 use smithay_client_toolkit::shell::wlr_layer::{
-    Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
+    Layer, LayerShell, LayerSurface, LayerSurfaceConfigure,
 };
-use smithay_client_toolkit::shm::{Shm, ShmHandler};
-use wayland_client::globals::GlobalList;
-use wayland_client::protocol::{wl_output, wl_surface};
-use wayland_client::{Connection, QueueHandle};
+use smithay_client_toolkit::shm::Shm;
+use wayland_client::QueueHandle;
+use wayland_client::protocol::wl_output;
 
-use crate::guard::{Poisoned, guard, guard_always};
+use crate::guard::Poisoned;
 use crate::layout::{CellSize, Layout, OutputSize};
 use crate::pty::apply_winsize;
 use crate::surfaces::gap::{HeldGap, start_held_gap};
@@ -52,6 +48,9 @@ use super::sizing::{Grid, Sizing};
 use super::surfaces::{PanelSurfaces, SurfaceId};
 use super::tween::TweenDriver;
 use super::tween_draw::{TweenDraw, TweenRender};
+
+mod handlers;
+mod session;
 
 /// The globals and surfaces one bound panel thread session holds (D2). The
 /// fields live here and not on [`PanelState`] because every one of them needs
@@ -176,55 +175,6 @@ impl PanelState {
         }
     }
 
-    /// Bind the session (D1, D2): the required globals, the output state and
-    /// the panel surface's creation and initial commit. A missing required
-    /// global is [`BindFailure::NoDisplay`]; a failed pool or a caught panic
-    /// is [`BindFailure::Internal`] (D5 latches the shared flag — the caller
-    /// runs this under the guard).
-    pub(crate) fn bind(
-        &mut self,
-        globals: &GlobalList,
-        qh: &QueueHandle<Self>,
-    ) -> Result<(), BindFailure> {
-        let compositor =
-            CompositorState::bind(globals, qh).map_err(|_bind| BindFailure::NoDisplay)?;
-        let shm = Shm::bind(globals, qh).map_err(|_bind| BindFailure::NoDisplay)?;
-        let shell = LayerShell::bind(globals, qh).map_err(|_bind| BindFailure::NoDisplay)?;
-        let mut scale = Scale::bind(globals, qh);
-        let presentation = Presentation::bind(globals, qh);
-        let activation = Activation::bind(globals, qh);
-        // The panel surface is created with no output, so the compositor
-        // places it on the focused output (D3); the first enter names it.
-        let surface = compositor.create_surface_with_data(qh, None, 1, SurfaceId::Panel);
-        // The per-surface fractional-scale and viewport objects (D1):
-        // optional globals, their absence degrades the scale, never the start.
-        scale.attach(SurfaceId::Panel, &surface, qh);
-        let panel = shell.create_layer_surface(qh, surface, Layer::Overlay, Some("pinwin"), None);
-        let surfaces = PanelSurfaces::new(
-            panel,
-            &shm,
-            self.startup.layout,
-            self.startup.keyboard,
-            self.cell,
-        )
-        .map_err(|_pool| BindFailure::Internal)?;
-        self.session = Some(Session {
-            registry: RegistryState::new(globals),
-            outputs: OutputState::new(globals, qh),
-            compositor,
-            shell,
-            shm,
-            surfaces: Some(surfaces),
-            pending_output: None,
-            resolved: None,
-            scale,
-            presentation,
-            activation,
-            qh: qh.clone(),
-        });
-        Ok(())
-    }
-
     /// A closed compositor connection maps the panel onto the dead state
     /// (D2): the handle stops posting (`NotRunning` without blocking), and a
     /// still-pending start handshake fails — the panel never went live, the
@@ -232,27 +182,6 @@ impl PanelState {
     pub(crate) fn connection_closed(&mut self) {
         self.inner.live.store(false, Ordering::Relaxed);
         self.handshake.report(StartOutcome::NoDisplay);
-    }
-
-    /// Tear the panel down: drop the two layer surfaces and end the loop.
-    /// The teardown command, the closed command channel and the startup
-    /// watchdog's fire all end here, so the panel leaves the screen at once
-    /// and no later configure can push a pty size — the only push path runs
-    /// through the configure handling the dropped surfaces take with them.
-    /// Nothing here can panic, so the stop relays call it outside the guard
-    /// and the loop still ends on a latched flag.
-    pub(crate) fn tear_down(&mut self) {
-        if let Some(session) = self.session.as_mut() {
-            // The per-surface scale objects die with their surfaces, and
-            // before them: dropping the objects sends their `destroy`
-            // requests, so the viewport and fractional-scale objects of the
-            // panel and of a still-live reserve cannot outlive the surfaces
-            // they are attached to.
-            session.scale.detach(SurfaceId::Panel);
-            session.scale.detach(SurfaceId::Reserve);
-            session.surfaces = None;
-        }
-        self.done = true;
     }
 
     /// The panel surface entered an output (D3): the first enter names the
@@ -473,188 +402,6 @@ pub(crate) fn apply_pty_size(fd: RawFd, grid: Grid) {
     };
     let _ = apply_winsize(fd, i32::from(grid.cols()), rows, cell_w, cell_h);
 }
-
-impl CompositorHandler for PanelState {
-    fn scale_factor_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        new_factor: i32,
-    ) {
-        // The integer preferred buffer scale is the fallback scale source
-        // (D5); the fractional preferred scale arrives through the
-        // `wp_fractional_scale_v1` dispatch in `buffers`.
-        let poisoned = self.poisoned.clone();
-        let _ = guard(&poisoned, || self.note_integer_scale(new_factor));
-    }
-
-    fn transform_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_transform: wl_output::Transform,
-    ) {
-        // The renderer consumes the transform with the scale (row 4.x).
-    }
-
-    fn frame(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        surface: &wl_surface::WlSurface,
-        time: u32,
-    ) {
-        // The tween's frame callbacks arrive here (row 6.2): the panel
-        // surface's step the driver and commit the eased frame, the
-        // reserve's change nothing. Guarded like every handler (D5).
-        let poisoned = self.poisoned.clone();
-        let _ = guard(&poisoned, || {
-            let is_panel = self
-                .session
-                .as_ref()
-                .and_then(|session| session.surfaces.as_ref())
-                .is_some_and(|surfaces| surfaces.is_panel_surface(surface));
-            if is_panel {
-                super::tween_draw::on_tween_frame(self, time);
-            }
-        });
-    }
-
-    fn surface_enter(
-        &mut self,
-        _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        surface: &wl_surface::WlSurface,
-        output: &wl_output::WlOutput,
-    ) {
-        let poisoned = self.poisoned.clone();
-        let _ = guard(&poisoned, || {
-            // The panel's first enter names its output (D3); the reserve's
-            // enters arrive after the resolution and change nothing.
-            let is_panel = self
-                .session
-                .as_ref()
-                .and_then(|session| session.surfaces.as_ref())
-                .is_some_and(|surfaces| surfaces.is_panel_surface(surface));
-            if is_panel {
-                self.on_panel_enter(output, qh);
-            }
-        });
-    }
-
-    fn surface_leave(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-        // The panel stays on its original monitor (the spec's "Dock at one
-        // edge of the panel's monitor"); a leave has no state to undo.
-    }
-}
-
-impl OutputHandler for PanelState {
-    fn output_state(&mut self) -> &mut OutputState {
-        // Only reachable once the session is bound: outputs are bound at the
-        // bind and their events dispatch through the queue the bind inserted,
-        // so no event can name an output while the session is `None`.
-        &mut self
-            .session
-            .as_mut()
-            .expect("output events dispatch only after the bind")
-            .outputs
-    }
-
-    fn new_output(
-        &mut self,
-        _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
-    ) {
-        let poisoned = self.poisoned.clone();
-        let _ = guard(&poisoned, || {
-            // A new output's description may complete a pending resolution.
-            self.try_resolve_output(qh);
-        });
-    }
-
-    fn update_output(
-        &mut self,
-        _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
-    ) {
-        let poisoned = self.poisoned.clone();
-        let _ = guard(&poisoned, || {
-            // The pending output's logical size may have arrived (D3).
-            self.try_resolve_output(qh);
-        });
-    }
-
-    fn output_destroyed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
-    ) {
-        // The compositor closes the layer surfaces when their output goes
-        // away; the `closed` handler maps that onto the dead panel.
-    }
-}
-
-impl ShmHandler for PanelState {
-    fn shm_state(&mut self) -> &mut Shm {
-        // Same bound-session argument as `output_state` above.
-        &mut self
-            .session
-            .as_mut()
-            .expect("wl_shm events dispatch only after the bind")
-            .shm
-    }
-}
-
-impl LayerShellHandler for PanelState {
-    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, layer: &LayerSurface) {
-        // A stop relay (D5): the panel's death must end the loop even on a
-        // latched flag, or the thread leaks its connection.
-        let poisoned = self.poisoned.clone();
-        let _ = guard_always(&poisoned, || self.on_layer_closed(layer));
-    }
-
-    fn configure(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        layer: &LayerSurface,
-        configure: LayerSurfaceConfigure,
-        _serial: u32,
-    ) {
-        let poisoned = self.poisoned.clone();
-        let _ = guard(&poisoned, || self.on_configure(layer, &configure));
-    }
-}
-
-impl ProvidesRegistryState for PanelState {
-    fn registry(&mut self) -> &mut RegistryState {
-        // Same bound-session argument as `output_state` above: the registry
-        // exists from the bind on, and registry events dispatch only after
-        // the queue that carries them is inserted.
-        &mut self
-            .session
-            .as_mut()
-            .expect("registry events dispatch only after the bind")
-            .registry
-    }
-
-    registry_handlers![OutputState];
-}
-
-delegate_registry!(PanelState);
-
-delegate_dispatch2!(PanelState);
 
 #[cfg(test)]
 mod tests {
