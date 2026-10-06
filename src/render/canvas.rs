@@ -22,7 +22,10 @@
 //! powerline triangles, a closed-outline stroke with miter joins for the
 //! one-line sprite (the hollow powerline separators), an image blit and a
 //! coverage-mask blit for the glyphs, and a pixel read for the tests. The
-//! module was frozen for those rows; the row 4.3 review replaced the
+//! cached kitty images scale through [`scale::resample`], the one
+//! resampling primitive row 4.7 adds (area averaging in premultiplied
+//! space, edges unclipped). The module was frozen for those rows; the row
+//! 4.3 review replaced the
 //! straight-line stroke with the closed-outline stroke, because cairo
 //! strokes the hollow separators as one closed triangle whose joins fill
 //! the corners and three butt-capped lines do not.
@@ -40,8 +43,10 @@ use tiny_skia::{
 use crate::term::cells::Rgb;
 
 mod bitmap;
+mod scale;
 
 pub use bitmap::{CanvasMask, image_pixmap};
+pub(crate) use scale::resample;
 
 /// A colour cached for painting into the [`Canvas`] (D5): the channels are
 /// stored in the pixmap's memory order — blue, green, red, alpha of the
