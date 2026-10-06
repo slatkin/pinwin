@@ -7,6 +7,7 @@
 //! `guard` is the shared D5 panic guard, `ghostty_sys` the hand-written FFI
 //! against the pinned libghostty-vt (D2).
 
+pub mod activation;
 pub mod anim;
 pub mod fontconfig;
 pub mod ghostty_sys;
@@ -20,4 +21,5 @@ pub mod render;
 pub mod surfaces;
 pub mod term;
 
+pub use activation::ActivationToken;
 pub use panel::{Panel, PinwinError};
