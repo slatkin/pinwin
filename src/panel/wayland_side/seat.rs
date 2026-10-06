@@ -61,8 +61,7 @@ impl std::fmt::Debug for KeyboardLinks {
     }
 }
 
-/// The seat hooks' links, the GDK path's [`crate::input::InputLinks`] twin:
-/// everything the hooks reach outside this module. The row 8.1 wiring
+/// The seat hooks' links: everything the hooks reach outside this module. The row 8.1 wiring
 /// assembles one value from the panel state; the pointer and focus hooks
 /// take the whole set, the keyboard hooks the terminal and the latch
 /// through [`KeyboardLinks`].
