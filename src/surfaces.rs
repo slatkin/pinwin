@@ -39,29 +39,15 @@ use crate::render::OutputScale;
 mod area;
 pub(crate) mod gap;
 mod hooks;
+mod publish;
 
 pub use area::GridArea;
 pub use hooks::{DrawFn, GridSnapshotFn, MeasureFn, SurfaceHooks};
+pub use publish::PublishOutcome;
+
+use publish::should_animate;
 
 use gap::{HeldGap, gap_tween_decision, reserve_gap, staged_publish, start_held_gap};
-
-/// The outcome of publishing a layout (`glue_publish_layout`'s return codes).
-/// The `panel` row (4.1) maps these onto `PinwinError`: `NotLive` is
-/// `NotRunning`, `InvalidLayout` is `InvalidLayout` and `Terminal` is
-/// `Internal` (`pinwin_api.c`'s `apply_on_gtk_thread`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PublishOutcome {
-    /// The layout is applied and the grid follows (`PINWIN_GEOM_OK`).
-    Applied,
-    /// The panel has no live metrics yet, or is already torn down
-    /// (`GLUE_NOT_LIVE`).
-    NotLive,
-    /// The layout the live monitor refuses (`PINWIN_GEOM_ERR_METRICS`).
-    InvalidLayout,
-    /// The layout published but the terminal grid could not be allocated; the
-    /// previous grid stays (`GLUE_ERR_TERMINAL`).
-    Terminal,
-}
 
 /// Why [`init`] failed (`glue_init`'s zero return).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,21 +58,6 @@ pub enum InitFailure {
     /// The session's compositor lacks wlr-layer-shell (an X11 session, or
     /// GNOME): the spec's "Wayland layer-shell is required" case.
     LayerShell,
-}
-
-/// Whether a layout apply animates (`glue_publish_layout`'s decision): a
-/// layout differing only in its column count and/or push/cover choice animates
-/// — the side and the left and right gutters move the reservation's side, so a
-/// layout touching them snaps. A covering-only change animates so a pushing
-/// retarget at the same width can ease its gap back (overlay-expand D3). The
-/// duration clamp to 1000 ms happens upstream (`pinwin_api.c`), as in the C.
-/// The library reads no desktop animation setting: the host's duration is the
-/// only control.
-fn should_animate(duration_ms: u32, applied: &Layout, requested: &Layout) -> bool {
-    duration_ms > 0
-        && requested.side() == applied.side()
-        && requested.left() == applied.left()
-        && requested.right() == applied.right()
 }
 
 /// Validate a layout against live metrics (`pinwin_layout_validate` plus the
