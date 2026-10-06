@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn the_length_boundaries_reject_256_bytes() {
         let max = "a".repeat(MAX_TOKEN_BYTES);
-        assert!(ActivationToken::new(&max).is_ok(), "255 bytes build");
+        ActivationToken::new(&max).expect("255 bytes build");
         let over = "a".repeat(MAX_TOKEN_BYTES + 1);
         assert_eq!(
             ActivationToken::new(&over),
@@ -145,8 +145,8 @@ mod tests {
     /// highest visible characters (`!`, `~`) are accepted.
     #[test]
     fn the_visible_ascii_range_edges_holds() {
-        assert!(ActivationToken::new("!").is_ok());
-        assert!(ActivationToken::new("~").is_ok());
+        assert!(ActivationToken::new("!").is_ok_and(|token| token.as_str() == "!"));
+        assert!(ActivationToken::new("~").is_ok_and(|token| token.as_str() == "~"));
         // DEL one past the top of the range.
         assert_eq!(
             ActivationToken::new("\u{7f}"),
