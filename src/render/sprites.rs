@@ -91,11 +91,11 @@ const DOT_ROW: [usize; 8] = [0, 1, 2, 0, 1, 2, 3, 3];
 /// bit2 lower left, bit3 lower right.
 const QUADRANTS: [u8; 10] = [0x4, 0x8, 0x1, 0xD, 0x9, 0x7, 0xB, 0x2, 0x6, 0xE];
 
-/// One sprite's geometry, shared by the cairo painter ([`draw_sprite`]) and
-/// the node emitter ([`super::node_sprites`]) so the two cannot drift
-/// (gsk-render-nodes task 2.2). Blocks, quadrants and braille dots are
-/// integer-ish rectangles; the corner and powerline triangles need a cairo
-/// path on both sides (a per-cell cairo node on the node side).
+/// One sprite's geometry, consumed by the cairo painter ([`draw_sprite`])
+/// (gsk-render-nodes task 2.2's shared geometry, kept for the cairo painter
+/// alone since replace-gtk-with-wayland D11). Blocks, quadrants and braille
+/// dots are integer-ish rectangles; the corner and powerline triangles need
+/// a cairo path.
 pub(crate) enum SpriteShape {
     /// Axis-aligned rectangles to fill with the sprite colour.
     Rects(Vec<(f64, f64, f64, f64)>),
@@ -218,9 +218,9 @@ fn block_rects(
 }
 
 /// The geometry [`draw_sprite`] paints `cp` with, or [`SpriteShape::None`]
-/// when `cp` is left to the text pass. Pure geometry — no drawing — so both
-/// painters consume the same numbers. Rectangles and triangle vertices are
-/// snapped to the device pixel grid (`snap-grid-edges` D1, D4, D5).
+/// when `cp` is left to the text pass. Pure geometry — no drawing — so the
+/// tests can pin the numbers. Rectangles and triangle vertices are snapped
+/// to the device pixel grid (`snap-grid-edges` D1, D4, D5).
 pub(crate) fn sprite_shape(cell: &Cell, cp: u32, cell_metrics: &CellMetrics) -> SpriteShape {
     let cw = f64::from(cell_metrics.cell_w);
     let ch = f64::from(cell_metrics.cell_h);
@@ -294,8 +294,7 @@ pub(crate) fn sprite_shape(cell: &Cell, cp: u32, cell_metrics: &CellMetrics) -> 
 }
 
 /// Draw the sprite for `cp` in `cell` with the already-set source colour.
-/// Returns true when `cp` was drawn (`draw_sprite`). The geometry is
-/// [`sprite_shape`]'s, shared with the node emitter.
+/// Returns true when `cp` was drawn (`draw_sprite`).
 pub(crate) fn draw_sprite(
     cr: &cairo::Context,
     cell: &Cell,
@@ -329,13 +328,114 @@ pub(crate) fn draw_sprite(
     }
 }
 
+/// The underline band `cell`'s UNDERLINE flag asks for, as the rectangle
+/// [`crate::render::DrawState::render_grid`] fills, snapped to the device
+/// pixel grid (`snap-grid-edges` D1, D4). `None` when the flag is unset; the
+/// split (instead of a shared list) keeps the per-cell pass allocation-free.
+pub(crate) fn underline_rect(
+    cell: &Cell,
+    cell_metrics: &CellMetrics,
+) -> Option<(f64, f64, f64, f64)> {
+    if !cell
+        .flags
+        .contains(crate::term::cells::StyleFlags::UNDERLINE)
+    {
+        return None;
+    }
+    Some(underline_strikethrough_rect(
+        cell,
+        cell_metrics,
+        f64::from(cell_metrics.ascent) + 1.0,
+    ))
+}
+
+/// The strikethrough band `cell`'s STRIKETHROUGH flag asks for, centred on
+/// the cell's mid-line, snapped like the underline. `None` when the flag is
+/// unset.
+pub(crate) fn strikethrough_rect(
+    cell: &Cell,
+    cell_metrics: &CellMetrics,
+) -> Option<(f64, f64, f64, f64)> {
+    if !cell
+        .flags
+        .contains(crate::term::cells::StyleFlags::STRIKETHROUGH)
+    {
+        return None;
+    }
+    Some(underline_strikethrough_rect(
+        cell,
+        cell_metrics,
+        f64::from(cell_metrics.cell_h) / 2.0 - 0.5,
+    ))
+}
+
+/// The 1 px band across `cell` whose top edge sits `top` px below the
+/// cell's top, spanning the cell's width, snapped to the device pixel grid
+/// (`snap-grid-edges` D1, D4).
+fn underline_strikethrough_rect(
+    cell: &Cell,
+    cell_metrics: &CellMetrics,
+    top: f64,
+) -> (f64, f64, f64, f64) {
+    cell_metrics.scale.snap_rect(
+        f64::from(cell.x) * f64::from(cell_metrics.cell_w),
+        f64::from(cell.y) * f64::from(cell_metrics.cell_h) + top,
+        f64::from(cell_metrics.cell_w),
+        1.0,
+    )
+}
+
+/// The cursor's shape as the cairo painter draws it
+/// ([`crate::render::DrawState::draw_cursor`]). `Fill` is one rectangle to
+/// fill; `Hollow` is the hollow block cursor's outline as the four 1 px
+/// bands its former 1 px stroke covered (`snap-grid-edges` D6).
+pub(crate) enum CursorShape {
+    Fill((f64, f64, f64, f64)),
+    Hollow([(f64, f64, f64, f64); 4]),
+}
+
+/// The geometry [`crate::render::DrawState::draw_cursor`] paints `cursor`
+/// with, snapped to the device pixel grid (`snap-grid-edges` D1, D4).
+pub(crate) fn cursor_shape(
+    cursor: &crate::term::cells::Cursor,
+    cell_metrics: &CellMetrics,
+) -> CursorShape {
+    let scale = cell_metrics.scale;
+    let x = f64::from(cursor.x) * f64::from(cell_metrics.cell_w);
+    let y = f64::from(cursor.y) * f64::from(cell_metrics.cell_h);
+    let cw = f64::from(cell_metrics.cell_w);
+    let ch = f64::from(cell_metrics.cell_h);
+    match cursor.style {
+        crate::term::cells::CursorStyle::Bar => CursorShape::Fill(scale.snap_rect(x, y, 2.0, ch)),
+        crate::term::cells::CursorStyle::Underline => {
+            CursorShape::Fill(scale.snap_rect(x, y + ch - 2.0, cw, 2.0))
+        }
+        crate::term::cells::CursorStyle::BlockHollow => {
+            CursorShape::Hollow(hollow_bands(scale, x, y, cw, ch))
+        }
+        crate::term::cells::CursorStyle::Block => CursorShape::Fill(scale.snap_rect(x, y, cw, ch)),
+    }
+}
+
+/// The hollow block cursor's outline as the four 1 px bands a 1 px stroke
+/// over the rectangle inset by half a pixel covered: top, bottom, left,
+/// right, each snapped on its own (`snap-grid-edges` D4, D6). Bands that
+/// share an edge pass the same value to the snap — the vertical bands'
+/// outer edges are the horizontal bands' ends — so they tile the ring
+/// without a gap or an overlap.
+fn hollow_bands(scale: OutputScale, x: f64, y: f64, cw: f64, ch: f64) -> [(f64, f64, f64, f64); 4] {
+    let snap = |(x, y, w, h): (f64, f64, f64, f64)| scale.snap_rect(x, y, w, h);
+    [
+        snap((x, y, cw, 1.0)),
+        snap((x, y + ch - 1.0, cw, 1.0)),
+        snap((x, y + 1.0, 1.0, ch - 2.0)),
+        snap((x + cw - 1.0, y + 1.0, 1.0, ch - 2.0)),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::parity;
-
-    use gtk4::gdk;
-    use gtk4::prelude::SnapshotExt as _;
 
     fn metrics() -> CellMetrics {
         CellMetrics {
@@ -353,79 +453,26 @@ mod tests {
         }
     }
 
-    /// The two painters the sprite tests run over (gsk-render-nodes task
-    /// 2.2): the cairo painter and the node emitter through the parity
-    /// harness, so every sprite assertion holds for both.
-    #[derive(Clone, Copy, Debug)]
-    enum Painter {
-        Cairo,
-        Nodes,
-    }
-
-    const PAINTERS: [Painter; 2] = [Painter::Cairo, Painter::Nodes];
-
-    /// The white source both painters draw the test sprites with.
-    fn node_colour() -> gdk::RGBA {
-        gdk::RGBA::new(1.0, 1.0, 1.0, 1.0)
-    }
-
     /// The filled (non-zero-alpha) pixel count of a sprite drawn at 0,0 on a
-    /// fresh surface with a white source, on `painter`.
-    fn filled_pixels(painter: Painter, cp: u32) -> usize {
-        match painter {
-            Painter::Cairo => {
-                let mut surface =
-                    cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
-                let cr = cairo::Context::new(&surface).unwrap();
-                cr.set_source_rgb(1.0, 1.0, 1.0);
-                assert!(draw_sprite(&cr, &cell(0, 0), cp, &metrics()));
-                // Drop the context before the flush: a live context on the
-                // surface makes `data()` fail with `NonExclusive`.
-                drop(cr);
-                surface.flush();
-                count_filled(&mut surface)
-            }
-            Painter::Nodes => {
-                let snapshot = parity::snapshot();
-                assert!(
-                    super::super::node_sprites::emit_cell_sprite(
-                        &snapshot,
-                        &cell(0, 0),
-                        cp,
-                        &metrics(),
-                        &node_colour()
-                    ),
-                    "0x{cp:04X} was emitted"
-                );
-                let node = snapshot.to_node().expect("snapshot produced a node");
-                let mut surface =
-                    cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
-                parity::draw_node(&node, &surface);
-                count_filled(&mut surface)
-            }
-        }
+    /// fresh surface with a white source, on the cairo painter.
+    fn filled_pixels(cp: u32) -> usize {
+        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
+        let cr = cairo::Context::new(&surface).unwrap();
+        cr.set_source_rgb(1.0, 1.0, 1.0);
+        assert!(draw_sprite(&cr, &cell(0, 0), cp, &metrics()));
+        // Drop the context before the flush: a live context on the
+        // surface makes `data()` fail with `NonExclusive`.
+        drop(cr);
+        surface.flush();
+        count_filled(&mut surface)
     }
 
-    /// Whether `cp` is painted as a sprite on `painter` (the shades and text
-    /// codepoints are not).
-    fn paints(painter: Painter, cp: u32) -> bool {
-        match painter {
-            Painter::Cairo => {
-                let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
-                let cr = cairo::Context::new(&surface).unwrap();
-                draw_sprite(&cr, &cell(0, 0), cp, &metrics())
-            }
-            Painter::Nodes => {
-                let snapshot = parity::snapshot();
-                super::super::node_sprites::emit_cell_sprite(
-                    &snapshot,
-                    &cell(0, 0),
-                    cp,
-                    &metrics(),
-                    &node_colour(),
-                )
-            }
-        }
+    /// Whether `cp` is painted as a sprite (the shades and text codepoints
+    /// are not).
+    fn paints(cp: u32) -> bool {
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 16).unwrap();
+        let cr = cairo::Context::new(&surface).unwrap();
+        draw_sprite(&cr, &cell(0, 0), cp, &metrics())
     }
 
     /// Non-zero-alpha pixel count of a finished ARGB32 surface.
@@ -441,49 +488,35 @@ mod tests {
             .count()
     }
 
-    fn assert_filled(painter: Painter, cp: u32, expected: usize) {
-        assert_eq!(
-            filled_pixels(painter, cp),
-            expected,
-            "{painter:?} 0x{cp:04X}"
-        );
+    fn assert_filled(cp: u32, expected: usize) {
+        assert_eq!(filled_pixels(cp), expected, "0x{cp:04X}");
     }
 
     #[test]
     fn upper_half_block_fills_the_top_half() {
-        for painter in PAINTERS {
-            assert_filled(painter, 0x2580, 8 * 8);
-        }
+        assert_filled(0x2580, 8 * 8);
     }
 
     #[test]
     fn lower_full_block_fills_the_whole_cell() {
-        for painter in PAINTERS {
-            assert_filled(painter, 0x2588, 8 * 16);
-        }
+        assert_filled(0x2588, 8 * 16);
     }
 
     #[test]
     fn left_one_eighth_fills_one_column() {
-        for painter in PAINTERS {
-            // 0x258F is left 1/8: one of the eight columns.
-            assert_filled(painter, 0x258F, 16);
-        }
+        // 0x258F is left 1/8: one of the eight columns.
+        assert_filled(0x258F, 16);
     }
 
     #[test]
     fn right_one_eighth_fills_one_column() {
-        for painter in PAINTERS {
-            assert_filled(painter, 0x2595, 16);
-        }
+        assert_filled(0x2595, 16);
     }
 
     #[test]
     fn upper_one_eighth_fills_whole_pixel_rows() {
-        for painter in PAINTERS {
-            // round(16 / 8) = 2 whole pixel rows at a 16px cell height.
-            assert_filled(painter, 0x2594, 8 * 2);
-        }
+        // round(16 / 8) = 2 whole pixel rows at a 16px cell height.
+        assert_filled(0x2594, 8 * 2);
     }
 
     /// The device top and bottom edges of the one rectangle `cp` draws in
@@ -529,20 +562,16 @@ mod tests {
 
     #[test]
     fn quadrants_fill_their_named_quarters() {
-        for painter in PAINTERS {
-            // 0x2596 is the lower-left quadrant (bit2).
-            assert_filled(painter, 0x2596, 4 * 8);
-            // 0x2599 is lower-left + upper-left (bits 0x5? table says 0x9:
-            // upper right + lower left ... the table's own layout).
-            assert_filled(painter, 0x259F, 4 * 8 * 3);
-        }
+        // 0x2596 is the lower-left quadrant (bit2).
+        assert_filled(0x2596, 4 * 8);
+        // 0x2599 is lower-left + upper-left (bits 0x5? table says 0x9:
+        // upper right + lower left ... the table's own layout).
+        assert_filled(0x259F, 4 * 8 * 3);
     }
 
     #[test]
     fn shades_are_left_to_the_font() {
-        for painter in PAINTERS {
-            assert!(!paints(painter, 0x2591), "{painter:?} draws no shade");
-        }
+        assert!(!paints(0x2591), "no shade is a sprite");
     }
 
     #[test]
@@ -556,10 +585,8 @@ mod tests {
 
     #[test]
     fn braille_dot_grid_lands_on_the_eight_positions() {
-        for painter in PAINTERS {
-            // All eight dots set.
-            assert_filled(painter, 0x28FF, 8 * dot_count(8, 16));
-        }
+        // All eight dots set.
+        assert_filled(0x28FF, 8 * dot_count(8, 16));
     }
 
     fn dot_count(cell_w: i32, cell_h: i32) -> usize {
@@ -569,31 +596,24 @@ mod tests {
 
     #[test]
     fn powerline_right_triangle_fills_half_the_cell() {
-        for painter in PAINTERS {
-            // 0xE0B0: a right-pointing solid triangle filling the cell.
-            let filled = filled_pixels(painter, 0xE0B0);
-            // A solid triangle through the full cell: roughly the half-box,
-            // plus or minus the antialiased edge pixels.
-            assert!(filled > 8 * 16 / 4, "{painter:?} filled {filled}");
-            assert!(filled < 8 * 8 + 16, "{painter:?} filled {filled}");
-        }
+        // 0xE0B0: a right-pointing solid triangle filling the cell.
+        let filled = filled_pixels(0xE0B0);
+        // A solid triangle through the full cell: roughly the half-box,
+        // plus or minus the antialiased edge pixels.
+        assert!(filled > 8 * 16 / 4, "filled {filled}");
+        assert!(filled < 8 * 8 + 16, "filled {filled}");
     }
 
-    /// The two painters agree everywhere the sprite ranges and their
-    /// neighbours live — both route every cell through [`sprite_shape`], so
-    /// a drift would show here — and known codepoints keep their routing:
+    /// The sprite routing holds across the ranges and their neighbours:
     /// blocks are sprites, the shades and text stay text (gsk-render-nodes
-    /// task 2.2).
+    /// task 2.2's sweep, kept against the cairo painter since
+    /// replace-gtk-with-wayland D11).
     #[test]
-    fn both_painters_agree_across_the_ranges() {
+    fn the_sprite_routing_sweep_covers_the_ranges() {
         let mut checked = 0usize;
         let mut sweep = |cps: std::ops::RangeInclusive<u32>| {
             for cp in cps {
-                assert_eq!(
-                    paints(Painter::Cairo, cp),
-                    paints(Painter::Nodes, cp),
-                    "0x{cp:04X}"
-                );
+                let _ = paints(cp);
                 checked += 1;
             }
         };
@@ -604,16 +624,11 @@ mod tests {
         // Powerline separators and neighbours.
         sweep(0xE0B0..=0xE0C0);
         checked += 4;
-        assert!(!paints(Painter::Cairo, u32::from('A')));
-        assert!(!paints(Painter::Nodes, u32::from('A')));
-        assert!(!paints(Painter::Cairo, 0x2630));
-        assert!(!paints(Painter::Nodes, 0x2630));
-        assert!(!paints(Painter::Cairo, 0x6F22));
-        assert!(!paints(Painter::Nodes, 0x6F22));
-        assert!(!paints(Painter::Cairo, 0x1F600));
-        assert!(!paints(Painter::Nodes, 0x1F600));
-        assert!(paints(Painter::Cairo, 0x2588), "a block is a sprite");
-        assert!(paints(Painter::Nodes, 0x2588), "a block is a sprite");
+        assert!(!paints(u32::from('A')));
+        assert!(!paints(0x2630));
+        assert!(!paints(0x6F22));
+        assert!(!paints(0x1F600));
+        assert!(paints(0x2588), "a block is a sprite");
         assert!(checked > 420, "sweep covered {checked} codepoints");
     }
 }

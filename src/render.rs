@@ -14,16 +14,10 @@
 //! body through the shared [`crate::guard`] helper and latches `poisoned`,
 //! after which it draws nothing.
 //!
-//! `render_grid` stays the cairo
-//! fallback and the parity oracle. `snapshot` presents every frame as GSK
-//! nodes: the whole grid built once into a retained `gsk::RenderNode` on a
-//! tween's first frame and appended translated for the rest of the tween,
-//! rebuilt into the widget's snapshot on every non-tween draw. When node
-//! emission is not possible, the frame chains to the cairo draw path, which
-//! renders the full grid with `render_grid` every frame — the fallback is
-//! correctness-first, with no per-tween cache of its own (gsk-render-nodes
-//! row 4.2 retired the stage-1 texture cache).
-//! `parity` is the test-only diff harness.
+//! `render_grid` draws the full grid every frame. During a width tween the
+//! caller has translated to the docked edge, so a tween frame repaints the
+//! grid per frame — the retained GSK tween node went away with the node
+//! painter (replace-gtk-with-wayland D11).
 
 pub use images::PixbufDecoder;
 
@@ -67,17 +61,11 @@ mod metrics;
 /// a swash placement transform (replace-gtk-with-wayland D6). GTK-free,
 /// like the font module.
 pub mod nerd;
-mod node_cursor;
-mod node_images;
-mod node_sprites;
-mod nodes;
 /// The grid painter for the canvas (row 4.3): the theme background, the
 /// cell backgrounds, the underline and strikethrough bands, the cursor
 /// shapes and the focus accent, with the text and image passes to come.
 /// GTK-free, like the canvas.
 pub mod painter;
-#[cfg(test)]
-mod parity;
 /// The `png`-crate kitty PNG decoder (row 4.7): the [`PngDecoder`] the
 /// panel hands to the terminal from row 8 on, GTK-free like the canvas.
 pub mod png;
@@ -87,12 +75,10 @@ pub mod png;
 /// D6/D11). GTK-free, like the font module.
 pub mod shape;
 mod snap;
-mod snapshot;
 mod sprite;
 mod sprites;
 mod text;
 pub mod text_pass;
-mod texture;
 
 use crate::guard::{Poisoned, guard};
 use crate::layout::Accent;
@@ -102,11 +88,9 @@ use crate::term::cells::{Cursor, CursorStyle, Rgb, StyleFlags, Wide};
 use metrics::CellMetrics;
 use text::FontsRef;
 
-use gtk4::gsk;
-
 /// One frame's draw state (`g_font*`, `g_cell_*`, `g_nerd_*`, `g_theme_*`,
-/// `g_accent`, `g_focused`, the retained tween grid node and the image cache
-/// in the C glue). Everything here lives on the GTK thread only.
+/// `g_accent` and the image cache in the C glue). Everything here lives on
+/// the GTK thread only.
 pub struct DrawState {
     theme_background: Rgb,
     theme_foreground: Rgb,
@@ -115,34 +99,14 @@ pub struct DrawState {
     poisoned: Poisoned,
     fonts: Option<metrics::Fonts>,
     cell_metrics: CellMetrics,
-    /// The pango context the metrics were measured on, kept for the node
-    /// emitter's layouts (gsk-render-nodes): the cairo path builds its layout
-    /// off a cairo context, but `append_layout` needs a plain one, and the
-    /// widget's context is the one whose font map and resolution match what
-    /// the cairo path ends up rendering through.
-    pango_context: Option<pango::Context>,
-    /// The retained grid node (gsk-render-nodes row 4.1): the whole grid —
-    /// theme background, cell backgrounds, cells, cursor and images — built
-    /// once into a `gsk::RenderNode` on the tween's first frame and appended
-    /// translated for the rest of the tween; the glyphs stay in GSK's GPU
-    /// atlas, so the per-frame CPU work is a transform. Keyed by column count
-    /// and height (`grid_node_cols`/`grid_node_height`): the terminal grid is
-    /// resized only when the tween ends, so the node starts correct. Rebuilt
-    /// fresh on every non-tween draw, and dropped when a tween stops (the
-    /// `tween_cache_drop` hook) or the cell metrics change. The cairo fallback
-    /// has no cache of its own: a tween frame it has to draw renders the full
-    /// grid every frame (gsk-render-nodes row 4.2).
-    grid_node: Option<gsk::RenderNode>,
-    grid_node_cols: i32,
-    grid_node_height: i32,
     images: images::ImageCache,
 }
 
 impl std::fmt::Debug for DrawState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The font, context, grid-node and image-cache fields hold GTK and
-        // cairo handles without a `Debug` impl; the scalar state is enough
-        // to identify a draw state in test failures.
+        // The font and image-cache fields hold GTK and cairo handles without
+        // a `Debug` impl; the scalar state is enough to identify a draw state
+        // in test failures.
         f.debug_struct("DrawState")
             .field("theme_background", &self.theme_background)
             .field("theme_foreground", &self.theme_foreground)
@@ -181,10 +145,6 @@ impl DrawState {
             poisoned,
             fonts: None,
             cell_metrics: CellMetrics::default(),
-            pango_context: None,
-            grid_node: None,
-            grid_node_cols: 0,
-            grid_node_height: 0,
             images: images::ImageCache::default(),
         }
     }
@@ -208,11 +168,8 @@ impl DrawState {
     }
 
     /// Measure the font on `context` and refresh the cell metrics
-    /// (`cell_metrics_update`). Also drops the retained grid node: the cell
-    /// size may change, so the node is stale.
+    /// (`cell_metrics_update`).
     pub fn cell_metrics_update(&mut self, context: &pango::Context) {
-        self.drop_grid_node();
-        self.pango_context = Some(context.clone());
         let fonts = self.fonts.get_or_insert_with(metrics::Fonts::load);
         let mut measured = metrics::measure(context, &fonts.regular);
         // `measure` builds fresh metrics from the font; the output scale is
@@ -224,24 +181,9 @@ impl DrawState {
 
     /// Record the output scale the next draw runs at (`snap-grid-edges` D2,
     /// D3): the shared geometry functions snap their rectangles through it.
-    /// Called from the draw hooks on every draw. A changed scale drops the
-    /// retained grid node (snap-grid-edges D7): the node holds snapped
-    /// geometry for the scale it was built at. An unchanged scale keeps it,
-    /// so a tween does not rebuild the node every frame.
+    /// Called from the draw hooks on every draw.
     pub(crate) fn set_scale(&mut self, scale: OutputScale) {
-        if self.cell_metrics.scale != scale {
-            self.cell_metrics.scale = scale;
-            self.drop_grid_node();
-        }
-    }
-
-    /// Drop the retained grid node (`render_grid_cache_drop`): the node is
-    /// keyed to one tween, so it goes when the tween stops (the
-    /// `tween_cache_drop` hook) and when the cell metrics change.
-    pub fn drop_grid_node(&mut self) {
-        self.grid_node = None;
-        self.grid_node_cols = 0;
-        self.grid_node_height = 0;
+        self.cell_metrics.scale = scale;
     }
 
     /// Render a frame into `cr` (`on_draw`): the theme background, the full
@@ -294,10 +236,10 @@ impl DrawState {
             return;
         }
 
-        // While a width tween runs, keep the grid against the docked edge.
-        // This is the fallback a tween frame lands on when the GSK snapshot
-        // could not emit nodes: it renders the full grid every frame — slow,
-        // but correct (gsk-render-nodes row 4.2).
+        // While a width tween runs, keep the grid against the docked edge:
+        // a tween frame repaints the full grid every frame (the retained GSK
+        // tween node went away with the node painter, replace-gtk-with-wayland
+        // D11).
         cr.translate(draw_offset, 0.0);
         self.render_grid(cr, terminal, height);
         cr.translate(-draw_offset, 0.0);
@@ -347,13 +289,11 @@ impl DrawState {
             if cell.flags.contains(StyleFlags::UNDERLINE)
                 || cell.flags.contains(StyleFlags::STRIKETHROUGH)
             {
-                // The same snapped rectangles the node emitter fills
-                // (node_cursor::underline_rect/strikethrough_rect), filled
-                // unantialiased like them (`snap-grid-edges` D6) — identical
-                // geometry, so the two painters cannot drift.
-                for (x, y, w, h) in node_cursor::underline_rect(&cell, &cell_metrics)
+                // Unantialiased 1 px bands, snapped like every other
+                // rectangle (`snap-grid-edges` D6).
+                for (x, y, w, h) in sprites::underline_rect(&cell, &cell_metrics)
                     .into_iter()
-                    .chain(node_cursor::strikethrough_rect(&cell, &cell_metrics))
+                    .chain(sprites::strikethrough_rect(&cell, &cell_metrics))
                 {
                     sprites::fill_rect(cr, x, y, w, h);
                 }
@@ -403,7 +343,7 @@ impl DrawState {
 
     /// Draw the cursor shape, and the character under a block cursor in its
     /// background colour (`draw_cursor`). The shape geometry is
-    /// [`node_cursor::cursor_shape`]'s, shared with the node emitter.
+    /// [`sprites::cursor_shape`]'s.
     fn draw_cursor(
         &mut self,
         cr: &cairo::Context,
@@ -416,11 +356,11 @@ impl DrawState {
 
         set_rgb(cr, colors.foreground);
 
-        match node_cursor::cursor_shape(cursor, &cell_metrics) {
-            node_cursor::CursorShape::Fill((x, y, w, h)) => {
+        match sprites::cursor_shape(cursor, &cell_metrics) {
+            sprites::CursorShape::Fill((x, y, w, h)) => {
                 sprites::fill_rect(cr, x, y, w, h);
             }
-            node_cursor::CursorShape::Hollow(bands) => {
+            sprites::CursorShape::Hollow(bands) => {
                 for (x, y, w, h) in bands {
                     sprites::fill_rect(cr, x, y, w, h);
                 }
@@ -473,8 +413,7 @@ impl DrawState {
 
 /// Paint the frame's cell backgrounds into `cr` (`render_grid`'s background
 /// pass). The frame must be open (`frame_begin`); the caller rewinds the
-/// frame afterwards. The geometry is [`nodes::cell_background_rect`], shared
-/// with the node emitter so the two painters cannot drift.
+/// frame afterwards.
 fn paint_backgrounds(
     cr: &cairo::Context,
     terminal: &mut Terminal,
@@ -487,13 +426,41 @@ fn paint_backgrounds(
     // exactly.
     cr.set_antialias(cairo::Antialias::None);
     while let Some(cell) = terminal.cell_next() {
-        if let Some((x, y, w, h)) = nodes::cell_background_rect(&cell, cell_metrics, height) {
+        if let Some((x, y, w, h)) = cell_background_rect(&cell, cell_metrics, height) {
             set_rgb(cr, cell.bg);
             cr.rectangle(x, y, w, h);
             let _ = cr.fill();
         }
     }
     cr.set_antialias(cairo::Antialias::Default);
+}
+
+/// The background rectangle of `cell` in logical pixels, or `None` when the
+/// cell has no explicit background. The frame's last row — `height / cell_h`
+/// minus one, exactly what `render_grid` tests — fills down to `height`,
+/// which need not be a multiple of the cell pitch. Each edge is snapped to
+/// the device pixel grid (`snap-grid-edges` D1, D4): neighbouring cells
+/// pass the same shared-edge value to the snap, so both compute the same
+/// edge and no blended seam appears at a fractional scale.
+fn cell_background_rect(
+    cell: &crate::term::cells::Cell,
+    metrics: CellMetrics,
+    height: i32,
+) -> Option<(f64, f64, f64, f64)> {
+    if !cell.has_bg {
+        return None;
+    }
+    let row_height = if cell.y == height / metrics.cell_h - 1 {
+        height - cell.y * metrics.cell_h
+    } else {
+        metrics.cell_h
+    };
+    Some(metrics.scale.snap_rect(
+        f64::from(cell.x) * f64::from(metrics.cell_w),
+        f64::from(cell.y) * f64::from(metrics.cell_h),
+        f64::from(metrics.cell_w),
+        f64::from(row_height),
+    ))
 }
 
 fn set_rgb(cr: &cairo::Context, color: Rgb) {

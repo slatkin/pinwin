@@ -42,7 +42,7 @@ mod hooks;
 mod publish;
 
 pub use area::GridArea;
-pub use hooks::{DrawFn, GridSnapshotFn, MeasureFn, SurfaceHooks};
+pub use hooks::{DrawFn, MeasureFn, SurfaceHooks};
 pub use publish::PublishOutcome;
 
 use publish::should_animate;
@@ -116,8 +116,8 @@ pub struct Surfaces {
     pub app: gtk4::Application,
     /// The visible panel surface.
     pub win: gtk4::ApplicationWindow,
-    /// The terminal drawing area, a subclass whose `snapshot` presents every
-    /// frame as GSK nodes (poc-gsk-texture-grid 2.1, gsk-render-nodes 4.1).
+    /// The terminal drawing area; it draws through the draw function set
+    /// below (`Surfaces::build`).
     pub area: GridArea,
     /// The transparent reservation, created and presented only after the
     /// visible panel maps (`g_reserve`).
@@ -239,7 +239,7 @@ impl Surfaces {
         win.set_layer(Layer::Overlay);
         win.set_keyboard_mode(keyboard_mode(keyboard));
 
-        let area = GridArea::new(poisoned.clone(), Rc::clone(&hooks.grid_snapshot));
+        let area = GridArea::new();
         let draw = Rc::clone(&hooks.draw);
         let draw_poisoned = poisoned.clone();
         area.set_draw_func(move |_area, cr, width, height| {
@@ -386,11 +386,10 @@ impl Surfaces {
     /// tween or not (gsk-render-nodes design, Post-task decisions: C52).
     ///
     /// The integer logical offset snaps once, here, to a whole device pixel
-    /// at the surface's current scale (`snap-grid-edges` D7): the draw hooks,
-    /// `DrawState::draw`, `DrawState::snapshot_grid` and the input
-    /// controllers all use this one snapped value, so the drawn cell and the
-    /// cell under the pointer agree and a moving frame cannot put a cell
-    /// edge between two device pixels.
+    /// at the surface's current scale (`snap-grid-edges` D7): the draw hook,
+    /// `DrawState::draw` and the input controllers all use this one snapped
+    /// value, so the drawn cell and the cell under the pointer agree and a
+    /// moving frame cannot put a cell edge between two device pixels.
     #[must_use]
     pub fn draw_offset(&self) -> f64 {
         self.draw_offset_at(self.scale())
@@ -440,12 +439,10 @@ impl Surfaces {
     }
 
     /// The terminal produced output — the host's post-resize repaint, or any
-    /// other bytes: the drawn grid is the terminal's live one again. A
-    /// retained tween node built from the stale grid must not outlive it.
+    /// other bytes: the drawn grid is the terminal's live one again, and the
+    /// frame asks for a redraw.
     pub(crate) fn note_terminal_output(&self) {
-        if self.stale_grid_px.replace(0) != 0 {
-            (self.hooks.tween_cache_drop)();
-        }
+        self.stale_grid_px.replace(0);
         self.queue_draw();
     }
 
@@ -543,9 +540,9 @@ impl Surfaces {
         self.apply_layout_surfaces();
     }
 
-    /// The tween stopped for any reason: drop the tween's retained grid
-    /// node, clear the pty's tween flag and apply the deferred grid resize,
-    /// if an animated apply left one pending (`anim_stop`'s glue half).
+    /// The tween stopped for any reason: clear the pty's tween flag and
+    /// apply the deferred grid resize, if an animated apply left one pending
+    /// (`anim_stop`'s glue half).
     ///
     /// The resize runs here, synchronously, not behind an idle: every draw
     /// after this stop — including the frame that presents the tween's final
@@ -557,7 +554,6 @@ impl Surfaces {
     /// last frame instead of after it; the tween is over, so nothing animates
     /// behind the block.
     fn on_tween_stopped(&self) {
-        (self.hooks.tween_cache_drop)();
         (self.hooks.set_tween_active)(false);
         self.fire_deferred_grid_resize();
     }

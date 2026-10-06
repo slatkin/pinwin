@@ -36,7 +36,7 @@ use crate::input::InputLinks;
 use crate::layout::Layout;
 use crate::pty::Pty;
 use crate::render::{DrawState, OutputScale};
-use crate::surfaces::{DrawFn, GridSnapshotFn, MeasureFn, PublishOutcome, SurfaceHooks, Surfaces};
+use crate::surfaces::{DrawFn, MeasureFn, PublishOutcome, SurfaceHooks, Surfaces};
 use crate::term::Terminal;
 
 use gtk4::glib;
@@ -401,24 +401,6 @@ fn build_hooks(
             poisoned.clone(),
         ),
         measure: measure_hook(Rc::clone(draw), Rc::clone(pty), poisoned.clone()),
-        tween_cache_drop: {
-            let draw = Rc::clone(draw);
-            let poisoned = poisoned.clone();
-            Rc::new(move || {
-                // A stop relay, not ordinary glue (D5): `Anim` fires `on_stop`
-                // under `guard_always` precisely so a latched panel still
-                // relays — skipping this would strand the tween's retained
-                // grid node forever.
-                let _ = guard_always(&poisoned, || draw.borrow_mut().drop_grid_node());
-            })
-        },
-        grid_snapshot: grid_snapshot_hook(
-            link.clone(),
-            Rc::clone(draw),
-            Rc::clone(terminal),
-            Rc::clone(focused),
-            poisoned.clone(),
-        ),
         start_result: {
             let handshake = handshake.clone();
             Rc::new(move |ok| {
@@ -433,9 +415,10 @@ fn build_hooks(
             let pty = Rc::clone(pty);
             let poisoned = poisoned.clone();
             Rc::new(move |active| {
-                // A stop relay like `tween_cache_drop` above (D5): a latched
-                // panel must still clear the pty's tween flag, or the read
-                // drain stays throttled forever.
+                // A stop relay, not ordinary glue (D5): `Anim` fires `on_stop`
+                // under `guard_always` precisely so a latched panel still
+                // relays — skipping this would leave the pty's tween flag set
+                // and the read drain throttled forever.
                 let _ = guard_always(&poisoned, || pty.borrow().set_tween_active(active));
             })
         },
@@ -494,69 +477,18 @@ fn draw_hook(
     })
 }
 
-/// The first paint's monitor resolution (`g_layout_latch`), shared by the
-/// cairo draw hook and the GSK snapshot hook (gsk-render-nodes design, Post-task decisions: C5): a
-/// snapshot frame bypasses the draw func entirely, so the snapshot hook must
-/// consume the same one-shot before emitting — otherwise the start handshake
-/// never completes, `Panel::start` blocks in `wait_for_start` forever and
-/// the reservation is never anchored to the resolved monitor. The surface
+/// The first paint's monitor resolution (`g_layout_latch`), run by the
+/// cairo draw hook: the start handshake completes on the first paint, and
+/// the reservation must be anchored to the resolved monitor. The surface
 /// has entered its output by the first paint, so the monitor reported here
 /// is the panel's real one (glue.c's `resolve_layout_monitor`); the failure
-/// path (no monitor) reports through the start-result hook and quits, the
-/// same from either caller.
+/// path (no monitor) reports through the start-result hook and quits.
 fn resolve_first_draw_monitor(link: &SurfacesLink) {
     link.with(|surfaces| {
         if surfaces.latch.get() {
             surfaces.resolve_monitor();
         }
     });
-}
-
-/// The grid frame's GSK snapshot emission (poc-gsk-texture-grid task 2.1,
-/// gsk-render-nodes row 4.1): read the tween state off the surfaces handle,
-/// then present the frame — the retained grid node translated while a tween
-/// runs, a fresh node build on every non-tween draw — and the focus accent
-/// as GSK nodes; `false` falls back to the cairo draw path. The terminal is
-/// passed in for the node builds, and the focus flag is copied into the draw
-/// state here just as [`draw_hook`] does, since a snapshot frame bypasses
-/// the draw func. The first frame after map also resolves the layout
-/// monitor through the same shared one-shot as [`draw_hook`] (gsk-render-nodes
-/// design, Post-task decisions: C5), before the emission, or the start
-/// handshake never completes. A panic
-/// here latches the shared flag (D5) and falls back the same way.
-fn grid_snapshot_hook(
-    link: SurfacesLink,
-    draw: Rc<RefCell<DrawState>>,
-    terminal: Rc<RefCell<Terminal>>,
-    focused: Rc<Cell<bool>>,
-    poisoned: Poisoned,
-) -> Rc<GridSnapshotFn> {
-    Rc::new(move |snapshot: &gtk4::Snapshot, width: i32, height: i32| {
-        guard(&poisoned, || {
-            resolve_first_draw_monitor(&link);
-            let (offset, animating, scale) = link
-                .with(|surfaces| {
-                    let scale = surfaces.scale();
-                    (
-                        surfaces.draw_offset_at(scale),
-                        surfaces.anim.active(),
-                        scale,
-                    )
-                })
-                .unwrap_or((0.0, false, OutputScale::default()));
-            draw.borrow_mut().set_scale(scale);
-            draw.borrow_mut().set_focused(focused.get());
-            draw.borrow_mut().snapshot_grid(
-                snapshot,
-                &mut terminal.borrow_mut(),
-                width,
-                height,
-                offset,
-                animating,
-            )
-        })
-        .unwrap_or(false)
-    })
 }
 
 /// The cell measurement against a widget (`render.c`'s
