@@ -5,6 +5,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use super::face::split_index;
 use super::fallback::{CACHE_CAP, FallbackCache};
 use super::family::{MatchedFace, family_name_matches, style_matches};
 use super::*;
@@ -208,6 +209,66 @@ fn book_primary_path(book: &FontBook) -> std::path::PathBuf {
         .regular()
         .path()
         .to_path_buf()
+}
+
+#[test]
+fn fontconfig_index_splits_into_file_index_and_named_instance() {
+    // The packing fontconfig's fcfreetype.c builds: the low 16 bits are the
+    // face index within the file, the high 16 bits the named instance plus
+    // one (0 there means the default instance).
+    assert_eq!(split_index(0).ok(), Some((0, None)));
+    assert_eq!(split_index(3).ok(), Some((3, None)));
+    // Cantarell-VF.otf bold matches with instance 3 in face 0.
+    assert_eq!(split_index(262_144).ok(), Some((0, Some(3))));
+    assert_eq!(split_index(262_144 + 2).ok(), Some((2, Some(3))));
+    assert_eq!(split_index(65_535).ok(), Some((65_535, None)));
+    assert!(matches!(split_index(-1), Err(FontError::BadIndex(-1))));
+}
+
+/// Variable-font families fontconfig matches through named instances: their
+/// matched `FC_INDEX` carries the instance in the high 16 bits, which swash
+/// must not see as a face index.
+const VARIABLE_FAMILIES: [&str; 2] = ["Cantarell", "Adwaita Sans"];
+
+#[test]
+fn a_variable_font_family_resolves_with_named_instances() {
+    let Some(book) = book() else { return };
+    let Some(family) = VARIABLE_FAMILIES
+        .into_iter()
+        .find(|family| book.has_family(family))
+    else {
+        eprintln!("skipping: no variable-font family is installed");
+        return;
+    };
+    let config = FontConfig {
+        family: Some(family.to_owned()),
+        size: 11.0,
+    };
+    // Before the index split this errored: the bold match carries a named
+    // instance in the high 16 bits, and swash rejected that as a face index.
+    let faces = book.family_faces(&config).unwrap();
+    let all = [
+        Some(faces.regular().clone()),
+        faces.bold().cloned(),
+        faces.italic().cloned(),
+        faces.bold_italic().cloned(),
+    ];
+    for face in all.into_iter().flatten() {
+        assert!(
+            face.parse().is_some(),
+            "{} does not parse",
+            face.path().display()
+        );
+    }
+    // The named instance travels on the face, not inside the file index.
+    let bold_match = book.best_match(family, Style::Bold).unwrap();
+    if bold_match.index > 0xFFFF {
+        let bold = faces.bold().expect("the matched bold face is a real style");
+        assert!(
+            bold.instance().is_some(),
+            "the named instance is kept on the face"
+        );
+    }
 }
 
 #[test]

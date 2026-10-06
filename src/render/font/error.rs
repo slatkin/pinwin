@@ -22,7 +22,7 @@ pub enum FontError {
     /// The face file is not a font swash can parse, or the face index is out
     /// of range for the file.
     NotAFont { path: PathBuf },
-    /// fontconfig reported a negative face index.
+    /// fontconfig reported a face index the loader cannot use (negative).
     BadIndex(i32),
 }
 

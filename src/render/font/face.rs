@@ -18,6 +18,7 @@ use super::error::FontError;
 pub struct Face {
     path: PathBuf,
     index: usize,
+    instance: Option<usize>,
     bytes: Arc<[u8]>,
 }
 
@@ -28,10 +29,22 @@ impl Face {
         &self.path
     }
 
-    /// The face index within the file (TTC collections hold several).
+    /// The face index within the file (TTC collections hold several): the
+    /// low 16 bits of fontconfig's combined `FC_INDEX`, which is the index
+    /// swash's [`FontRef::from_index`] wants.
     #[must_use]
     pub fn index(&self) -> usize {
         self.index
+    }
+
+    /// The named instance fontconfig matched, when the face is a variable
+    /// font's named instance: the zero-based index into the file's `fvar`
+    /// named styles (the high 16 bits of fontconfig's `FC_INDEX`, minus
+    /// one). `None` is the default instance. Row 4.5 may apply it as a
+    /// variation; loading itself always opens the default instance.
+    #[must_use]
+    pub fn instance(&self) -> Option<usize> {
+        self.instance
     }
 
     /// The shared face bytes, in the form swash parses.
@@ -40,7 +53,9 @@ impl Face {
         Arc::clone(&self.bytes)
     }
 
-    /// The face as swash sees it, or `None` when the bytes do not parse.
+    /// The face as swash sees it, or `None` when the bytes do not parse. That
+    /// is always the file face's default instance; a matched named instance
+    /// travels separately (see [`Face::instance`]).
     #[must_use]
     pub fn parse(&self) -> Option<FontRef<'_>> {
         FontRef::from_index(&self.bytes, self.index)
@@ -65,6 +80,33 @@ impl Face {
 /// overflows (see `fallback::FallbackCache`, capped at
 /// `fallback::CACHE_CAP` entries). Faces already handed out keep their
 /// bytes alive through their own `Arc` after a clear.
+/// Split fontconfig's combined face index into what swash needs. The
+/// `FC_INDEX` property packs the face index within the file into the low 16
+/// bits and, for a variable font, the matched named instance into the high
+/// 16 bits plus one (0 there means the default instance) — fontconfig's
+/// `fcfreetype.c` builds it as `id = (instance_num << 16) + face_num` and
+/// decodes it as `namedstyle[(id >> 16) - 1]`. swash's `FontRef` only takes
+/// the file index, so the instance must travel beside it. A negative index
+/// is a fontconfig error.
+pub(crate) fn split_index(index: i32) -> Result<(usize, Option<usize>), FontError> {
+    if index < 0 {
+        return Err(FontError::BadIndex(index));
+    }
+    let Ok(file_index) = usize::try_from(index & 0xFFFF) else {
+        return Err(FontError::BadIndex(index));
+    };
+    let instance = match (index >> 16) & 0xFFFF {
+        0 => None,
+        packed => {
+            let Ok(instance) = usize::try_from(packed - 1) else {
+                return Err(FontError::BadIndex(index));
+            };
+            Some(instance)
+        }
+    };
+    Ok((file_index, instance))
+}
+
 pub(crate) struct ByteMap {
     files: RefCell<HashMap<PathBuf, Arc<[u8]>>>,
     reads: Cell<usize>,
@@ -85,12 +127,11 @@ impl ByteMap {
         }
     }
 
-    /// A [`Face`] over `file` at `index`, reading the file's bytes once and
-    /// sharing them with every other face of the same file.
+    /// A [`Face`] over `file` at fontconfig's combined `FC_INDEX`, reading
+    /// the file's bytes once and sharing them with every other face of the
+    /// same file.
     pub(crate) fn face(&self, file: &str, index: i32) -> Result<Face, FontError> {
-        let Ok(index) = usize::try_from(index) else {
-            return Err(FontError::BadIndex(index));
-        };
+        let (index, instance) = split_index(index)?;
         #[cfg(test)]
         if self.fail_loads.get() {
             return Err(FontError::NotAFont {
@@ -102,7 +143,12 @@ impl ByteMap {
         if FontRef::from_index(&bytes, index).is_none() {
             return Err(FontError::NotAFont { path });
         }
-        Ok(Face { path, index, bytes })
+        Ok(Face {
+            path,
+            index,
+            instance,
+            bytes,
+        })
     }
 
     /// The shared bytes of `path`, read from disk on first use.
