@@ -1,12 +1,12 @@
 //! The sprite layer of the grid painter (row 4.3): the frame's block
-//! elements ([`sprite::block`]) and braille patterns ([`sprite::braille`])
-//! drawn as unantialiased rectangles on the canvas, in the cell's
+//! elements ([`sprite::block`]), braille patterns ([`sprite::braille`]) and
+//! polygons ([`sprite::poly`] — the corner triangles and the powerline
+//! separators, solid and hollow) drawn on the canvas in the cell's
 //! foreground colour — or the theme foreground when the cell names none —
 //! exactly as [`crate::render::sprites::draw_sprite`] draws them on the
-//! GTK path. Powerline separators, the one-line sprite, the corner
-//! triangles and the cursor shapes plug in as further dispatch arms in
-//! later rows; until then their code points are not sprites and fall to
-//! the text pass.
+//! GTK path. The cursor shapes plug in as a further dispatch arm in the
+//! next row; until then their code points are not sprites and fall to the
+//! text pass.
 //!
 //! The per-cell skips are the GTK cell pass's: a wide glyph's spacer tail
 //! is never rendered, and a cell with no glyph or the INVISIBLE flag draws
@@ -22,14 +22,33 @@
 //! frame pass calls it between the backgrounds and the bands.
 
 use super::canvas::{Canvas, CanvasColor};
-use super::geom::{DeviceRect, FrameInput, PainterMetrics};
+use super::geom::{DeviceRect, FrameInput, PainterMetrics, device_f32};
 use crate::term::Terminal;
 use crate::term::cells::{StyleFlags, Wide, first_codepoint};
 
 mod block;
 mod braille;
+mod poly;
 
-/// Walk the open frame's cells and fill the sprites, shifted by `offset`
+/// The drawing primitives one sprite cell carries (row 4.3): unantialiased
+/// rectangles for the blocks and the braille dots, an antialiased filled
+/// polygon for the solid corner and powerline triangles, and antialiased
+/// stroked segments for the hollow powerline outline — design decision 5's
+/// one line sprite. All coordinates are device pixels; a `None` from
+/// [`cell_sprite`] still means the text pass owns the cell.
+#[derive(Debug)]
+pub(crate) enum Primitive {
+    /// Axis-aligned rectangles to fill exactly with the sprite colour.
+    Rects(Vec<DeviceRect>),
+    /// A closed polygon to fill with the sprite colour, its vertices in
+    /// draw order.
+    FillPolygon(Vec<(f64, f64)>),
+    /// Open segments to stroke with the sprite colour at the given device
+    /// width; a closed outline arrives as its sides.
+    StrokeLines(Vec<[(f64, f64); 2]>, f64),
+}
+
+/// Walk the open frame's cells and draw the sprites, shifted by `offset`
 /// device pixels along x. The frame must be open
 /// ([`Terminal::frame_begin`]); the caller rewinds the frame afterwards.
 pub(super) fn paint(
@@ -40,16 +59,45 @@ pub(super) fn paint(
     offset: i32,
 ) {
     while let Some(cell) = terminal.cell_next() {
-        let Some((color, rects)) = cell_sprite(metrics, frame, &cell) else {
+        let Some((color, primitive)) = cell_sprite(metrics, frame, &cell) else {
             continue;
         };
-        for rect in rects {
-            canvas.fill_rect(rect.x() + offset, rect.y(), rect.w(), rect.h(), color);
+        match primitive {
+            Primitive::Rects(rects) => {
+                for rect in rects {
+                    canvas.fill_rect(rect.x() + offset, rect.y(), rect.w(), rect.h(), color);
+                }
+            }
+            Primitive::FillPolygon(points) => {
+                let points: Vec<(f32, f32)> = points
+                    .iter()
+                    .map(|(x, y)| (shift(*x, offset), device_f32(*y)))
+                    .collect();
+                canvas.fill_polygon(&points, color);
+            }
+            Primitive::StrokeLines(sides, width) => {
+                let width = device_f32(width);
+                for [(ax, ay), (bx, by)] in sides {
+                    canvas.stroke_line(
+                        shift(ax, offset),
+                        device_f32(ay),
+                        shift(bx, offset),
+                        device_f32(by),
+                        width,
+                        color,
+                    );
+                }
+            }
         }
     }
 }
 
-/// The sprite one cell draws: its colour and device rectangles, or `None`
+/// Shift one device x coordinate by the tween's device-pixel offset.
+fn shift(x: f64, offset: i32) -> f32 {
+    device_f32(x + f64::from(offset))
+}
+
+/// The sprite one cell draws: its colour and drawing primitives, or `None`
 /// when the cell is not drawn as a sprite — the skipped cells, and every
 /// code point no dispatch arm owns yet (the text pass draws those). Pure,
 /// so the tests build cells by hand and no frame walk is needed.
@@ -57,7 +105,7 @@ fn cell_sprite(
     metrics: &PainterMetrics,
     frame: &FrameInput,
     cell: &crate::term::cells::Cell,
-) -> Option<(CanvasColor, Vec<DeviceRect>)> {
+) -> Option<(CanvasColor, Primitive)> {
     if cell.wide == Wide::SpacerTail {
         return None; // never rendered
     }
@@ -66,14 +114,18 @@ fn cell_sprite(
     }
     let cp = first_codepoint(cell.text_bytes());
     // The sprite dispatch: one arm per family a row ports. Row 4.3 owns
-    // the blocks and the braille patterns.
-    let rects = block::rects(cp, metrics, cell).or_else(|| braille::rects(cp, metrics, cell))?;
+    // the blocks, the braille patterns and the polygons.
+    let rects = block::rects(cp, metrics, cell).or_else(|| braille::rects(cp, metrics, cell));
+    let primitive = match rects {
+        Some(rects) => Primitive::Rects(rects),
+        None => poly::primitive(cp, metrics, cell)?,
+    };
     let color = if cell.has_fg {
         CanvasColor::from_theme(cell.fg)
     } else {
         frame.foreground()
     };
-    Some((color, rects))
+    Some((color, primitive))
 }
 
 #[cfg(test)]
@@ -209,9 +261,9 @@ mod tests {
         }
     }
 
-    /// The dispatch's routing: the block and braille code points are
-    /// sprites (the blank U+2800 too — it draws nothing), the shades, the
-    /// corner triangles, powerline and text are not.
+    /// The dispatch's routing: the block, braille and polygon code points
+    /// are sprites (the blank U+2800 too — it draws nothing), the shades
+    /// and text are not.
     #[test]
     fn the_dispatch_routes_the_sprite_ranges() {
         let m = metrics(1.0);
@@ -226,20 +278,14 @@ mod tests {
         for cp in 0x2800..=0x28FF {
             assert!(owns(cp), "0x{cp:04X} is a braille sprite");
         }
-        // Not owned: the shades (the font has them), the corner triangles
-        // and powerline (later rows), and text.
         for cp in [
-            0x2591,
-            0x2592,
-            0x2593,
-            0x25E2,
-            0x25E5,
-            0xE0B0,
-            0xE0B3,
-            u32::from('A'),
-            0x2630,
+            0x25E2, 0x25E3, 0x25E4, 0x25E5, 0xE0B0, 0xE0B1, 0xE0B2, 0xE0B3,
         ] {
-            assert!(!owns(cp), "0x{cp:04X} is not a sprite yet");
+            assert!(owns(cp), "0x{cp:04X} is a polygon sprite");
+        }
+        // Not owned: the shades (the font has them) and text.
+        for cp in [0x2591, 0x2592, 0x2593, u32::from('A'), 0x2630] {
+            assert!(!owns(cp), "0x{cp:04X} is not a sprite");
         }
     }
 
@@ -274,6 +320,24 @@ mod tests {
         assert!(
             cell_sprite(&m, &frame, &invisible).is_none(),
             "an INVISIBLE cell draws no sprite"
+        );
+
+        // The same skips hold for the polygon sprites.
+        let poly_tail = Cell {
+            wide: Wide::SpacerTail,
+            ..cell_at(4, 0xE0B0)
+        };
+        assert!(
+            cell_sprite(&m, &frame, &poly_tail).is_none(),
+            "a polygon tail is skipped"
+        );
+        let invisible_poly = Cell {
+            flags: StyleFlags::INVISIBLE,
+            ..cell_at(3, 0xE0B0)
+        };
+        assert!(
+            cell_sprite(&m, &frame, &invisible_poly).is_none(),
+            "an INVISIBLE polygon cell draws no sprite"
         );
     }
 
@@ -478,5 +542,256 @@ mod tests {
             ..cell_at(0, 0x2588)
         };
         assert!(cell_sprite(&m, &frame, &invisible).is_none());
+    }
+
+    /// A solid powerline separator fills its interior with the cell
+    /// foreground and leaves the corners past its apex unpainted, at
+    /// scale 1 where the 8×16 cell's device box is exact. U+E0B0 points
+    /// right: its base is the cell's left edge, its apex the middle of
+    /// the right edge.
+    #[test]
+    fn a_solid_powerline_fills_its_interior_and_leaves_the_far_corners() {
+        let scale = 1.0;
+        let mut terminal = terminal();
+        terminal.push_pty_data(&utf8(0xE0B0));
+        let canvas = painted(&mut terminal, scale);
+        pixel_is(&canvas, 0, 8, fg_bytes(), "the base midpoint");
+        pixel_is(&canvas, 2, 8, fg_bytes(), "the interior");
+        pixel_is(&canvas, 0, 12, fg_bytes(), "the lower base");
+        // Past the hypotenuse the corners on the apex's side stay
+        // background.
+        pixel_is(&canvas, 7, 0, theme_bytes(), "the top far corner");
+        pixel_is(&canvas, 7, 15, theme_bytes(), "the bottom far corner");
+        pixel_is(&canvas, 6, 1, theme_bytes(), "inside the far corner");
+    }
+
+    /// The right-pointing and left-pointing solid separators are mirror
+    /// images: every pixel's coverage class — the theme background, the
+    /// exact foreground, or a blend strictly between — mirrors to the
+    /// opposite cell. tiny-skia's antialiasing carries a small
+    /// slope-sign bias on a 45° edge (a diagonal that bisects a pixel
+    /// covers 62% of it one way and 38% the other), so two mirrored
+    /// blended pixels blend by slightly different amounts; the class is
+    /// what the shape pins.
+    #[test]
+    fn the_two_solid_separators_are_mirror_images() {
+        let scale = 1.0;
+        let mut terminal = terminal();
+        let mut data = utf8(0xE0B0);
+        data.extend(utf8(0xE0B2));
+        terminal.push_pty_data(&data);
+        let canvas = painted(&mut terminal, scale);
+        let class = |pixel: [u8; 4]| -> u8 {
+            if pixel == theme_bytes() {
+                0
+            } else if pixel == fg_bytes() {
+                2
+            } else {
+                1
+            }
+        };
+        for y in 0..16u32 {
+            for x in 0..8u32 {
+                let left = class(canvas.pixel(x, y).expect("inside the canvas"));
+                let right = class(canvas.pixel(8 + (7 - x), y).expect("inside the canvas"));
+                assert_eq!(left, right, "the mirror class of ({x}, {y})");
+            }
+        }
+        // All three classes really occur: the filled interior, a blended
+        // diagonal pixel and the empty far corner.
+        assert_eq!(class(canvas.pixel(2, 8).expect("inside")), 2, "filled");
+        assert_eq!(class(canvas.pixel(0, 0).expect("inside")), 1, "blended");
+        assert_eq!(class(canvas.pixel(7, 0).expect("inside")), 0, "empty");
+    }
+
+    /// Each corner triangle fills the half of the cell its corner names:
+    /// the interior at its right angle is foreground, the opposite
+    /// corner background, and the painted coverage sums to half the cell.
+    #[test]
+    fn each_corner_triangle_covers_its_half_of_the_cell() {
+        let scale = 1.0;
+        for (cp, full, empty) in [
+            (0x25E2, (6, 14), (0, 0)), // lower right
+            (0x25E3, (1, 14), (7, 0)), // lower left
+            (0x25E4, (1, 1), (7, 15)), // upper left
+            (0x25E5, (6, 1), (0, 15)), // upper right
+        ] {
+            let mut terminal = terminal();
+            terminal.push_pty_data(&utf8(cp));
+            let canvas = painted(&mut terminal, scale);
+            pixel_is(&canvas, full.0, full.1, fg_bytes(), "the interior corner");
+            pixel_is(&canvas, empty.0, empty.1, theme_bytes(), "the far corner");
+            // The antialiased coverage, read off the blue channel's blend
+            // between the theme background and the foreground, sums to
+            // the triangle's area — half the 8×16 cell — within
+            // rasterization dust.
+            let (theme_b, fg_b) = (f64::from(theme_bytes()[0]), f64::from(fg_bytes()[0]));
+            let coverage: f64 = (0..16u32)
+                .flat_map(|y| (0..8u32).map(move |x| (x, y)))
+                .map(|(x, y)| {
+                    let blue = f64::from(canvas.pixel(x, y).expect("inside")[0]);
+                    (blue - theme_b) / (fg_b - theme_b)
+                })
+                .sum();
+            assert!(
+                (coverage - 64.0).abs() <= 2.0,
+                "0x{cp:04X} covers {coverage} of 64 square pixels"
+            );
+        }
+    }
+
+    /// The hollow separator strokes its closed outline at 2 logical
+    /// pixels of width — 2·scale device pixels, cairo's user-space rule —
+    /// and leaves the interior empty. Probed across the base edge, away
+    /// from the corners, at every scale the painter tests: the canvas is
+    /// opaque, so a partial column reads as a blend between the theme
+    /// background and the foreground, and the blend pins the width.
+    #[test]
+    fn the_hollow_separator_strokes_at_two_logical_pixels() {
+        for (scale, coverage) in [(1.0, 0.0f64), (1.25, 0.25), (1.5, 0.5), (1.8, 0.8)] {
+            let mut terminal = terminal();
+            let mut data = utf8(u32::from(' '));
+            data.extend(utf8(0xE0B1));
+            terminal.push_pty_data(&data);
+            let canvas = painted(&mut terminal, scale);
+            let m = metrics(scale);
+            let base = m.cell_rect(1, 0).x();
+            let mid = device_px(8.0 * scale);
+            let at = |dx: i32| {
+                canvas
+                    .pixel(
+                        u32::try_from(base + dx).expect("fits"),
+                        u32::try_from(mid).expect("fits"),
+                    )
+                    .expect("inside the canvas")
+            };
+            // The stroke is centred on the base edge: both columns it
+            // covers fully carry the exact foreground bytes.
+            assert_eq!(at(-1), fg_bytes(), "the inner column at {scale}");
+            assert_eq!(at(0), fg_bytes(), "the base column at {scale}");
+            // The columns past the width's edge blend by the coverage the
+            // width leaves: none at scale 1 (width 2), then 1/4, 1/2 and
+            // 4/5 at 1.25, 1.5 and 1.8.
+            let blend = |pixel: [u8; 4], want: f64, label: &str| {
+                for (channel, (fg, theme)) in fg_bytes()
+                    .into_iter()
+                    .zip(theme_bytes())
+                    .take(3)
+                    .enumerate()
+                {
+                    let expected = want * f64::from(fg) + (1.0 - want) * f64::from(theme);
+                    // The tolerance covers tiny-skia's sub-pixel edge
+                    // quantization: at 1.8 the width's edge at +1.8 lands
+                    // on its scanline grid near +1.75, so the blend reads
+                    // about 0.75 coverage instead of 0.8. The neighbouring
+                    // widths (0, 1/4, 1/2) stay distinct.
+                    assert!(
+                        (f64::from(pixel[channel]) - expected).abs() <= 16.0,
+                        "{label} channel {channel} at scale {scale}: {} vs {expected}",
+                        pixel[channel]
+                    );
+                }
+            };
+            for dx in [-2, 1] {
+                blend(at(dx), coverage, "the edge column");
+            }
+            // The interior stays empty: probed a few columns right of the
+            // base edge on the mid row, clear of the apex join, where the
+            // two diagonal sides are far.
+            assert_eq!(at(3), theme_bytes(), "the interior is empty at {scale}");
+            assert_eq!(
+                at(4),
+                theme_bytes(),
+                "the deep interior is empty at {scale}"
+            );
+        }
+    }
+
+    /// A solid separator followed by a full block leaves no seam at 1.5:
+    /// across the separator's base-to-apex row every pixel carries some
+    /// foreground, so no background column opens between the two cells,
+    /// and the block continues at full strength on the shared edge.
+    #[test]
+    fn a_solid_separator_and_a_full_block_leave_no_seam_at_1_5() {
+        let scale = 1.5;
+        let mut terminal = terminal();
+        let mut data = utf8(0xE0B0);
+        data.extend(utf8(0x2588));
+        terminal.push_pty_data(&data);
+        let canvas = painted(&mut terminal, scale);
+        let m = metrics(scale);
+        let cell0 = m.cell_rect(0, 0);
+        let cell1 = m.cell_rect(1, 0);
+        let mid = device_px(8.0 * scale);
+        for x in cell0.x()..cell1.x() {
+            let pixel = canvas
+                .pixel(
+                    u32::try_from(x).expect("fits"),
+                    u32::try_from(mid).expect("fits"),
+                )
+                .expect("inside the canvas");
+            assert_ne!(pixel, theme_bytes(), "no background seam at x {x}");
+        }
+        // The apex pixel itself is a blend — the triangle's tip — and the
+        // block next to it is exact.
+        let apex = canvas
+            .pixel(
+                u32::try_from(cell1.x() - 1).expect("fits"),
+                u32::try_from(mid).expect("fits"),
+            )
+            .expect("inside the canvas");
+        assert_ne!(apex, theme_bytes(), "the apex pixel is painted");
+        assert_ne!(apex, fg_bytes(), "the apex pixel blends");
+        pixel_is(&canvas, cell1.x(), mid, fg_bytes(), "the block continues");
+        // Just off the apex row the tip is thin, as the shape asks.
+        pixel_is(
+            &canvas,
+            cell1.x() - 1,
+            mid - 8,
+            theme_bytes(),
+            "above the apex the tip is thin",
+        );
+    }
+
+    /// A polygon sprite takes the cell's foreground colour, falling back
+    /// to the theme foreground when the cell names none. The pinned vt
+    /// walks a styled private-use glyph's cell last, so the test finds
+    /// the separator cell by its code point.
+    #[test]
+    fn a_polygon_sprite_takes_the_cells_foreground() {
+        let scale = 1.0;
+        let mut explicit = terminal();
+        let mut data = b"\x1b[31m".to_vec();
+        data.extend(utf8(0xE0B0));
+        explicit.push_pty_data(&data);
+        let walked = cells(&mut explicit);
+        let separator = walked
+            .iter()
+            .find(|cell| first_codepoint(cell.text_bytes()) == 0xE0B0)
+            .expect("the separator cell");
+        assert!(separator.has_fg, "the cell carries the SGR colour");
+        let fg = bytes([separator.fg.r, separator.fg.g, separator.fg.b]);
+        let canvas = painted(&mut explicit, scale);
+        let m = metrics(scale);
+        let cell_rect = m.cell_rect(separator.x, separator.y);
+        pixel_is(
+            &canvas,
+            cell_rect.x() + 2,
+            cell_rect.y() + 8,
+            fg,
+            "the separator is the cell's red",
+        );
+
+        // No colour named: the theme foreground.
+        let mut fallback = terminal();
+        fallback.push_pty_data(&utf8(0xE0B0));
+        let canvas = painted(&mut fallback, scale);
+        pixel_is(
+            &canvas,
+            2,
+            8,
+            fg_bytes(),
+            "the separator is the theme foreground",
+        );
     }
 }
