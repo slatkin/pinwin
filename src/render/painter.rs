@@ -11,10 +11,13 @@
 //! 1. [`bg`] — the cell backgrounds, merged into runs of equal colour.
 //! 2. [`sprite`] — the block and braille sprites.
 //! 3. [`bands`] — the underline and strikethrough decorations.
-//! 4. later rows plug the text pass in between the sprites and the bands
+//! 4. [`cursor`] — the cursor shape, in the terminal's default foreground.
+//! 5. later rows plug the text pass in between the sprites and the bands
 //!    (the two passes own disjoint cells, and GTK draws each cell's bands
-//!    after its glyph), then the cursor pass and the kitty image pass, in
-//!    [`crate::render::DrawState::render_grid`]'s order.
+//!    after its glyph), then the kitty image pass, in
+//!    [`crate::render::DrawState::render_grid`]'s order — the text pass
+//!    also feeds the cursor layer the block cursor's cell text (see the
+//!    seam in [`cursor`]).
 //!
 //! The focus accent ([`accent`]) draws last, on top, in raw surface
 //! coordinates — the one layer the tween's draw offset does not translate,
@@ -29,7 +32,7 @@
 
 use super::canvas::Canvas;
 use super::geom::{FrameInput, PainterMetrics, device_px};
-use super::{accent, bands, bg, sprite};
+use super::{accent, bands, bg, cursor, sprite};
 use crate::term::Terminal;
 
 /// Draw one frame of `terminal` into `canvas`: the theme background, the
@@ -72,10 +75,7 @@ pub fn paint_frame(
     terminal.frame_rewind();
     bands::paint(canvas, metrics, frame, terminal, offset);
     terminal.frame_rewind();
-    // Row 4.4 plugs the text pass in here — after the sprites, whose code
-    // points it never draws, and before the bands, which GTK paints after
-    // each cell's glyph; the cursor pass and the image pass follow it
-    // (`render_grid`'s order).
+    cursor::paint(canvas, metrics, terminal, offset);
     terminal.frame_end();
 
     accent::paint(canvas, frame, metrics);
