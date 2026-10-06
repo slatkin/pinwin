@@ -22,5 +22,5 @@
 
 ## 4. Follow-up for downstream hosts
 
-- [ ] 4.1 Update issue #15 in the pinwin repo: replace the `pkill -USR1` example with the `pinwin --focus` bind, and link this change. Verify: `gh issue view 15 --json body` shows the new text.
-- [ ] 4.2 File an issue in the `slatkin/mbv` repo with the implementation details for mbv as a host: mbv calls `Panel::request_focus()` and adds its own command-line IPC. For example, it can use a `--focus` client over a Unix socket, as the `pinwin` binary does. The user binds that client to a compositor hotkey. Include the remap behavior, the `none` and `exclusive` no-op, the error cases, and a link to this change. Verify: `gh issue view <n> --repo slatkin/mbv --json title,body` shows the issue.
+- [x] 4.1 Update issue #15 in the pinwin repo: replace the `pkill -USR1` example with the `pinwin --focus` bind, and link this change. Verify: `gh issue view 15 --json body` shows the new text.
+- [x] 4.2 File an issue in the `slatkin/mbv` repo with the implementation details for mbv as a host: mbv calls `Panel::request_focus()` and adds its own command-line IPC. For example, it can use a `--focus` client over a Unix socket, as the `pinwin` binary does. The user binds that client to a compositor hotkey. Include the remap behavior, the `none` and `exclusive` no-op, the error cases, and a link to this change. Verify: `gh issue view <n> --repo slatkin/mbv --json title,body` shows the issue.
