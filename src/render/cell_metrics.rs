@@ -7,9 +7,13 @@
 //! `points * 96 / 72` pixels (the 96 dpi convention), and everything else is
 //! font units times `pixels / units_per_em`. Pixel rounding follows
 //! FreeType's hinted metrics, which is what the old Pango numbers carry:
-//! the ascent is ceiled up to the pixel, the descent ceiled up in magnitude
-//! (FreeType floors its negative `descender`), and each hinted advance is
-//! rounded to a whole pixel. The derived formulas — widest digit advance for
+//! the scaling is quantized to FreeType's 26.6 fixed point (whole 1/64 px
+//! units — float dust below 1/64 px can never cross a pixel boundary
+//! there, while a raw `f64` `ceil` turns Lekton Nerd Font's ascent at
+//! size 14, `14.000000000000002` px, into 15 and grows every cell row by
+//! a pixel), then the ascent is ceiled up to the pixel, the descent
+//! ceiled up in magnitude (FreeType floors its negative `descender`), and
+//! each hinted advance is rounded to a whole pixel. The derived formulas — widest digit advance for
 //! the width, ascent plus descent for the height, a zero line gap, the
 //! baseline rounded away from zero, `0.75 * ascent` for the cap height and
 //! `(2*cap + face_h) / 3` for the one-cell icon height — carry over
@@ -146,10 +150,11 @@ impl CellMetrics {
     }
 
     /// The [`PainterMetrics`] for one frame at `scale`: the logical cell
-    /// pitch and the truncated logical ascent. `None` when `scale` is not
-    /// positive and finite (it falls back to 1 only inside
-    /// [`PainterMetrics::new`]'s own degenerate handling; here a broken
-    /// scale surfaces as `None`).
+    /// pitch and the truncated logical ascent. A `scale` that is not
+    /// positive and finite falls back to 1 inside [`PainterMetrics::new`]
+    /// (the same degenerate handling `OutputScale::new` has), so `None`
+    /// only appears when the cell pitch is not finite and positive —
+    /// which the whole-pixel pitch a [`CellMetrics`] carries never is.
     #[must_use]
     pub fn painter_metrics(&self, scale: f64) -> Option<PainterMetrics> {
         PainterMetrics::new(
@@ -168,28 +173,98 @@ pub fn measure(face: &Face, size: f64) -> Result<CellMetrics, MetricsError> {
     if !size.is_finite() || size <= 0.0 {
         return Err(MetricsError::BadSize(size));
     }
+    // Pango's 96 dpi convention: the font is placed at points * 96/72 px.
+    // FreeType computes the hinted metrics in 26.6 fixed point, whose
+    // largest pixel size is 65535; beyond it the scaling is not
+    // representable, so refuse the size instead of clamping the cell to
+    // the canvas maximum.
+    let pixels_per_em = size * 96.0 / 72.0;
+    if pixels_per_em > MAX_PIXELS_PER_EM {
+        return Err(MetricsError::BadSize(size));
+    }
     let font = face.parse().ok_or(MetricsError::UnparsableFace)?;
     let metrics = font.metrics(&[]);
     let units_per_em = metrics.units_per_em;
     if units_per_em == 0 {
         return Err(MetricsError::BadUnitsPerEm);
     }
-    // Pango's 96 dpi convention: the font is placed at points * 96/72 px.
-    let pixels_per_em = size * 96.0 / 72.0;
     let scale = pixels_per_em / f64::from(units_per_em);
 
     // FreeType's hinted metrics, which the old Pango numbers carry: the
     // ascent ceils up to the pixel, the descent ceils up in magnitude
     // (FreeType floors its negative `descender`), and each hinted advance
-    // rounds to a whole pixel. swash's descent is a positive distance, so
+    // rounds to a whole pixel — each after the 26.6 quantization the
+    // module comment describes. swash's descent is a positive distance, so
     // the magnitude guard only covers a font that reports it negatively.
-    let ascent_px = (f64::from(metrics.ascent) * scale).ceil();
-    let descent_px = (f64::from(metrics.descent) * scale).abs().ceil();
-    let digit_px = digit_advance_px(&font, scale)
-        .ok_or(MetricsError::NoDigits)?
-        .round();
+    let (ascent_px, descent_px) = hinted_vertical_metrics(
+        f64::from(metrics.ascent),
+        f64::from(metrics.descent),
+        f64::from(units_per_em),
+        pixels_per_em,
+    )
+    .ok_or(MetricsError::BadSize(size))?;
+    let raw_digit = digit_advance_px(&font, scale).ok_or(MetricsError::NoDigits)?;
+    let digit_px = quantize_26_6_units(raw_digit)
+        .and_then(round_units_26_6_to_px)
+        .ok_or(MetricsError::BadSize(size))?;
 
     Ok(derive(ascent_px, descent_px, digit_px))
+}
+
+/// `FreeType`'s largest pixel size: the hinted metrics are computed in 26.6
+/// fixed point, whose whole range is 0 to 65535 1/64-px units.
+const MAX_PIXELS_PER_EM: f64 = 65535.0;
+
+/// Quantize a non-negative pixel distance to whole 1/64-pixel units — the
+/// 26.6 fixed point `FreeType` scales the hinted metrics in, with
+/// `FT_MulFix` rounding to the nearest unit. Dust below 1/64 px cannot
+/// cross a pixel boundary there, so the rounding below runs on these
+/// units, not on the raw `f64`. `None` when the distance is negative,
+/// not finite, or its unit count leaves the `i64` range; `measure` turns
+/// `None` into [`MetricsError::BadSize`].
+fn quantize_26_6_units(px: f64) -> Option<i64> {
+    if !px.is_finite() || px < 0.0 {
+        return None;
+    }
+    let units = px * 64.0;
+    if !units.is_finite() {
+        return None;
+    }
+    num_traits::cast(units.round())
+}
+
+/// Ceil whole 26.6 units up to a whole pixel, in integer arithmetic:
+/// `(units + 63) / 64` for the non-negative units the ascent and the
+/// descent magnitude are. `None` when the units sit at the `i64` ceiling
+/// or the pixel value leaves the `f64` range.
+fn ceil_units_26_6_to_px(units: i64) -> Option<f64> {
+    num_traits::cast(units.checked_add(63)? / 64)
+}
+
+/// Round whole 26.6 units to a whole pixel, half up — the rounding a
+/// hinted advance reduces to. `None` like [`ceil_units_26_6_to_px`].
+fn round_units_26_6_to_px(units: i64) -> Option<f64> {
+    num_traits::cast(units.checked_add(32)? / 64)
+}
+
+/// The hinted ascent and descent in pixels, the way `FreeType` computes the
+/// vertical metrics from the font's horizontal ones: the font-unit values
+/// scaled by `pixels_per_em / units_per_em`, quantized to 26.6 fixed
+/// point ([`quantize_26_6_units`]), then the ascent ceiled up to the
+/// pixel and the descent magnitude ceiled up (`FreeType` floors its
+/// negative `descender`). The descent comes back as a positive magnitude.
+/// `None` when a value is not finite or leaves the 26.6 range; `measure`
+/// turns that into [`MetricsError::BadSize`].
+fn hinted_vertical_metrics(
+    ascent_units: f64,
+    descent_units: f64,
+    units_per_em: f64,
+    pixels_per_em: f64,
+) -> Option<(f64, f64)> {
+    let scale = pixels_per_em / units_per_em;
+    let ascent = ceil_units_26_6_to_px(quantize_26_6_units(ascent_units * scale)?)?;
+    let descent = ceil_units_26_6_to_px(quantize_26_6_units(descent_units.abs() * scale)?)?;
+    Some((ascent, descent))
 }
 
 /// The widest advance of the digits 0 to 9, scaled to pixels — Pango's

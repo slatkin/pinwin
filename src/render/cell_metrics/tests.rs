@@ -3,7 +3,10 @@
 //! rules, the `CSI 16 t` reply and the painter metrics at a fractional
 //! scale.
 
-use super::{MetricsError, derive, measure, round_away_from_zero};
+use super::{
+    MetricsError, ceil_units_26_6_to_px, derive, hinted_vertical_metrics, measure,
+    quantize_26_6_units, round_away_from_zero, round_units_26_6_to_px,
+};
 use crate::fontconfig::FontConfig;
 use crate::render::font::FontBook;
 use crate::term::{PngDecoder, PtySink, Terminal};
@@ -13,18 +16,25 @@ use crate::term::{PngDecoder, PtySink, Terminal};
 const FAMILY: &str = "JetBrainsMono Nerd Font";
 const SIZE: f64 = 11.0;
 
-/// The regular face of the test family, or `None` (printed) when the
+/// The family the boundary gate runs on: its ascent sits exactly on the
+/// pixel boundary at size 14, which is what the 26.6 quantization is for.
+const LEKTON: &str = "Lekton Nerd Font";
+const LEKTON_SIZE: f64 = 14.0;
+
+/// The regular face of `family` at `size`, or `None` (printed) when the
 /// machine lacks it — the font tests only run where CI installs the font.
-fn regular_face() -> Option<crate::render::font::Face> {
-    let book = FontBook::new().ok()?;
-    if !book.has_family(FAMILY) {
+/// A broken `FontBook` or a failed face lookup is not a skip: it fails the
+/// test, so a row 4.4 or 4.5 regression cannot hide behind "not installed".
+fn regular_face(family: &str, size: f64) -> Option<crate::render::font::Face> {
+    let book = FontBook::new().expect("the font book opens");
+    if !book.has_family(family) {
         return None;
     }
     let config = FontConfig {
-        family: Some(FAMILY.to_owned()),
-        size: SIZE,
+        family: Some(family.to_owned()),
+        size,
     };
-    let faces = book.family_faces(&config).ok()?;
+    let faces = book.family_faces(&config).expect("the family's faces load");
     Some(faces.regular().clone())
 }
 
@@ -34,7 +44,7 @@ fn regular_face() -> Option<crate::render::font::Face> {
 /// stop and ask the user: the cell size sets the panel width.
 #[test]
 fn jetbrains_mono_nerd_font_11_matches_the_old_pango_cell() {
-    let Some(face) = regular_face() else {
+    let Some(face) = regular_face(FAMILY, SIZE) else {
         println!("skipped: {FAMILY} is not installed");
         return;
     };
@@ -56,7 +66,7 @@ fn jetbrains_mono_nerd_font_11_matches_the_old_pango_cell() {
 /// display never reaches the font.
 #[test]
 fn bad_sizes_error_instead_of_panic() {
-    let Some(face) = regular_face() else {
+    let Some(face) = regular_face(FAMILY, SIZE) else {
         println!("skipped: {FAMILY} is not installed");
         return;
     };
@@ -161,12 +171,116 @@ impl PngDecoder for NoDecoder {
     }
 }
 
+/// A size whose pixels-per-em leaves `FreeType`'s 26.6 range is refused
+/// with `BadSize`, not computed into a cell clamped to the canvas
+/// maximum: 1e18 points and one point past the 65535 px ceiling (49152
+/// points at the 96 dpi convention) both fail, while a size just below
+/// the ceiling still measures.
+#[test]
+fn an_oversized_size_errors_instead_of_saturating() {
+    let Some(face) = regular_face(FAMILY, SIZE) else {
+        println!("skipped: {FAMILY} is not installed");
+        return;
+    };
+    assert!(
+        matches!(measure(&face, 1e18), Err(MetricsError::BadSize(_))),
+        "an astronomical size is refused"
+    );
+    assert!(
+        matches!(measure(&face, 49_152.0), Err(MetricsError::BadSize(_))),
+        "one point past the 65535 px-per-em ceiling is refused"
+    );
+    assert!(
+        measure(&face, 49_150.0).is_ok(),
+        "a size just below the ceiling still measures"
+    );
+}
+
+/// The 26.6 quantize-and-ceil: `FreeType` scales in 1/64 px units, so dust
+/// below 1/64 px cannot cross a pixel boundary there. A raw `f64` ceil
+/// turned Lekton's ascent at size 14, `14.000000000000002` px, into 15;
+/// the quantized value stays 14. A real fraction still ceils up.
+#[test]
+fn the_26_6_quantize_ceils_dust_away() {
+    assert_eq!(quantize_26_6_units(14.000_000_000_000_002), Some(896));
+    assert_eq!(ceil_units_26_6_to_px(896), Some(14.0));
+    assert_eq!(
+        ceil_units_26_6_to_px(quantize_26_6_units(14.02).expect("finite")),
+        Some(15.0),
+        "a real fraction ceils up"
+    );
+    assert_eq!(
+        ceil_units_26_6_to_px(quantize_26_6_units(15.0).expect("finite")),
+        Some(15.0)
+    );
+    assert_eq!(
+        ceil_units_26_6_to_px(quantize_26_6_units(0.0).expect("finite")),
+        Some(0.0)
+    );
+    // The advance rounds half up on the quantized value: 8.5 px (544
+    // units) rounds to 9, 8.49 px (543 units) stays 8.
+    assert_eq!(round_units_26_6_to_px(544), Some(9.0));
+    assert_eq!(round_units_26_6_to_px(543), Some(8.0));
+    // A negative or non-finite distance is not a 26.6 value.
+    assert_eq!(quantize_26_6_units(-1.0), None);
+    assert_eq!(quantize_26_6_units(f64::NAN), None);
+    assert_eq!(quantize_26_6_units(f64::INFINITY), None);
+}
+
+/// The Lekton Nerd Font numbers through the pure hinted-metric path (no
+/// font needed): upem 1000, hhea ascent 750, descent 250. At the sizes
+/// whose raw ascent carries float dust (7, 14, 28) `FreeType`'s 26.6
+/// scaling keeps the ascent on its pixel and the descent ceils to the
+/// next one — exactly what the old Pango path measures, one row less
+/// than the raw `ceil` gave at 14.
+#[test]
+fn the_lekton_hinted_vertical_metrics_match_pango() {
+    for (size, ascent, descent, cell_h) in [
+        (7.0, 7.0, 3.0, 10),
+        (14.0, 14.0, 5.0, 19),
+        (28.0, 28.0, 10.0, 38),
+    ] {
+        let hinted = hinted_vertical_metrics(750.0, 250.0, 1000.0, size * 96.0 / 72.0)
+            .expect("the Lekton numbers are finite");
+        assert_eq!(hinted, (ascent, descent), "at font-size {size}");
+        // Through `derive`: the cell height is the hinted sum, the
+        // truncated ascent the hinted ascent, the baseline the descent.
+        let metrics = derive(ascent, descent, 9.0);
+        assert_eq!(metrics.cell_h(), cell_h, "at font-size {size}");
+        assert_eq!(f64::from(metrics.ascent()), ascent, "at font-size {size}");
+    }
+}
+
+/// Gate (row 4.6): Lekton Nerd Font 14 — the font whose ascent sits on
+/// the pixel boundary and exposed the raw `ceil` — gives the same cell
+/// the old Pango path measures: 9 by 19, ascent 14, baseline 5. Skipped
+/// only where the font is not installed; a face-lookup error fails.
+#[test]
+fn lekton_nerd_font_14_matches_the_old_pango_cell() {
+    let Some(face) = regular_face(LEKTON, LEKTON_SIZE) else {
+        println!("skipped: {LEKTON} is not installed");
+        return;
+    };
+    let metrics = measure(&face, LEKTON_SIZE).expect("the font metrics compute");
+    assert_eq!(metrics.cell_w(), 9, "the cell width matches Pango's");
+    assert_eq!(metrics.cell_h(), 19, "the cell height matches Pango's");
+    assert_eq!(metrics.ascent(), 14, "the truncated ascent matches Pango's");
+    assert_eq!(metrics.baseline(), 5, "the baseline matches Pango's");
+    // The face box fills the cell: the hinted ascent and descent sum to
+    // the whole-pixel line box the old path carries.
+    assert_eq!(metrics.face_w(), 9.0);
+    assert_eq!(metrics.face_h(), 19.0);
+    assert_eq!(metrics.face_y(), 0.0);
+    assert_eq!(metrics.icon_h(), 19.0);
+    assert_eq!(metrics.icon_h_single(), (2.0 * 0.75 * 14.0 + 19.0) / 3.0);
+}
+
 /// The `CSI 16 t` reply matches the drawn cell: the terminal answers with
 /// the cell size `push_size` received, and that size comes from the new
 /// metrics.
 #[test]
 fn the_csi_16_t_reply_matches_the_drawn_cell() {
-    let Some(face) = regular_face() else {
+    let Some(face) = regular_face(FAMILY, SIZE) else {
         println!("skipped: {FAMILY} is not installed");
         return;
     };
@@ -196,7 +310,7 @@ fn the_csi_16_t_reply_matches_the_drawn_cell() {
 /// truncated ascent, and the cell rectangles tile at that scale.
 #[test]
 fn painter_metrics_at_1_5_keep_the_logical_cell_and_truncated_ascent() {
-    let Some(face) = regular_face() else {
+    let Some(face) = regular_face(FAMILY, SIZE) else {
         println!("skipped: {FAMILY} is not installed");
         return;
     };
