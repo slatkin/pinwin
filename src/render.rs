@@ -54,6 +54,7 @@ pub mod painter;
 mod parity;
 mod snap;
 mod snapshot;
+mod sprite;
 mod sprites;
 mod text;
 mod texture;

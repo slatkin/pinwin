@@ -61,6 +61,17 @@ pub fn device_f32(value: f64) -> f32 {
     num_traits::cast(clamped).unwrap_or(0.0)
 }
 
+/// Convert one logical value to the integer form the sprite geometry
+/// computes on — the logical half of the cast seam (D5). The GTK path's
+/// cell pitch is already an integer (`CellMetrics::cell_w` is `i32`); the
+/// painter carries it as `f64`, and the braille dot grid needs that integer
+/// back. Rounds like [`device_px`] does, for the same dust and degeneracy
+/// reasons.
+#[must_use]
+pub(crate) fn logical_px(value: f64) -> i32 {
+    device_px(value)
+}
+
 /// A rectangle in device pixels (D5): the integer form the canvas
 /// primitives take. The fields are private; [`PainterMetrics`] is the
 /// constructor, so a `DeviceRect` always carries non-negative extents
