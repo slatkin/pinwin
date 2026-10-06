@@ -18,7 +18,7 @@ pub const MAX_TOKEN_BYTES: usize = 255;
 ///
 /// Built only through [`ActivationToken::new`]; the field is private, so a
 /// token that failed validation cannot exist.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ActivationToken {
     token: String,
 }
@@ -51,6 +51,15 @@ impl ActivationToken {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.token
+    }
+}
+
+impl fmt::Debug for ActivationToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The token is a one-use permission: a debug format of a command or
+        // a panic message that carried it could spend it (the request and
+        // its reply name the token, not its bytes).
+        write!(f, "ActivationToken(<redacted, {} bytes>)", self.token.len())
     }
 }
 
@@ -152,6 +161,17 @@ mod tests {
             ActivationToken::new("\u{7f}"),
             Err(ActivationTokenError::NotVisibleAscii)
         );
+    }
+
+    /// The debug output masks the token: it names the type and the byte
+    /// count, never the token's bytes, so a command debug-format or a panic
+    /// message cannot leak a live one-use token.
+    #[test]
+    fn the_debug_output_does_not_contain_the_token() {
+        let token = ActivationToken::new("niri-spawn:pinwin-172839").expect("valid token");
+        let debug = format!("{token:?}");
+        assert!(!debug.contains("niri-spawn"));
+        assert_eq!(debug, "ActivationToken(<redacted, 24 bytes>)");
     }
 
     /// The error type displays a non-empty message and is a
