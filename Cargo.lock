@@ -703,6 +703,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-traits"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -775,6 +784,7 @@ dependencies = [
  "gtk4",
  "gtk4-layer-shell",
  "libc",
+ "num-traits",
  "pango",
  "pangocairo",
  "png",

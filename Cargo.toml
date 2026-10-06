@@ -61,6 +61,11 @@ swash = "0.2"
 fontconfig = "0.11"
 png = "0.18"
 
+# The renderer's one f64-to-integer seam (`render::geom::device_px`):
+# tiny-skia takes i32/f32 geometry while the snapped edges are f64, and a
+# NumCast conversion keeps the cast lints quiet without a suppression.
+num-traits = "0.2"
+
 # port-to-rust D5: panics must never cross the public API, so the unwind
 # runtime is required for the catch_unwind guards at every boundary. Setting
 # `panic = "abort"` is forbidden: it would abort the host instead.

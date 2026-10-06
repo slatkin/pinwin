@@ -32,6 +32,10 @@ pub(crate) use snap::OutputScale;
 /// The canvas the grid painter draws a frame into, from row 4.3 on (D5):
 /// GTK-free, pixel tests without a display.
 pub mod canvas;
+/// The geometry seam between the snapped logical grid and the device-pixel
+/// canvas: the cast seam, the painter's cell metrics and the frame input
+/// (D5). GTK-free, like the canvas.
+pub mod geom;
 mod images;
 mod metrics;
 mod node_cursor;
