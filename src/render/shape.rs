@@ -10,10 +10,15 @@
 //! faces would position its parts against each other's metrics for no
 //! visual gain. So the shaper picks one face for the whole cluster: the
 //! style's face when it covers every code point that needs a glyph, else
-//! the fallback face for the first uncovered code point, else the primary
-//! face whose notdef box draws, the same box Pango's missing-glyph path
-//! drew. This matches the design's "swash shapes each cell's grapheme
-//! cluster" (D6).
+//! the fallback face for the first uncovered code point — taken only when
+//! it covers the whole cluster, so a fallback for an uncovered mark never
+//! trades a drawn base for a notdef box — else the primary face whose
+//! notdef box draws, the same box Pango's missing-glyph path drew. A mark
+//! needs a glyph of its own like any other code point: the base it attaches
+//! to only positions it, so an uncovered combining or enclosing mark (the
+//! keycap U+20E3, an accent in a face without it) drives the fallback the
+//! same way an uncovered base does. This matches the design's "swash shapes
+//! each cell's grapheme cluster" (D6).
 //!
 //! The named instance travels with the face: the shaper applies the face's
 //! named instance to the shaper (`normalized_coords`) the same way the

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::shaper::TextShaper;
 use super::{ShapeError, ShapedCluster};
 use crate::fontconfig::FontConfig;
-use crate::render::font::{FamilyFaces, FontBook, Style};
+use crate::render::font::{Face, FamilyFaces, FontBook, Style};
 use crate::render::glyph::{Ppem, Synthesis};
 
 /// The family the tests pin; CI installs it (design D10).
@@ -386,4 +386,144 @@ fn a_shaped_cluster_reports_its_parts() {
         cluster.glyphs()[0].x_advance(),
         "one glyph: the cluster advance is its own"
     );
+}
+
+/// The keycap cluster "1" U+FE0F U+20E3: the primary face maps the digit
+/// but neither the variation selector (ignored, it needs no glyph) nor the
+/// enclosing keycap mark, and a mark needs a glyph like any other code
+/// point — so the cell falls back to a face that covers U+20E3, the way
+/// the old Pango path's itemization picked an emoji font for it. Skipped
+/// when no installed font covers U+20E3; a failed lookup is a failure,
+/// never a skip.
+#[test]
+fn a_keycap_cluster_falls_back_to_a_face_that_covers_the_mark() {
+    let mut book = FontBook::new().expect("the font book opens");
+    let Some(faces) = faces_of(&book, FAMILY) else {
+        return;
+    };
+    let primary = faces.regular().clone();
+    assert!(
+        !primary.covers('\u{20E3}'),
+        "the test family must lack the keycap mark for this test to prove anything"
+    );
+    let expected = match book.fallback_face('\u{20E3}') {
+        Ok(Some(face)) => face,
+        Ok(None) => {
+            println!("skipped: no installed font covers U+20E3");
+            return;
+        }
+        Err(error) => panic!("the fallback lookup failed: {error}"),
+    };
+    let mut shaper = TextShaper::new(faces, book);
+    let cluster = shaper
+        .shape("1\u{FE0F}\u{20E3}", Style::Regular, ppem_at(SIZE))
+        .expect("the cluster shapes");
+    assert_eq!(
+        cluster.face().path(),
+        expected.path(),
+        "the keycap cluster shaped on the face fontconfig ranks for U+20E3"
+    );
+    assert!(
+        cluster.face().covers('\u{20E3}'),
+        "the chosen face covers the keycap mark"
+    );
+}
+
+/// "e" plus combining acute in `JetBrainsMono` does not fall back: the face
+/// maps U+0301, and a mark the face covers needs no fallback any more than
+/// a covered base does. Skipped when the machine's face lacks U+0301,
+/// because then the test cannot separate mark coverage from fallback
+/// behaviour.
+#[test]
+fn a_mark_the_face_maps_does_not_trigger_a_fallback() {
+    let book = FontBook::new().expect("the font book opens");
+    let Some(faces) = faces_of(&book, FAMILY) else {
+        return;
+    };
+    let primary = faces.regular().clone();
+    if !primary.covers('\u{0301}') {
+        println!("skipped: {FAMILY} does not map U+0301 on this machine");
+        return;
+    }
+    let mut shaper = TextShaper::new(faces, book);
+    let cluster = shaper
+        .shape("e\u{0301}", Style::Regular, ppem_at(SIZE))
+        .expect("the cluster shapes");
+    assert_eq!(
+        cluster.face().path(),
+        primary.path(),
+        "a mark the face maps never moves the cluster to a fallback"
+    );
+}
+
+/// A mark the primary face lacks, with a base the primary covers: the
+/// cluster moves to the fallback only when the fallback covers the base
+/// too — the whole cluster shapes on one face — and stays on the primary
+/// face when no fallback covers both, rather than drawing the base as
+/// notdef. What this machine does: the fallback fontconfig ranks for the
+/// Tibetan vowel sign I (U+0F72) is Noto Serif Tibetan, which covers the
+/// mark but not the Latin base, so the cluster stays on the primary face;
+/// for U+1AB0 the fallback is Noto Sans, which covers base and mark, so
+/// the cluster moves.
+#[test]
+fn an_uncovered_mark_moves_the_cluster_only_when_the_fallback_covers_the_base() {
+    let book = FontBook::new().expect("the font book opens");
+    let Some(faces) = faces_of(&book, FAMILY) else {
+        return;
+    };
+    let primary = faces.regular().clone();
+    assert!(primary.covers('e'), "the test family covers the base");
+    one_mark_case(
+        FontBook::new().expect("the font book opens"),
+        faces.clone(),
+        &primary,
+        "U+1AB0",
+        '\u{1AB0}',
+    );
+    one_mark_case(
+        FontBook::new().expect("the font book opens"),
+        faces,
+        &primary,
+        "U+0F72",
+        '\u{0F72}',
+    );
+}
+
+/// One (base, mark) case of the uncovered-mark test above: the cluster
+/// moves to the fallback only when the fallback covers the base too, and
+/// stays on the primary face when no fallback covers both.
+fn one_mark_case(mut book: FontBook, faces: FamilyFaces, primary: &Face, name: &str, mark: char) {
+    assert!(
+        !primary.covers(mark),
+        "the test family lacks {name} for this test to prove anything"
+    );
+    let fallback = match book.fallback_face(mark) {
+        Ok(Some(face)) => face,
+        Ok(None) => {
+            println!("skipped: no installed font covers {name}");
+            return;
+        }
+        Err(error) => panic!("the fallback lookup failed: {error}"),
+    };
+    let mut shaper = TextShaper::new(faces, book);
+    let cluster = shaper
+        .shape(&format!("e{mark}"), Style::Regular, ppem_at(SIZE))
+        .expect("the cluster shapes");
+    if fallback.covers('e') {
+        println!("noted: the fallback for {name} covers base and mark; the cluster moved to it");
+        assert_eq!(
+            cluster.face().path(),
+            fallback.path(),
+            "a fallback covering the whole cluster takes the cluster"
+        );
+    } else {
+        println!(
+            "noted: the fallback for {name} lacks the base; the cluster stayed on the primary face"
+        );
+        assert_eq!(
+            cluster.face().path(),
+            primary.path(),
+            "a fallback that lacks the base never takes the cluster"
+        );
+    }
 }

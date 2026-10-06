@@ -97,9 +97,10 @@ impl TextShaper {
     /// pixels per em. The face choice follows the rules of the shape
     /// module's doc: the style's face, else the nearest face with
     /// synthesis, else — when a code point that needs a glyph is not
-    /// covered — the fallback face for the first uncovered code point, else
-    /// the primary face whose notdef draws. The whole cluster shapes on the
-    /// one chosen face.
+    /// covered — the fallback face for the first uncovered code point,
+    /// taken only when it covers the whole cluster, else the primary face
+    /// whose notdef draws. The whole cluster shapes on the one chosen
+    /// face.
     ///
     /// An empty cluster shapes to an empty result, not an error. A shaping
     /// error (an unparsable face, an unknown named instance, a failed
@@ -202,21 +203,28 @@ impl TextShaper {
             }
         };
 
-        if let Some(codepoint) = first_uncovered(&face, cluster) {
-            // The fallback face has no style faces of its own: it is
-            // fontconfig's best cover for the code point, always a regular
-            // roman face, so the cell's own bold and italic synthesize on
-            // it. When no fallback covers the code point, the cluster
-            // shapes on the primary face and the notdef box draws.
-            if let Some(fallback) = self
+        if let Some(codepoint) = first_uncovered(&face, cluster)
+            && let Some(fallback) = self
                 .book
                 .fallback_face(codepoint)
                 .map_err(ShapeError::Fallback)?
-                .filter(|fallback| fallback.covers(codepoint))
-            {
-                let (bold, italic) = style_bits(style);
-                return Ok((fallback, Synthesis::new(bold, italic)));
-            }
+                // The whole cluster shapes on one face, so the fallback is
+                // taken only when it covers every code point that needs a
+                // glyph: a fallback for an uncovered mark that lacks the
+                // base would draw the base as notdef, worse than the
+                // primary's missing mark.
+            && cluster
+                .chars()
+                .filter(|ch| !coverage_ignorable(*ch))
+                .all(|ch| fallback.covers(ch))
+        {
+            // The fallback face has no style faces of its own: it is
+            // fontconfig's best cover for the code point, always a regular
+            // roman face, so the cell's own bold and italic synthesize on
+            // it. When no fallback covers the whole cluster, the cluster
+            // shapes on the primary face and its notdef box draws.
+            let (bold, italic) = style_bits(style);
+            return Ok((fallback, Synthesis::new(bold, italic)));
         }
         Ok((face, synthesis))
     }
@@ -311,20 +319,12 @@ fn tokens(text: &str) -> impl Iterator<Item = Token> + '_ {
 /// Characters the coverage check ignores: variation selectors, the zero
 /// width joiner and swash's own default-ignorables never need a glyph of
 /// their own — they select or join glyphs the base code points already
-/// cover.
+/// cover. Everything else does need a glyph, combining and enclosing marks
+/// included: the base only positions a mark, so an uncovered mark must
+/// drive the fallback exactly like an uncovered base.
 fn coverage_ignorable(ch: char) -> bool {
     matches!(ch, '\u{FE00}'..='\u{FE0F}' | '\u{200D}')
         || ch.properties().category() == swash::text::Category::Format
-}
-
-/// Zero-width combining marks: they attach to a base and need no glyph of
-/// their own when the base is present (see `uncovered_in_cluster`).
-/// Spacing marks are not zero-width and count normally.
-fn zero_width_mark(ch: char) -> bool {
-    matches!(
-        ch.properties().category(),
-        swash::text::Category::NonspacingMark | swash::text::Category::EnclosingMark
-    )
 }
 
 /// The first code point of `cluster` that needs a glyph and has none in
@@ -335,9 +335,7 @@ fn zero_width_mark(ch: char) -> bool {
 /// itself reports the unparsable face.
 fn first_uncovered(face: &Face, cluster: &str) -> Option<char> {
     let Some(font) = face.parse() else {
-        return cluster
-            .chars()
-            .find(|ch| !coverage_ignorable(*ch) && !zero_width_mark(*ch));
+        return cluster.chars().find(|ch| !coverage_ignorable(*ch));
     };
     let charmap = font.charmap();
     let script = script_of(cluster);
@@ -349,19 +347,11 @@ fn first_uncovered(face: &Face, cluster: &str) -> Option<char> {
     while parser.next(&mut shaped) {
         shaped.map(|ch| charmap.map(u32::from(ch)));
         let chars = shaped.mapped_chars();
-        // A mark only gets a free pass when the cluster it attaches to has
-        // a base: a lone mark still needs a glyph.
-        let has_base = chars
-            .iter()
-            .any(|c| !coverage_ignorable(c.ch) && !zero_width_mark(c.ch));
         for c in chars {
             if c.glyph_id != 0 || !c.contributes_to_shaping {
                 continue;
             }
             if c.ignorable || coverage_ignorable(c.ch) {
-                continue;
-            }
-            if zero_width_mark(c.ch) && has_base {
                 continue;
             }
             return Some(c.ch);
