@@ -5,6 +5,7 @@
 //! `tests/draw_tests.rs`. Real system fonts, real shaping, no display.
 
 use crate::render::canvas::Canvas;
+use crate::render::image_pass::ImagePass;
 use crate::render::painter::paint_frame;
 use crate::render::text_pass::test_support::{
     HIDE_CURSOR, Rig, block, cell_at, common_size, px, theme_bytes, utf8,
@@ -221,12 +222,14 @@ fn paint_frame_is_the_rigs_entry() {
     let (w, h) = frame.device_size();
     let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
     let mut pass = rig.pass();
+    let mut images = ImagePass::new();
     paint_frame(
         &mut canvas,
         &rig.metrics(1.0, rig.cell_h),
         &frame,
         &mut terminal,
         &mut pass,
+        &mut images,
     );
     assert_eq!(canvas.size(), (w, h));
 }

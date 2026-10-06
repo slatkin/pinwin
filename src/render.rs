@@ -51,6 +51,11 @@ pub mod geom;
 /// one device size, with hinting, colour and style synthesis, and caches the
 /// results (replace-gtk-with-wayland D6/D11). GTK-free, like the canvas.
 pub mod glyph;
+/// The kitty image pass (row 4.7): the frame's kitty placements decoded
+/// with the `png` crate, scaled to their placement sizes and cached, and
+/// drawn into the canvas above the cursor (replace-gtk-with-wayland D5).
+/// GTK-free, like the canvas.
+pub mod image_pass;
 mod images;
 mod metrics;
 /// The Nerd Font glyph constraints over swash geometry (row 4.5): the port

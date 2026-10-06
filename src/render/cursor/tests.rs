@@ -4,6 +4,7 @@ use super::super::painter::paint_frame;
 use super::{CursorShape, cursor_shape, glyph_redraw};
 use crate::fontconfig::ThemeColours;
 use crate::guard::Poisoned;
+use crate::render::image_pass::ImagePass;
 use crate::render::text_pass::TextPass;
 use crate::render::text_pass::test_support;
 use crate::term::cells::{Cursor, CursorStyle};
@@ -55,7 +56,15 @@ fn painted(terminal: &mut Terminal, scale: f64, text: &mut TextPass) -> Canvas {
     let frame = frame(scale, false, None);
     let (w, h) = frame.device_size();
     let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
-    paint_frame(&mut canvas, &metrics(scale), &frame, terminal, text);
+    let mut images = ImagePass::new();
+    paint_frame(
+        &mut canvas,
+        &metrics(scale),
+        &frame,
+        terminal,
+        text,
+        &mut images,
+    );
     canvas
 }
 
@@ -390,12 +399,14 @@ fn the_cursor_draws_above_the_cells_and_below_the_accent() {
     let unfocused = frame(scale, false, None);
     let (w, h) = unfocused.device_size();
     let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
+    let mut images = ImagePass::new();
     paint_frame(
         &mut canvas,
         &m,
         &unfocused,
         &mut bg_terminal,
         &mut test.pass,
+        &mut images,
     );
     rect_is(
         &canvas,
@@ -449,12 +460,14 @@ fn the_cursor_draws_above_the_cells_and_below_the_accent() {
     let focused = frame(scale, true, Some(accent));
     let (w, h) = focused.device_size();
     let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
+    let mut images = ImagePass::new();
     paint_frame(
         &mut canvas,
         &m,
         &focused,
         &mut sprite_terminal,
         &mut test.pass,
+        &mut images,
     );
     let accent_bytes = bytes([0, 0, 255]);
     assert_eq!(

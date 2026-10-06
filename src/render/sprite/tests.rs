@@ -1,5 +1,4 @@
 use super::super::geom::device_px;
-use super::super::painter::paint_frame;
 use super::*;
 use crate::fontconfig::ThemeColours;
 use crate::guard::Poisoned;
@@ -53,13 +52,11 @@ fn metrics(scale: f64) -> PainterMetrics {
     PainterMetrics::new(8.0, 16.0, 12.0, scale).expect("test metrics are valid")
 }
 
-/// A canvas of `frame`'s device size with the frame painted into it.
+/// A canvas of `frame`'s device size with the frame painted into it, the
+/// shared helper carrying the frame's kitty image pass.
 fn painted(terminal: &mut Terminal, scale: f64, text: &mut TextPass) -> Canvas {
     let frame = frame(scale);
-    let (w, h) = frame.device_size();
-    let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
-    paint_frame(&mut canvas, &metrics(scale), &frame, terminal, text);
-    canvas
+    test_support::painted_frame(terminal, &metrics(scale), &frame, text)
 }
 
 /// A colour's bytes in the canvas' memory order: blue, green, red, alpha.

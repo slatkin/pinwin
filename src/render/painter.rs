@@ -18,8 +18,10 @@
 //! 4. [`bands`] — the underline and strikethrough decorations.
 //! 5. [`cursor`] — the cursor shape, in the terminal's default foreground,
 //!    with the block cursor's glyph redraw through the text pass.
-//! 6. later rows add the kitty image pass, in
-//!    [`crate::render::DrawState::render_grid`]'s order.
+//! 6. [`image_pass`] — the kitty image placements, decoded, scaled and
+//!    cached by the caller-owned [`ImagePass`] (row 4.7), in
+//!    [`crate::render::DrawState::render_grid`]'s order: after the cursor
+//!    and before the accent, so images draw above the cursor there too.
 //!
 //! The focus accent ([`accent`]) draws last, on top, in raw surface
 //! coordinates — the one layer the tween's draw offset does not translate,
@@ -34,6 +36,7 @@
 
 use super::canvas::Canvas;
 use super::geom::{FrameInput, PainterMetrics, device_px};
+use super::image_pass::ImagePass;
 use super::text_pass::TextPass;
 use super::{accent, bands, bg, cursor, sprite};
 use crate::term::Terminal;
@@ -45,7 +48,8 @@ use crate::term::Terminal;
 /// the frame snaps at; `frame` carries the sizes, the tween's draw offset,
 /// the focus state and the theme colours. `text` is the panel thread's
 /// text pass (the shaper, the glyph cache and the cell metrics), owned by
-/// the caller across frames. The canvas must already be the frame's device
+/// the caller across frames; `images` is its kitty image pass (the scaled
+/// image cache) beside it. The canvas must already be the frame's device
 /// size ([`FrameInput::device_size`]).
 ///
 /// A terminal with no live frame (none created yet, or a failed refresh)
@@ -57,6 +61,7 @@ pub fn paint_frame(
     frame: &FrameInput,
     terminal: &mut Terminal,
     text: &mut TextPass,
+    images: &mut ImagePass,
 ) {
     // The theme background is the whole surface: the grid draws over it,
     // and cells without an explicit background show it.
@@ -82,8 +87,19 @@ pub fn paint_frame(
     let cursor_text = text.paint(canvas, metrics, frame, terminal, offset);
     terminal.frame_rewind();
     bands::paint(canvas, metrics, frame, terminal, offset);
-    terminal.frame_rewind();
+    // No rewind here: the cursor layer walks no cells, and the rewind
+    // would clear the placeholder origins the last cell walk recorded —
+    // the image pass resolves its unicode-placeholder placements against
+    // them, exactly as `render_grid`'s single walk leaves them for
+    // `ImageCache::draw`.
     cursor::paint(canvas, metrics, terminal, offset, &cursor_text, text);
+    // No rewind before the image pass, exactly as `render_grid` calls
+    // `ImageCache::draw` straight after the cursor. The image iterator is
+    // separate from the cell walk, so a rewind is not needed for it — and
+    // it is harmful: `frame_rewind` clears the placeholder origins the
+    // cell walk recorded, and a unicode-placeholder placement resolves
+    // against them (`image_next` finds no origin and drops it).
+    images.paint(canvas, metrics, terminal, offset);
     terminal.frame_end();
 
     accent::paint(canvas, frame, metrics);
@@ -166,7 +182,15 @@ mod tests {
     ) -> Canvas {
         let (w, h) = frame.device_size();
         let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
-        paint_frame(&mut canvas, &metrics(scale), frame, terminal, text);
+        let mut images = ImagePass::new();
+        paint_frame(
+            &mut canvas,
+            &metrics(scale),
+            frame,
+            terminal,
+            text,
+            &mut images,
+        );
         canvas
     }
 

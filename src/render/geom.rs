@@ -243,6 +243,19 @@ impl PainterMetrics {
         )
     }
 
+    /// The snapped device rectangle of an arbitrary logical rectangle —
+    /// the kitty image placements' destination rectangles, which the
+    /// terminal reports in logical pixels rather than cell units. The
+    /// edges snap on their own ([`OutputScale::snap_rect`]: the right
+    /// edge is `snap(x + w)`, never `snap(x) + snap(w)`), so the
+    /// rectangle keeps its last device pixel and a positive size never
+    /// collapses below one device pixel. A negative or zero size gives an
+    /// empty rectangle at its snapped origin.
+    #[must_use]
+    pub fn logical_rect(&self, x: f64, y: f64, w: f64, h: f64) -> DeviceRect {
+        self.snap_device(x, y, w, h)
+    }
+
     /// Snap a logical rectangle and scale it to device pixels. Each device
     /// edge is `device_px` of the snapped edge times the scale, so two
     /// rectangles that share a snapped logical edge share the device edge
@@ -555,6 +568,36 @@ mod tests {
         assert!(m.run_rect(0, 0, -2).is_empty());
         assert!(m.cell_sub_rect(0, 0, 1.0, 1.0, 0.0, 5.0).is_empty());
         assert!(m.cell_sub_rect(0, 0, 1.0, 1.0, -3.0, 5.0).is_empty());
+    }
+
+    /// An arbitrary logical rectangle — the kitty placements' form — snaps
+    /// its right and bottom edges on their own, so the whole rectangle
+    /// keeps its last device pixel at a fractional scale, and a positive
+    /// size never collapses below one device pixel.
+    #[test]
+    fn a_logical_rect_keeps_its_last_device_pixel_at_fractional_scales() {
+        for scale in [1.0, 1.25, 1.5, 1.8] {
+            let m = metrics(9.0, 20.0, scale);
+            // An 8-logical-pixel-wide rectangle at x = 32: at 1.5 its
+            // device width is 12, at 1.8 it is round(39.6) - 57.6 = 14 —
+            // both cover every device pixel the true fractional span
+            // touches.
+            let rect = m.logical_rect(32.0, 32.0, 8.0, 16.0);
+            assert_eq!(rect.x(), device_px(32.0 * scale));
+            assert_eq!(rect.w(), device_px(40.0 * scale) - device_px(32.0 * scale));
+            assert!(rect.w() > 0 && rect.h() > 0, "positive at {scale}");
+            // The exact fractional span's last pixel: the device width is
+            // at least ceil(round-tripped) of the true span.
+            let true_span = 8.0 * scale;
+            assert!(f64::from(rect.w()) + 0.5 >= true_span, "width at {scale}");
+        }
+        // Zero and negative sizes give an empty rectangle at the snapped
+        // origin.
+        let m = metrics(9.0, 20.0, 1.5);
+        let empty = m.logical_rect(4.0, 4.0, 0.0, 5.0);
+        assert!(empty.is_empty());
+        let negative = m.logical_rect(4.0, 4.0, -2.0, 5.0);
+        assert!(negative.is_empty());
     }
 
     /// A frame input caches the theme colours swapped (D5): drawn into a

@@ -14,6 +14,7 @@ use crate::render::cell_metrics::CellMetrics;
 use crate::render::font::{FamilyFaces, FontBook};
 use crate::render::geom::{DeviceRect, FrameInput, PainterMetrics, device_px};
 use crate::render::glyph::GlyphCache;
+use crate::render::image_pass::ImagePass;
 use crate::render::painter::paint_frame;
 use crate::render::shape::TextShaper;
 use crate::term::cells::{CELL_TEXT_CAP, Cell};
@@ -150,12 +151,14 @@ impl Rig {
         let frame = self.frame(scale, cell_h, draw_offset);
         let (w, h) = frame.device_size();
         let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
+        let mut images = ImagePass::new();
         paint_frame(
             &mut canvas,
             &self.metrics(scale, cell_h),
             &frame,
             terminal,
             &mut self.pass(),
+            &mut images,
         );
         canvas
     }
@@ -200,6 +203,23 @@ impl PngDecoder for NoDecoder {
     fn decode_png(&mut self, _data: &[u8]) -> Option<crate::term::DecodedPng> {
         None
     }
+}
+
+/// A canvas of `frame`'s device size with the frame painted into it —
+/// the shared form of the per-pass `painted` helpers, so each pass's
+/// tests build only its own pass and this one place carries the frame's
+/// kitty image pass.
+pub(crate) fn painted_frame(
+    terminal: &mut Terminal,
+    metrics: &PainterMetrics,
+    frame: &FrameInput,
+    text: &mut TextPass,
+) -> Canvas {
+    let (w, h) = frame.device_size();
+    let mut canvas = Canvas::new(w, h).expect("canvas size is valid");
+    let mut images = ImagePass::new();
+    paint_frame(&mut canvas, metrics, frame, terminal, text, &mut images);
+    canvas
 }
 
 /// A colour's bytes in the canvas' memory order: blue, green, red, alpha.
