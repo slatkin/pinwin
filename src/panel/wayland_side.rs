@@ -214,7 +214,8 @@ pub fn spawn_panel_thread(
 /// body is caught by the thread's own latch, and whatever ended the thread
 /// — teardown, a closed connection or a caught panic — leaves the handle
 /// dead and a still-pending start handshake failed, instead of hanging the
-/// waiting host.
+/// waiting host. A caught panic reports `Internal` (D5) and latches the
+/// shared flag, so later host calls report `Internal`, never `NotRunning`.
 fn thread_main(display_name: Option<String>, start: StartCommand, commands: Channel<PanelCommand>) {
     let StartCommand {
         poisoned,
@@ -222,7 +223,7 @@ fn thread_main(display_name: Option<String>, start: StartCommand, commands: Chan
         inner,
     } = start;
     let latch = Poisoned::new();
-    let _ = guard_always(&latch, || {
+    let ended = guard_always(&latch, || {
         run_thread(
             display_name,
             &poisoned,
@@ -236,7 +237,22 @@ fn thread_main(display_name: Option<String>, start: StartCommand, commands: Chan
     // loop-returned path — the panel never went live. Both are idempotent
     // on the paths that already did the same.
     inner.live.store(false, Ordering::Relaxed);
-    handshake.report(StartOutcome::NoDisplay);
+    report_thread_end(&poisoned, &handshake, &ended);
+}
+
+/// Map how the thread body ended onto the start handshake and the shared
+/// latch (D5): a clean end is the loop-returned path — `NoDisplay`, the
+/// panel never went live (or the handshake was already resolved, which the
+/// one-shot report drops). A caught panic is `Internal`, and the shared
+/// flag is latched so later host calls report `Internal`, never
+/// `NotRunning`.
+fn report_thread_end(poisoned: &Poisoned, handshake: &Handshake, ended: &Result<(), Poisoned>) {
+    if ended.is_err() {
+        poisoned.latch();
+        handshake.report(StartOutcome::Internal);
+    } else {
+        handshake.report(StartOutcome::NoDisplay);
+    }
 }
 
 /// The thread body once the start command is unpacked: connect, then run the
@@ -321,16 +337,7 @@ fn run_loop(
         .map_err(calloop::Error::from)?;
 
     handle.insert_source(commands, |event, (), state| {
-        // D5 boundary: a callback is a boundary like a GTK closure. The
-        // latch is cloned first: the guard's borrow and the closure's
-        // command handling must not alias the same `PanelState`.
-        let poisoned = state.poisoned.clone();
-        let _ = guard(&poisoned, || match event {
-            Event::Msg(command) => handle_command(state, command),
-            // Every sender is gone (the host dropped the handle without a
-            // teardown): end the thread the same way a teardown does.
-            Event::Closed => state.done = true,
-        });
+        on_command_event(state, event);
     })?;
 
     loop {
@@ -340,6 +347,35 @@ fn run_loop(
         // `None`: park until the command channel or the connection wakes the
         // loop, like the parked GTK thread's main context.
         event_loop.dispatch(None, state)?;
+    }
+}
+
+/// The command channel's callback (D5 boundary): a callback is a boundary
+/// like a GTK closure, so ordinary commands run under the shared [`guard`]
+/// and a latched panel runs no more glue code. The stop relays — a teardown
+/// and a closed command channel — must run even on a latched flag (D5):
+/// skipping them would drop the teardown's reply (the host's drop waits the
+/// whole reply bound) and never end the loop, leaking the thread and its
+/// Wayland connection.
+fn on_command_event(state: &mut PanelState, event: Event<PanelCommand>) {
+    // The latch is cloned first: the guard's borrow and the command
+    // handling must not alias the same `PanelState`.
+    let poisoned = state.poisoned.clone();
+    match event {
+        // The teardown is a stop relay, not ordinary glue (D5):
+        // `guard_always` runs it even on a latched flag.
+        Event::Msg(PanelCommand::Teardown { reply }) => {
+            let _ = guard_always(&poisoned, || {
+                handle_command(state, PanelCommand::Teardown { reply });
+            });
+        }
+        Event::Msg(command) => {
+            let _ = guard(&poisoned, || handle_command(state, command));
+        }
+        // Every sender is gone (the host dropped the handle without a
+        // teardown): end the thread the same way a teardown does. A plain
+        // store cannot panic, so it needs no guard at all.
+        Event::Closed => state.done = true,
     }
 }
 
@@ -584,7 +620,10 @@ mod tests {
 
     /// A teardown command ends the loop state and answers through the
     /// bounded reply, even on a latched flag (D5's stop relay): the host's
-    /// drop must not strand.
+    /// drop must not strand. The test drives the real callback path
+    /// ([`on_command_event`], outer guard included) — a `handle_command`
+    /// call alone would skip the short-circuiting outer guard that hid this
+    /// relay once.
     #[test]
     fn a_teardown_command_ends_the_thread_state() {
         let (tx, _rx) = mpsc::channel();
@@ -595,13 +634,87 @@ mod tests {
             inner: live_inner(),
         };
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        handle_command(&mut state, PanelCommand::Teardown { reply: reply_tx });
+        on_command_event(
+            &mut state,
+            Event::Msg(PanelCommand::Teardown { reply: reply_tx }),
+        );
         assert!(state.done, "the loop ends");
         assert_eq!(
             reply_rx.recv_timeout(Duration::from_secs(1)),
             Ok(()),
             "the teardown replies even on a latched flag"
         );
+    }
+
+    /// A closed command channel ends the loop even on a latched flag (D5's
+    /// stop relay): a swallowed `Closed` would leak the thread and its
+    /// Wayland connection after a plain handle drop.
+    #[test]
+    fn a_closed_command_channel_ends_the_thread_even_when_latched() {
+        let (tx, _rx) = mpsc::channel();
+        let mut state = PanelState {
+            poisoned: Poisoned::latched(),
+            handshake: Handshake::new(tx),
+            done: false,
+            inner: live_inner(),
+        };
+        on_command_event(&mut state, Event::Closed);
+        assert!(state.done, "the closed channel ends the loop");
+    }
+
+    /// An ordinary command stays under the short-circuiting guard (D5): on
+    /// a latched flag it never runs and its reply channel closes empty,
+    /// while the loop keeps going.
+    #[test]
+    fn a_latched_flag_drops_an_ordinary_command() {
+        let (tx, _rx) = mpsc::channel();
+        let mut state = PanelState {
+            poisoned: Poisoned::latched(),
+            handshake: Handshake::new(tx),
+            done: false,
+            inner: live_inner(),
+        };
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        on_command_event(
+            &mut state,
+            Event::Msg(PanelCommand::Apply {
+                layout: startup().layout,
+                duration_ms: 0,
+                reply: reply_tx,
+            }),
+        );
+        assert!(!state.done, "an ordinary command does not end the thread");
+        assert_eq!(
+            reply_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Disconnected),
+            "the guarded command never ran"
+        );
+    }
+
+    /// A caught panic in the thread body reports `Internal` through the
+    /// start handshake and latches the shared flag (D5): later host calls
+    /// must read `Internal`, never `NotRunning`.
+    #[test]
+    fn a_caught_thread_panic_reports_internal_and_latches_the_shared_flag() {
+        let (tx, rx) = mpsc::channel();
+        let handshake = Handshake::new(tx);
+        let shared = Poisoned::new();
+        report_thread_end(&shared, &handshake, &Err(Poisoned::latched()));
+        assert!(shared.is_poisoned(), "the shared latch is set");
+        assert_eq!(wait_for_start(&rx), Err(PinwinError::Internal));
+    }
+
+    /// A clean thread end reports `NoDisplay` through the start handshake
+    /// and leaves the shared flag alone: a connection failure is the spec's
+    /// "no display" case, not a panic.
+    #[test]
+    fn a_clean_thread_end_reports_no_display_without_latching() {
+        let (tx, rx) = mpsc::channel();
+        let handshake = Handshake::new(tx);
+        let shared = Poisoned::new();
+        report_thread_end(&shared, &handshake, &Ok(()));
+        assert!(!shared.is_poisoned(), "no panic, no latch");
+        assert_eq!(wait_for_start(&rx), Err(PinwinError::NoDisplay));
     }
 
     /// The display-name resolution follows `connect_to_env`'s rules: a
