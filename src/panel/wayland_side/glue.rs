@@ -647,11 +647,17 @@ mod tests {
             &mut counted,
         );
         assert_eq!(pushes.get(), 0, "a staged animated apply pushes nothing");
+        assert_eq!(state.panel_size, None, "no configure named a size yet");
         state.tween.begin(360, 1080, 200, Instant::now(), None);
         state.tween_finished(1080, &mut counted);
         assert_eq!(pushes.get(), 1, "the finish pushes once");
         assert_pushed(&master, &terminal, 120, 1080 / 16);
-        assert!(repaint.get(), "the push latched the repaint flag");
+        assert!(repaint.get(), "the finish latched the repaint flag");
+        assert_eq!(
+            state.panel_size,
+            Some((1080, 1080)),
+            "the finish records the final logical size"
+        );
     }
 
     /// A snap during a running tween pushes at once: the stop relay lifts

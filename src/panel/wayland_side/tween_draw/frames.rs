@@ -4,6 +4,7 @@
 //! bookkeeping and the finish's final geometry.
 
 use super::super::crop::copy_crop;
+use super::super::present::{FinishViewport, finish_end_state};
 use super::super::sizing::Grid;
 use super::super::state::PanelState;
 use super::super::surfaces::SurfaceId;
@@ -167,13 +168,17 @@ impl PanelState {
     /// the deferred grid once through the sizing path, the new columns
     /// derived from the latest configure height (the GTK path's
     /// `on_tween_stopped`) — then the final geometry, the same path a plain
-    /// apply writes. The push sink is a parameter so the display-free tests
-    /// observe it (`port-to-rust` D10); the production callers sink the pty
-    /// winsize. The pty read's tween flag has no mirror here yet: the
-    /// pty source joins this thread in row 8.1 and reads the driver's own
-    /// state, which the finish has already cleared. The headless core has
-    /// no session, so the geometry write is exercised only on niri (row
-    /// 10.1); the relay is display-free and tested in the apply module.
+    /// apply writes. The viewport end state follows (dispatch D4c): the
+    /// last eased frame left a source crop and a destination on the
+    /// panel's viewport, and the live buffer the finish's repaint draws
+    /// needs the crop unset and the destination at the final logical size,
+    /// so the surface no longer shows the crop. The finish latches the
+    /// repaint request, which the draw step turns into that live frame at
+    /// the final size. The push sink is a parameter so the display-free
+    /// tests observe it (`port-to-rust` D10); the production callers sink
+    /// the pty winsize. The headless core has no session, so the geometry
+    /// write is exercised only on niri (row 10.1); the relay is
+    /// display-free and tested in the apply module.
     pub(crate) fn tween_finished(&mut self, target_px: i32, push: &mut dyn FnMut(Grid)) {
         // The final frame commits at the target before the cache drops
         // (row 6.1): the viewport's source and destination are persistent
@@ -192,5 +197,34 @@ impl PanelState {
             reserve_zone: self.held.zone(),
         };
         self.write_geometry(geometry);
+        let height = self.sizing.height();
+        let viewporter = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.scale.panel_viewporter());
+        for action in finish_end_state(viewporter, height, target_px) {
+            if let Some(session) = self.session.as_mut() {
+                match action {
+                    FinishViewport::UnsetSource => {
+                        // The protocol's all `-1` arguments reset the source
+                        // to its default, the whole buffer.
+                        session.scale.set_source(SurfaceId::Panel, -1, -1, -1, -1);
+                    }
+                    FinishViewport::Destination(width, height) => {
+                        session
+                            .scale
+                            .set_destination(SurfaceId::Panel, width, height);
+                    }
+                }
+            }
+        }
+        // The frame input the live draw builds from: the final width and
+        // the latest configure height.
+        if let (Some(height), Ok(width)) = (height, u32::try_from(target_px)) {
+            self.panel_size = Some((width, height));
+        }
+        // The live grid must replace the crop on screen (dispatch D4c): the
+        // draw step turns this request into the frame at the final size.
+        self.repaint.set(true);
     }
 }
