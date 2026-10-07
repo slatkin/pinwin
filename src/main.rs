@@ -35,8 +35,8 @@ mod settings;
 
 use cli::{Mode, default_command, parse_args};
 use pinwin::instance::{
-    BindError, InstanceName, SocketFile, ToggleError, bind_instance_socket, serve_toggle_requests,
-    socket_path_from_env, toggle_client,
+    InstanceError, InstanceName, SocketFile, ToggleError, bind_instance_socket,
+    serve_toggle_requests, socket_path_from_env, toggle_client,
 };
 use settings::{Settings, Zone, read_settings};
 
@@ -160,6 +160,17 @@ fn child_exec(child: &ChildCommand) -> ! {
     unsafe { libc::_exit(127) }
 }
 
+/// The exit status for a toggle-client outcome: `ok` exits 0, an
+/// environment error — no usable socket path — exits 2 like the other
+/// environment errors, and every not-answered request exits 1.
+fn toggle_client_exit(result: &Result<(), ToggleError>) -> i32 {
+    match result {
+        Ok(()) => 0,
+        Err(ToggleError::Environment(_)) => 2,
+        Err(ToggleError::NotAnswered(_)) => 1,
+    }
+}
+
 /// The `--toggle` client side (replace-gtk-with-wayland D4): ask the host
 /// that owns the name's socket to toggle its panel and report the reply.
 /// The client reads no environment besides the display — the request itself
@@ -173,13 +184,13 @@ fn run_toggle_client(name: Option<InstanceName>) -> i32 {
         .and_then(|path| toggle_client(&path));
     match result {
         Ok(()) => 0,
-        Err(ToggleError::Environment(message)) => {
-            eprintln!("{message}");
-            2
+        Err(ToggleError::Environment(error)) => {
+            eprintln!("pinwin: {error}");
+            toggle_client_exit(&Err(ToggleError::Environment(error)))
         }
         Err(ToggleError::NotAnswered(message)) => {
             eprintln!("{message}");
-            1
+            toggle_client_exit(&Err(ToggleError::NotAnswered(message)))
         }
     }
 }
@@ -350,17 +361,20 @@ fn serve_toggle_until_exit(
 /// socket file's path, which the host removes after its child exits. Errors
 /// carry the full `pinwin:` message.
 fn bind_focus_socket(name: &InstanceName) -> Result<(net::UnixListener, SocketFile), String> {
-    let socket_path = socket_path_from_env(name)?;
+    let socket_path = socket_path_from_env(name).map_err(|error| format!("pinwin: {error}"))?;
     match bind_instance_socket(&socket_path) {
         Ok(listener) => Ok((listener, SocketFile::new(socket_path))),
         Err(error) => Err(match error {
-            BindError::Duplicate => {
+            InstanceError::Duplicate => {
                 format!(
                     "pinwin: another pinwin already owns {}",
                     socket_path.display()
                 )
             }
-            BindError::Failed(error) => format!("pinwin: {}: {error}", socket_path.display()),
+            // A bind that takes the path already has it, so this arm is
+            // only the typed error's completeness.
+            InstanceError::Path(error) => format!("pinwin: {error}"),
+            InstanceError::Io(error) => format!("pinwin: {}: {error}", socket_path.display()),
         }),
     }
 }
@@ -372,6 +386,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pinwin::instance::PathError;
     use std::ffi::OsStr;
 
     /// The exit-status mapping: the child's status when it exited, 1 when it
@@ -388,16 +403,32 @@ mod tests {
         assert_eq!(child_exit_status(9), 1);
     }
 
-    /// The `--toggle` client maps the outcomes: a name with no listener is
-    /// a not-answered request, exit 1. The invalid-name and socket-path
-    /// environment classes are covered by the `InstanceName::parse` and
-    /// `socket_path` contracts in `instance.rs`; here the no-host path holds.
-    /// The name has no listener, and the test never touches the process
-    /// environment (the display variables it resolves are inherited, which
-    /// only changes the message, not the status).
+    /// The `--toggle` client maps the outcomes: `ok` exits 0, an
+    /// environment error — no usable socket path — exits 2, and a
+    /// not-answered request exits 1. The invalid-name class is covered by
+    /// `InstanceName::parse`'s contract in `instance.rs` and, end to end,
+    /// by `tests/command_line_ipc.rs`; here the exit-code mapping holds
+    /// without touching the process environment.
+    #[test]
+    fn the_toggle_client_maps_the_exit_statuses() {
+        assert_eq!(toggle_client_exit(&Ok(())), 0);
+        assert_eq!(
+            toggle_client_exit(&Err(ToggleError::Environment(PathError::NoRuntimeDir))),
+            2
+        );
+        assert_eq!(
+            toggle_client_exit(&Err(ToggleError::NotAnswered("no answer".to_owned()))),
+            1
+        );
+    }
+
+    /// A name with no listener is a not-answered request, exit 1, against
+    /// a socket path that resolves (the display variables are inherited,
+    /// which only changes the message, not the status). The test never
+    /// touches the process environment.
     #[test]
     fn the_toggle_client_without_a_listener_exits_1() {
-        let name = Some(InstanceName::parse("--toggle", "no-such-instance").expect("valid"));
+        let name = Some(InstanceName::parse("no-such-instance").expect("valid"));
         assert_eq!(run_toggle_client(name), 1);
     }
 

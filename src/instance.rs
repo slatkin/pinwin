@@ -38,9 +38,10 @@ impl InstanceName {
         InstanceName("default".to_owned())
     }
 
-    /// Validate `raw`, reporting a failure as the full `pinwin:` exit-2
-    /// message under `context` (`PINWIN_NAME` or `--toggle`).
-    pub fn parse(context: &str, raw: &str) -> Result<InstanceName, String> {
+    /// Validate `raw` into an [`InstanceName`]. The library reports the
+    /// rejection without a context label (`serve-instance-socket` D5); the
+    /// binary adds its `pinwin: <context>:` prefix.
+    pub fn parse(raw: &str) -> Result<InstanceName, InvalidName> {
         let valid = (1..=64).contains(&raw.len())
             && raw
                 .bytes()
@@ -48,13 +49,28 @@ impl InstanceName {
         if valid {
             Ok(InstanceName(raw.to_owned()))
         } else {
-            Err(format!(
-                "pinwin: {context}: expected a name of 1..=64 characters from \
-                 [A-Za-z0-9_-], got '{raw}'"
-            ))
+            Err(InvalidName(raw.to_owned()))
         }
     }
 }
+
+/// Why a name is not a valid [`InstanceName`] (`serve-instance-socket` D5):
+/// it carries the rejected name, so its [`Display`](fmt::Display) can point
+/// at it; the binary adds the `pinwin: <context>:` prefix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvalidName(String);
+
+impl fmt::Display for InvalidName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "expected a name of 1..=64 characters from [A-Za-z0-9_-], got '{}'",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for InvalidName {}
 
 impl fmt::Display for InstanceName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -70,15 +86,68 @@ impl Deref for InstanceName {
     }
 }
 
-/// Why the socket for an instance could not be taken.
+/// Why the socket for an instance could not be taken
+/// (`serve-instance-socket` D5).
 #[derive(Debug)]
-pub enum BindError {
+pub enum InstanceError {
     /// A live listener answered the connect: another host already owns the
     /// name on this display.
     Duplicate,
+    /// The environment gave no usable socket path. Only the
+    /// environment-reading bind can end here; a bind that takes the path
+    /// already has it.
+    Path(PathError),
     /// The socket could not be set up.
-    Failed(io::Error),
+    Io(io::Error),
 }
+
+impl fmt::Display for InstanceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Duplicate => f.write_str("another instance already owns this name"),
+            Self::Path(error) => fmt::Display::fmt(error, f),
+            Self::Io(error) => fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl std::error::Error for InstanceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Duplicate => None,
+            Self::Path(error) => Some(error),
+            Self::Io(error) => Some(error),
+        }
+    }
+}
+
+/// Why the socket path for an instance could not be composed
+/// (`serve-instance-socket` D5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PathError {
+    /// `XDG_RUNTIME_DIR` is unset or empty.
+    NoRuntimeDir,
+    /// `WAYLAND_DISPLAY` is set but cannot be used in a path: not UTF-8,
+    /// empty, or holding a `/`. The variant carries the name as it would
+    /// print, so the message can point at it.
+    BadDisplay(String),
+}
+
+impl fmt::Display for PathError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoRuntimeDir => f.write_str(
+                "XDG_RUNTIME_DIR: expected the runtime directory of the Wayland session",
+            ),
+            Self::BadDisplay(raw) => write!(
+                f,
+                "WAYLAND_DISPLAY: expected a UTF-8 display name without '/', got '{raw}'"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PathError {}
 
 /// The socket path for the instance: `$XDG_RUNTIME_DIR/pinwin/
 /// $WAYLAND_DISPLAY-<name>.sock`. The runtime directory is used as given,
@@ -87,17 +156,15 @@ pub enum BindError {
 /// same default the Wayland client library connects with; a set value must
 /// be valid UTF-8 and hold no `/`, so the path cannot escape
 /// `$XDG_RUNTIME_DIR/pinwin` and distinct displays cannot collapse onto one
-/// socket.
+/// socket. A missing or empty runtime directory, or a display name that
+/// cannot be used in a path, is a [`PathError`].
 pub fn socket_path(
     runtime_dir: Option<&OsStr>,
     display: Option<&OsStr>,
     name: &InstanceName,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, PathError> {
     let Some(runtime_dir) = runtime_dir.filter(|dir| !dir.as_bytes().is_empty()) else {
-        return Err(
-            "pinwin: XDG_RUNTIME_DIR: expected the runtime directory of the Wayland session"
-                .to_owned(),
-        );
+        return Err(PathError::NoRuntimeDir);
     };
     let display = match display {
         None => "wayland-0".to_owned(),
@@ -106,11 +173,7 @@ pub fn socket_path(
                 .to_str()
                 .filter(|text| !text.is_empty() && !text.contains('/'));
             let Some(display) = valid else {
-                return Err(format!(
-                    "pinwin: WAYLAND_DISPLAY: expected a UTF-8 display name without '/', \
-                     got '{}'",
-                    raw.to_string_lossy()
-                ));
+                return Err(PathError::BadDisplay(raw.to_string_lossy().into_owned()));
             };
             display.to_owned()
         }
@@ -127,16 +190,16 @@ pub fn socket_path(
 ///    unlinking on a failed connect would let a racing second host unlink
 ///    the first host's live socket.
 /// 3. On `EADDRINUSE` the path's owner is probed with a connect. A live
-///    owner answers, and the caller exits 2 ([`BindError::Duplicate`]).
+///    owner answers, and the caller exits 2 ([`InstanceError::Duplicate`]).
 ///    Only a dead owner — connection refused, or the file already gone —
 ///    is unlinked and bound again, once. Any other connect error stands
-///    ([`BindError::Failed`]), so a permission or resource failure never
+///    ([`InstanceError::Io`]), so a permission or resource failure never
 ///    gets something else's path deleted.
-pub fn bind_instance_socket(path: &Path) -> Result<net::UnixListener, BindError> {
+pub fn bind_instance_socket(path: &Path) -> Result<net::UnixListener, InstanceError> {
     // `socket_path` always composes a parent, but a hand-built path without
     // one is a caller error, not a panic.
     let Some(dir) = path.parent() else {
-        return Err(BindError::Failed(io::Error::new(
+        return Err(InstanceError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             "the socket path has no parent directory",
         )));
@@ -144,17 +207,17 @@ pub fn bind_instance_socket(path: &Path) -> Result<net::UnixListener, BindError>
     if let Err(error) = fs::create_dir(dir)
         && error.kind() != io::ErrorKind::AlreadyExists
     {
-        return Err(BindError::Failed(error));
+        return Err(InstanceError::Io(error));
     }
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(BindError::Failed)?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(InstanceError::Io)?;
     match bind_fresh(path) {
         Ok(listener) => return Ok(listener),
         // The path is taken; find out whether its owner is still alive.
         Err(error) if error.raw_os_error() == Some(libc::EADDRINUSE) => {}
-        Err(error) => return Err(BindError::Failed(error)),
+        Err(error) => return Err(InstanceError::Io(error)),
     }
     match net::UnixStream::connect(path) {
-        Ok(_live) => Err(BindError::Duplicate),
+        Ok(_live) => Err(InstanceError::Duplicate),
         Err(error)
             if matches!(
                 error.raw_os_error(),
@@ -168,11 +231,11 @@ pub fn bind_instance_socket(path: &Path) -> Result<net::UnixListener, BindError>
             if let Err(error) = fs::remove_file(path)
                 && error.kind() != io::ErrorKind::NotFound
             {
-                return Err(BindError::Failed(error));
+                return Err(InstanceError::Io(error));
             }
-            bind_fresh(path).map_err(BindError::Failed)
+            bind_fresh(path).map_err(InstanceError::Io)
         }
-        Err(error) => Err(BindError::Failed(error)),
+        Err(error) => Err(InstanceError::Io(error)),
     }
 }
 
@@ -376,7 +439,7 @@ impl Drop for SocketFile {
 
 /// [`socket_path`] from the process environment: `XDG_RUNTIME_DIR` is used as
 /// given, with no lossy conversion.
-pub fn socket_path_from_env(name: &InstanceName) -> Result<PathBuf, String> {
+pub fn socket_path_from_env(name: &InstanceName) -> Result<PathBuf, PathError> {
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
     let display = std::env::var_os("WAYLAND_DISPLAY");
     socket_path(runtime_dir.as_deref(), display.as_deref(), name)
@@ -387,7 +450,7 @@ pub fn socket_path_from_env(name: &InstanceName) -> Result<PathBuf, String> {
 pub enum ToggleError {
     /// The environment did not provide a usable socket path (exit 2, the
     /// same class as a bad name).
-    Environment(String),
+    Environment(PathError),
     /// No host answered `ok`: no host at all, a refusing host, a failing
     /// host, or no valid reply in time (exit 1).
     NotAnswered(String),

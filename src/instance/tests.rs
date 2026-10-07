@@ -25,26 +25,26 @@ fn temp_dir(tag: &str) -> PathBuf {
 const REQUEST_LINE: &[u8] = b"toggle\n";
 
 /// A valid name parses, and the boundaries of the character set, the
-/// length range and the error message hold.
+/// length range and the [`InvalidName`] message hold.
 #[test]
 fn the_instance_name_validates() {
-    let name = InstanceName::parse("PINWIN_NAME", "notes").expect("valid");
+    let name = InstanceName::parse("notes").expect("valid");
     assert_eq!(&*name, "notes");
     assert_eq!(name.to_string(), "notes");
 
     // The whole allowed character set, and the 64-character boundary.
-    InstanceName::parse("x", "A-z_09-").expect("the full allowed set");
-    InstanceName::parse("x", &"a".repeat(64)).expect("64 characters");
+    InstanceName::parse("A-z_09-").expect("the full allowed set");
+    InstanceName::parse(&"a".repeat(64)).expect("64 characters");
 
-    // Empty, too long, and characters outside the set.
+    // Empty, too long, and characters outside the set: the typed error,
+    // whose message carries the rejected name (the binary adds the
+    // `pinwin: <context>:` prefix).
     for raw in ["", &"a".repeat(65), "a/b", "a b", "a.b", "ä"] {
-        let error = InstanceName::parse("PINWIN_NAME", raw).expect_err(raw);
+        let error = InstanceName::parse(raw).expect_err(raw);
+        assert!(matches!(error, InvalidName(_)), "raw = {raw:?}");
         assert_eq!(
-            error,
-            format!(
-                "pinwin: PINWIN_NAME: expected a name of 1..=64 characters from \
-                 [A-Za-z0-9_-], got '{raw}'"
-            ),
+            error.to_string(),
+            format!("expected a name of 1..=64 characters from [A-Za-z0-9_-], got '{raw}'"),
             "raw = {raw:?}"
         );
     }
@@ -62,7 +62,7 @@ fn the_default_instance_name_is_default() {
 /// through as an `OsStr`, with no lossy conversion.
 #[test]
 fn socket_path_composes_the_runtime_path() {
-    let name = InstanceName::parse("x", "notes").expect("valid");
+    let name = InstanceName::parse("notes").expect("valid");
     let os = OsStr::new;
     assert_eq!(
         socket_path(Some(os("/run/user/1000")), Some(os("wayland-1")), &name),
@@ -74,7 +74,7 @@ fn socket_path_composes_the_runtime_path() {
     );
 
     // An empty display, a display with a separator, and a non-UTF-8
-    // display are all exit-2 errors: the path must stay inside
+    // display are all [`PathError`]s: the path must stay inside
     // `$XDG_RUNTIME_DIR/pinwin` and distinct displays must stay distinct.
     for raw in [
         os(""),
@@ -84,10 +84,11 @@ fn socket_path_composes_the_runtime_path() {
     ] {
         let error =
             socket_path(Some(os("/run/user/1000")), Some(raw), &name).expect_err("bad display");
+        assert!(matches!(error, PathError::BadDisplay(_)), "raw = {raw:?}");
         assert_eq!(
-            error,
+            error.to_string(),
             format!(
-                "pinwin: WAYLAND_DISPLAY: expected a UTF-8 display name without '/', \
+                "WAYLAND_DISPLAY: expected a UTF-8 display name without '/', \
                  got '{}'",
                 raw.to_string_lossy()
             ),
@@ -96,9 +97,16 @@ fn socket_path_composes_the_runtime_path() {
         );
     }
 
-    // A missing or empty runtime directory is an exit-2 error.
-    socket_path(None, Some(os("wayland-0")), &name).expect_err("no runtime directory");
-    socket_path(Some(os("")), Some(os("wayland-0")), &name).expect_err("empty runtime directory");
+    // A missing or empty runtime directory is the `NoRuntimeDir` variant.
+    for runtime_dir in [None, Some(os(""))] {
+        let error = socket_path(runtime_dir, Some(os("wayland-0")), &name)
+            .expect_err("no runtime directory");
+        assert!(matches!(error, PathError::NoRuntimeDir));
+        assert_eq!(
+            error.to_string(),
+            "XDG_RUNTIME_DIR: expected the runtime directory of the Wayland session"
+        );
+    }
 }
 
 /// A stale file on the socket path is removed and bound again, and the
@@ -159,7 +167,7 @@ fn a_live_listener_makes_the_bind_fail() {
 
     let first = bind_instance_socket(&path).expect("first bind");
     assert!(
-        matches!(bind_instance_socket(&path), Err(BindError::Duplicate)),
+        matches!(bind_instance_socket(&path), Err(InstanceError::Duplicate)),
         "the live listener is a duplicate"
     );
     drop(first);
@@ -180,7 +188,7 @@ fn a_racing_second_host_leaves_the_live_socket_in_place() {
     // The second host reports the duplicate without touching the file...
     assert!(matches!(
         bind_instance_socket(&path),
-        Err(BindError::Duplicate)
+        Err(InstanceError::Duplicate)
     ));
     // ...and the first owner's socket still answers.
     net::UnixStream::connect(&path).expect("the live socket survived");

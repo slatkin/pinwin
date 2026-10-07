@@ -39,7 +39,13 @@ pub(crate) fn parse_args(args: &[OsString]) -> Result<Mode, String> {
             return Ok(Mode::Toggle {
                 name: rest
                     .get(1)
-                    .map(|raw| InstanceName::parse("--toggle", &raw.to_string_lossy()))
+                    .map(|raw| {
+                        // The library reports the rejection without a context
+                        // label (`serve-instance-socket` D5); this adds the
+                        // option's.
+                        InstanceName::parse(&raw.to_string_lossy())
+                            .map_err(|error| format!("pinwin: --toggle: {error}"))
+                    })
                     .transpose()?,
             });
         } else if first.as_bytes() == b"--" {
@@ -129,7 +135,7 @@ mod tests {
         assert_eq!(
             parse_args(&os(&["--toggle", "notes"])),
             Ok(Mode::Toggle {
-                name: Some(InstanceName::parse("--toggle", "notes").expect("valid"))
+                name: Some(InstanceName::parse("notes").expect("valid"))
             })
         );
 

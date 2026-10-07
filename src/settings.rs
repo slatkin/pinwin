@@ -133,7 +133,9 @@ fn zone(raw: Option<&str>) -> Result<Zone, String> {
 fn instance_name(raw: Option<&str>) -> Result<InstanceName, String> {
     match raw {
         None => Ok(InstanceName::default_instance()),
-        Some(raw) => InstanceName::parse("PINWIN_NAME", raw),
+        Some(raw) => {
+            InstanceName::parse(raw).map_err(|error| format!("pinwin: PINWIN_NAME: {error}"))
+        }
     }
 }
 
@@ -385,13 +387,13 @@ mod tests {
         let map = HashMap::from([("PINWIN_NAME".to_owned(), "notes".to_owned())]);
         assert_eq!(
             call(&map).expect("valid").name,
-            InstanceName::parse("PINWIN_NAME", "notes").expect("valid")
+            InstanceName::parse("notes").expect("valid")
         );
         let long = "a".repeat(64);
         let map = HashMap::from([("PINWIN_NAME".to_owned(), long.clone())]);
         assert_eq!(
             call(&map).expect("64 characters").name,
-            InstanceName::parse("PINWIN_NAME", &long).expect("valid")
+            InstanceName::parse(&long).expect("valid")
         );
 
         // A bad name is an exit-2 error before any surface opens; an empty
