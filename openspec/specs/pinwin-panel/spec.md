@@ -550,7 +550,7 @@ the host thread indefinitely: a panel thread that does not answer within a bound
 - **WHEN** the panel's thread ended on its own and the host applies an animated layout
 - **THEN** the call returns `Err(PinwinError::NotRunning)` without blocking
 
-#### Scenario: Wedged GTK side
+#### Scenario: Wedged panel thread
 - **WHEN** the panel thread does not answer an apply within the bounded wait
 - **THEN** the call returns `Err(PinwinError::Internal)` and the host thread is not blocked
   further
