@@ -6,7 +6,7 @@
 //! The shape follows `src/pinwin_api.c`: start validates its arguments before
 //! any thread work, then hands the startup to the panel thread and waits for
 //! a handshake that completes when the panel is on screen with live metrics.
-//! Applies, toggles and the teardown post a command on the thread's calloop
+//! Applies, toggles, shows and the teardown post a command on the thread's calloop
 //! channel
 //! and wait up to five seconds for the reply (a wedged thread is `Internal`,
 //! never a hang). Drop posts a teardown, waits for its bounded reply and
@@ -31,12 +31,14 @@ pub use error::PinwinError;
 pub use startup::Startup;
 
 use std::os::fd::RawFd;
+use std::os::unix::net::UnixListener;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use crate::guard::{Poisoned, guard, guard_always};
+use crate::instance::{InstanceSocket, Request, SocketFile, serve_requests};
 use crate::layout::Layout;
 
 use handshake::{Handshake, wait_for_start};
@@ -65,7 +67,7 @@ static INSTANCE: Mutex<Instance> = Mutex::new(Instance { phase: Phase::Idle });
 /// latch — the same flag every glue closure of this panel guards against —
 /// and whether the panel thread is still live. The thread holds a clone of
 /// the `Arc` and clears `live` when the panel ends on its own, so an apply
-/// or a toggle on a dead panel reports `NotRunning` without posting
+/// or a toggle or a show on a dead panel reports `NotRunning` without posting
 /// anything.
 #[derive(Debug)]
 pub(crate) struct Inner {
@@ -76,17 +78,38 @@ pub(crate) struct Inner {
 /// A running panel, the host's handle. Dropping it closes the panel.
 ///
 /// Besides applies, the handle offers the show/hide toggle
-/// ([`Panel::toggle`]): it hides a shown panel and shows a hidden one
-/// (replace-gtk-with-wayland D4).
+/// ([`Panel::toggle`]) — it hides a shown panel and shows a hidden one
+/// (replace-gtk-with-wayland D4) — and a show ([`Panel::show`]): it shows a
+/// hidden panel and leaves a shown one unchanged (serve-instance-socket D6).
+/// A start with a bound instance socket serves `toggle` and `show`
+/// requests on it until the drop
+/// (serve-instance-socket D2).
 ///
 /// Not `Clone`: one handle per panel, so the single-instance rule is
 /// ownership, not bookkeeping.
 #[derive(Debug)]
 pub struct Panel {
     inner: Arc<Inner>,
-    /// The panel thread the start spawned; the applies, the toggle and the
-    /// drop's teardown post through it (D2).
+    /// The panel thread the start spawned; the applies, the toggle, the
+    /// show and the drop's teardown post through it (D2).
     thread: PanelThread,
+    /// The instance socket the panel serves, when the host opted in
+    /// (serve-instance-socket D2): the shutdown flag the drop sets and the
+    /// socket file the drop removes, both before the teardown; the
+    /// listener thread itself is detached and never joined.
+    serving: Option<InstanceServing>,
+}
+
+/// The instance socket a started panel serves (serve-instance-socket D2):
+/// the flag that ends the detached listener within one accept poll and
+/// the socket file whose drop frees the name at once. The handle's drop
+/// takes it apart — the flag first, then the file at the end of its
+/// scope — so the order lives in one place.
+#[derive(Debug)]
+struct InstanceServing {
+    shutdown: Arc<AtomicBool>,
+    /// The socket file; its drop removes the socket path.
+    file: SocketFile,
 }
 
 impl Panel {
@@ -110,16 +133,22 @@ impl Panel {
         // built inside and handed to the panel thread.
         let latch = Poisoned::new();
         guard(&latch, || Self::start_inner(startup))
-            .map_err(|_| PinwinError::Internal)
+            .map_err(|_spawn_error| PinwinError::Internal)
             .and_then(std::convert::identity)
     }
 
-    fn start_inner(startup: Startup) -> Result<Panel, PinwinError> {
+    fn start_inner(mut startup: Startup) -> Result<Panel, PinwinError> {
         // Pure argument checks, no thread work (pinwin_api.c's startup_valid
         // minus the classes the argument types make unrepresentable, D6/D7).
         if !fd_is_open(startup.fd()) {
             return Err(PinwinError::InvalidFd);
         }
+        // The bound instance socket never reaches the panel thread
+        // (serve-instance-socket D1): the host side takes it out and serves
+        // it through the detached listener once the handshake succeeded. A
+        // start that fails from here on drops the socket, whose drop
+        // removes the file, so a failed start releases the name.
+        let socket = startup.take_instance();
 
         let poisoned = Poisoned::new();
         let inner = Arc::new(Inner {
@@ -165,7 +194,42 @@ impl Panel {
                 Phase::Idle
             }
         };
-        outcome.map(|()| Panel { inner, thread })
+        // A failed start drops the unused socket here, whose drop removes
+        // the file (serve-instance-socket D1).
+        outcome?;
+        let mut panel = Panel {
+            inner,
+            thread,
+            serving: None,
+        };
+        // The bound instance socket is served now that the handshake
+        // succeeded (serve-instance-socket D2). A failed spawn drops the
+        // panel — its teardown removes the socket file — and reports
+        // `Internal`.
+        if let Some(socket) = socket {
+            panel
+                .serve_instance(socket)
+                .map_err(|_spawn_error| PinwinError::Internal)?;
+        }
+        Ok(panel)
+    }
+
+    /// Serve the bound instance socket (serve-instance-socket D2): take
+    /// the listener and the socket file apart, spawn the detached
+    /// `pinwin-instance` listener thread over clones of the shared state
+    /// and the command sender, and keep the file and the shutdown flag on
+    /// the handle. The thread never borrows the `Panel`, so the drop does
+    /// not join it.
+    ///
+    /// # Errors
+    /// Only the OS-level thread spawn fails here; the socket file drops
+    /// with the unused socket, removing the path.
+    fn serve_instance(&mut self, socket: InstanceSocket) -> std::io::Result<()> {
+        let (listener, file) = socket.into_parts();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        spawn_instance_listener(&self.thread, listener, Arc::clone(&shutdown))?;
+        self.serving = Some(InstanceServing { shutdown, file });
+        Ok(())
     }
 
     /// Apply a layout without animation: update the applied column count,
@@ -227,7 +291,25 @@ impl Panel {
     /// configure, after the reply. All keyboard modes toggle: the host chose
     /// the mode, and show and hide are not focus requests.
     pub fn toggle(&self) -> Result<(), PinwinError> {
-        toggle_via_inner(&self.inner, || self.thread.toggle())
+        show_or_toggle_via_inner(&self.inner, || self.thread.toggle())
+    }
+
+    /// Show the panel (serve-instance-socket row 3.1, D6): show a hidden
+    /// panel; a shown panel is left unchanged — the call returns `Ok`, no
+    /// surface is unmapped or remapped and the reservation does not change
+    /// (the spec's "Show a shown panel" scenario). A hidden panel maps like
+    /// the show half of a toggle, and the reply is that show's commit
+    /// without a buffer; the rest of a show follows the configure, after
+    /// the reply. The panel is shown at start.
+    ///
+    /// The same bounded contract as the toggle: the call posts to the panel
+    /// thread through the shared posted path and never blocks indefinitely.
+    ///
+    /// # Errors
+    /// `NotRunning` on a dead panel (without blocking), `Internal` on a
+    /// caught panic or a wedged or ended thread.
+    pub fn show(&self) -> Result<(), PinwinError> {
+        show_or_toggle_via_inner(&self.inner, || self.thread.show())
     }
 }
 
@@ -249,7 +331,7 @@ pub(crate) fn apply_via_inner(
     guard(&inner.poisoned, || {
         post_apply(inner, layout, duration_ms, post)
     })
-    .map_err(|_| PinwinError::Internal)
+    .map_err(|_spawn_error| PinwinError::Internal)
     .and_then(std::convert::identity)
 }
 
@@ -268,23 +350,25 @@ fn post_apply(
     post(layout, duration_ms)
 }
 
-/// A toggle through the display-free inner handle (D10): the same order as
-/// [`apply_via_inner`] — the poisoned check first (D5: a panic
-/// reports `Internal`, never `NotRunning`), then the ended check — then the
-/// toggle itself. No mode short-circuit: every keyboard mode toggles.
-pub(crate) fn toggle_via_inner(
+/// A posted show or toggle through the display-free inner handle (D10):
+/// the same order as [`apply_via_inner`] — the poisoned check first (D5: a
+/// panic reports `Internal`, never `NotRunning`), then the ended check —
+/// then the posted command itself. One helper for both, so the two cannot
+/// drift (serve-instance-socket D6). No mode short-circuit: every keyboard
+/// mode toggles, and a show on a shown panel is answered on the thread.
+pub(crate) fn show_or_toggle_via_inner(
     inner: &Inner,
     post: impl FnOnce() -> Result<(), PinwinError>,
 ) -> Result<(), PinwinError> {
-    match guard(&inner.poisoned, || post_toggle(inner, post)) {
+    match guard(&inner.poisoned, || post_show_or_toggle(inner, post)) {
         Ok(result) => result,
         Err(_) => Err(PinwinError::Internal),
     }
 }
 
-/// The unguarded body of [`toggle_via_inner`]: the ended check, then the
-/// toggle itself.
-fn post_toggle(
+/// The unguarded body of [`show_or_toggle_via_inner`]: the ended check, then
+/// the posted command itself.
+fn post_show_or_toggle(
     inner: &Inner,
     post: impl FnOnce() -> Result<(), PinwinError>,
 ) -> Result<(), PinwinError> {
@@ -298,6 +382,20 @@ fn post_toggle(
 
 impl Drop for Panel {
     fn drop(&mut self) {
+        // The instance socket first (serve-instance-socket D2): the flag
+        // ends the detached listener within one accept poll, and the
+        // socket file — dropped at the end of this block, after the flag
+        // — removes the path; the name is free as soon as the drop
+        // returns. The teardown below then clears `live`, so a request
+        // still in flight answers `error` and never touches the next
+        // panel. The drop never joins the thread.
+        if let Some(serving) = self.serving.take() {
+            let InstanceServing {
+                shutdown,
+                file: _file,
+            } = serving;
+            shutdown.store(true, Ordering::Relaxed);
+        }
         // D5: the teardown runs even on a latched flag and never unwinds; the
         // thread ends on its own after the teardown, and the drop never joins
         // it (D2).
@@ -305,6 +403,35 @@ impl Drop for Panel {
             teardown_inner(&self.inner, || self.thread.teardown());
         });
     }
+}
+
+/// Spawn the detached `pinwin-instance` listener thread
+/// (serve-instance-socket D2): it runs the existing accept loop over a
+/// clone of the panel thread's handle — the command sender and the shared
+/// state — and answers `toggle` and `show` requests through the same
+/// posted path the host's own calls use. It ends within one accept poll
+/// of the shutdown flag; the process never waits on a detached thread.
+fn spawn_instance_listener(
+    thread: &PanelThread,
+    listener: UnixListener,
+    shutdown: Arc<AtomicBool>,
+) -> std::io::Result<()> {
+    let serve_thread = thread.clone_for_listener();
+    std::thread::Builder::new()
+        .name("pinwin-instance".to_owned())
+        .spawn(move || {
+            // The loop body runs under `serve_requests`' own D5 latch, and
+            // the posted commands run under the panel's shared one.
+            serve_requests(
+                &listener,
+                &|request| match request {
+                    Request::Toggle => serve_thread.toggle(),
+                    Request::Show => serve_thread.show(),
+                },
+                &shutdown,
+            );
+        })?;
+    Ok(())
 }
 
 /// The teardown body: post the teardown and wait for its reply, then release

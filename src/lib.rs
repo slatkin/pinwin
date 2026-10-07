@@ -11,6 +11,7 @@ pub mod anim;
 pub mod fontconfig;
 pub mod ghostty_sys;
 pub mod guard;
+pub mod instance;
 pub mod layout;
 pub mod nerd_font;
 pub mod panel;

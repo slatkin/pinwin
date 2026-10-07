@@ -246,6 +246,9 @@ impl PanelState {
         startup: Startup,
         cell: CellSize,
     ) -> Self {
+        // The layout is read before the startup moves into the state
+        // (serve-instance-socket D1: `Startup` is no longer `Copy`).
+        let layout = startup.layout();
         PanelState {
             poisoned,
             handshake,
@@ -259,9 +262,9 @@ impl PanelState {
             stale_grid_px: Rc::new(Cell::new(0)),
             draw_offset: Rc::new(Cell::new(0.0)),
             seat_links: None,
-            sizing: Sizing::new(startup.layout().cols(), cell),
-            held: start_held_gap(startup.layout(), cell.width().get()),
-            applied: startup.layout(),
+            sizing: Sizing::new(layout.cols(), cell),
+            held: start_held_gap(layout, cell.width().get()),
+            applied: layout,
             tween: TweenDriver::default(),
             visibility: Visibility::Shown,
             tween_draw: None,

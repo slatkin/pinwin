@@ -83,12 +83,22 @@ impl PanelState {
         self.visibility = Visibility::Hidden;
     }
 
+    /// The posted show command (serve-instance-socket D6): show a hidden
+    /// panel; a shown panel is left unchanged — the command answers at
+    /// once with no commit.
+    pub(crate) fn show(&mut self) {
+        if self.visibility == Visibility::Hidden {
+            self.show_hidden();
+        }
+    }
+
     /// The show half (D4): map the panel and the reserve again with the
     /// applied layout's and the held gap's layer state, committed without a
     /// buffer. The configure that follows draws the current grid and maps
     /// the panel; a new height resizes the grid and the pty as any
-    /// configure does.
-    fn show(&mut self) {
+    /// configure does. The posted show reaches this only from hidden —
+    /// [`PanelState::show`] short-circuits a shown panel first (D6).
+    fn show_hidden(&mut self) {
         // The layer state the show sends: the applied layout's panel
         // geometry and the held gap's reserve one — what a hidden apply
         // stored, or what was live at the hide.
@@ -325,6 +335,25 @@ mod tests {
         assert_eq!(state.visibility, Visibility::Shown, "the second shows");
     }
 
+    /// The posted show branches on the visibility (serve-instance-socket
+    /// D6): a shown state is left shown — the show half never runs — and a
+    /// hidden one is shown again, like the toggle's show half.
+    #[test]
+    fn a_show_branches_on_the_visibility() {
+        let mut state = headless_state();
+        state.show();
+        assert_eq!(
+            state.visibility,
+            Visibility::Shown,
+            "the shown state stays shown"
+        );
+
+        state.toggle();
+        assert_eq!(state.visibility, Visibility::Hidden);
+        state.show();
+        assert_eq!(state.visibility, Visibility::Shown, "the hidden shows");
+    }
+
     /// A hide ends a running tween at its target: the stop relay drops the
     /// wide cache, cancels the driver and pushes the deferred grid — the
     /// target's columns — through the sizing path (D4, the relay of the
@@ -505,6 +534,55 @@ mod tests {
                 .draw(&mut term.borrow_mut(), &test_frame),
             FrameOutcome::Damage(Damage::whole_surface(w, h)),
             "the shown panel's configure draw presents"
+        );
+    }
+
+    /// A show on a shown state commits nothing (serve-instance-socket D6,
+    /// the spec's "Show a shown panel" scenario): the show half never runs,
+    /// so the frame gate is not invalidated and the next idle draw stays
+    /// clean — no forced repaint, no commit. The hidden path's
+    /// invalidation is pinned by
+    /// [`a_show_invalidates_the_gate_so_an_idle_panel_maps`].
+    #[test]
+    fn a_show_on_a_shown_state_leaves_the_gate_clean() {
+        let Some(setup) = setup() else {
+            return;
+        };
+        let cell = cell_of(&setup);
+        let mut state = headless_state();
+        let term = terminal(cell);
+        term.borrow_mut().push_pty_data(b"\x1b[?25lhi");
+        let test_frame = frame(cell);
+        state.render = Some(TweenRender {
+            terminal: Rc::clone(&term),
+            renderer: Rc::new(RefCell::new(renderer(setup))),
+        });
+
+        // Two identical draws: the second plans nothing, the gate's clean
+        // verdict.
+        {
+            let panel = state.render.as_ref().expect("the render state");
+            let mut renderer = panel.renderer.borrow_mut();
+            let _first = renderer.draw(&mut term.borrow_mut(), &test_frame);
+            assert_eq!(
+                renderer.draw(&mut term.borrow_mut(), &test_frame),
+                FrameOutcome::Clean,
+                "the idle panel's gate is clean"
+            );
+        };
+
+        // A show on the shown panel changes nothing: the gate stays clean,
+        // so the next draw plans nothing and no commit follows.
+        state.show();
+        assert_eq!(state.visibility, Visibility::Shown);
+        let panel = state.render.as_ref().expect("the render state");
+        assert_eq!(
+            panel
+                .renderer
+                .borrow_mut()
+                .draw(&mut term.borrow_mut(), &test_frame),
+            FrameOutcome::Clean,
+            "the show on a shown panel invalidated nothing"
         );
     }
 }

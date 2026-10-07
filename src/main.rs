@@ -9,32 +9,32 @@
 //! pinwin htop
 //! pinwin --toggle [name]   # asks the named running panel to show or hide
 //!                          # itself, for a niri key binding
+//! pinwin --show [name]     # shows the named running panel if it is hidden
 //! ```
 //!
 //! A thin host over the library API ([`pinwin::panel`]), the port of
 //! `host/main.c` (port-to-rust D8): it owns the pty, the child's environment
 //! and the process lifetime; the library owns the panel. The pure parts live
 //! in testable modules — argument parsing ([`cli`]), environment parsing
-//! ([`settings`]) and the toggle-socket identity ([`ipc`]); the process parts
-//! (`forkpty`, signals, waiting) stay in [`run`] and [`host_panel`].
+//! ([`settings`]) and the toggle-socket identity ([`pinwin::instance`]); the
+//! process parts (`forkpty`, signals, waiting) stay in [`run`] and
+//! [`host_panel`].
 
 use std::env;
 use std::ffi::{CString, OsString};
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use pinwin::layout::{Layout, Side};
 use pinwin::panel::{Panel, PinwinError, Startup};
 
 mod cli;
-mod ipc;
 mod settings;
 
 use cli::{Mode, default_command, parse_args};
-use ipc::{BindError, InstanceName, ToggleError};
+use pinwin::instance::{InstanceName, InstanceSocket, Request, SendError, send};
 use settings::{Settings, Zone, read_settings};
 
 /// The child's process id, read by the signal handler; zero means "no child
@@ -157,28 +157,31 @@ fn child_exec(child: &ChildCommand) -> ! {
     unsafe { libc::_exit(127) }
 }
 
-/// The `--toggle` client side (replace-gtk-with-wayland D4): ask the host
-/// that owns the name's socket to toggle its panel and report the reply.
-/// The client reads no environment besides the display — the request itself
+/// The exit status for a client outcome: `ok` exits 0, an environment
+/// error — no usable socket path — exits 2 like the other environment
+/// errors, and every other failure exits 1.
+fn send_exit(result: &Result<(), SendError>) -> i32 {
+    match result {
+        Ok(()) => 0,
+        Err(SendError::Environment(_)) => 2,
+        Err(_) => 1,
+    }
+}
+
+/// The `--toggle`/`--show` client side (replace-gtk-with-wayland D4;
+/// `--show` is new with `serve-instance-socket`): ask the host that owns the
+/// name's socket to toggle or show its panel and report the reply. The
+/// client reads no environment besides the display — the request itself
 /// carries nothing. `ok` exits 0, a missing or failing host exits 1, and an
 /// environment error — an unusable socket path — exits 2 like the other
 /// environment errors.
-fn run_toggle_client(name: Option<InstanceName>) -> i32 {
+fn run_client(name: Option<InstanceName>, request: Request) -> i32 {
     let name = name.unwrap_or_else(InstanceName::default_instance);
-    let result = ipc::socket_path_from_env(&name)
-        .map_err(ToggleError::Environment)
-        .and_then(|path| ipc::toggle_client(&path));
-    match result {
-        Ok(()) => 0,
-        Err(ToggleError::Environment(message)) => {
-            eprintln!("{message}");
-            2
-        }
-        Err(ToggleError::NotAnswered(message)) => {
-            eprintln!("{message}");
-            1
-        }
+    let result = send(&name, request);
+    if let Err(error) = &result {
+        eprintln!("pinwin: {error}");
     }
+    send_exit(&result)
 }
 
 /// The whole program; returns the exit status.
@@ -200,11 +203,11 @@ fn run() -> i32 {
             return 2;
         }
     };
-    // The toggle client asks the host that owns the name's socket to
-    // toggle its panel and reports the reply (replace-gtk-with-wayland
-    // D4); it reads no environment besides the display.
+    // The client asks the host that owns the name's socket to toggle or
+    // show its panel and reports the reply (replace-gtk-with-wayland D4);
+    // it reads no environment besides the display.
     let command = match mode {
-        Mode::Toggle { name } => return run_toggle_client(name),
+        Mode::Client { request, name } => return run_client(name, request),
         Mode::Host { command } => command,
     };
     let command = if command.is_empty() {
@@ -216,17 +219,17 @@ fn run() -> i32 {
 }
 
 /// Host the panel over the command's pty (the `Mode::Host` path): bind the
-/// instance's focus socket, fork the command onto a new pty, start the panel
-/// on the master and serve focus requests until the child exits. Returns the
-/// host's exit status.
+/// instance socket, fork the command onto a new pty, and start the panel on
+/// the master with the bound socket — the panel's own listener thread serves
+/// the requests until the handle drops. Returns the host's exit status.
 fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
-    // The focus socket must be ours before any surface opens: a live host
+    // The instance socket must be ours before any surface opens: a live host
     // with the same name on this display makes this start exit 2 instead
     // (keyboard-focus-request design).
-    let (listener, socket_file) = match bind_focus_socket(&settings.name) {
-        Ok(listener) => listener,
-        Err(message) => {
-            eprintln!("{message}");
+    let socket = match InstanceSocket::bind(&settings.name) {
+        Ok(socket) => socket,
+        Err(error) => {
+            eprintln!("pinwin: {error}");
             return 2;
         }
     };
@@ -292,14 +295,19 @@ fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
         libc::signal(libc::SIGTERM, on_term as *const () as libc::sighandler_t);
     };
 
-    // Start the panel on the pty master. On failure the child is hung up and
-    // reaped and the host exits 1.
-    let panel = match Panel::start(Startup::new(
-        master.as_raw_fd(),
-        layout,
-        settings.keyboard,
-        settings.accent,
-    )) {
+    // Start the panel on the pty master, with the bound socket: the panel's
+    // listener thread takes the requests over from here. On failure the child
+    // is hung up and reaped and the host exits 1; dropping the failed start's
+    // startup removes the socket file, so the name is free again.
+    let panel = match Panel::start(
+        Startup::new(
+            master.as_raw_fd(),
+            layout,
+            settings.keyboard,
+            settings.accent,
+        )
+        .with_instance(socket),
+    ) {
         Ok(panel) => panel,
         Err(error) => {
             let reason = match error {
@@ -311,55 +319,13 @@ fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
             return 1;
         }
     };
-    let status = serve_toggle_until_exit(&panel, &listener, socket_file, pid);
-    // Dropping the handle closes the panel (the C's `pinwin_stop`).
+    // The panel serves the socket until the handle drops; the host only
+    // waits for its child.
+    let status = wait_for_child(pid);
+    // Dropping the handle closes the panel and removes the socket file (the
+    // C's `pinwin_stop`).
     drop(panel);
     child_exit_status(status)
-}
-
-/// Serve toggle requests on the bound socket while the child runs
-/// (replace-gtk-with-wayland D4): a scoped thread borrows the panel — the
-/// request is bounded like `Panel::apply_layout` — and ends within one
-/// accept poll of the shutdown flag set once the child exits. The socket
-/// file goes with it: the host removes the file it created. Returns the
-/// child's raw wait status.
-fn serve_toggle_until_exit(
-    panel: &Panel,
-    listener: &net::UnixListener,
-    socket_file: ipc::SocketFile,
-    pid: i32,
-) -> i32 {
-    let shutdown = AtomicBool::new(false);
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            ipc::serve_toggle_requests(listener, &|| panel.toggle(), &shutdown);
-        });
-        let status = wait_for_child(pid);
-        shutdown.store(true, Ordering::Relaxed);
-        drop(socket_file);
-        status
-    })
-}
-
-/// Bind the focus socket for this instance, before any surface opens: a live
-/// host with the same name on this display makes the start exit 2 instead
-/// (keyboard-focus-request design). Returns the listener together with the
-/// socket file's path, which the host removes after its child exits. Errors
-/// carry the full `pinwin:` message.
-fn bind_focus_socket(name: &InstanceName) -> Result<(net::UnixListener, ipc::SocketFile), String> {
-    let socket_path = ipc::socket_path_from_env(name)?;
-    match ipc::bind_instance_socket(&socket_path) {
-        Ok(listener) => Ok((listener, ipc::SocketFile::new(socket_path))),
-        Err(error) => Err(match error {
-            BindError::Duplicate => {
-                format!(
-                    "pinwin: another pinwin already owns {}",
-                    socket_path.display()
-                )
-            }
-            BindError::Failed(error) => format!("pinwin: {}: {error}", socket_path.display()),
-        }),
-    }
 }
 
 fn main() {
@@ -369,7 +335,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pinwin::instance::PathError;
     use std::ffi::OsStr;
+    use std::path::PathBuf;
 
     /// The exit-status mapping: the child's status when it exited, 1 when it
     /// did not (killed by a signal). The raw statuses are built the way the
@@ -385,17 +353,50 @@ mod tests {
         assert_eq!(child_exit_status(9), 1);
     }
 
-    /// The `--toggle` client maps the outcomes: a name with no listener is
-    /// a not-answered request, exit 1. The invalid-name and socket-path
-    /// environment classes are covered by the `InstanceName::parse` and
-    /// `socket_path` contracts in `ipc.rs`; here the no-host path holds.
-    /// The name has no listener, and the test never touches the process
-    /// environment (the display variables it resolves are inherited, which
-    /// only changes the message, not the status).
+    /// The `--toggle`/`--show` client maps the outcomes: `ok` exits 0, an
+    /// environment error — no usable socket path — exits 2, and every
+    /// other send failure exits 1. The invalid-name class is covered by
+    /// `InstanceName::parse`'s contract in `instance.rs` and, end to end,
+    /// by `tests/command_line_ipc.rs`; here the exit-code mapping holds
+    /// without touching the process environment.
     #[test]
-    fn the_toggle_client_without_a_listener_exits_1() {
-        let name = Some(InstanceName::parse("--toggle", "no-such-instance").expect("valid"));
-        assert_eq!(run_toggle_client(name), 1);
+    fn the_client_maps_the_send_errors_to_exit_statuses() {
+        assert_eq!(send_exit(&Ok(())), 0);
+        assert_eq!(
+            send_exit(&Err(SendError::Environment(PathError::NoRuntimeDir))),
+            2
+        );
+        assert_eq!(
+            send_exit(&Err(SendError::NotListening {
+                path: PathBuf::new(),
+                error: io::Error::from_raw_os_error(libc::ENOENT),
+            })),
+            1
+        );
+        assert_eq!(
+            send_exit(&Err(SendError::Refused {
+                request: Request::Show
+            })),
+            1
+        );
+        assert_eq!(
+            send_exit(&Err(SendError::NoAnswer {
+                path: PathBuf::new(),
+                error: None,
+            })),
+            1
+        );
+    }
+
+    /// A name with no listener is a not-answered request, exit 1, for both
+    /// client requests, against a socket path that resolves (the display
+    /// variables are inherited, which only changes the message, not the
+    /// status). The tests never touch the process environment.
+    #[test]
+    fn the_client_without_a_listener_exits_1() {
+        let name = Some(InstanceName::parse("no-such-instance").expect("valid"));
+        assert_eq!(run_client(name.clone(), Request::Toggle), 1);
+        assert_eq!(run_client(name, Request::Show), 1);
     }
 
     /// The exec arguments are the C strings of the command, with the pointer
