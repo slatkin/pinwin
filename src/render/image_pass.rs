@@ -1,19 +1,19 @@
 //! The kitty image pass of the grid painter (row 4.7, `replace-gtk-with-
 //! wayland` D5): the open frame's kitty placements decoded, scaled and
 //! blitted into the canvas, in [`crate::render::painter::paint_frame`]'s
-//! layer order after the cursor and before the focus accent — exactly
-//! where `DrawState::render_grid` calls `ImageCache::draw` on the GTK
-//! path, so images draw above the cursor there too.
+//! layer order after the cursor and before the focus accent — where the
+//! GTK path drew the images, so images draw above the cursor there too.
 //!
-//! The placements arrive through [`Terminal::image_next`] in the
+//! The placements arrive through [`crate::term::Terminal::image_next`] in the
 //! iterator's order, and `z` is ignored exactly as the old path ignores
-//! it: `ImageCache::draw` draws whatever order the iterator hands over,
+//! it: `ImageCache::draw` drew whatever order the iterator handed over,
 //! and so does this pass (a comment, not an oversight — ghostty emits
 //! placements in its own order and the GTK panel has always honoured it).
 //!
 //! Each placement's destination rectangle is the terminal's logical
 //! rectangle snapped to the device grid through
-//! [`PainterMetrics::logical_rect`]: the right and bottom edges snap on
+//! [`crate::render::geom::PainterMetrics::logical_rect`]: the right and
+//! bottom edges snap on
 //! their own (`snap(x + w)`, never `snap(x) + snap(w)`), so at a
 //! fractional scale the device rectangle covers every device pixel the
 //! true fractional span touches — at scale 1.5 an 8-logical-pixel-wide
@@ -32,7 +32,8 @@
 //! changes the key every frame and costs one resample per frame; the
 //! budget clears bound the damage. The unscaled pixmap is built on a miss
 //! only, from the ghostty pixels read synchronously through
-//! [`image_pixmap`] (the one-time red/blue swap and premultiplication),
+//! [`crate::render::canvas::image_pixmap`] (the one-time red/blue swap and
+//! premultiplication),
 //! scaled, and dropped; the cache never holds it. Entries no placement
 //! touched this frame are evicted, like the old `ImageCache::evict`, and
 //! an image id that returns with a new generation drops its stale

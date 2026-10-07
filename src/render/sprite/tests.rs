@@ -36,7 +36,7 @@ const THEME: ThemeColours = ThemeColours {
 };
 
 /// Hides the frame's cursor (DECTCEM). The fresh terminal reports a
-/// visible block cursor — the GTK path draws it too — so the tests below
+/// visible block cursor — the GTK path drew it too — so the tests below
 /// that scan what the cell layers drew hide it first; the cursor layer
 /// has its own tests.
 const HIDE_CURSOR: &[u8] = b"\x1b[?25l";

@@ -5,11 +5,11 @@
 //! and a per-row dirty flag (`GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY`,
 //! conservative: a row may be flagged without its content changing). The
 //! gate turns those, plus everything the render state's flags do NOT
-//! cover, into one [`FramePlan`]:
+//! cover, into one `FramePlan`:
 //!
-//! * [`FramePlan::Skip`] — the frame is unchanged: draw nothing, touch no
+//! * `FramePlan::Skip` — the frame is unchanged: draw nothing, touch no
 //!   pixel, commit nothing.
-//! * [`FramePlan::Rows`] — a partial repaint: the changed rows and their
+//! * `FramePlan::Rows` — a partial repaint: the changed rows and their
 //!   glyph-spill neighbours.
 //! * everything — a full repaint, whenever the render state says `FULL` or
 //!   any input it does not cover changed.
@@ -45,11 +45,14 @@
 //! twice the cell pitch tall, which the cell metrics and the nerd-font
 //! constraint do not produce; one row of headroom covers the rest.
 //!
-//! The caller owns the [`FrameGate`] across frames, beside the text pass
-//! and the image pass, and hands it to [`paint_frame_gated`]. When an
+//! The caller owns the [`crate::render::frame_gate::FrameGate`] across
+//! frames, beside the text pass
+//! and the image pass, and hands it to
+//! [`crate::render::frame_gate::paint_frame_gated`]. When an
 //! event outside the gate's view invalidates the canvas — a fresh
 //! `wl_shm` buffer from the pool, a lost frame — the caller forces the
-//! next frame to everything with [`FrameGate::invalidate`].
+//! next frame to everything with
+//! [`crate::render::frame_gate::FrameGate::invalidate`].
 //!
 //! GTK-free (`replace-gtk-with-wayland` D10): the tests run without a
 //! display.
@@ -253,8 +256,8 @@ impl FrameGate {
     }
 
     /// Decide what this frame must redraw. Called with the frame open; the
-    /// dirty data is the capture `frame_begin` made (see
-    /// [`crate::term::cells::dirty`]).
+    /// dirty data is the capture `frame_begin` made (see the `dirty`
+    /// submodule of `term::cells`).
     fn plan(&mut self, input: &GateInput) -> FramePlan {
         let grid_rows = i32::from(input.fingerprint.rows);
         let Some(last) = &self.last else {
@@ -328,8 +331,8 @@ fn cursor_changed(a: Option<&Cursor>, b: Option<&Cursor>) -> bool {
 }
 
 /// Draw one frame of `terminal` into the caller-owned `canvas` under the
-/// frame gate: a [`FramePlan::Skip`] frame draws and commits nothing, a
-/// [`FramePlan::Rows`] frame repaints only the changed rows and their
+/// frame gate: a `FramePlan::Skip` frame draws and commits nothing, a
+/// `FramePlan::Rows` frame repaints only the changed rows and their
 /// spill neighbours, everything is [`super::painter::paint_frame`]'s full
 /// draw. Returns the [`FrameOutcome`] the caller presents by.
 ///

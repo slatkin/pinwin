@@ -6,8 +6,8 @@
 //! environment when none is given), answers a socket that is missing or does
 //! not speak Wayland with `NoDisplay` through the start handshake, and then
 //! runs the calloop loop: apply, focus and teardown commands arrive on a
-//! calloop channel, each answered through the bounded replies of
-//! [`super::handshake`]. A teardown ends the loop and the thread ends on its
+//! calloop channel, each answered through the bounded replies of the start
+//! handshake in `super::handshake`. A teardown ends the loop and the thread ends on its
 //! own, like the drop contract promises; a closed compositor connection
 //! marks the panel dead (D2), so later calls report `NotRunning`.
 //!
@@ -17,15 +17,18 @@
 //!
 //! The bound session — the sctk handlers, the two layer surfaces of row 3.1
 //! and the grid sizing of row 3.3 — lives in the submodules beside this
-//! lifecycle plumbing: [`state`] holds the dispatch state, [`surfaces`] the
-//! surface geometry, [`sizing`] the pure size decisions, [`apply`] the layout
+//! lifecycle plumbing: the `state` submodule holds the dispatch state,
+//! the `surfaces` submodule the
+//! surface geometry, [`sizing`] the pure size decisions, the `apply`
+//! submodule the layout
 //! apply (row 3.5), [`commands`] the command-channel handling,
-//! [`watchdog`] the startup watchdog, [`tween`] the width tween's driver
+//! the `watchdog` submodule the startup watchdog, [`tween`] the width tween's driver
 //! (row 6.1), [`crop`] the tween's crop plan and wide buffer (row 6.2),
-//! [`tween_draw`] the tween's holder and frame glue (row 6.2) and
+//! the `tween_draw` submodule the tween's holder and frame glue (row 6.2) and
 //! [`renderer`] the thread's font setup and renderer — the one owner of
 //! the draw passes, metrics, theme and focus state that wires the frames
-//! and the tween's wide draw. [`frame_log`] is the tween's frame log and
+//! and the tween's wide draw. The private `frame_log` submodule is the
+//! tween's frame log and
 //! its presentation-time source (row 6.3), and [`present`] the frames'
 //! present step (dispatch D4c) — the pure planner, the frame input and the
 //! executor the configure path and the loop's repaint hook run.

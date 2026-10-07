@@ -21,7 +21,8 @@
 //! it only reads fontconfig's own data.
 //!
 //! The fallback lookup must not run per frame: row 4.5 (the glyph unit)
-//! resolves a cell's code points through [`FontBook::fallback_face`], which
+//! resolves a cell's code points through
+//! [`crate::render::font::FontBook::fallback_face`], which
 //! caches the answer — found or not found — per code point, so a repeated
 //! code point costs a map hit and a new one at most one fontconfig sort
 //! (milliseconds) plus one file read.

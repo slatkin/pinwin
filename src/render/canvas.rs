@@ -1,16 +1,20 @@
 //! The canvas the grid painter draws a frame into (replace-gtk-with-wayland
-//! D5, D11): a tiny-skia [`Pixmap`] at device size whose bytes read in the
+//! D5, D11): a tiny-skia [`tiny_skia::Pixmap`] at device size whose bytes
+//! read in the
 //! `ARGB8888` memory order blue, green, red, alpha, ready to copy straight
 //! into a `wl_shm` buffer.
 //!
 //! The channel swap that makes the byte orders meet happens exactly once,
-//! at colour-cache time: a theme colour enters as a [`CanvasColor`], a
-//! decoded image or a colour glyph through [`image_pixmap`], and both
+//! at colour-cache time: a theme colour enters as a
+//! [`crate::render::canvas::CanvasColor`], a
+//! decoded image or a colour glyph through
+//! [`crate::render::canvas::image_pixmap`], and both
 //! already carry their red and blue exchanged — no per-frame conversion
 //! pass ever runs (D5).
 //!
 //! Premultiplied alpha is what both tiny-skia's pixmap and `ARGB8888` use.
-//! [`CanvasColor`] stores the colour still non-premultiplied, and
+//! [`crate::render::canvas::CanvasColor`] stores the colour still
+//! non-premultiplied, and
 //! tiny-skia's raster pipeline premultiplies at fill time; premultiplication
 //! scales each channel by the alpha, so it commutes with the one-time
 //! red/blue swap — the pixmap bytes are the premultiplied colour in the
@@ -22,7 +26,7 @@
 //! powerline triangles, a closed-outline stroke with miter joins for the
 //! one-line sprite (the hollow powerline separators), an image blit and a
 //! coverage-mask blit for the glyphs, and a pixel read for the tests. The
-//! cached kitty images scale through [`scale::resample`], the one
+//! cached kitty images scale through `scale::resample`, the one
 //! resampling primitive row 4.7 adds (area averaging in premultiplied
 //! space, edges unclipped). The module was frozen for those rows; the row
 //! 4.3 review replaced the

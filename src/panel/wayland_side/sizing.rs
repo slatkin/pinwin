@@ -10,8 +10,8 @@
 //! instead (`port-to-rust` D10 — no display, no real pty).
 //!
 //! The cell metrics are a startup input (replace-gtk-with-wayland D3): the
-//! start command carries them — row 4.6's font module will compute them
-//! before the panel thread binds its surfaces — so [`Sizing::new`] requires
+//! start command carries them — measured before the panel thread binds its
+//! surfaces — so [`Sizing::new`] requires
 //! them and a metrics-less state is unrepresentable. A sizing that silently
 //! derived nothing would never size the pty, which is the bug this guards
 //! against.

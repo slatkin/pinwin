@@ -1,7 +1,7 @@
 //! Input-encoding half of pinwin's terminal core (port-to-rust D3): key,
-//! mouse, scroll and focus events arrive from the GTK controllers (row 3.7)
-//! and are encoded into the pty with libghostty-vt's encoders, exactly as
-//! `src/input.zig` did.
+//! mouse, scroll and focus events arrive from the panel thread's seat
+//! handlers (`panel::wayland_side::seat`) and are encoded into the pty with
+//! libghostty-vt's encoders, exactly as `src/input.zig` did.
 //!
 //! The encoders read the modes the child set at runtime (kitty keyboard
 //! flags, mouse tracking, SGR format) with a `setopt_from_terminal` before
@@ -9,9 +9,11 @@
 //! notch accumulator and the last focus/button state, which live on the
 //! [`Terminal`] so this module keeps no process globals.
 //!
-//! No GTK/GDK types appear here: the two GDK-derived values the key encoder
+//! No windowing-toolkit types appear here: the two toolkit-derived values
+//! the key encoder
 //! needs (the level-0 "unshifted" codepoint for a keycode and the codepoint a
-//! keyval produces) arrive in [`KeyInput`] from the GTK layer, which owns
+//! keyval produces) arrive in [`KeyInput`] from the seat's translation, which
+//! owns
 //! those calls.
 
 use std::os::raw::c_char;
@@ -152,7 +154,7 @@ impl std::ops::BitOr for Modifiers {
     }
 }
 
-/// One key event as the GTK layer observed it. `unshifted_codepoint` and
+/// One key event as the seat layer observed it. `unshifted_codepoint` and
 /// `keyval_unicode` are the two GDK lookups the encoder needs; both are 0 when
 /// the layout has no answer.
 #[derive(Clone, Copy, Debug)]
@@ -174,7 +176,8 @@ pub struct KeyInput {
 pub struct InputState {
     /// Whether a non-modifier button is currently held (mouse encoder input).
     any_button_pressed: bool,
-    /// The focus state last reported to the program. GTK sends a leave at map
+    /// The focus state last reported to the program. The compositor sends a
+    /// leave at map
     /// time, before any enter; programs expect balanced reports, so only
     /// actual changes are reported.
     focus_gained: bool,

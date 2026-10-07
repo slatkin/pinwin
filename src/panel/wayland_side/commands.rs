@@ -1,7 +1,7 @@
 //! The panel thread's command-channel handling (replace-gtk-with-wayland D2):
 //! the apply, focus and teardown commands the host posts and the closed
 //! command channel, split from the surface-event handlers in
-//! [`super::state`] so both stay small. The teardown and the closed channel
+//! `super::state` so both stay small. The teardown and the closed channel
 //! are stop relays (D5): they end the loop and drop the surfaces even on a
 //! latched flag, or a dead panel would strand the host's drop for the whole
 //! reply bound and leak the thread and its Wayland connection.

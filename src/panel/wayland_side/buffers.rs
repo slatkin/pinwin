@@ -9,7 +9,7 @@
 //! resolution order, the 1/120 conversion and the device-size rounding are
 //! free functions here, tested without a display (`port-to-rust` D10). The
 //! resolved scale reaches the renderer as the existing
-//! [`crate::render::OutputScale`], not as a second scale type.
+//! `crate::render::OutputScale`, not as a second scale type.
 //!
 //! `wp_fractional_scale_manager_v1` and `wp_viewporter` are optional
 //! globals (D1): their absence degrades the scale to the integer fallback
@@ -149,7 +149,7 @@ struct SurfaceScale {
 /// The output-scale state of one bound session: the optional fractional and
 /// viewporter globals, their per-surface objects, and the two preferred-scale
 /// sources the resolution order reads. Constructed only through
-/// [`Scale::bind`] on the panel thread; the fields are private.
+/// `Scale::bind` on the panel thread; the fields are private.
 #[derive(Debug)]
 pub struct Scale {
     fractional_manager: Option<WpFractionalScaleManagerV1>,
@@ -211,7 +211,7 @@ impl Scale {
     /// Set the viewport source of one surface's viewport, in buffer (device)
     /// pixels (row 6.2): the compositor maps this rectangle onto the
     /// destination, and whole device pixels encode exactly as `wl_fixed`
-    /// ([`CropRect::wl_fixed`] pins it). Without a viewport, a no-op.
+    /// ([`super::crop::CropRect::wl_fixed`] pins it). Without a viewport, a no-op.
     pub(crate) fn set_source(&mut self, id: SurfaceId, x: i32, y: i32, w: i32, h: i32) {
         if let Some(viewport) = &self.surface_mut(id).viewport {
             viewport.set_source(f64::from(x), f64::from(y), f64::from(w), f64::from(h));

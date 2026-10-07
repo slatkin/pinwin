@@ -1,10 +1,11 @@
 //! The seat side of the wayland panel thread (replace-gtk-with-wayland D8,
 //! rows 5.1 to 5.5): the keyboard half — the key events the toolkit's
-//! `KeyboardHandler` delivers are translated into the same [`KeyInput`] the
-//! GDK path's `src/input.rs` builds and pushed into the terminal's key
-//! encoder — plus the pointer half (row 5.3) and the keyboard focus half
-//! (row 5.4) behind the same links, and the cursor-shape hook (row 5.5).
-//! Row 8.1 wires the dispatch state to the hooks here.
+//! `KeyboardHandler` delivers are translated into the same
+//! [`crate::term::input::KeyInput`] the terminal's key encoder takes and
+//! pushed into the terminal — plus the pointer half (row 5.3) and the
+//! keyboard focus half (row 5.4) behind the same links, and the
+//! cursor-shape hook (row 5.5). Row 8.1 wires the dispatch state to the
+//! hooks here.
 //!
 //! The hooks take the pieces the row 8.1 dispatch hands them (the toolkit's
 //! `KeyEvent`, `RawModifiers`, keymap string) and hold no Wayland objects of
@@ -153,8 +154,8 @@ impl SeatSide {
         });
     }
 
-    /// A key press (row 5.1): the translated [`KeyInput`] reaches the
-    /// terminal's key encoder.
+    /// A key press (row 5.1): the translated
+    /// [`crate::term::input::KeyInput`] reaches the terminal's key encoder.
     pub fn key_pressed(&mut self, event: &KeyEvent) {
         let poisoned = self.links.poisoned.clone();
         let _ = guard(&poisoned, || {

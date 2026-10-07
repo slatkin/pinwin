@@ -1,35 +1,36 @@
 //! The grid painter (row 4.3, `replace-gtk-with-wayland` D5): one frame of
-//! the terminal drawn into a [`Canvas`] at device size — the CPU painter
-//! the panel thread will present through its `wl_shm` buffers once row 8.1
-//! switches `Panel` over. The GTK painters (`DrawState::draw`, the GSK
-//! emitter) stay the production path until then; this module gives the same
-//! pixels for the same cells.
+//! the terminal drawn into a [`crate::render::canvas::Canvas`] at device
+//! size — the CPU painter the panel thread presents through its `wl_shm`
+//! buffers, the same pixels for the same cells the GTK painters drew
+//! before the port switched `Panel` over.
 //!
 //! A frame draws in layers, each one pass over the open frame's cells in
 //! its own file, called in order:
 //!
-//! 1. [`bg`] — the cell backgrounds, merged into runs of equal colour.
-//! 2. [`sprite`] — the block and braille sprites.
+//! 1. `bg` — the cell backgrounds, merged into runs of equal colour.
+//! 2. `sprite` — the block and braille sprites.
 //! 3. [`text_pass`] — the cells' text, on the device pixel lattice. The
-//!    sprite and text passes own disjoint cells ([`sprite::cell_sprite`]
-//!    returns `None` for the cells the text pass owns), and GTK draws each
+//!    sprite and text passes own disjoint cells (`sprite::cell_sprite`
+//!    returns `None` for the cells the text pass owns), and GTK drew each
 //!    cell's bands after its glyph, so the text pass runs before the bands.
 //!    The walk also collects the cursor cell's text for the cursor layer.
-//! 4. [`bands`] — the underline and strikethrough decorations.
+//! 4. `bands` — the underline and strikethrough decorations.
 //! 5. [`cursor`] — the cursor shape, in the terminal's default foreground,
 //!    with the block cursor's glyph redraw through the text pass.
 //! 6. [`image_pass`] — the kitty image placements, decoded, scaled and
-//!    cached by the caller-owned [`ImagePass`] (row 4.7), in
-//!    [`crate::render::DrawState::render_grid`]'s order: after the cursor
-//!    and before the accent, so images draw above the cursor there too.
+//!    cached by the caller-owned
+//!    [`crate::render::image_pass::ImagePass`] (row 4.7), drawn after the
+//!    cursor and before the accent, so images draw above the cursor there
+//!    too, as the GTK path's grid walk ordered them.
 //!
-//! The focus accent ([`accent`]) draws last, on top, in raw surface
+//! The focus accent (`accent`) draws last, on top, in raw surface
 //! coordinates — the one layer the tween's draw offset does not translate,
-//! as `DrawState::draw` draws it after the translated grid.
+//! as the GTK path drew it after the translated grid.
 //!
 //! The layers are stateless passes over one frame, so they are free
 //! functions; the stateful caches they draw through (the glyph and sprite
-//! caches) live in the [`TextPass`] the caller owns beside the frame call.
+//! caches) live in the [`crate::render::text_pass::TextPass`] the caller
+//! owns beside the frame call.
 //!
 //! GTK-free (`replace-gtk-with-wayland` D10): `paint_frame` and the pixel
 //! tests below run without a display.
@@ -53,8 +54,8 @@ use crate::term::Terminal;
 /// size ([`FrameInput::device_size`]).
 ///
 /// A terminal with no live frame (none created yet, or a failed refresh)
-/// draws the theme background and the accent only — the degraded draw
-/// `DrawState::draw_inner` keeps to.
+/// draws the theme background and the accent only — the degraded draw the
+/// GTK painters kept to.
 pub fn paint_frame(
     canvas: &mut Canvas,
     metrics: &PainterMetrics,
@@ -83,7 +84,7 @@ pub fn paint_frame(
 }
 
 /// Draw the layers of an already-open frame and finish it: the cell layers
-/// in order, the cursor, the kitty images, then [`terminal.frame_end`] and
+/// in order, the cursor, the kitty images, then `terminal.frame_end()` and
 /// the focus accent on top. [`paint_frame`] opens the frame and hands the
 /// opened one here; the frame gate (`super::frame_gate`) reuses the same
 /// sequence for its full-repaint path, so the two entries cannot drift.
@@ -106,11 +107,11 @@ pub(super) fn paint_open_frame(
     // No rewind here: the cursor layer walks no cells, and the rewind
     // would clear the placeholder origins the last cell walk recorded —
     // the image pass resolves its unicode-placeholder placements against
-    // them, exactly as `render_grid`'s single walk leaves them for
-    // `ImageCache::draw`.
+    // them, as the GTK path's single cell walk left them for its image
+    // cache.
     cursor::paint(canvas, metrics, terminal, offset, &cursor_text, text);
-    // No rewind before the image pass, exactly as `render_grid` calls
-    // `ImageCache::draw` straight after the cursor. The image iterator is
+    // No rewind before the image pass, which runs straight after the
+    // cursor, as on the GTK path. The image iterator is
     // separate from the cell walk, so a rewind is not needed for it — and
     // it is harmful: `frame_rewind` clears the placeholder origins the
     // cell walk recorded, and a unicode-placeholder placement resolves
@@ -168,7 +169,7 @@ mod tests {
     const ASCENT: f64 = 12.0;
 
     /// Hides the frame's cursor (DECTCEM). The fresh terminal reports a
-    /// visible block cursor — the GTK path draws it too — so the tests
+    /// visible block cursor — the GTK path drew it too — so the tests
     /// below that scan what the cell layers drew hide it first; the
     /// cursor layer has its own tests.
     const HIDE_CURSOR: &[u8] = b"\x1b[?25l";

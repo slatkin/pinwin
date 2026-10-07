@@ -1,7 +1,8 @@
 //! The text pass of the grid painter (row 4.5, `replace-gtk-with-wayland`
 //! D5/D6/D11): each cell's grapheme cluster shaped with the [`TextShaper`],
 //! rasterized through the [`GlyphCache`] at the frame's device size, and
-//! drawn onto the [`Canvas`] at the device pixel lattice — the same pixels
+//! drawn onto the [`crate::render::canvas::Canvas`] at the device pixel
+//! lattice — the same pixels
 //! the GTK path's `text::draw_text` produces for the same cells.
 //!
 //! Placement on the lattice (the spec requirement "Cell text on the device
@@ -10,7 +11,8 @@
 //! whole number of device pixels. The vertical offset is the device baseline
 //! offset from the cell's top: the truncated logical ascent
 //! [`PainterMetrics::ascent`] carries times the scale, rounded to a whole
-//! device pixel with [`device_px`]. Neither the offset nor the nerd-font
+//! device pixel with [`crate::render::geom::device_px`]. Neither the offset
+//! nor the nerd-font
 //! transform depends on the column or the row, so the same glyph in the same
 //! style and colour renders to the same device pixels from every cell's
 //! snapped top-left corner at any scale.
@@ -23,22 +25,23 @@
 //! position comes from the cluster's pen walk. The pen position and the
 //! shaper's offsets are device pixels already (the shaper shapes at the
 //! device ppem); each glyph's position is rounded to a whole device pixel
-//! with [`device_px`].
+//! with [`crate::render::geom::device_px`].
 //!
-//! The pass owns exactly the cells [`super::sprite::cell_sprite`] declines:
+//! The pass owns exactly the cells `sprite::cell_sprite` declines:
 //! the sprite pass and this pass own disjoint cells, and the frame walk runs
 //! this pass after the sprites and before the bands, because GTK draws each
 //! cell's decorations after its glyph.
 //!
 //! The walk also collects the text bytes of the cell at the cursor's
-//! position — the same collection the GTK path's `render_grid` does — and
+//! position — the same collection the GTK path's grid walk did — and
 //! returns them as [`CursorText`] for the cursor layer's block-cursor glyph
 //! redraw (see the seam in [`super::cursor`]).
 //!
 //! The state the pass needs (the shaper, the glyph cache, the cell metrics
 //! the nerd-font constraints are expressed against, and the font size in
-//! points) lives in [`TextPass`]; row 8.1 will own one per panel thread and
-//! hand it to [`super::painter::paint_frame`] each frame.
+//! points) lives in [`crate::render::text_pass::TextPass`]; the panel
+//! thread's renderer owns one and hands it to
+//! [`super::painter::paint_frame`] each frame.
 //!
 //! GTK-free (`replace-gtk-with-wayland` D10): the pixel tests in
 //! `text_pass/tests.rs` run without a display.
@@ -86,7 +89,7 @@ impl CursorText {
         }
     }
 
-    /// The collected bytes, at most [`CURSOR_TEXT_MAX`] of them.
+    /// The collected bytes, at most `CURSOR_TEXT_MAX` of them.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.len]
@@ -170,7 +173,7 @@ impl TextPass {
             }
             // The cursor cell's text, collected once — the first cell with
             // a glyph at the cursor's position, exactly the GTK path's
-            // `render_grid` collection. A cell the sprite pass owns still
+            // grid-walk collection. A cell the sprite pass owns still
             // collects: the old path redraws it through the text path too.
             if !collected
                 && let Some(at) = cursor

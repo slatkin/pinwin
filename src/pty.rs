@@ -13,12 +13,13 @@
 //! tests exercise it against a real pipe or pty master (D10). The read
 //! source itself is a calloop registration; its twin for the panel thread
 //! lives in the `calloop` submodule, whose readiness callback runs the same
-//! [`drain`] under the shared [`crate::guard`] helper (D5).
+//! `drain` under the shared [`crate::guard`] helper (D5).
 //!
 //! The GTK-widget-dependent piece of `src/pty.c` — applying the drawing
-//! area's allocation to the grid before resizing — is not ported here: it
-//! belongs to the render/surface rows (tasks 3.6/3.7/4.1) and drives
-//! [`Pty::resize`] once the grid is known.
+//! area's allocation to the grid before resizing — has no counterpart
+//! here: the panel thread's grid sizing (`panel::wayland_side::sizing`)
+//! decides the grid and applies the winsize through the caller-supplied
+//! callback that drives [`Pty::resize`].
 //!
 //! The read source for the panel thread lives beside it in the `calloop`
 //! submodule (`replace-gtk-with-wayland` D2); the thread attaches it in

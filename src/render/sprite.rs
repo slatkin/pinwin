@@ -1,12 +1,11 @@
 //! The sprite layer of the grid painter (row 4.3): the frame's block
-//! elements ([`sprite::block`]), braille patterns ([`sprite::braille`]) and
-//! polygons ([`sprite::poly`] — the corner triangles and the powerline
+//! elements (`sprite::block`), braille patterns (`sprite::braille`) and
+//! polygons (`sprite::poly` — the corner triangles and the powerline
 //! separators, solid and hollow) drawn on the canvas in the cell's
 //! foreground colour — or the theme foreground when the cell names none —
-//! exactly as [`crate::render::sprites::draw_sprite`] draws them on the
-//! GTK path. The cursor shapes plug in as a further dispatch arm in the
-//! next row; until then their code points are not sprites and fall to the
-//! text pass.
+//! exactly as the GTK path's `draw_sprite` drew them. The cursor shapes
+//! are the cursor layer's own draw; their code points are not sprites and
+//! fall to the text pass.
 //!
 //! The per-cell skips are the GTK cell pass's: a wide glyph's spacer tail
 //! is never rendered, and a cell with no glyph or the INVISIBLE flag draws

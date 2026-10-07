@@ -80,7 +80,7 @@ impl std::fmt::Debug for TextShaper {
 
 impl TextShaper {
     /// A shaper over the family's faces and the book that resolves the
-    /// fallbacks, at the default entry cap (see [`DEFAULT_ENTRY_CAP`]).
+    /// fallbacks, at the default entry cap (see `DEFAULT_ENTRY_CAP`).
     #[must_use]
     pub fn new(faces: FamilyFaces, book: FontBook) -> Self {
         Self::with_cap(faces, book, DEFAULT_ENTRY_CAP)
@@ -119,7 +119,7 @@ impl TextShaper {
     /// into one error.
     ///
     /// The cache answers before the face choice runs: the choice is a pure
-    /// function of the key (see [`ShapeKey`]), so a hit is one map lookup
+    /// function of the key (see `ShapeKey`), so a hit is one map lookup
     /// and the choice's cost — a charmap walk over the cluster, a swash
     /// parser pass — is paid once per distinct cluster, style and size.
     pub fn shape(

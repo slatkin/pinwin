@@ -6,7 +6,8 @@
 //! D10): the decisions here are unit tested without a compositor, and the
 //! Wayland calls themselves — `set_size`, the margins, `set_source`,
 //! `set_destination`, the reserve's zone, the buffer attach and the commit —
-//! stay with the frame handler a later row 6.2 unit wires. This module only
+//! stay with the frame glue (`tween_draw`) and the apply path. This module
+//! only
 //! decides what those calls carry.
 //!
 //! The rounding rule, stated once: a device size is its logical size times
@@ -38,9 +39,9 @@
 //! the tests assert it.
 //!
 //! The per-frame margins and the reserve's side and zone follow the
-//! surfaces' own rules: [`panel_margins`] for the panel's insets and the
+//! surfaces' own rules: `panel_margins` for the panel's insets and the
 //! held-gap rule (overlay-expand D3) through
-//! [`crate::surfaces::gap::reserve_gap_parts`] — the zone moves with the
+//! `crate::surfaces::gap::reserve_gap_parts` — the zone moves with the
 //! panel only while a flagged gap tween runs on a pushing target.
 //!
 //! The wide draw ([`draw_wide`]) reuses the existing grid painter over a
@@ -112,7 +113,7 @@ impl TweenCrop {
     /// the columns the tween defers the resize of, times the cell width.
     ///
     /// The offset is decided in device pixels and converted to the logical
-    /// form [`FrameInput`] carries: for a right-docked panel the grid's
+    /// form [`crate::render::geom::FrameInput`] carries: for a right-docked panel the grid's
     /// right edge must land exactly on the buffer's last device pixel, so
     /// the offset is `wide - grid` device pixels expressed in logical
     /// pixels. A logical-integer offset instead could round one device
@@ -357,7 +358,7 @@ impl FrameGeometry {
 
 /// The per-frame panel geometry of a tween frame at `panel_px` (D7): the
 /// tweening layout's margins and the held gap's rule for the reserve. The
-/// same rules the plain apply writes ([`panel_margins`], the held-gap rule
+/// same rules the plain apply writes (`panel_margins`, the held-gap rule
 /// of overlay-expand D3), read once here so the tween frames cannot drift
 /// from them.
 #[must_use]

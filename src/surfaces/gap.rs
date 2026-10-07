@@ -3,10 +3,11 @@
 //! moves them, and what a frame draws. GTK-free so every decision is unit
 //! tested here, like [`crate::layout`].
 //!
-//! The state lives on the [`Surfaces`] struct as a `Cell`; these helpers
+//! The state lives on the panel thread's surface state as a `Cell`; these
+//! helpers
 //! own the decisions about it — when a publish moves it and what a frame
-//! draws from it — while `Surfaces` itself only stores and fetches what
-//! they compute.
+//! draws from it — while the surface state itself only stores and fetches
+//! what they compute.
 
 use super::metrics_valid;
 use crate::layout::{Coverage, Layout, Side};
@@ -127,7 +128,7 @@ pub fn reserve_gap_parts(
     )
 }
 
-/// The decision half of [`Surfaces::publish`] (overlay-expand D4), split out
+/// The decision half of a publish (overlay-expand D4), split out
 /// so the reject-before-mutate ordering is unit testable without a display:
 /// validate the staged layout against the live output metrics first, and only
 /// a validated layout yields the staged mutation — the applied layout, column

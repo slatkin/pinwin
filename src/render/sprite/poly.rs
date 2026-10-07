@@ -1,14 +1,15 @@
 //! The polygon sprites of the canvas painter (row 4.3): the four corner
 //! triangles (U+25E2–U+25E5) and the four powerline separators
-//! (U+E0B0–U+E0B3), with the triangle geometry the GTK painters get from
-//! [`crate::render::sprites::sprite_shape`] — Ghostty's full-cell corner
+//! (U+E0B0–U+E0B3), with the triangle geometry the GTK painters used
+//! (`sprite_shape`) — Ghostty's full-cell corner
 //! triangles and the half-height powerline triangle, a wide glyph's head
 //! spanning both of its columns.
 //!
 //! Every vertex lands where the GTK path puts it: `sprite_shape` snaps
 //! each logical vertex coordinate with `OutputScale::snap_edge`, and
 //! cairo's device scale places the snapped vertex at `round(v · scale)`
-//! device pixels — the value [`device_px`] produces here, so both
+//! device pixels — the value [`crate::render::geom::device_px`] produces
+//! here, so both
 //! painters draw the same triangle on the device lattice.
 //!
 //! The two hollow separators (U+E0B1 and U+E0B3) are design decision 5's

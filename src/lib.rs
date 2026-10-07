@@ -3,7 +3,7 @@
 //! The public API is the [`Panel`] handle and its [`PinwinError`] results
 //! (D4, D6): start takes a host-owned pty fd and a full layout, applies run
 //! through the handle, and dropping it closes the panel. The `panel` module
-//! owns the GTK-thread lifecycle; the ported modules below are its parts —
+//! owns the panel-thread lifecycle; the ported modules below are its parts —
 //! `guard` is the shared D5 panic guard, `ghostty_sys` the hand-written FFI
 //! against the pinned libghostty-vt (D2).
 

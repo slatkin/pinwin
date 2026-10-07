@@ -7,7 +7,8 @@
 //! Two decisions live here and are recorded on their functions:
 //!
 //! - The canvas copy into a pool slot is always the full canvas, and the
-//!   damage is only for the compositor ([`copy_frame`]). The pool rotates
+//!   damage is only for the compositor (the copy in `draw_frame_at`). The
+//!   pool rotates
 //!   its slots, so the slot a hand-out serves may hold the frame before the
 //!   last one; only a full copy guarantees the buffer's bytes are the
 //!   canvas'. The rectangles stay the compositor's damage hint: compositors
@@ -25,8 +26,8 @@
 //! and the finish's end-state actions are pure and unit tested here
 //! without a display (`port-to-rust` D10). The executor touches the
 //! queue-bound pool and the surfaces, so a live session is what exercises
-//! it (row 10.1); until dispatch D5 moves `Panel::start` to the thread,
-//! nothing in the crate reaches it in production.
+//! it (row 10.1); the executor runs on the panel thread, reached through
+//! the dispatch state's frame and repaint hooks.
 
 use crate::fontconfig::ThemeColours;
 use crate::layout::{Accent, Side};

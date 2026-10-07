@@ -1,6 +1,6 @@
 //! The cursor layer of the grid painter (row 4.3): the frame's cursor
-//! drawn after the cell layers and before the focus accent, exactly as
-//! `DrawState::draw_cursor` draws it on the GTK path — the shape in the
+//! drawn after the cell layers and before the focus accent, exactly as the
+//! GTK path's cursor layer drew it — the shape in the
 //! terminal's default foreground, the hollow block as four
 //! one-logical-pixel bands each snapped on its own so they tile the ring
 //! with no gap and no overlap.
@@ -48,8 +48,8 @@ pub enum CursorShape {
 }
 
 /// The geometry `paint` fills for `cursor`, snapped to the device pixel
-/// grid — the device form of [`crate::render::node_cursor::cursor_shape`]'s
-/// logical rectangles, the same formulas the GTK painters share. A cursor
+/// grid — the device form of the logical rectangles the GTK painters
+/// drew, by the formulas both paths share. A cursor
 /// covers its own cell only: a wide glyph's head cell carries the cursor,
 /// the tail keeps the cell layers' pixels.
 #[must_use]

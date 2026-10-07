@@ -1,7 +1,7 @@
 //! The block-element sprites of the canvas painter (row 4.3): the full,
 //! half and eighth blocks and the quadrants of U+2580–U+259F drawn as
-//! unantialiased rectangles, with the same geometry the GTK painters get
-//! from [`crate::render::sprites::block_rects`] — Ghostty's
+//! unantialiased rectangles, with the same geometry the GTK painters'
+//! `block_rects` used — Ghostty's
 //! `draw/block.zig` integer arithmetic on the cell's snapped device box, so
 //! a bar of one fraction has the same thickness whichever edge it anchors
 //! to and two blocks that share an edge share that device edge.
@@ -98,8 +98,8 @@ pub(super) fn rects(cp: u32, metrics: &PainterMetrics, cell: &Cell) -> Option<Ve
 use super::super::geom::DeviceRect;
 
 /// The snapped device box of `cell`: one column wide, or two for a wide
-/// glyph's head, exactly the box [`crate::render::sprites::sprite_shape`]
-/// builds. The edges snap individually, so neighbouring cells' boxes share
+/// glyph's head, exactly the box the GTK painters' `sprite_shape` built.
+/// The edges snap individually, so neighbouring cells' boxes share
 /// their device edges and blocks cannot leave a seam.
 fn cell_box(metrics: &PainterMetrics, cell: &Cell) -> (f64, f64, f64, f64) {
     let width = if cell.wide == Wide::Wide {
@@ -118,8 +118,8 @@ fn cell_box(metrics: &PainterMetrics, cell: &Cell) -> (f64, f64, f64, f64) {
 
 /// Ghostty's `Fraction.min` (`draw/common.zig`) on a size in whole device
 /// pixels: the min edge of a section, taken as the complement of the max
-/// edge so that rounding evens out. Ported with [`crate::render::sprites`],
-/// which keeps its own copy for the GTK painters.
+/// edge so that rounding evens out. Ported from the GTK painters' `sprites`
+/// module, which kept its own copy.
 fn fraction_min(size: f64, fraction: f64) -> f64 {
     size - ((1.0 - fraction) * size).round()
 }

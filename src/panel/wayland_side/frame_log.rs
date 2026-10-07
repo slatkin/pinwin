@@ -33,7 +33,7 @@
 //!
 //! The recorder's arithmetic is checked throughout and casts no numeric
 //! type with `as`: integer-to-float conversions go through
-//! [`num_traits::cast`], which is total in these directions, so the
+//! `num_traits::cast`, which is total in these directions, so the
 //! dead fallbacks never fire.
 
 use std::io::Write;

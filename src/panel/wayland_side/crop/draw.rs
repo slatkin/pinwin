@@ -1,6 +1,7 @@
 //! The tween's wide draw and its copies (replace-gtk-with-wayland
 //! row 6.2, design decision 7): the grid drawn once into a wide
-//! [`Canvas`] through the existing painter, the one upload of the cached
+//! [`crate::render::canvas::Canvas`] through the existing painter, the one
+//! upload of the cached
 //! canvas into its `wl_shm` buffer, and the no-viewporter fallback that
 //! copies each frame's crop into a fresh buffer — a memory copy, no
 //! glyph work. Pure and display-free (`port-to-rust` D10); the
@@ -19,7 +20,7 @@ use super::{CropFrame, WideDraw};
 
 /// Draw the live grid once into the wide canvas (D7, row 6.2): the theme
 /// background fills the whole canvas and the grid sits against the docked
-/// edge, shifted by the draw offset [`TweenCrop::wide_draw`] decided. The
+/// edge, shifted by the draw offset [`super::TweenCrop::wide_draw`] decided. The
 /// existing painter draws every layer — nothing about it changes.
 ///
 /// `metrics` must carry the same scale the crop geometry was decided at; it

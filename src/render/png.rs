@@ -1,9 +1,8 @@
 //! The `png`-crate PNG decoder for the kitty images (row 4.7): the
-//! [`PngDecoder`] the panel hands to the terminal once row 8 switches it
-//! over. Straight (non-premultiplied) RGBA8 out, exactly what
-//! [`crate::render::canvas::image_pixmap`] takes, like the gdk-pixbuf
-//! decoder it replaces ([`super::images::PixbufDecoder`], which stays until
-//! row 8 deletes it).
+//! [`crate::term::PngDecoder`] implementation the panel thread hands to the
+//! terminal. Straight (non-premultiplied) RGBA8 out, exactly what
+//! [`crate::render::canvas::image_pixmap`] takes, as the gdk-pixbuf
+//! decoder it replaced did.
 //!
 //! The crate's transformations do the pixel-format work
 //! (`EXPAND` palettes and low bit depths to bytes, `STRIP_16` 16-bit
@@ -13,14 +12,14 @@
 //!
 //! Limits: a hostile or corrupt PNG must not allocate gigabytes. The
 //! header is checked before any pixel buffer exists — zero dimensions
-//! reject, and either dimension above [`MAX_DIMENSION`] rejects — and the
+//! reject, and either dimension above `MAX_DIMENSION` rejects — and the
 //! decoded-RGBA byte count is computed with checked arithmetic against
-//! [`MAX_DECODED_BYTES`] before the vector is sized. [`MAX_DECODED_BYTES`]
-//! is exactly the largest image [`MAX_DIMENSION`] admits decoded to RGBA8
+//! `MAX_DECODED_BYTES` before the vector is sized. `MAX_DECODED_BYTES`
+//! is exactly the largest image `MAX_DIMENSION` admits decoded to RGBA8
 //! (16384² × 4 = 1 GiB), so a full-size poster still decodes; the crate's
 //! own allocation limiter caps its internal scratch (row buffers, zlib
 //! windows) at its default 64 MiB, far above any row a
-//! [`MAX_DIMENSION`]-wide image needs. Every failure path returns `None`;
+//! `MAX_DIMENSION`-wide image needs. Every failure path returns `None`;
 //! no `unwrap`, no panic.
 
 use std::io::Cursor;
@@ -32,12 +31,12 @@ use crate::term::{DecodedPng, PngDecoder};
 /// The largest image side the decoder accepts, in pixels. Kitty posters
 /// are large but not absurd: 16384² covers any media artwork a terminal
 /// shows several times over, and it bounds the decoded RGBA buffer at
-/// [`MAX_DECODED_BYTES`]. The image pass rejects an image beyond the same
+/// `MAX_DECODED_BYTES`. The image pass rejects an image beyond the same
 /// bound, so the two agree.
 pub(crate) const MAX_DIMENSION: u32 = 16_384;
 
 /// The largest decoded image the decoder will build, in bytes of RGBA8:
-/// [`MAX_DIMENSION`]² × 4, checked against the header before the buffer is
+/// `MAX_DIMENSION`² × 4, checked against the header before the buffer is
 /// allocated.
 const MAX_DECODED_BYTES: usize = 1_073_741_824;
 

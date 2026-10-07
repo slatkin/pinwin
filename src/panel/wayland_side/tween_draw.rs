@@ -5,7 +5,7 @@
 //! scale they were decided at, and the gap state the frames commit the
 //! reserve with — plus the two pieces that turn it into Wayland requests:
 //! the pure per-frame commit plan and the thin executor
-//! [`commit_tween_frame`] runs it.
+//! `PanelState::commit_tween_frame` runs it.
 //!
 //! The decisions are pure and unit tested here without a compositor
 //! (`port-to-rust` D10): [`TweenDraw::commit_plan`] maps an eased width to

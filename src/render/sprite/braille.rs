@@ -1,6 +1,6 @@
 //! The braille sprites of the canvas painter (row 4.3): U+2800–U+28FF drawn
 //! as a 2×4 grid of unantialiased square dots, with the dot geometry the
-//! GTK painters get from [`crate::render::sprites::braille_geometry`] —
+//! GTK painters' `braille_geometry` used —
 //! leftover pixels go to spacing and margins before the dots grow, so the
 //! pattern fills the cell like Ghostty's.
 //!
@@ -23,9 +23,9 @@ const DOT_ROW: [usize; 8] = [0, 1, 2, 0, 1, 2, 3, 3];
 /// The braille dot geometry for one cell: the dot size and the left/top
 /// offset of each of the 2 dot columns and 4 dot rows, in logical pixels.
 /// Leftover pixels go to spacing and margins before the dots grow, so the
-/// pattern fills the cell like Ghostty's. Ported with
-/// [`crate::render::sprites`], which keeps its own copy for the GTK
-/// painters; tests pin both to the same numbers.
+/// pattern fills the cell like Ghostty's. Ported from the GTK painters'
+/// `sprites` module, which kept its own copy; tests pin both to the same
+/// numbers.
 fn geometry(cell_w: i32, cell_h: i32) -> (i32, [i32; 2], [i32; 4]) {
     let mut dot = (cell_w / 4).min(cell_h / 8);
     let mut x_spacing = cell_w / 4;

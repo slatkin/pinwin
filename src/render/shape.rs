@@ -42,13 +42,14 @@
 //! cap, clearing on overflow like [`GlyphCache`] and the font module's
 //! fallback cache. Errors are not cached. Memory ceiling: 8192 entries, each
 //! a key (a cluster text of at most a few dozen bytes, a ppem and two style
-//! bits) and a [`ShapedCluster`] of at most a few dozen 16-byte glyphs plus
+//! bits) and a [`crate::render::shape::ShapedCluster`] of at most a few
+//! dozen 16-byte glyphs plus
 //! a shared `Face` — under 8 MiB in the worst case, a few hundred KiB
 //! typically.
 //!
 //! GTK-free like the font module (replace-gtk-with-wayland D10): the tests
-//! run without a display. The module is `pub` from `render` so the row's
-//! later units can use it before their own rows land (`pub(crate)` entries
+//! run without a display. The module is `pub` from `render` because its
+//! consumer, the text pass, lives beside it (`pub(crate)` entries
 //! with no caller are dead code under `-D warnings`, and no lint
 //! suppression is permitted).
 //!

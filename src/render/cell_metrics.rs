@@ -1,7 +1,7 @@
 //! The cell metrics from the font, computed with swash (row 4.6): the cell
 //! pitch, the truncated ascent, the baseline and the Nerd Font numbers the
-//! constraints are expressed against. The port of `measure` in
-//! `super::metrics` (the Pango module, which stays until row 8).
+//! constraints are expressed against. The port of the Pango-based
+//! `measure` the GTK path used.
 //!
 //! Size conversion matches Pango: the font size in points places the font at
 //! `points * 96 / 72` pixels (the 96 dpi convention), and everything else is

@@ -1,7 +1,7 @@
 //! The panel thread's layer surfaces (replace-gtk-with-wayland D3): the
 //! visible panel on the `overlay` layer and the transparent reservation, the
-//! wayland twins of [`crate::surfaces`] while the GTK surfaces stay until row
-//! 8.1 removes them.
+//! panel thread's counterparts of the pure surface rules in
+//! [`crate::surfaces`].
 //!
 //! The panel is created with no output, so the compositor places it on the
 //! focused output; the first `wl_surface.enter` names that output and the
@@ -124,8 +124,7 @@ struct Reserve {
 
 /// The panel thread's two layer surfaces plus the shared memory pool their
 /// transparent placeholder buffers come from. Lives on the panel thread,
-/// inside the bound session; the GTK surfaces stay in `crate::surfaces` until
-/// row 8.1 switches `Panel` over.
+/// inside the bound session.
 pub(crate) struct PanelSurfaces {
     panel: LayerSurface,
     reserve: Option<Reserve>,
@@ -150,8 +149,8 @@ impl PanelSurfaces {
     /// interactivity. The initial commit with no buffer asks the compositor
     /// for the first configure.
     ///
-    /// `cell` is the measured cell metrics the start command carried (row
-    /// 4.6's font module will compute them): a required input, because a
+    /// `cell` is the measured cell metrics the start command carried: a
+    /// required input, because a
     /// panel without them cannot ask for its width and would never map.
     ///
     /// # Errors

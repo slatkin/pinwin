@@ -1,7 +1,6 @@
 //! The startup watchdog (replace-gtk-with-wayland D2/D3): two calloop timers
 //! on the panel thread watching the start handshake, the wayland twin of the
-//! GTK side's single repeating `timeout_add_local` watchdog
-//! ([`super::super::gtk_side`]).
+//! GTK side's single repeating `timeout_add_local` watchdog.
 //!
 //! The two timers keep two separate duties apart. The poll is a repeating
 //! 200 ms tick, like the GTK side's: while the handshake is still pending, a
@@ -33,8 +32,8 @@ use crate::guard::guard_always;
 use super::super::handshake::{APPLY_WAIT, StartOutcome};
 use super::state::PanelState;
 
-/// The poll's bound: the 200 ms the GTK side's startup watchdog polls with
-/// (`gtk_side.rs`'s `timeout_add_local`).
+/// The poll's bound: the 200 ms the GTK side's startup watchdog polled
+/// with, through `timeout_add_local`.
 pub(crate) const START_WATCHDOG: Duration = Duration::from_millis(200);
 
 /// The hard deadline's bound: the same five seconds an apply waits for its
@@ -113,7 +112,8 @@ pub(crate) fn on_deadline_tick(state: &mut PanelState) -> TimeoutAction {
 /// drops it when the start already resolved — then tear the panel down, the
 /// same teardown the teardown command and the closed command channel take:
 /// the surfaces drop, no configure can push a pty size afterwards, and the
-/// loop ends. Runs under [`guard_always`], not [`guard`]: a latched flag is
+/// loop ends. Runs under [`guard_always`], not [`crate::guard::guard`]: a
+/// latched flag is
 /// exactly the case the watchdog must still report (D5).
 fn fire(state: &mut PanelState, outcome: StartOutcome) {
     let poisoned = state.poisoned.clone();

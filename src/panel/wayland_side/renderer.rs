@@ -1,11 +1,14 @@
 //! The panel thread's renderer (row 8.1, `replace-gtk-with-wayland` D5):
-//! the one owner of everything a frame draws with — one [`TextPass`], one
-//! [`ImagePass`], one [`FrameGate`] and a persistent [`Canvas`] at the
+//! the one owner of everything a frame draws with — one
+//! [`crate::render::text_pass::TextPass`], one
+//! [`crate::render::image_pass::ImagePass`], one
+//! [`crate::render::frame_gate::FrameGate`] and a persistent
+//! [`crate::render::canvas::Canvas`] at the
 //! current frame's device size — plus the scale, theme, accent and focus
 //! state the frames and the tween's wide draw read. There is exactly one
 //! renderer per panel thread, exactly as there is one text pass and one
 //! image pass; the tween path borrows it through the
-//! [`TweenRender`](super::tween_draw::TweenRender) bundle and the live
+//! `TweenRender` bundle (`super::tween_draw`) and the live
 //! frames draw through [`Renderer::draw`].
 //!
 //! The renderer holds no Wayland object and no display: it is testable

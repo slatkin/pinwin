@@ -1,7 +1,8 @@
 //! The width tween's driver on the panel thread (replace-gtk-with-wayland
-//! row 6.1, design decision 7): the GTK-free twin of [`crate::anim::Anim`],
-//! driven by the compositor's `wl_surface.frame` callbacks instead of a GTK
-//! tick callback and watched by a calloop timer instead of a `GLib` timeout.
+//! row 6.1, design decision 7): the panel-thread driver around
+//! [`crate::anim::Tween`], driven by the compositor's `wl_surface.frame`
+//! callbacks instead of a GTK tick callback and watched by a calloop timer
+//! instead of a `GLib` timeout.
 //!
 //! The tween step, the ease and the retarget rules stay in
 //! [`crate::anim::Tween`]; this module adds the running-tween state around
@@ -10,18 +11,18 @@
 //! the run loop drives. Every decision is a pure step the tests drive
 //! without a display (`port-to-rust` D10); the Wayland calls — the frame
 //! callback requests and the per-frame commits — stay in the thin glue of
-//! the caller: [`arm_watchdog`] arms the timer from the run loop, and row
+//! the caller: `arm_watchdog` arms the timer from the run loop, and row
 //! 6.2 wires `CompositorHandler::frame` and the animated apply's begin to
 //! the driver.
 //!
-//! The GTK path's [`crate::anim::AnimHooks`] closures do not carry over: the
+//! The GTK path's hook closures do not carry over: the
 //! driver lives inside the panel state, and its frame, stop and finish
 //! actions need `&mut PanelState` (the surfaces, the grid sizing), which a
 //! closure stored beside the driver cannot reach. The hook semantics ride on
 //! the returned steps instead: [`FrameStep::Frame`] is `on_frame`,
 //! [`FrameStep::Finished`] and [`WatchdogStep::Expired`] are the stop relay
-//! followed by `on_finish`, and every [`TweenDriver::begin`] and
-//! [`TweenDriver::cancel`] relays the stop unconditionally, exactly as the
+//! followed by `on_finish`, and every `TweenDriver::begin` and
+//! `TweenDriver::cancel` relays the stop unconditionally, exactly as the
 //! GTK path's `anim_stop` half runs on every begin and cancel.
 //!
 //! Panics never cross back into calloop (D5): the watchdog's timer callback
@@ -30,7 +31,7 @@
 //! the GTK watchdog's unguarded `stop_inner`.
 //!
 //! `PINWIN_FRAMELOG` (row 6.3) rides on the driver: a tween's begin takes
-//! the frame log it will feed ([`FrameLog`](super::frame_log::FrameLog),
+//! the frame log it will feed (`FrameLog`,
 //! built by the caller from the environment and the session's
 //! presentation-time binding), the frames feed it, and every stop point —
 //! a frame finish, the watchdog, a cancel, a retarget's stop relay —
@@ -51,8 +52,8 @@ use crate::layout::Layout;
 use super::frame_log::FrameLog;
 use super::state::PanelState;
 
-/// The watchdog's slack past the duration, the GTK path's rule
-/// ([`crate::anim::Anim::begin`]): a tween whose frame callbacks stall still
+/// The watchdog's slack past the duration, the GTK path's rule: a tween
+/// whose frame callbacks stall still
 /// snaps to its target 100 ms after it was due.
 const WATCHDOG_SLACK_MS: u64 = 100;
 
@@ -91,7 +92,7 @@ pub enum WatchdogStep {
     Expired(i32),
 }
 
-/// What [`TweenDriver::begin`] staged.
+/// What `TweenDriver::begin` staged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TweenBegin {
     /// No tween: a zero duration snaps, and the caller applies the layout
@@ -130,7 +131,7 @@ struct Armed {
 
 /// The width tween's state on the panel thread: the one running tween, if
 /// any, and the watchdog timer's arming bookkeeping. Lives on
-/// [`PanelState`](super::state::PanelState) beside the session; the driver's
+/// `PanelState` (`super::state`) beside the session; the driver's
 /// decisions are pure and unit tested here (`port-to-rust` D10).
 #[derive(Default, Debug)]
 pub struct TweenDriver {
@@ -155,7 +156,7 @@ pub struct TweenDriver {
 
 impl TweenDriver {
     /// Start, or retarget, a tween from `from_px` to `to_px` over
-    /// `duration_ms` ([`crate::anim::Anim::begin`]'s state half): a running
+    /// `duration_ms` ([`crate::anim::Tween::begin`]'s state half): a running
     /// tween stops first, and the caller relays the stop unconditionally,
     /// exactly as the GTK path's `on_stop` runs on every begin. A zero
     /// duration stages no tween — the caller snaps through the plain apply
@@ -233,7 +234,7 @@ impl TweenDriver {
     }
 
     /// The panel's current pixel width: the running tween's eased width,
-    /// else the applied width ([`crate::anim::Anim::current_px`]). A retarget
+    /// else the applied width ([`crate::anim::Tween::current_px`]). A retarget
     /// reads this as its `from_px`.
     #[must_use]
     pub fn current_px(&self, applied_px: i32) -> i32 {
@@ -273,12 +274,11 @@ impl TweenDriver {
         }
     }
 
-    /// Cancel the running tween, if any ([`crate::anim::Anim::cancel`]'s
-    /// unconditional stop): the caller relays the stop whether or not a
-    /// tween ran, exactly like the GTK path's unconditional cache drop and
-    /// deferred-grid fire. The armed watchdog timer, if any, fires once more
-    /// and removes itself. The running tween's frame log, if any, prints
-    /// its summary here, as the GTK stop did.
+    /// Cancel the running tween, if any: the caller relays the stop
+    /// whether or not a tween ran, exactly like the GTK path's unconditional
+    /// cache drop and deferred-grid fire. The armed watchdog timer, if any,
+    /// fires once more and removes itself. The running tween's frame log, if
+    /// any, prints its summary here, as the GTK stop did.
     pub fn cancel(&mut self) {
         self.running = None;
         self.stop_log();
@@ -319,7 +319,7 @@ impl TweenDriver {
     /// Print and drop the running tween's frame log: the one summary line
     /// per tween, at every stop point — a frame finish, the watchdog, a
     /// cancel, a retarget's stop relay — exactly where the GTK path's
-    /// `stop_inner` printed ([`crate::anim::FrameLog`]). A stopped tween
+    /// `stop_inner` printed ([`FrameLog`]). A stopped tween
     /// leaves no log behind, so no later stop prints again.
     fn stop_log(&mut self) {
         if let Some(log) = self.frame_log.take() {
@@ -385,7 +385,7 @@ impl TweenDriver {
 }
 
 /// Whether a layout apply animates (row 6.2): the GTK path's
-/// [`crate::surfaces::should_animate`] rule, read against the applied
+/// [`should_animate`] rule, read against the applied
 /// layout — a positive duration between layouts that match in side and
 /// left and right gutters animates, because those move the reservation's
 /// side; a covering-only change animates so a pushing retarget at the same

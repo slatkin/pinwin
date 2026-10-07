@@ -6,23 +6,28 @@
 //! the numbers live in and the output: the old path scaled an already
 //! rasterized layout through cairo, this module produces a
 //! [`PlacementTransform`](crate::render::glyph::PlacementTransform) swash
-//! applies to the outline before rasterizing (see [`placement`]).
+//! applies to the outline before rasterizing (see
+//! [`crate::render::nerd::placement`]).
 //!
 //! Frames, both y up:
 //!
-//! * [`constrain`] works in the frame relative to the cell's bottom-left
+//! * [`crate::render::nerd::constrain`] works in the frame relative to the
+//!   cell's bottom-left
 //!   corner — the old `NerdGlyph` frame, which `draw_text` built from
 //!   Pango's y-down ink box with `y = baseline - (ink bottom - baseline)`.
 //! * [`PlacementTransform`](crate::render::glyph::PlacementTransform) works
 //!   in the frame relative to the baseline, y up — swash's outline frame.
-//!   [`placement`] converts between the two; [`ink_to_cell_frame`] is that
+//! [`crate::render::nerd::placement`] converts between the two;
+//! `ink_to_cell_frame` is that
 //!   conversion as its own tested function.
 //!
 //! Everything here is device pixels: the spec's "Cell text on the device
 //! pixel lattice" requires a constrained glyph to sit at the same device
 //! pixel offset in every cell at any output scale, so the metrics the
-//! constraints are expressed against are the logical [`CellMetrics`] numbers
-//! multiplied by the unsnapped output scale ([`NerdMetrics::scaled`]). The
+//! constraints are expressed against are the logical
+//! [`crate::render::cell_metrics::CellMetrics`] numbers
+//! multiplied by the unsnapped output scale
+//! ([`crate::render::nerd::NerdMetrics::scaled`]). The
 //! transform never depends on the column or row — only on the glyph, the
 //! constraint, the metrics and the constraint width — so the same glyph
 //! renders the same way in every cell.
@@ -217,7 +222,7 @@ impl NerdMetrics {
 /// A rasterized glyph's ink box, relative to the baseline, y up, in device
 /// pixels: the box the unconstrained rasterization produced (see
 /// [`Glyph::placement`] for the y-up convention). The input to
-/// [`placement`] and [`ink_to_cell_frame`].
+/// [`crate::render::nerd::placement`] and `ink_to_cell_frame`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InkBox {
     left: f64,

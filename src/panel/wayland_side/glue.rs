@@ -95,7 +95,7 @@ pub(crate) fn thread_renderer(
 pub(crate) type BytePath = (Rc<RefCell<Terminal>>, Rc<Cell<bool>>, Rc<Cell<i32>>, Pty);
 
 pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd, cell: CellSize) -> BytePath {
-    // The pty winsize's pixel fields (the glib paths' input): a measured
+    // The pty winsize's pixel fields (the glib path's input): a measured
     // cell is positive, so the conversion cannot fail; the fallback keeps
     // the fields positive rather than panicking (D5).
     let cell_w = u32::try_from(cell.width().get()).unwrap_or(1);

@@ -1,10 +1,9 @@
 //! The calloop twin of the glib pty read source (`replace-gtk-with-wayland`
 //! D2): the same [`drain`] — the same hangup handling and the same bounded
 //! tween budget — dispatched from the panel thread's calloop loop instead of
-//! the GTK main context. Nothing registers it before row 8.1 switches
-//! `Panel::start` over, so the entry point is `pub` for reachability (the
-//! same choice `panel::wayland_side` made) while the GTK path keeps its glib
-//! source; no GTK-path code calls into this module.
+//! the GTK main context. The entry point is `pub` for reachability (the
+//! same choice `panel::wayland_side` made); the glib source went with the
+//! GTK path, and this module is the only pty read source.
 //!
 //! Panics never cross into calloop (D5): the readiness callback runs the
 //! drain under the shared [`crate::guard`] with the caller's poisoned latch,
@@ -67,7 +66,8 @@ impl<D> PtySource<'_, D> {
 
 impl Pty {
     /// The read-source inputs the panel thread's calloop attach needs
-    /// (row 8.1): the fd and the shared slot — the one the [`PtyWriter`]
+    /// (row 8.1): the fd and the shared slot — the one the
+    /// [`super::PtyWriter`]
     /// reads, so a hangup or a teardown retires the writes with the reads —
     /// and the panel's shared D5 latch the drain runs under. The pty module
     /// owns them; the panel thread only attaches. The tween flag is the

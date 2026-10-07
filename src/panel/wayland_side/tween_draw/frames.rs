@@ -13,7 +13,7 @@ use super::{TweenAction, TweenDraw};
 
 /// One `wl_surface.frame` callback for the panel surface (row 6.2): the
 /// compositor's event time steps the tween driver, and the step decides the
-/// frame. An eased frame commits through [`commit_tween_frame`] and
+/// frame. An eased frame commits through [`PanelState::commit_tween_frame`] and
 /// requests the next callback; the finish relays the stop and applies the
 /// final geometry, requesting none.
 pub(crate) fn on_tween_frame(state: &mut PanelState, time_ms: u32) {

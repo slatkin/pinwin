@@ -272,7 +272,7 @@ fn the_glyph_redraw_condition_follows_the_gtk_rule() {
     assert!(!glyph_redraw(&block, b"X"), "hollow does not redraw");
 }
 
-/// A wide-tail block cursor keeps its full shape — the GTK path draws
+/// A wide-tail block cursor keeps its full shape — the GTK path drew
 /// the shape over the tail cell too; only the glyph redraw is
 /// suppressed (pinned by `the_glyph_redraw_condition_follows_the_gtk_rule`).
 #[test]

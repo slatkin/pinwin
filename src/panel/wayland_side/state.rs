@@ -17,7 +17,8 @@
 //! Panics never cross back into calloop or the compositor (D5): every
 //! handler body runs under the shared [`crate::guard`] helpers with the
 //! panel's one shared latch, and the stop relays — a compositor-closed panel
-//! surface, like a teardown — run under [`guard_always`] so a latched panel
+//! surface, like a teardown — run under
+//! [`crate::guard::guard_always`] so a latched panel
 //! still ends.
 
 use std::cell::{Cell, RefCell};

@@ -1,12 +1,13 @@
 //! The start handshake and the bounded apply reply (port-to-rust D4/D5): the
-//! small channel layer between the host thread and the GTK side, GTK-free so
-//! tests can drive every mapping and timeout outcome without a display.
+//! small channel layer between the host thread and the panel side,
+//! display-free so tests can drive every mapping and timeout outcome without
+//! a Wayland connection.
 //!
 //! Mirrors `src/pinwin_api.c`: only the first start result counts (the
 //! post-loop call cannot undo a successful start), an apply waits up to five
-//! seconds for its reply and reports `Internal` on a timeout, and a GTK side
-//! that died mid-handshake closes the reply channel, which the waiting host
-//! reports as `Internal` instead of hanging.
+//! seconds for its reply and reports `Internal` on a timeout, and a panel
+//! side that died mid-handshake closes the reply channel, which the waiting
+//! host reports as `Internal` instead of hanging.
 
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
@@ -15,7 +16,8 @@ use crate::surfaces::PublishOutcome;
 
 use super::error::PinwinError;
 
-/// How long an apply — and a drop's teardown — waits for the GTK side's reply
+/// How long an apply — and a drop's teardown — waits for the panel side's
+/// reply
 /// (`pinwin_api.c`'s `APPLY_WAIT_TIMEOUT_US`). A wedged loop must not block
 /// the host thread forever (D5).
 pub(crate) const APPLY_WAIT: Duration = Duration::from_secs(5);
@@ -34,9 +36,10 @@ pub(crate) enum StartOutcome {
 }
 
 /// The one-shot start handshake: exactly one report reaches the waiting host,
-/// like `pinwin_api.c`'s `g_api_start_done` latch. Cloned into every GTK-side
-/// closure that can complete the handshake (the start-result hook, the
-/// activate path, the startup watchdog and the loop-returned cleanup).
+/// like `pinwin_api.c`'s `g_api_start_done` latch. Cloned into every
+/// panel-side closure that can complete the handshake (the start-result
+/// hook, the activate path, the startup watchdog and the loop-returned
+/// cleanup).
 #[derive(Clone)]
 pub(crate) struct Handshake(Arc<Mutex<Option<mpsc::Sender<StartOutcome>>>>);
 
@@ -100,8 +103,8 @@ pub(crate) fn wait_for_focus(
 }
 
 /// Wait for the start handshake. Unbounded, like `pinwin_start`'s cond wait:
-/// the GTK side always reports (the start-result hook, the startup watchdog
-/// or the loop-returned cleanup), and a GTK thread that died closes the
+/// the panel side always reports (the start-result hook, the startup watchdog
+/// or the loop-returned cleanup), and a panel thread that died closes the
 /// channel, which becomes `Internal` instead of a hang.
 pub(crate) fn wait_for_start(receiver: &mpsc::Receiver<StartOutcome>) -> Result<(), PinwinError> {
     match receiver.recv() {
@@ -112,7 +115,7 @@ pub(crate) fn wait_for_start(receiver: &mpsc::Receiver<StartOutcome>) -> Result<
 
 /// Wait for an apply's reply within [`APPLY_WAIT`] (or a caller-supplied
 /// bound, for tests). A timeout and a closed channel are both `Internal`: the
-/// wedged and the dead GTK side are unexpected failures, not layout verdicts.
+/// wedged and the dead panel side are unexpected failures, not layout verdicts.
 pub(crate) fn wait_for_apply(
     receiver: &mpsc::Receiver<PublishOutcome>,
     timeout: Duration,
@@ -149,7 +152,7 @@ mod tests {
         rx.recv_timeout(Duration::from_millis(10)).unwrap_err();
     }
 
-    /// A GTK thread that died without reporting closes the channel: the
+    /// A panel thread that died without reporting closes the channel: the
     /// waiting start becomes `Internal`, never a hang.
     #[test]
     fn a_dropped_handshake_sender_is_internal() {
@@ -204,7 +207,7 @@ mod tests {
     #[test]
     fn an_apply_timeout_is_internal() {
         let (tx, rx) = mpsc::sync_channel::<PublishOutcome>(1);
-        // The sender stays alive (a wedged-but-alive GTK side) in another
+        // The sender stays alive (a wedged-but-alive panel side) in another
         // thread, so the only outcome is the timeout.
         let holder = thread::spawn(move || {
             thread::sleep(Duration::from_millis(300));
@@ -219,7 +222,7 @@ mod tests {
         holder.join().expect("holder thread");
     }
 
-    /// A GTK side that died mid-apply closes the reply channel: `Internal`,
+    /// A panel side that died mid-apply closes the reply channel: `Internal`,
     /// immediately rather than after the bound.
     #[test]
     fn a_disconnected_apply_reply_is_internal() {

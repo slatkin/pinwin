@@ -1,17 +1,18 @@
 //! The geometry seam between the snapped logical grid and the device-pixel
 //! canvas (replace-gtk-with-wayland D5, D11). The snap rules in
-//! [`super::snap`] work in logical pixels and land every edge on a device
+//! `super::snap` work in logical pixels and land every edge on a device
 //! pixel; this module turns the snapped rectangles into the integer device
 //! rectangles the canvas primitives take, and carries the per-frame input
 //! the painter needs: the cell metrics, the frame geometry and the theme
-//! colours as cached [`CanvasColor`]s.
+//! colours as cached [`crate::render::canvas::CanvasColor`]s.
 //!
 //! Every f64-to-integer conversion of the renderer goes through
-//! [`device_px`], the module's one cast seam: tiny-skia takes `i32`/`f32`
+//! [`crate::render::geom::device_px`], the module's one cast seam: tiny-skia takes `i32`/`f32`
 //! geometry, the snapped edges are `f64`, and the `NumCast` conversion
 //! keeps the cast lints quiet without a lint suppression. An `f32` reaches
 //! the canvas' fractional primitives through `f32::from` of a
-//! [`device_px`] result, or through this module when a later painter row
+//! [`crate::render::geom::device_px`] result, or through this module when a
+//! later painter row
 //! needs fractional device coordinates.
 //!
 //! GTK-free like the snap rules (`replace-gtk-with-wayland` D10): the
@@ -65,7 +66,8 @@ pub fn device_f32(value: f64) -> f32 {
 /// computes on — the logical half of the cast seam (D5). The GTK path's
 /// cell pitch is already an integer (`CellMetrics::cell_w` is `i32`); the
 /// painter carries it as `f64`, and the braille dot grid needs that integer
-/// back. Rounds like [`device_px`] does, for the same dust and degeneracy
+/// back. Rounds like [`crate::render::geom::device_px`] does, for the same
+/// dust and degeneracy
 /// reasons.
 #[must_use]
 pub(crate) fn logical_px(value: f64) -> i32 {
@@ -127,7 +129,8 @@ impl DeviceRect {
 }
 
 /// The cell metrics the grid painter draws with — the painter's form of
-/// `metrics::CellMetrics`: the cell pitch in logical pixels and the output
+/// [`crate::render::cell_metrics::CellMetrics`]: the cell pitch in logical
+/// pixels and the output
 /// scale the frame snaps at. The fields are private (port-to-rust D6); the
 /// constructor and the rectangle helpers carry the invariants.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -246,7 +249,7 @@ impl PainterMetrics {
     /// The snapped device rectangle of an arbitrary logical rectangle —
     /// the kitty image placements' destination rectangles, which the
     /// terminal reports in logical pixels rather than cell units. The
-    /// edges snap on their own ([`OutputScale::snap_rect`]: the right
+    /// edges snap on their own (`OutputScale::snap_rect`: the right
     /// edge is `snap(x + w)`, never `snap(x) + snap(w)`), so the
     /// rectangle keeps its last device pixel and a positive size never
     /// collapses below one device pixel. A negative or zero size gives an
@@ -321,11 +324,11 @@ pub struct FrameInput {
 impl FrameInput {
     /// A frame input for the frame's sizes, the tween's draw offset, the
     /// focus state, the Ghostty theme colours and the startup accent — the
-    /// inputs `DrawState::new` and `DrawState::draw` take today.
+    /// inputs the frame draw takes.
     ///
     /// `draw_offset` is the tween's snapped docked-edge offset in logical
-    /// pixels, the same value `DrawState::draw` takes today: the grid
-    /// draws shifted by it along x, the focus accent does not.
+    /// pixels: the grid draws shifted by it along x, the focus accent does
+    /// not.
     #[must_use]
     pub fn new(
         logical_width: u32,

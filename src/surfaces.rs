@@ -1,8 +1,8 @@
 //! The surfaces' pure core: the layout-validation gate and the publish
-//! verdict, plus the held-gap decisions in [`gap`] — the parts of the former
-//! GTK layer-shell surfaces (`src/glue.c`) that the panel thread applies
-//! against its own Wayland surfaces (replace-gtk-with-wayland rows 3.1 and
-//! 3.5). The GTK window wiring itself went with the GTK path.
+//! verdict, plus the held-gap decisions in the `gap` submodule — the parts
+//! of the former GTK layer-shell surfaces (`src/glue.c`) that the panel
+//! thread applies against its own Wayland surfaces (replace-gtk-with-wayland
+//! rows 3.1 and 3.5). The GTK window wiring itself went with the GTK path.
 //!
 //! Layout types come from [`crate::layout`]; a monitor with degenerate metrics
 //! maps to the invalid-layout verdict (port-to-rust D6), as `glue.c`

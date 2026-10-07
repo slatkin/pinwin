@@ -5,7 +5,7 @@
 //! functions are pure: they take the file contents as a `&str` and return
 //! plain data, so they are testable without a display or a config file. The
 //! thin wrappers that resolve the XDG config paths and read the files live in
-//! the [`load`] submodule.
+//! the `load` submodule.
 //!
 //! The C parser is deliberately quirky in places (it was written against
 //! Ghostty's real config syntax, and `sscanf` does the tokenizing); the port

@@ -2,8 +2,8 @@
 //! the whole window in the configured accent colour and width, drawn only
 //! while the panel holds keyboard focus. Layer surfaces get no compositor
 //! focus ring (niri draws one only around layout windows), so the focused
-//! panel marks itself — the same duty [`crate::render::DrawState::
-//! draw_focus_accent`] performs on the GTK path.
+//! panel marks itself — the same duty the GTK path's focus-accent draw
+//! performed.
 //!
 //! The geometry is that stroke's, in raw surface (device) coordinates: a
 //! rectangle inset by half the stroke width, so the stroke stays inside
@@ -11,8 +11,8 @@
 //! its line covers — outer edges on the window's edges, inner edges one
 //! stroke in — filled here as four rectangles, which tiles the same
 //! region. Unlike the grid layers, the accent is not snapped and not
-//! translated by the tween's draw offset (`DrawState::draw` draws it after
-//! the grid, untranslated): a stroke the window edges pin cannot shift.
+//! translated by the tween's draw offset (the GTK path drew it after the
+//! grid, untranslated): a stroke the window edges pin cannot shift.
 //!
 //! GTK-free (`replace-gtk-with-wayland` D10); private to the painter, whose
 //! frame pass calls it last, on top of every grid layer.

@@ -2,17 +2,16 @@
 //! cell backgrounds, walked once and merged into horizontal runs of equal
 //! colour. The canvas is already the theme background — the painter filled
 //! it before the frame pass — so only cells with an explicit background
-//! draw, exactly the cells [`crate::render::paint_backgrounds`] fills on
-//! the GTK path.
+//! draw, exactly the cells the GTK path's background fill drew.
 //!
 //! Each run fills as one rectangle through
 //! [`PainterMetrics::run_rect`], so the cells inside it share one snapped
 //! geometry and cannot develop seams, and two runs of different colour
-//! that touch share the snapped edge — the same property the per-cell
-//! [`crate::render::nodes::cell_background_rect`] rectangles get from the
+//! that touch share the snapped edge — the same property the GTK path's
+//! per-cell rectangles got from the
 //! shared edge values, now with fewer fills. The frame's last row fills
 //! down to the frame's logical height, which need not land on a cell
-//! boundary, as [`crate::render::nodes::cell_background_rect`] does.
+//! boundary, as the GTK path's per-cell rectangle did.
 //!
 //! The frame's tween draw offset translates the grid: every run shifts by
 //! the offset's device pixels, and the canvas clips what moves past the
