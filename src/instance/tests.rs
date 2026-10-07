@@ -1,6 +1,6 @@
-//! The `ipc` module's tests, split from `ipc.rs` to keep the module at its
-//! line budget (the split is mechanical; every item stays reachable through
-//! `use super::*`).
+//! The `instance` module's tests, split from `instance.rs` to keep the
+//! module at its line budget (the split is mechanical; every item stays
+//! reachable through `use super::*`).
 
 use super::*;
 use std::sync::atomic::AtomicUsize;
@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicUsize;
 fn temp_dir(tag: &str) -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "pinwin-ipc-test-{}-{}-{}",
+        "pinwin-instance-test-{}-{}-{}",
         std::process::id(),
         tag,
         NEXT.fetch_add(1, Ordering::Relaxed)

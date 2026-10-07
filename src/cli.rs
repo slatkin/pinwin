@@ -10,7 +10,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 
-use crate::ipc::InstanceName;
+use pinwin::instance::InstanceName;
 
 /// The shell used when `$SHELL` is unset or empty.
 const FALLBACK_SHELL: &str = "/bin/sh";
@@ -135,7 +135,7 @@ mod tests {
 
         // The same name check as `PINWIN_NAME`, under the `--toggle` label:
         // a bad name, the empty one included, is an exit-2 error. The exact
-        // wording is `InstanceName::parse`'s contract, asserted in `ipc.rs`;
+        // wording is `InstanceName::parse`'s contract, asserted in `instance.rs`;
         // here only the error class holds: the rejection names the option.
         for raw in ["", "a/b"] {
             assert!(

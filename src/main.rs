@@ -15,8 +15,9 @@
 //! `host/main.c` (port-to-rust D8): it owns the pty, the child's environment
 //! and the process lifetime; the library owns the panel. The pure parts live
 //! in testable modules — argument parsing ([`cli`]), environment parsing
-//! ([`settings`]) and the toggle-socket identity ([`ipc`]); the process parts
-//! (`forkpty`, signals, waiting) stay in [`run`] and [`host_panel`].
+//! ([`settings`]) and the toggle-socket identity ([`pinwin::instance`]); the
+//! process parts (`forkpty`, signals, waiting) stay in [`run`] and
+//! [`host_panel`].
 
 use std::env;
 use std::ffi::{CString, OsString};
@@ -30,11 +31,13 @@ use pinwin::layout::{Layout, Side};
 use pinwin::panel::{Panel, PinwinError, Startup};
 
 mod cli;
-mod ipc;
 mod settings;
 
 use cli::{Mode, default_command, parse_args};
-use ipc::{BindError, InstanceName, ToggleError};
+use pinwin::instance::{
+    BindError, InstanceName, SocketFile, ToggleError, bind_instance_socket, serve_toggle_requests,
+    socket_path_from_env, toggle_client,
+};
 use settings::{Settings, Zone, read_settings};
 
 /// The child's process id, read by the signal handler; zero means "no child
@@ -165,9 +168,9 @@ fn child_exec(child: &ChildCommand) -> ! {
 /// environment errors.
 fn run_toggle_client(name: Option<InstanceName>) -> i32 {
     let name = name.unwrap_or_else(InstanceName::default_instance);
-    let result = ipc::socket_path_from_env(&name)
+    let result = socket_path_from_env(&name)
         .map_err(ToggleError::Environment)
-        .and_then(|path| ipc::toggle_client(&path));
+        .and_then(|path| toggle_client(&path));
     match result {
         Ok(()) => 0,
         Err(ToggleError::Environment(message)) => {
@@ -326,13 +329,13 @@ fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
 fn serve_toggle_until_exit(
     panel: &Panel,
     listener: &net::UnixListener,
-    socket_file: ipc::SocketFile,
+    socket_file: SocketFile,
     pid: i32,
 ) -> i32 {
     let shutdown = AtomicBool::new(false);
     std::thread::scope(|scope| {
         scope.spawn(|| {
-            ipc::serve_toggle_requests(listener, &|| panel.toggle(), &shutdown);
+            serve_toggle_requests(listener, &|| panel.toggle(), &shutdown);
         });
         let status = wait_for_child(pid);
         shutdown.store(true, Ordering::Relaxed);
@@ -346,10 +349,10 @@ fn serve_toggle_until_exit(
 /// (keyboard-focus-request design). Returns the listener together with the
 /// socket file's path, which the host removes after its child exits. Errors
 /// carry the full `pinwin:` message.
-fn bind_focus_socket(name: &InstanceName) -> Result<(net::UnixListener, ipc::SocketFile), String> {
-    let socket_path = ipc::socket_path_from_env(name)?;
-    match ipc::bind_instance_socket(&socket_path) {
-        Ok(listener) => Ok((listener, ipc::SocketFile::new(socket_path))),
+fn bind_focus_socket(name: &InstanceName) -> Result<(net::UnixListener, SocketFile), String> {
+    let socket_path = socket_path_from_env(name)?;
+    match bind_instance_socket(&socket_path) {
+        Ok(listener) => Ok((listener, SocketFile::new(socket_path))),
         Err(error) => Err(match error {
             BindError::Duplicate => {
                 format!(
@@ -388,7 +391,7 @@ mod tests {
     /// The `--toggle` client maps the outcomes: a name with no listener is
     /// a not-answered request, exit 1. The invalid-name and socket-path
     /// environment classes are covered by the `InstanceName::parse` and
-    /// `socket_path` contracts in `ipc.rs`; here the no-host path holds.
+    /// `socket_path` contracts in `instance.rs`; here the no-host path holds.
     /// The name has no listener, and the test never touches the process
     /// environment (the display variables it resolves are inherited, which
     /// only changes the message, not the status).

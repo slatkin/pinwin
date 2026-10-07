@@ -1,13 +1,14 @@
-//! The command-line IPC identity, socket setup, listener and `--toggle`
-//! client for the `pinwin` program (change `keyboard-focus-request`'s socket
-//! plumbing, the toggle protocol of `replace-gtk-with-wayland` D4): the
-//! validated instance name, the socket path under `$XDG_RUNTIME_DIR/pinwin`,
-//! the duplicate check, stale-file removal and bind that all happen before
-//! any surface opens, the listener that parses `toggle\n` and answers
-//! `ok\n` or `error\n` until the host's child ends, and the client that asks
-//! a running host to toggle its panel. The transport is the standard
-//! library's Unix sockets only, no new dependencies; every socket wait is
-//! bounded, so one peer cannot hang the listener or the client.
+//! The instance socket: the validated instance name, the socket path under
+//! `$XDG_RUNTIME_DIR/pinwin`, the duplicate check, stale-file removal and
+//! bind that all happen before any surface opens, the listener that parses
+//! `toggle\n` and answers `ok\n` or `error\n` until the host's child ends,
+//! and the client that asks a running host to toggle its panel
+//! (`keyboard-focus-request`'s socket plumbing, the toggle protocol of
+//! `replace-gtk-with-wayland` D4; the module moved into the library with
+//! `serve-instance-socket` D7, so a library host can serve the same socket).
+//! The transport is the standard library's Unix sockets only, no new
+//! dependencies; every socket wait is bounded, so one peer cannot hang the
+//! listener or the client.
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -21,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use std::{fs, os::unix::net};
 
-use pinwin::guard::{Poisoned, guard_default};
+use crate::guard::{Poisoned, guard_default};
 
 /// A validated instance name (`PINWIN_NAME`, `--toggle [name]`): 1..=64
 /// characters from `[A-Za-z0-9_-]`. The newtype keeps the socket path safe
@@ -32,6 +33,7 @@ pub struct InstanceName(String);
 
 impl InstanceName {
     /// The name used when none is given: `default`.
+    #[must_use]
     pub fn default_instance() -> InstanceName {
         InstanceName("default".to_owned())
     }
@@ -131,7 +133,14 @@ pub fn socket_path(
 ///    ([`BindError::Failed`]), so a permission or resource failure never
 ///    gets something else's path deleted.
 pub fn bind_instance_socket(path: &Path) -> Result<net::UnixListener, BindError> {
-    let dir = path.parent().expect("the socket path has a parent");
+    // `socket_path` always composes a parent, but a hand-built path without
+    // one is a caller error, not a panic.
+    let Some(dir) = path.parent() else {
+        return Err(BindError::Failed(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the socket path has no parent directory",
+        )));
+    };
     if let Err(error) = fs::create_dir(dir)
         && error.kind() != io::ErrorKind::AlreadyExists
     {
@@ -212,7 +221,7 @@ const ACCEPT_POLL: Duration = Duration::from_millis(100);
 ///
 /// The body runs through the D5 guard with its own latch: a panic in the
 /// listener ends the loop quietly instead of unwinding out of the thread.
-pub(crate) fn serve_toggle_requests<E>(
+pub fn serve_toggle_requests<E>(
     listener: &net::UnixListener,
     toggle: &(impl Fn() -> Result<(), E> + Sync),
     shutdown: &AtomicBool,
@@ -339,7 +348,7 @@ fn write_bounded(stream: &mut net::UnixStream, reply: &[u8]) {
 /// Remove the instance's socket file after the host ends. The listener this
 /// module bound always created the file at that path (the bind replaced any
 /// stale file first), so the removal only has to skip an already-gone file.
-pub(crate) fn remove_socket_file(path: &Path) {
+fn remove_socket_file(path: &Path) {
     if let Err(error) = fs::remove_file(path)
         && error.kind() != io::ErrorKind::NotFound
     {
@@ -349,10 +358,12 @@ pub(crate) fn remove_socket_file(path: &Path) {
 
 /// The instance's socket file; dropping it removes the file, so every exit
 /// path after the bind cleans up.
-pub(crate) struct SocketFile(PathBuf);
+#[derive(Debug)]
+pub struct SocketFile(PathBuf);
 
 impl SocketFile {
-    pub(crate) fn new(path: PathBuf) -> Self {
+    #[must_use]
+    pub fn new(path: PathBuf) -> Self {
         Self(path)
     }
 }
@@ -365,7 +376,7 @@ impl Drop for SocketFile {
 
 /// [`socket_path`] from the process environment: `XDG_RUNTIME_DIR` is used as
 /// given, with no lossy conversion.
-pub(crate) fn socket_path_from_env(name: &InstanceName) -> Result<PathBuf, String> {
+pub fn socket_path_from_env(name: &InstanceName) -> Result<PathBuf, String> {
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
     let display = std::env::var_os("WAYLAND_DISPLAY");
     socket_path(runtime_dir.as_deref(), display.as_deref(), name)
@@ -373,7 +384,7 @@ pub(crate) fn socket_path_from_env(name: &InstanceName) -> Result<PathBuf, Strin
 
 /// What asking a host to toggle ended in.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ToggleError {
+pub enum ToggleError {
     /// The environment did not provide a usable socket path (exit 2, the
     /// same class as a bad name).
     Environment(String),
@@ -386,7 +397,7 @@ pub(crate) enum ToggleError {
 /// `toggle\n`, and wait a bounded time for the reply. `ok\n` is [`Ok`];
 /// everything else — a refused connect, `error\n`, a timeout, an invalid
 /// reply — is [`ToggleError::NotAnswered`] with the message to print.
-pub(crate) fn toggle_client(path: &Path) -> Result<(), ToggleError> {
+pub fn toggle_client(path: &Path) -> Result<(), ToggleError> {
     let mut stream = net::UnixStream::connect(path).map_err(|error| {
         ToggleError::NotAnswered(format!(
             "pinwin: no pinwin is listening on {} ({error})",

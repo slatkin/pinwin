@@ -13,7 +13,7 @@ use std::num::NonZeroU16;
 
 use pinwin::layout::{Accent, Keyboard};
 
-use crate::ipc::InstanceName;
+use pinwin::instance::InstanceName;
 
 /// Which layout class the panel starts in (`PINWIN_ZONE`,
 /// `replace-gtk-with-wayland` D4): `reserve` starts with a pushing layout,
@@ -396,7 +396,7 @@ mod tests {
 
         // A bad name is an exit-2 error before any surface opens; an empty
         // value is bad too, not the default. The exact wording is
-        // `InstanceName::parse`'s contract, asserted in `ipc.rs`; here only
+        // `InstanceName::parse`'s contract, asserted in `instance.rs`; here only
         // the error class holds: the rejection names the variable.
         for raw in ["", "a/b", &"a".repeat(65), "a b"] {
             let map = HashMap::from([("PINWIN_NAME".to_owned(), raw.to_owned())]);
