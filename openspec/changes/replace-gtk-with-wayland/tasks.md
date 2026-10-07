@@ -63,9 +63,9 @@ start a later group.
 ## 8. Switch over and remove GTK
 
 - [x] 8.1 Switch `Panel` to the panel thread. Delete `src/panel/gtk_side.rs`, the GSK and cairo painters, `src/render/parity.rs`, `src/render/texture.rs`, the GDK input wiring and the GLib pty source. Remove the GTK, cairo, Pango and gdk-pixbuf code from the other modules that design decision 11 names, and replace the GLib call in `src/fontconfig.rs`. Remove gtk4, gdk4, gtk4-layer-shell, pango, pangocairo, cairo-rs and gdk-pixbuf from `Cargo.toml`. Replace the demo's `glib::base64_encode` with a short encoder. Route `Panel::request_focus` to the panel thread, so the focus command reaches `xdg_activation_v1.activate` (the GTK path's `post_focus` returns `Ok(())` without posting since row 7.2). Verify: `cargo build`, `cargo build --examples`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo audit`, `cargo nextest run` and `make check-code-file-lines` all pass.
-- [ ] 8.2 Remove `gtk4` and `gtk4-layer-shell` from the package list in `.github/workflows/build.yml`. Add a step that lists the `pinwin` binary's dynamic dependencies with `ldd` and fails on a forbidden library. Verify: the step passes on the new binary, and the "Dynamic dependencies" scenario holds.
+- [x] 8.2 Remove `gtk4` and `gtk4-layer-shell` from the package list in `.github/workflows/build.yml`. Add a step that lists the `pinwin` binary's dynamic dependencies with `ldd` and fails on a forbidden library. Verify: the step passes on the new binary, and the "Dynamic dependencies" scenario holds.
 - [ ] 8.3 Update `README.md` and `AGENTS.md`: the install requirements, the module structure, the architecture, the `NoDisplay` description and the known caveats. Remove the parked GTK thread from both. Verify: `grep -n GTK README.md AGENTS.md` shows only historical mentions.
-- [ ] 8.4 Set the crate version to 0.2.0, and replace the `gtk4` keyword in `Cargo.toml`. Verify: `cargo build` succeeds and `Cargo.toml` shows 0.2.0.
+- [x] 8.4 Set the crate version to 0.2.0, and replace the `gtk4` keyword in `Cargo.toml`. Verify: `cargo build` succeeds and `Cargo.toml` shows 0.2.0.
 
 ## 9. niri upstream
 
