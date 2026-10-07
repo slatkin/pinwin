@@ -71,7 +71,6 @@ pub(crate) fn map_outcome(outcome: PublishOutcome) -> Result<(), PinwinError> {
         PublishOutcome::Applied => Ok(()),
         PublishOutcome::NotLive => Err(PinwinError::NotRunning),
         PublishOutcome::InvalidLayout => Err(PinwinError::InvalidLayout),
-        PublishOutcome::Terminal => Err(PinwinError::Internal),
     }
 }
 
@@ -187,10 +186,6 @@ mod tests {
         assert_eq!(
             map_outcome(PublishOutcome::InvalidLayout),
             Err(PinwinError::InvalidLayout)
-        );
-        assert_eq!(
-            map_outcome(PublishOutcome::Terminal),
-            Err(PinwinError::Internal)
         );
     }
 

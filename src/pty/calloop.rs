@@ -121,13 +121,12 @@ pub fn attach_calloop<D>(
                 } else {
                     0
                 };
-                // No hangup condition to pass (D2): calloop's poller folds
-                // `EPOLLHUP`/`EPOLLERR` into plain readability — its
-                // `Readiness::error` stays clear for fd sources — so unlike
-                // the glib source's `G_IO_HUP` there is no readiness bit to
-                // consult, and the drain's read result (EOF, or `EIO` on a
-                // pty master) is the hangup detector.
-                drain(fd, false, feed.as_mut(), started, budget, &now_us)
+                // calloop's poller folds `EPOLLHUP`/`EPOLLERR` into plain
+                // readability — its `Readiness::error` stays clear for fd
+                // sources — so there is no readiness bit to consult, and the
+                // drain's read result (EOF, or `EIO` on a pty master) is the
+                // hangup detector (D2).
+                drain(fd, feed.as_mut(), started, budget, &now_us)
             });
             match outcome {
                 Ok(Drain::Dispatched) => Ok(PostAction::Continue),

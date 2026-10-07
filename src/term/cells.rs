@@ -106,22 +106,7 @@ impl Terminal {
         let Some(handles) = self.handles.as_mut() else {
             return false;
         };
-        begin(&mut self.frame, handles, false)
-    }
-
-    /// Reopen the frame for an image pass after a closed one, keeping the
-    /// placeholder origins the just-finished cell pass recorded. The node
-    /// painter runs its cell and image passes as separate frame cycles
-    /// (`emit_cells`/`emit_images` in `render/nodes.rs`), and the image pass
-    /// resolves a virtual placement against the origins of the very cells
-    /// that pass just walked — a fresh [`frame_begin`](Self::frame_begin)
-    /// would clear them and silently drop every unicode-placeholder image.
-    /// Returns false under the same conditions as `frame_begin`.
-    pub fn frame_begin_images(&mut self) -> bool {
-        let Some(handles) = self.handles.as_mut() else {
-            return false;
-        };
-        begin(&mut self.frame, handles, true)
+        begin(&mut self.frame, handles)
     }
 
     /// Revisit the captured cells after painting all backgrounds, so glyphs may
@@ -179,7 +164,7 @@ impl Terminal {
 
 /// Start a frame (`pinwin_frame_begin`): refresh the render state, capture the
 /// default colours and cursor, and rewind the row iterator.
-fn begin(frame: &mut FrameState, handles: &mut Handles, keep_placeholders: bool) -> bool {
+fn begin(frame: &mut FrameState, handles: &mut Handles) -> bool {
     let terminal = handles.terminal.expect("frame_begin with a live terminal");
     let render_state = handles
         .render_state
@@ -257,9 +242,7 @@ fn begin(frame: &mut FrameState, handles: &mut Handles, keep_placeholders: bool)
     frame.last_emitted_cp = 0;
     frame.in_row = false;
     frame.flags.images_started = false;
-    if !keep_placeholders {
-        frame.placeholders.clear();
-    }
+    frame.placeholders.clear();
     frame.cell_y = -1;
     true
 }

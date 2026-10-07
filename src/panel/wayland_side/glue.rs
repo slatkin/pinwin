@@ -16,7 +16,7 @@ use std::os::fd::RawFd;
 use std::rc::Rc;
 
 use crate::guard::Poisoned;
-use crate::layout::{Accent, CellSize};
+use crate::layout::Accent;
 use crate::pty::Pty;
 use crate::render::png::PngCrateDecoder;
 use crate::term::Terminal;
@@ -94,13 +94,8 @@ pub(crate) fn thread_renderer(
 /// pty the writer and the fd slot come from.
 pub(crate) type BytePath = (Rc<RefCell<Terminal>>, Rc<Cell<bool>>, Rc<Cell<i32>>, Pty);
 
-pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd, cell: CellSize) -> BytePath {
-    // The pty winsize's pixel fields (the glib path's input): a measured
-    // cell is positive, so the conversion cannot fail; the fallback keeps
-    // the fields positive rather than panicking (D5).
-    let cell_w = u32::try_from(cell.width().get()).unwrap_or(1);
-    let cell_h = u32::try_from(cell.height().get()).unwrap_or(1);
-    let pty = Pty::new(poisoned.clone(), fd, cell_w, cell_h);
+pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd) -> BytePath {
+    let pty = Pty::new(poisoned.clone(), fd);
     let repaint = Rc::new(Cell::new(false));
     let stale_grid_px = Rc::new(Cell::new(0));
     let terminal = Rc::new(RefCell::new(Terminal::new(
@@ -219,7 +214,7 @@ mod tests {
     use super::super::{Inner, Startup};
     use super::*;
     use crate::fontconfig::FontConfig;
-    use crate::layout::{Keyboard, Layout, OutputSize, Side};
+    use crate::layout::{CellSize, Keyboard, Layout, OutputSize, Side};
     use crate::panel::PinwinError;
     use crate::panel::handshake::{Handshake, map_start};
     use crate::panel::wayland_side::sizing::Sizing;
@@ -355,8 +350,7 @@ mod tests {
     /// loop later reads and clears.
     #[test]
     fn the_byte_path_shares_one_flag_between_the_terminal_and_the_state() {
-        let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
-        let (terminal, repaint, _stale, _pty) = byte_path(Poisoned::new(), -1, cell);
+        let (terminal, repaint, _stale, _pty) = byte_path(Poisoned::new(), -1);
         assert!(
             terminal.borrow_mut().push_size(8, 4, 9, 16),
             "the test grid pushes"
@@ -378,7 +372,7 @@ mod tests {
     #[test]
     fn the_byte_path_records_and_clears_the_widened_grid() {
         let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
-        let (terminal, repaint, stale, _pty) = byte_path(Poisoned::new(), -1, cell);
+        let (terminal, repaint, stale, _pty) = byte_path(Poisoned::new(), -1);
         assert!(
             terminal.borrow_mut().push_size(40, 4, 9, 16),
             "the test grid pushes"
@@ -422,8 +416,7 @@ mod tests {
     fn a_focus_enter_through_the_seat_links_flips_the_flag_and_requests_a_repaint() {
         use crate::panel::wayland_side::seat::SeatSide;
 
-        let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
-        let (terminal, repaint, _stale, _pty) = byte_path(Poisoned::new(), -1, cell);
+        let (terminal, repaint, _stale, _pty) = byte_path(Poisoned::new(), -1);
         let focused = Rc::new(Cell::new(false));
         let draw_offset = Rc::new(Cell::new(0.0));
         let links = seat_links(&terminal, &repaint, &draw_offset, &focused, Poisoned::new());
@@ -493,8 +486,7 @@ mod tests {
         use std::os::fd::AsRawFd as _;
 
         let (master, mut slave) = pty_pair();
-        let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
-        let (terminal, repaint, _stale, pty) = byte_path(Poisoned::new(), master.as_raw_fd(), cell);
+        let (terminal, repaint, _stale, pty) = byte_path(Poisoned::new(), master.as_raw_fd());
         assert!(
             terminal.borrow_mut().push_size(8, 4, 9, 16),
             "the test grid pushes"
@@ -554,14 +546,14 @@ mod tests {
     );
 
     fn state_over_pty(master: &std::fs::File) -> StateOverPty {
+        let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
         let startup = Startup {
             fd: master.as_raw_fd(),
             layout: layout(Side::Left, 40, 0, 0, 0, 0),
             keyboard: Keyboard::OnDemand,
             accent: None,
         };
-        let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
-        let (terminal, repaint, stale_px, pty) = byte_path(Poisoned::new(), startup.fd, cell);
+        let (terminal, repaint, stale_px, pty) = byte_path(Poisoned::new(), startup.fd);
         let mut state = PanelState::headless(
             Handshake::new(mpsc::channel().0),
             Poisoned::new(),

@@ -501,32 +501,4 @@ mod tests {
             "drawn at the placeholder origin at the image's own size"
         );
     }
-
-    /// The node painter's order: `emit_images` opens its own frame after the
-    /// cell pass has ended (`node_images.rs`), and that `frame_begin` must
-    /// not throw away the placeholder origins the cell pass recorded, or
-    /// every unicode-placeholder image is silently dropped (the mbv bug).
-    #[test]
-    fn replayed_mbv_image_survives_the_node_image_pass_fresh_frame() {
-        let mut terminal = replay_terminal();
-        terminal.push_pty_data(&mbv_replay_bytes());
-
-        assert!(terminal.frame_begin());
-        collect(&mut terminal);
-        terminal.frame_end();
-
-        assert!(terminal.frame_begin_images());
-        let img = terminal
-            .image_next()
-            .expect("the placeholder origins survive into the image pass");
-        terminal.frame_end();
-        assert_eq!(img.image_id, IMAGE_ID);
-        assert_eq!((img.x, img.y, img.w, img.h), (4 * 8, 2 * 16, 8, 16));
-
-        // A plain frame_begin is still a fresh frame: without a cell pass it
-        // has no placeholder origins, so the image is not drawn again.
-        assert!(terminal.frame_begin());
-        assert!(terminal.image_next().is_none(), "stale origins are cleared");
-        terminal.frame_end();
-    }
 }

@@ -7,8 +7,8 @@
 
 /// The outcome of publishing a layout (`glue_publish_layout`'s return codes).
 /// The `panel` row (4.1) maps these onto `PinwinError`: `NotLive` is
-/// `NotRunning`, `InvalidLayout` is `InvalidLayout` and `Terminal` is
-/// `Internal` (`pinwin_api.c`'s `apply_on_gtk_thread`).
+/// `NotRunning` and `InvalidLayout` is `InvalidLayout`
+/// (`pinwin_api.c`'s `apply_on_gtk_thread`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PublishOutcome {
     /// The layout is applied and the grid follows (`PINWIN_GEOM_OK`).
@@ -18,7 +18,4 @@ pub enum PublishOutcome {
     NotLive,
     /// The layout the live monitor refuses (`PINWIN_GEOM_ERR_METRICS`).
     InvalidLayout,
-    /// The layout published but the terminal grid could not be allocated; the
-    /// previous grid stays (`GLUE_ERR_TERMINAL`).
-    Terminal,
 }

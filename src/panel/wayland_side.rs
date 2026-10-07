@@ -1,5 +1,6 @@
 //! The Wayland side of the `Panel` lifecycle (replace-gtk-with-wayland D2):
-//! one thread per start, owning the Wayland connection and the calloop loop.//! [`Panel::start`](super::Panel::start) spawns it and the drop's teardown
+//! one thread per start, owning the Wayland connection and the calloop loop.
+//! [`Panel::start`](super::Panel::start) spawns it and the drop's teardown
 //! ends it.
 //!
 //! [`spawn_panel_thread`] opens the connection from the display name (or the
@@ -346,7 +347,7 @@ fn run_thread(
         handshake.report(StartOutcome::Internal);
         return;
     };
-    let (terminal, repaint, stale_px, pty) = glue::byte_path(poisoned.clone(), startup.fd, cell);
+    let (terminal, repaint, stale_px, pty) = glue::byte_path(poisoned.clone(), startup.fd);
     let focused = Rc::new(Cell::new(false));
     let draw_offset = Rc::new(Cell::new(0.0));
 
@@ -431,7 +432,7 @@ fn run_loop(
     // default queue the wayland source dispatches, carrying the globals'
     // events and every surface, output and layer event the session's
     // handlers answer.
-    let queue = WaylandSource::new(connection.clone(), queue)
+    WaylandSource::new(connection.clone(), queue)
         .insert(handle.clone())
         .map_err(calloop::Error::from)?;
 
@@ -497,7 +498,6 @@ fn run_loop(
             if let Some(source) = pty_source.take() {
                 source.remove();
             }
-            let _ = queue;
             return Ok(());
         }
         if let Err(error) = event_loop.dispatch(None, state) {

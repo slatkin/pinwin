@@ -41,7 +41,7 @@
 //! suppression is permitted).
 
 use tiny_skia::{
-    FillRule, LineJoin, Paint, PathBuilder, Pixmap, PixmapPaint, Shader, Stroke, Transform,
+    FillRule, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Shader, Stroke, Transform,
 };
 
 use crate::term::cells::Rgb;
@@ -181,20 +181,7 @@ impl Canvas {
     /// non-finite coordinate draws nothing; a polygon reaching past the
     /// canvas is clipped to it.
     pub fn fill_polygon(&mut self, points: &[(f32, f32)], color: CanvasColor) {
-        if points.len() < 3 || !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
-            return;
-        }
-        let mut left = points.iter().copied();
-        let Some((x0, y0)) = left.next() else {
-            return;
-        };
-        let mut builder = PathBuilder::new();
-        builder.move_to(x0, y0);
-        for (x, y) in left {
-            builder.line_to(x, y);
-        }
-        builder.close();
-        let Some(path) = builder.finish() else {
+        let Some(path) = closed_path(points) else {
             return;
         };
         let paint = paint(color, true);
@@ -217,24 +204,10 @@ impl Canvas {
     /// non-finite coordinate draws nothing; the stroke is clipped to the
     /// canvas.
     pub fn stroke_polygon(&mut self, points: &[(f32, f32)], width: f32, color: CanvasColor) {
-        if points.len() < 3
-            || width <= 0.0
-            || !width.is_finite()
-            || !points.iter().all(|(x, y)| x.is_finite() && y.is_finite())
-        {
+        if width <= 0.0 || !width.is_finite() {
             return;
         }
-        let mut points = points.iter().copied();
-        let Some((x0, y0)) = points.next() else {
-            return;
-        };
-        let mut builder = PathBuilder::new();
-        builder.move_to(x0, y0);
-        for (x, y) in points {
-            builder.line_to(x, y);
-        }
-        builder.close();
-        let Some(path) = builder.finish() else {
+        let Some(path) = closed_path(points) else {
             return;
         };
         let stroke = Stroke {
@@ -295,6 +268,24 @@ fn paint(color: CanvasColor, anti_alias: bool) -> Paint<'static> {
         anti_alias,
         ..Paint::default()
     }
+}
+
+/// A closed path through `points`, or `None` for fewer than three points or
+/// a non-finite coordinate.
+fn closed_path(points: &[(f32, f32)]) -> Option<Path> {
+    let [(x0, y0), rest @ ..] = points else {
+        return None;
+    };
+    if points.len() < 3 || !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
+        return None;
+    }
+    let mut builder = PathBuilder::new();
+    builder.move_to(*x0, *y0);
+    for &(x, y) in rest {
+        builder.line_to(x, y);
+    }
+    builder.close();
+    builder.finish()
 }
 
 /// Multiply two 8-bit channels and round to the nearest `u8`, with

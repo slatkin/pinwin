@@ -42,30 +42,9 @@ pub mod xkb;
 use focus::FocusSide;
 use pointer::PointerSide;
 
-/// The keyboard hooks' links: the terminal the key encoder pushes into and
-/// the panel's shared D5 latch. They are the keyboard view of the fuller
-/// [`SeatLinks`], which [`SeatLinks::keyboard`] derives, so the row 8.1
-/// wiring carries one links value for all three seat halves.
-#[derive(Clone)]
-pub struct KeyboardLinks {
-    /// The terminal the encoders push into.
-    pub terminal: Rc<RefCell<Terminal>>,
-    /// Latched when a hook body panicked (D5); the panel consults it.
-    pub poisoned: Poisoned,
-}
-
-impl std::fmt::Debug for KeyboardLinks {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KeyboardLinks")
-            .field("poisoned", &self.poisoned)
-            .finish_non_exhaustive()
-    }
-}
-
 /// The seat hooks' links: everything the hooks reach outside this module. The row 8.1 wiring
 /// assembles one value from the panel state; the pointer and focus hooks
-/// take the whole set, the keyboard hooks the terminal and the latch
-/// through [`KeyboardLinks`].
+/// take the whole set.
 #[derive(Clone)]
 pub struct SeatLinks {
     /// The terminal the encoders push into.
@@ -89,17 +68,6 @@ impl std::fmt::Debug for SeatLinks {
             .field("focused", &self.focused)
             .field("poisoned", &self.poisoned)
             .finish_non_exhaustive()
-    }
-}
-
-impl SeatLinks {
-    /// The keyboard hooks' view of the links: the terminal and the latch.
-    #[must_use]
-    pub fn keyboard(&self) -> KeyboardLinks {
-        KeyboardLinks {
-            terminal: Rc::clone(&self.terminal),
-            poisoned: self.poisoned.clone(),
-        }
     }
 }
 
@@ -128,12 +96,6 @@ impl SeatSide {
             keyboard: keyboard::KeyboardSide::new(),
             pointer: PointerSide::default(),
         }
-    }
-
-    /// The keyboard hooks' view of the links: the terminal and the latch.
-    #[must_use]
-    pub fn keyboard_links(&self) -> KeyboardLinks {
-        self.links.keyboard()
     }
 
     /// One keymap update (row 5.1): the seat's own xkb keymap and state

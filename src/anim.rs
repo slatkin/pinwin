@@ -26,9 +26,8 @@ pub enum Advance {
 
 /// The tween's pure state and step, display-free so tests can drive it
 /// (`glue_anim.c` `Anim` minus the widget and source ids).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tween {
-    active: bool,
     from_px: i32,
     to_px: i32,
     cur_px: i32,
@@ -44,19 +43,12 @@ impl Tween {
     #[must_use]
     pub fn begin(from_px: i32, to_px: i32, duration_ms: u32) -> Self {
         Tween {
-            active: true,
             from_px,
             to_px,
             cur_px: from_px,
             t0_us: None,
             dur_us: i64::from(duration_ms) * 1000,
         }
-    }
-
-    /// Whether the tween is running (`a.active`).
-    #[must_use]
-    pub fn is_active(&self) -> bool {
-        self.active
     }
 
     /// The tween's current eased width: `from_px` until the first tick, then
@@ -95,11 +87,6 @@ impl Tween {
         self.cur_px =
             self.from_px + (f64::from(self.to_px - self.from_px) * ease(t)).round() as i32;
         Advance::Frame(self.cur_px)
-    }
-
-    /// Reset to inactive (`anim_stop`'s state half).
-    pub fn stop(&mut self) {
-        *self = Tween::default();
     }
 }
 
@@ -150,14 +137,5 @@ mod tests {
         let mut tween = Tween::begin(40, 120, 1000);
         let _ = tween.advance(5_000_000);
         assert_eq!(tween.advance(4_000_000), Advance::Frame(40));
-    }
-
-    #[test]
-    fn stop_resets_the_tween() {
-        let mut tween = Tween::begin(0, 100, 1000);
-        let _ = tween.advance(100_000);
-        tween.stop();
-        assert_eq!(tween, Tween::default());
-        assert!(!tween.is_active());
     }
 }

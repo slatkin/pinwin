@@ -123,11 +123,10 @@ fn errno() -> i32 {
 /// The outcome of one main-loop dispatch of the pty read source.
 #[derive(Debug, PartialEq, Eq)]
 enum Drain {
-    /// The dispatch drained to `EAGAIN` without a hangup condition, or
-    /// yielded within its budget: the source stays installed.
+    /// The dispatch drained to `EAGAIN` or yielded within its budget: the
+    /// source stays installed.
     Dispatched,
-    /// EOF, a read error, or `EAGAIN` with a hangup condition: the child side
-    /// is gone. Drop the read source and leave the host's process lifetime
+    /// EOF or a read error: the child side is gone. Drop the read source and leave the host's process lifetime
     /// alone (`src/pty.c`).
     HungUp,
 }
@@ -140,7 +139,6 @@ enum Drain {
 /// 64 KB (`src/pty.c`).
 fn drain(
     fd: RawFd,
-    hangup_condition: bool,
     feed: &mut dyn FnMut(&[u8]),
     started_us: i64,
     budget_us: i64,
@@ -166,12 +164,7 @@ fn drain(
         if n < 0 {
             match errno() {
                 libc::EINTR => continue,
-                libc::EAGAIN => {
-                    if hangup_condition {
-                        return Drain::HungUp;
-                    }
-                    return Drain::Dispatched;
-                }
+                libc::EAGAIN => return Drain::Dispatched,
                 _ => return Drain::HungUp,
             }
         }
@@ -206,8 +199,7 @@ impl PtySink for PtyWriter {
     }
 }
 
-/// The pty state for one panel: the host-supplied master fd and the cell
-/// size used for the winsize pixel fields. The shared fd slot is the only
+/// The pty state for one panel: the host-supplied master fd. The shared fd slot is the only
 /// state the [`PtyWriter`] needs across objects; the read source is a
 /// calloop registration the panel thread attaches (`calloop::attach_calloop`)
 /// and retire is the shared slot going to -1.
@@ -216,22 +208,18 @@ pub struct Pty {
     /// The host-owned master fd, retired to -1 when the read source is gone.
     /// The library never closes the real descriptor (D7).
     fd: Arc<AtomicI32>,
-    cell_w: u32,
-    cell_h: u32,
     /// Latched when a read-source panic is caught (D5).
     poisoned: Poisoned,
 }
 
 impl Pty {
-    /// Take the host-supplied master fd and the current cell size.
-    /// `poisoned` is the panel's shared D5 latch: a read-source panic latches
-    /// it so the rest of the panel's glue code stops too.
+    /// Take the host-supplied master fd. `poisoned` is the panel's shared D5
+    /// latch: a read-source panic latches it so the rest of the panel's glue
+    /// code stops too.
     #[must_use]
-    pub fn new(poisoned: Poisoned, fd: RawFd, cell_w: u32, cell_h: u32) -> Self {
+    pub fn new(poisoned: Poisoned, fd: RawFd) -> Self {
         Pty {
             fd: Arc::new(AtomicI32::new(fd)),
-            cell_w,
-            cell_h,
             poisoned,
         }
     }
@@ -242,36 +230,6 @@ impl Pty {
         PtyWriter {
             fd: Arc::clone(&self.fd),
         }
-    }
-
-    /// Record a new cell size for the winsize pixel fields (the glue updates
-    /// this when the font changes).
-    pub fn set_cell_size(&mut self, cell_w: u32, cell_h: u32) {
-        self.cell_w = cell_w;
-        self.cell_h = cell_h;
-    }
-
-    /// Whether a callback panic was caught in the read source (D5).
-    #[must_use]
-    pub fn poisoned(&self) -> bool {
-        self.poisoned.is_poisoned()
-    }
-
-    /// Whether the read source is gone (hangup or teardown): writes and
-    /// resizes are no-ops from here on.
-    #[must_use]
-    pub fn hung_up(&self) -> bool {
-        self.fd.load(Ordering::Relaxed) < 0
-    }
-
-    /// Apply a new winsize for the current grid, raising `SIGWINCH` only
-    /// after a successful ioctl. A no-op once the fd is retired.
-    pub fn resize(&self, cols: i32, rows: i32) {
-        let fd = self.fd.load(Ordering::Relaxed);
-        if fd < 0 {
-            return;
-        }
-        let _ = apply_winsize(fd, cols, rows, self.cell_w, self.cell_h);
     }
 }
 
@@ -422,8 +380,7 @@ mod tests {
     /// A writer over a retired fd slot is a no-op, like `g_pty_fd < 0`.
     #[test]
     fn writer_over_a_retired_fd_writes_nothing() {
-        let pty = Pty::new(Poisoned::new(), -1, 8, 16);
-        assert!(pty.hung_up());
+        let pty = Pty::new(Poisoned::new(), -1);
         let mut writer = pty.writer();
         writer.write_pty(b"gone");
     }
@@ -440,7 +397,6 @@ mod tests {
         let fed_for_feed = Arc::clone(&fed);
         let outcome = drain(
             read_end.as_raw_fd(),
-            false,
             &mut |data| {
                 fed_for_feed.fetch_add(data.len(), Ordering::Relaxed);
             },
@@ -467,7 +423,6 @@ mod tests {
         let clock = AtomicUsize::new(0);
         let outcome = drain(
             read_end.as_raw_fd(),
-            false,
             &mut |data| {
                 fed_for_feed.fetch_add(data.len(), Ordering::Relaxed);
             },
@@ -491,7 +446,6 @@ mod tests {
         let fed_for_feed = Arc::clone(&fed);
         let outcome = drain(
             read_end.as_raw_fd(),
-            false,
             &mut |data| {
                 fed_for_feed.fetch_add(data.len(), Ordering::Relaxed);
             },
@@ -501,22 +455,5 @@ mod tests {
         );
         assert_eq!(outcome, Drain::HungUp);
         assert_eq!(fed.load(Ordering::Relaxed), 0);
-    }
-
-    /// `EAGAIN` together with a hangup condition hangs the source up even
-    /// though the read itself would just be retried.
-    #[test]
-    fn drain_hangs_up_on_eagain_with_a_hangup_condition() {
-        let (read_end, _write_end) = pipe_pair();
-        set_non_blocking(read_end.as_raw_fd()).expect("non-blocking");
-        let outcome = drain(read_end.as_raw_fd(), true, &mut |_| {}, 1000, 0, &|| 1000);
-        assert_eq!(outcome, Drain::HungUp);
-    }
-
-    /// Resizing a retired fd is a no-op, like `g_pty_fd < 0`.
-    #[test]
-    fn resize_over_a_retired_fd_is_a_noop() {
-        let pty = Pty::new(Poisoned::new(), -1, 8, 16);
-        pty.resize(80, 24);
     }
 }
