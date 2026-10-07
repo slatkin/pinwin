@@ -437,6 +437,51 @@ impl Drop for SocketFile {
     }
 }
 
+/// The instance's bound socket: the listener plus the socket file its bind
+/// created (`serve-instance-socket` D1). Dropping it removes the file, so an
+/// unused bind leaves no path behind and the name is free again at once.
+#[derive(Debug)]
+pub struct InstanceSocket {
+    listener: net::UnixListener,
+    /// The socket file's path; dropping the socket removes the file.
+    path: PathBuf,
+}
+
+impl Drop for InstanceSocket {
+    fn drop(&mut self) {
+        remove_socket_file(&self.path);
+    }
+}
+
+impl InstanceSocket {
+    /// Take the socket for `name` from the process environment
+    /// (`serve-instance-socket` D1): the path comes from `XDG_RUNTIME_DIR`
+    /// and `WAYLAND_DISPLAY` ([`socket_path_from_env`]), a missing runtime
+    /// directory or an unusable display name is [`InstanceError::Path`],
+    /// and a live owner of the name is [`InstanceError::Duplicate`]. The
+    /// bind needs no panel, so a host can call it before any surface opens.
+    pub fn bind(name: &InstanceName) -> Result<InstanceSocket, InstanceError> {
+        let path = socket_path_from_env(name).map_err(InstanceError::Path)?;
+        bind_at(&path)
+    }
+
+    /// The bound listener, for a host that serves the socket itself.
+    #[must_use]
+    pub fn listener(&self) -> &net::UnixListener {
+        &self.listener
+    }
+}
+
+/// [`InstanceSocket::bind`] against an explicit path, so tests bind into a
+/// scratch directory without touching the process environment
+/// (`serve-instance-socket` D7).
+pub(crate) fn bind_at(path: &Path) -> Result<InstanceSocket, InstanceError> {
+    Ok(InstanceSocket {
+        listener: bind_instance_socket(path)?,
+        path: path.to_owned(),
+    })
+}
+
 /// [`socket_path`] from the process environment: `XDG_RUNTIME_DIR` is used as
 /// given, with no lossy conversion.
 pub fn socket_path_from_env(name: &InstanceName) -> Result<PathBuf, PathError> {

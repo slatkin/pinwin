@@ -212,6 +212,66 @@ fn the_bound_listener_is_close_on_exec() {
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 
+/// An [`InstanceSocket`] owns its socket file: dropping an unused socket
+/// removes the file, and the name binds again at once
+/// (`serve-instance-socket` task 1.3).
+#[test]
+fn a_dropped_unused_socket_removes_its_file() {
+    let dir = temp_dir("instance-drop");
+    let path = dir.join("wayland-0-default.sock");
+
+    let socket = bind_at(&path).expect("bind");
+    assert!(path.exists(), "the bind created the socket file");
+    net::UnixStream::connect(&path).expect("the bind is live");
+    drop(socket);
+    assert!(!path.exists(), "the dropped socket's file is gone");
+
+    // The name is free again, and the second socket cleans up the same
+    // way.
+    drop(bind_at(&path).expect("the name is free again"));
+    assert!(!path.exists(), "the second socket's file is gone too");
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// A second live [`bind_at`] on the same path is the typed duplicate
+/// error, and the first socket stays untouched.
+#[test]
+fn a_second_live_bind_is_a_duplicate() {
+    let dir = temp_dir("instance-duplicate");
+    let path = dir.join("wayland-0-default.sock");
+
+    let first = bind_at(&path).expect("first bind");
+    assert!(
+        matches!(bind_at(&path), Err(InstanceError::Duplicate)),
+        "the live listener is a duplicate"
+    );
+    net::UnixStream::connect(&path).expect("the first socket still answers");
+    drop(first);
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// The environment-reading [`InstanceSocket::bind`], the one test that
+/// goes through the process environment: with no `XDG_RUNTIME_DIR` there
+/// is no socket path, and the bind fails with the typed `Path` error
+/// before anything is created. The test removes the variable instead of
+/// setting it — it must not depend on a real runtime directory — and no
+/// other test in this binary reads it (nextest runs each test in its own
+/// process besides).
+#[test]
+fn bind_without_a_runtime_directory_is_a_path_error() {
+    // SAFETY: single-threaded with respect to this variable — no other
+    // test in this process reads or writes `XDG_RUNTIME_DIR`.
+    unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+    let name = InstanceName::parse("notes").expect("valid");
+    assert!(
+        matches!(
+            InstanceSocket::bind(&name),
+            Err(InstanceError::Path(PathError::NoRuntimeDir))
+        ),
+        "a missing runtime directory is a typed path error"
+    );
+}
+
 /// The listener answers exactly the `toggle\n` request: it runs the
 /// callback and is answered `ok`, a failing callback `error`, and every
 /// malformed line — any other command, an argument, an empty line, a line
