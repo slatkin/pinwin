@@ -89,9 +89,9 @@ exception (generated table). The build needs Zig 0.16 on PATH: `build.rs` fetche
 pinned libghostty-vt commit and builds ghostty's own static VT library with
 `zig build`, so a cold cache also needs `git` and network access. Set
 `PINWIN_GHOSTTY_SRC=<dir>` to build against an existing git checkout instead of
-fetching; its `HEAD` must be the pinned commit. The system needs the Wayland
-client stack (libwayland), libxkbcommon and fontconfig. Live runs require
-niri. If touching the legacy `pinwin.sh`, check it with `bash -n pinwin.sh`.
+fetching; its `HEAD` must be the pinned commit. The system needs libxkbcommon
+and fontconfig. Live runs require a Wayland compositor with wlr-layer-shell
+(niri). If touching the legacy `pinwin.sh`, check it with `bash -n pinwin.sh`.
 
 ## Coding Style & Naming Conventions
 

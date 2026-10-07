@@ -13,12 +13,12 @@ are removed with the port.
 
 Building needs Zig 0.16 on PATH: `build.rs` fetches the pinned libghostty-vt
 commit and builds ghostty's own static VT library with `zig build` (a cold
-cache also needs `git` and network access). The system needs the Wayland
-client stack (libwayland), libxkbcommon and fontconfig. Fractional output
-scale comes from the fractional-scale protocol; without it the panel uses the
-integer buffer scale. A width tween crops its cached buffer through
-viewporter, and copies the crop into a fresh buffer when the compositor lacks
-it. Set
+cache also needs `git` and network access). The system needs libxkbcommon
+and fontconfig, and running needs a Wayland compositor with wlr-layer-shell.
+Fractional output scale comes from the fractional-scale protocol; without it
+the panel uses the integer buffer scale. A width tween crops its cached
+buffer through viewporter, and copies the crop into a fresh buffer when the
+compositor lacks it. Set
 `PINWIN_GHOSTTY_SRC=<dir>`
 to build against an existing ghostty checkout at the pinned commit instead of
 fetching; a checkout at any other commit is rejected.
