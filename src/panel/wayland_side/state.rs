@@ -558,13 +558,7 @@ impl PanelState {
     /// winsize when the device pixel size changed
     /// (device-pixel-cell-reports D4).
     pub(crate) fn note_integer_scale(&mut self, factor: i32) {
-        let before = self.resolved_scale();
-        if let Some(session) = &mut self.session {
-            session.scale.note_integer(factor);
-        }
-        self.sync_renderer_scale();
-        let after = self.resolved_scale();
-        self.repush_for_scale(before, after);
+        self.change_scale(|scale| scale.note_integer(factor));
     }
 
     /// Note the fractional preferred scale the `wp_fractional_scale_v1`
@@ -572,13 +566,7 @@ impl PanelState {
     /// of the resolution order (D5). Re-pushes the winsize when the device
     /// pixel size changed (device-pixel-cell-reports D4).
     pub(crate) fn note_preferred_scale(&mut self, units_120: u32) {
-        let before = self.resolved_scale();
-        if let Some(session) = &mut self.session {
-            session.scale.note_preferred_scale(units_120);
-        }
-        self.sync_renderer_scale();
-        let after = self.resolved_scale();
-        self.repush_for_scale(before, after);
+        self.change_scale(|scale| scale.note_preferred_scale(units_120));
     }
 
     /// The frame log a new tween begins with (row 6.3,

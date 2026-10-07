@@ -16,7 +16,7 @@ use std::os::fd::RawFd;
 
 use crate::pty::apply_winsize;
 
-use super::super::buffers::FractionalScale;
+use super::super::buffers::{FractionalScale, Scale};
 use super::super::sizing::Grid;
 use super::PanelState;
 
@@ -41,19 +41,19 @@ pub(crate) fn apply_pty_size(fd: RawFd, grid: Grid, scale: FractionalScale) {
     let Ok(rows) = i32::try_from(grid.rows()) else {
         return;
     };
-    let (Ok(cell_w), Ok(cell_h)) = (
-        u32::try_from(grid.cell_width()),
-        u32::try_from(grid.cell_height()),
-    ) else {
+    let Some((cell_w, cell_h)) = device_cell_px(grid, scale) else {
         return;
     };
-    let _ = apply_winsize(
-        fd,
-        i32::from(grid.cols()),
-        rows,
-        device_cell(cell_w, scale),
-        device_cell(cell_h, scale),
-    );
+    let _ = apply_winsize(fd, i32::from(grid.cols()), rows, cell_w, cell_h);
+}
+
+/// The grid's cell in device pixels at `scale`; `None` for a negative cell
+/// dimension, which no derived grid has.
+fn device_cell_px(grid: Grid, scale: FractionalScale) -> Option<(u32, u32)> {
+    Some((
+        device_cell(u32::try_from(grid.cell_width()).ok()?, scale),
+        device_cell(u32::try_from(grid.cell_height()).ok()?, scale),
+    ))
 }
 
 impl PanelState {
@@ -69,6 +69,19 @@ impl PanelState {
         )
     }
 
+    /// Apply one scale note, sync the renderer and re-push the winsize when
+    /// the resolved scale moved the device pixels (device-pixel-cell-reports
+    /// D4): the sequence both scale-note handlers share.
+    pub(crate) fn change_scale(&mut self, note: impl FnOnce(&mut Scale)) {
+        let before = self.resolved_scale();
+        if let Some(session) = &mut self.session {
+            note(&mut session.scale);
+        }
+        self.sync_renderer_scale();
+        let after = self.resolved_scale();
+        self.repush_for_scale(before, after);
+    }
+
     /// Re-push the winsize after a scale note (device-pixel-cell-reports
     /// D4): the current grid re-derived from the sizing's live columns and
     /// last configure height, pushed through the grid sink at the new scale
@@ -80,15 +93,7 @@ impl PanelState {
         let Some(grid) = self.sizing.current_grid() else {
             return;
         };
-        let (Ok(cell_w), Ok(cell_h)) = (
-            u32::try_from(grid.cell_width()),
-            u32::try_from(grid.cell_height()),
-        ) else {
-            return;
-        };
-        if device_cell(cell_w, before) == device_cell(cell_w, after)
-            && device_cell(cell_h, before) == device_cell(cell_h, after)
-        {
+        if device_cell_px(grid, before) == device_cell_px(grid, after) {
             return;
         }
         let mut push = self.grid_sink_at(after);

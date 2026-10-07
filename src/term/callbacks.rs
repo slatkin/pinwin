@@ -194,9 +194,10 @@ unsafe extern "C" fn size_report(
     guard_default(&poisoned, false, || {
         // Device pixels: the logical cell times the panel thread's scale
         // note, rounded (D1/D3) — rows and columns answer unchanged.
+        let units_120 = ctx.scale_120.get();
         let (cell_w, cell_h) = (
-            device_cell(ctx.cell_w, ctx.scale_120.get()),
-            device_cell(ctx.cell_h, ctx.scale_120.get()),
+            device_cell(ctx.cell_w, units_120),
+            device_cell(ctx.cell_h, units_120),
         );
         // SAFETY: the caller guarantees `out` is writable.
         unsafe {
