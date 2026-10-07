@@ -313,6 +313,61 @@ fn the_listener_answers_the_toggle_protocol_and_stops_on_shutdown() {
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 
+/// A client that closes before the callback would run does not run it: a
+/// toggle is a non-idempotent flip, so a client whose 500 ms wait ran out
+/// while the listener was busy in an earlier toggle — the queued request
+/// the loop reaches later — must be dropped, not flipped.
+#[test]
+fn a_peer_that_left_before_the_callback_does_not_run_it() {
+    let dir = temp_dir("gone-peer");
+    let path = dir.join("wayland-0-default.sock");
+    let listener = bind_instance_socket(&path).expect("bind");
+    let shutdown = AtomicBool::new(false);
+    let seen = AtomicUsize::new(0);
+    let stub = || {
+        seen.fetch_add(1, Ordering::Relaxed);
+        Ok::<(), ()>(())
+    };
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| serve_toggle_requests(&listener, &stub, &shutdown));
+
+        // The client sends the request line and hangs up without waiting
+        // for the reply, the shape of a client whose bounded wait ran out
+        // while the listener was busy.
+        let mut gone = net::UnixStream::connect(&path).expect("connect");
+        write_bounded(&mut gone, REQUEST_LINE);
+        drop(gone);
+
+        // The accept queue is FIFO, so a second client's completed exchange
+        // proves the first connection was already handled by the loop.
+        let mut probe = net::UnixStream::connect(&path).expect("connect");
+        write_bounded(&mut probe, b"hello");
+        let reply =
+            (0..20).find_map(|_| read_bounded(&mut probe).filter(|reply| !reply.is_empty()));
+        assert_eq!(reply, Some(REPLY_ERROR.to_vec()), "the probe exchange");
+        assert_eq!(
+            seen.load(Ordering::Relaxed),
+            0,
+            "the gone peer's request did not run the callback"
+        );
+
+        // ...and a peer that stays connected still reaches the callback.
+        let mut live = net::UnixStream::connect(&path).expect("connect");
+        write_bounded(&mut live, REQUEST_LINE);
+        let reply = (0..20).find_map(|_| read_bounded(&mut live).filter(|reply| !reply.is_empty()));
+        assert_eq!(reply, Some(REPLY_OK.to_vec()), "the live exchange");
+        assert_eq!(
+            seen.load(Ordering::Relaxed),
+            1,
+            "the live peer's request ran the callback"
+        );
+
+        shutdown.store(true, Ordering::Relaxed);
+    });
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
 /// The client's exchange against a scripted host: the request line goes
 /// out as `toggle\n`; `ok` succeeds, `error` and a garbage reply are
 /// reported as the request not being answered, a host that never replies

@@ -229,7 +229,13 @@ pub(crate) fn serve_toggle_requests<E>(
                 continue;
             };
             let reply = match read_bounded(&mut stream).as_deref() {
-                Some(line) if line == REQUEST => match toggle() {
+                // The peer must still be there before the toggle runs: a
+                // toggle is a non-idempotent flip, so a request from a
+                // client that already gave up — its 500 ms wait ran out
+                // while this loop was busy in an earlier toggle — must not
+                // flip the panel later, when the loop reaches the queued
+                // request. A closed peer shows up as end-of-file.
+                Some(line) if line == REQUEST && !peer_gone(&stream) => match toggle() {
                     Ok(()) => REPLY_OK,
                     Err(_) => REPLY_ERROR,
                 },
@@ -238,6 +244,25 @@ pub(crate) fn serve_toggle_requests<E>(
             write_bounded(&mut stream, reply);
         }
     });
+}
+
+/// Whether the peer has closed its end: a non-blocking `MSG_PEEK` recv that
+/// reports zero bytes means no data is pending and the peer shut down.
+/// Pending data, no data yet (`EAGAIN`), or an unreadable error keep the
+/// peer — only a definite close skips the callback.
+fn peer_gone(stream: &net::UnixStream) -> bool {
+    let mut byte = 0u8;
+    // SAFETY: `byte` is one valid byte buffer for the duration of the call,
+    // and `MSG_PEEK` never consumes the data it reads.
+    let read = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            std::ptr::addr_of_mut!(byte).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    read == 0
 }
 
 /// Wait until `fd` reports `events` (`POLLIN`/`POLLOUT`), at most `timeout`.
