@@ -24,7 +24,7 @@
 
 ## 5. Release
 
-- [ ] 5.1 Document in the README's library section the bind-then-start opt-in, `Panel::show` and `instance::send`, and `--show` in "Toggle request". In "Migrating from `request_focus`", replace the "must track the shown state itself" text with a pointer to `Panel::show`. Add a "Migrating to 0.3.0" section: `Startup` is no longer `Copy`, and the opt-in socket is new. Add the README's socket snippet as `examples/instance_host.rs`, identical apart from a `main`. Verify: `cargo build --example instance_host` compiles it, and `diff` of the snippet's body against the README's fenced block shows no difference.
+- [x] 5.1 Document in the README's library section the bind-then-start opt-in, `Panel::show` and `instance::send`, and `--show` in "Toggle request". In "Migrating from `request_focus`", replace the "must track the shown state itself" text with a pointer to `Panel::show`. Add a "Migrating to 0.3.0" section: `Startup` is no longer `Copy`, and the opt-in socket is new. Add the README's socket snippet as `examples/instance_host.rs`, identical apart from a `main`. Verify: `cargo build --example instance_host` compiles it, and `diff` of the snippet's body against the README's fenced block shows no difference.
 - [ ] 5.2 Set the version in `Cargo.toml` to 0.3.0 and run the full check. Verify: `cargo clippy --all-targets -- -D warnings` and `cargo nextest run` both pass, and on niri `pinwin --show` and `pinwin --toggle` behave as the "Show from the command line" scenario says.
 
 ## Workflow follow-up
