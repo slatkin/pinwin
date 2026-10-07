@@ -35,7 +35,7 @@ mod settings;
 
 use cli::{Mode, default_command, parse_args};
 use ipc::{BindError, InstanceName, ToggleError};
-use settings::{Settings, read_settings};
+use settings::{Settings, Zone, read_settings};
 
 /// The child's process id, read by the signal handler; zero means "no child
 /// yet". `signal(2)` handlers may only touch async-signal-safe state, which
@@ -232,8 +232,15 @@ fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
     };
 
     // The layout the C host built: docked left, top/bottom/left gutters zero,
-    // `COLS` columns wide, `GUTTER` on the right.
+    // `COLS` columns wide, `GUTTER` on the right. `PINWIN_ZONE=overlay` opts
+    // into a covering start, so nothing is ever reserved and a toggle moves
+    // no window (replace-gtk-with-wayland D4); the library needs no new code
+    // for it, because a covering start already reserves nothing.
     let layout = Layout::new(Side::Left, settings.cols, 0, 0, 0, settings.right);
+    let layout = match settings.zone {
+        Zone::Reserve => layout,
+        Zone::Overlay => layout.covering(),
+    };
 
     // The library sets no child environment: say we are a colour terminal
     // before the fork, so the child inherits it.
