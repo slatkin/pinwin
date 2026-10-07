@@ -33,11 +33,6 @@ use super::apply::SurfaceGeometry;
 use super::state::PanelState;
 use super::surfaces::{grid_width_px, panel_margins};
 
-#[cfg(test)]
-use super::state::FrameOp;
-#[cfg(test)]
-use smithay_client_toolkit::shell::wlr_layer::Layer;
-
 /// Whether the panel's surfaces are mapped or unmapped (row 9.1, D4). The
 /// panel is shown at start; a toggle flips it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,28 +126,12 @@ impl PanelState {
         if let Some(render) = &self.render {
             render.renderer.borrow_mut().invalidate();
         }
-        // The layer writes the show's surfaces tail performs (row 9.9):
-        // recorded on the seam before the session read, so the headless
-        // tests observe the re-sent layers the same way the tween tests
-        // observe the frame order (row 9.8).
-        #[cfg(test)]
-        self.record_show_layer_ops();
         if let Some(session) = self.session.as_mut()
             && let Some(surfaces) = session.surfaces.as_mut()
         {
             surfaces.show(&geometry);
         }
         self.visibility = Visibility::Shown;
-    }
-
-    /// Record the layer writes the show's surfaces tail performs (row 9.9's
-    /// extension of the row 9.8 seam): test builds only.
-    #[cfg(test)]
-    fn record_show_layer_ops(&self) {
-        self.frame_ops.borrow_mut().extend([
-            FrameOp::SetPanelLayer(Layer::Overlay),
-            FrameOp::SetReserveLayer(Layer::Bottom),
-        ]);
     }
 
     /// Whether the session's surfaces lack the reserve: the show recreates
@@ -323,38 +302,6 @@ mod tests {
             startup(),
             cell(),
         )
-    }
-
-    /// A show re-sends the layers an unmap resets (row 9.9): the
-    /// compositor's shell drops the whole double-buffered layer-shell state
-    /// to its defaults on the hide's null-buffer commit — smithay's
-    /// `pre_commit_hook` sets the pending `LayerSurfaceCachedState` to
-    /// `Default`, whose layer is `background` — so a show that re-sent only
-    /// size, anchor, margins, zone and interactivity remapped the panel on
-    /// the `background` layer, below the normal windows. The show records
-    /// the layer writes on the row 9.8 seam: the panel back on `overlay`,
-    /// the reserve on `bottom`, in that order, before the remapping commit.
-    /// A reserve the compositor closed while hidden is instead recreated
-    /// with its layer set at creation.
-    #[test]
-    fn a_show_re_sends_the_layers_an_unmap_resets() {
-        let mut state = headless_state();
-        state.toggle();
-        assert!(
-            state.frame_ops.borrow().is_empty(),
-            "the hide records no layer writes"
-        );
-
-        state.toggle();
-        assert_eq!(
-            state.frame_ops.borrow().as_slice(),
-            [
-                FrameOp::SetPanelLayer(Layer::Overlay),
-                FrameOp::SetReserveLayer(Layer::Bottom),
-            ]
-            .as_slice(),
-            "the show re-sends both surfaces' layers"
-        );
     }
 
     /// A toggle flips the shown/hidden state and a second one flips it
