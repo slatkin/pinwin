@@ -9,7 +9,7 @@
 ### Requirement: Keyboard focus by clicking
 If the startup layout requests `on-demand` mode, the panel SHALL use layer-shell `on-demand`
 keyboard interactivity. In this mode, the panel receives keyboard input only after one of two
-events. The user clicks inside the panel, or the host requests focus. The panel gives up
+events. The user clicks inside the panel, or a toggle shows the panel. The panel gives up
 keyboard input after the user clicks a compositor window. At open, the panel SHALL NOT take
 keyboard focus. The keyboard mode is fixed at start time, and no runtime override exists.
 
@@ -232,7 +232,7 @@ count above 65535 and a gutter outside the 32-bit signed range SHALL be unrepres
 layout argument type and therefore need no runtime check. The push/cover choice SHALL be
 representable in the layout argument type with pushing as the backward-compatible default.
 Purely structural rejection (arithmetic overflow of the gutters' own sum) SHALL NOT require
-any GTK surface to exist.
+a compositor connection or any surface to exist.
 
 #### Scenario: Invalid geometry
 - **WHEN** the host applies top/bottom gutters leaving less than one row
@@ -293,8 +293,10 @@ compositor places tiled windows beside that strip. A covering layout leaves that
 exactly as the last pushing layout set it, so tiled windows do not move while the visible
 panel draws over them. When no pushing layout has ever applied (a covering start), the held
 reservation SHALL be an empty strip: nothing is reserved until the first pushing layout
-applies. The reservation SHALL apply only to the panel's monitor. The gap between the panel
-and the first tile is the far gutter plus whatever strut the compositor itself adds.
+applies. While the panel is hidden, the reservation SHALL be released, and showing the panel
+SHALL restore the held strip. The reservation SHALL apply only to the panel's monitor. The gap
+between the panel and the first tile is the far gutter plus whatever strut the compositor
+itself adds.
 
 #### Scenario: Tiles move right
 - **WHEN** the panel opens docked left with panel width 320, Left 0 and Right 12
@@ -313,12 +315,17 @@ and the first tile is the far gutter plus whatever strut the compositor itself a
   layout on the same side
 - **THEN** tiled windows keep their position and the visible panel extends past the strip
 
+#### Scenario: Hidden panel reserves nothing
+- **WHEN** the held strip is 332 px on the left and the panel is hidden
+- **THEN** tiled windows take the strip, and they move back beside it when the panel is shown
+
 ### Requirement: Host-owned pty
 The library SHALL read and write the pty master fd supplied at start and apply the window
 size to it (`TIOCSWINSZ`); it SHALL NOT fork, wait on a child, close the fd, or set any child
 environment (the host owns the fd's lifetime and its child's `TERM` and `COLORTERM`). A start
-whose fd is not an open descriptor SHALL fail with `PinwinError::InvalidFd` before any GTK
-work. Hangup on the master drops the read source without touching process lifetime.
+whose fd is not an open descriptor SHALL fail with `PinwinError::InvalidFd` before the library
+connects to the compositor. Hangup on the master drops the read source without touching
+process lifetime.
 
 #### Scenario: Sizes reach the child
 - **WHEN** the panel resizes after a layout apply
@@ -334,13 +341,13 @@ work. Hangup on the master drops the read source without touching process lifeti
 
 ### Requirement: The library never exits
 No library call SHALL terminate the host process for any reason: bad layout, missing display,
-missing Ghostty config, terminal allocation failure, GTK errors and panics inside the library
-(on the host's thread, on the GTK thread, or inside a terminal or GTK callback) are error
-values or degraded states, never `exit()`, abort or an unwinding panic that crosses the
-library's API. After a panic inside the library, the panel SHALL stop drawing and applying
-layouts and every later call on its handle SHALL return `Err(PinwinError::Internal)`.
-Terminal allocation failure keeps the previous grid and surfaces as
-`PinwinError::Internal`.
+missing Ghostty config, terminal allocation failure, Wayland protocol errors, a lost
+compositor connection and panics inside the library (on the host's thread, on the panel
+thread, or inside a terminal or Wayland callback) are error values or degraded states, never
+`exit()`, abort or an unwinding panic that crosses the library's API. After a panic inside the
+library, the panel SHALL stop drawing and applying layouts and every later call on its handle
+SHALL return `Err(PinwinError::Internal)`. Terminal allocation failure keeps the previous grid
+and surfaces as `PinwinError::Internal`.
 
 #### Scenario: Bad layout does not kill the host
 - **WHEN** the host applies a layout the monitor cannot hold
@@ -351,6 +358,11 @@ Terminal allocation failure keeps the previous grid and surfaces as
 - **WHEN** code inside the library panics while handling a draw, input or layout request
 - **THEN** the host process keeps running, no panic unwinds into the host's calls, later calls
   on the handle return `Err(PinwinError::Internal)`, and dropping the handle still returns
+
+#### Scenario: Compositor goes away
+- **WHEN** the compositor connection closes while the panel runs
+- **THEN** the host process keeps running and later calls on the handle return
+  `Err(PinwinError::NotRunning)`
 
 ### Requirement: No pinwin-owned configuration
 The library SHALL NOT read any pinwin-specific environment variable (`COLS`, `GUTTER`,
@@ -390,13 +402,14 @@ no SIGWINCH handler is unaffected (the default disposition is ignore).
 ### Requirement: Animated width transition
 The animated layout apply, given a layout and a duration in milliseconds, SHALL, when the
 requested layout differs from the applied layout only in its column count and push/cover
-choice (same side, same left and right gutters) and the duration is greater than zero and GTK
-animations are enabled, change the panel's pixel width from the current width to the target
-width continuously over the duration, driven by the panel's frame clock. The reservation's
-exclusive zone SHALL move with the panel only when the requested layout pushes and its strip
-differs from the held strip; otherwise it SHALL hold still, in the same frames. The duration
-SHALL be clamped to 1000 ms. It SHALL return the same results as the plain apply, where
-`Ok(())` means the layout was validated and accepted rather than that the animation finished.
+choice (same side, same left and right gutters) and the duration is greater than zero, change
+the panel's pixel width from the current width to the target width continuously over the
+duration, driven by the compositor's frame callbacks. The reservation's exclusive zone SHALL
+move with the panel only when the requested layout pushes and its strip differs from the held
+strip; otherwise it SHALL hold still, in the same frames. The duration SHALL be clamped to
+1000 ms. It SHALL return the same results as the plain apply, where `Ok(())` means the layout
+was validated and accepted rather than that the animation finished. The library SHALL NOT
+read any desktop animation setting. The host's duration is the only control.
 
 #### Scenario: Animate on request
 - **WHEN** the host applies a pushing layout, animated, with columns changed from 40 to 60 and
@@ -415,8 +428,13 @@ SHALL be clamped to 1000 ms. It SHALL return the same results as the plain apply
 - **THEN** the layout is applied in one step exactly as the plain apply would
 
 #### Scenario: Snap when animations are disabled
-- **WHEN** the GTK `gtk-enable-animations` setting is false
-- **THEN** the animated apply applies the layout in one step
+- **WHEN** the host turns animations off by passing a duration of 0 to every animated apply
+- **THEN** each apply takes effect in one step
+
+#### Scenario: Desktop animation setting has no effect
+- **WHEN** the GTK `gtk-enable-animations` setting is false and the host makes an animated
+  apply with a duration of 200 ms
+- **THEN** the panel width animates over about 200 ms
 
 #### Scenario: Other fields snap
 - **WHEN** the requested layout changes the side or the left or right gutter
@@ -500,14 +518,14 @@ a full layout (side, columns 1..=65535, four gutters, push/cover choice with pus
 backward-compatible default) and a keyboard mode, and an optional accent, and returns
 `Result<Panel, PinwinError>` once the panel is on screen or has failed. Applying a layout,
 plain or animated with a duration in milliseconds, is a method on the handle returning
-`Result<(), PinwinError>`. Dropping the handle closes the panel, cancels any running
-animation; the library's GTK thread is process-lifetime and is not joined, so it stays parked
-for a later start. It SHALL NOT panic. At most one panel exists per process: a start while
-another handle is alive SHALL fail with `PinwinError::AlreadyRunning` and leave the running
-panel unchanged. Applying through a handle whose panel is no longer live (its GTK side ended
-on its own) SHALL return `Err(PinwinError::NotRunning)` without blocking. A layout apply SHALL
-NOT block the host thread indefinitely: a GTK side that does not answer within a bounded time
-is `Err(PinwinError::Internal)`. After a drop, a new start MAY succeed.
+`Result<(), PinwinError>`. Dropping the handle closes the panel, cancels any running animation
+and ends the panel's thread. A drop SHALL NOT block the host thread beyond a bounded wait, and
+it SHALL NOT panic. At most one panel exists per process: a start while another handle is
+alive SHALL fail with `PinwinError::AlreadyRunning` and leave the running panel unchanged.
+Applying through a handle whose panel is no longer live (its panel thread ended on its own)
+SHALL return `Err(PinwinError::NotRunning)` without blocking. A layout apply SHALL NOT block
+the host thread indefinitely: a panel thread that does not answer within a bounded time is
+`Err(PinwinError::Internal)`. After a drop, a new start can succeed.
 
 #### Scenario: Start, relayout, drop
 - **WHEN** the host starts the panel, applies a valid layout, then drops the handle
@@ -524,12 +542,16 @@ is `Err(PinwinError::Internal)`. After a drop, a new start MAY succeed.
 - **THEN** the second start returns `Err(PinwinError::AlreadyRunning)` and the running panel
   is unchanged
 
+#### Scenario: Start after drop
+- **WHEN** the host drops the handle and starts a new panel
+- **THEN** the new start returns `Ok` and the new panel opens
+
 #### Scenario: Apply on a dead panel
-- **WHEN** the panel's GTK side has ended on its own and the host applies an animated layout
+- **WHEN** the panel's thread ended on its own and the host applies an animated layout
 - **THEN** the call returns `Err(PinwinError::NotRunning)` without blocking
 
 #### Scenario: Wedged GTK side
-- **WHEN** the GTK side does not answer an apply within the bounded wait
+- **WHEN** the panel thread does not answer an apply within the bounded wait
 - **THEN** the call returns `Err(PinwinError::Internal)` and the host thread is not blocked
   further
 
@@ -539,12 +561,16 @@ else `/bin/sh`) in the panel docked left, until the command exits. The program o
 sets `TERM=xterm-256color` and `COLORTERM=truecolor` for the child, forwards SIGINT and SIGTERM
 to the child as SIGHUP, and exits with the child's exit status (1 when the child did not exit
 normally). It reads `COLS` (1..=65535, default 40), `GUTTER` (0..=65535, the right gutter,
-default 0), `PINWIN_KEYBOARD` (`on-demand` default, `exclusive`, `none`), `PINWIN_ACCENT`
-(`on` default, `off`), `PINWIN_ACCENT_COLOR` (`#RRGGBB` or `RRGGBB`, default `#dabc7f`) and
-`PINWIN_ACCENT_WIDTH` (1..=65535, default 1, read only when the accent is on). An invalid value, or an unknown `--` option,
-SHALL exit 2 with a message on stderr before any surface opens; `--` ends option parsing. If
-the panel cannot start, the program SHALL hang up the child, wait for it, print a message and
-exit 1.
+default 0), `PINWIN_KEYBOARD` (`on-demand` default, `exclusive`, `none`), `PINWIN_ZONE`
+(`reserve` default, `overlay`), `PINWIN_ACCENT` (`on` default, `off`), `PINWIN_ACCENT_COLOR`
+(`#RRGGBB` or `RRGGBB`, default `#dabc7f`) and `PINWIN_ACCENT_WIDTH` (1..=65535, default 1,
+read only when the accent is on). With `PINWIN_ZONE=reserve`, the program starts with a
+pushing layout, so tiled windows sit beside the panel and a toggle moves them. With
+`PINWIN_ZONE=overlay`, it starts with a covering layout, so it reserves nothing, the panel
+draws over tiled windows and a toggle moves no window. An invalid value, or an unknown `--`
+option, SHALL exit 2 with a message on stderr before any surface opens; `--` ends option
+parsing. If the panel cannot start, the program SHALL hang up the child, wait for it, print a
+message and exit 1.
 
 #### Scenario: Run a command
 - **WHEN** the user runs `pinwin htop` in a niri session
@@ -556,8 +582,12 @@ exit 1.
 - **THEN** the panel runs `$SHELL`
 
 #### Scenario: Invalid environment
-- **WHEN** `COLS=0` or `PINWIN_KEYBOARD=sometimes` is set
+- **WHEN** `COLS=0`, `PINWIN_KEYBOARD=sometimes` or `PINWIN_ZONE=both` is set
 - **THEN** `pinwin` prints a message, exits 2 and opens nothing
+
+#### Scenario: Overlay zone
+- **WHEN** the user runs `PINWIN_ZONE=overlay pinwin htop` and toggles it twice
+- **THEN** tiled windows never move, and the panel draws over them while shown
 
 #### Scenario: Unknown option
 - **WHEN** the user runs `pinwin --frobnicate`
@@ -589,7 +619,7 @@ be visible between cells at any output scale, fractional or integer.
 
 The grid's offset from the docked edge SHALL be a whole number of device pixels in every
 frame, including each frame of a width animation. When the output scale changes, the panel
-SHALL redraw the grid at the new scale. The fallback painter SHALL meet the same rules.
+SHALL redraw the grid at the new scale.
 
 Snapping SHALL NOT change the cell size, the panel width or any size that the panel reports.
 A bar, band or outline SHALL be at least one device pixel thick. Its thickness SHALL be
@@ -619,8 +649,8 @@ within one device pixel of its logical thickness times the output scale.
 - **THEN** the panel redraws the grid at the new scale and no seam appears between cells
 
 #### Scenario: Fallback painter
-- **WHEN** the fallback painter draws the grid at an output scale of 1.5
-- **THEN** it snaps the same edges as the primary painter and no seam appears
+- **WHEN** the panel draws the grid at an output scale of 1.5
+- **THEN** one painter draws every frame, with no fallback painter, and no seam appears
 
 #### Scenario: Bar cursor keeps its physical size
 - **WHEN** the output scale is 1.5 and the cursor is a bar 2 logical pixels wide
@@ -631,72 +661,181 @@ within one device pixel of its logical thickness times the output scale.
 - **THEN** the cell size, the panel width and the reply to `CSI 16 t` equal their values at
   an output scale of 1
 
-### Requirement: Focus on request
-The `Panel` handle SHALL offer a focus request. The host can call it from any thread, and it
-returns `Result<(), PinwinError>`. In `on-demand` mode, a successful request SHALL give the
-panel keyboard focus without a click. After that, the panel SHALL keep and give up focus by
-the normal `on-demand` rules. The request SHALL NOT change the reserved gap, so tiled windows
-do not move or resize. In `none` or `exclusive` mode, the request SHALL return `Ok(())` and
-change nothing.
+### Requirement: Cell text on the device pixel lattice
+The panel SHALL place the origin of the text in each cell on a whole device pixel. A device
+pixel is one physical pixel. The origin SHALL come from the cell's own snapped corner plus an
+offset inside the cell that is also a whole number of device pixels. The same glyph, in the
+same style and colour, SHALL then render to the same device pixels inside every cell, at any
+output scale. This holds for plain text, wide cells and glyphs that the nerd-font constraints
+scale and centre.
 
-If the panel is no longer live, the request SHALL return `Err(PinwinError::NotRunning)`
-without blocking. If the GTK side does not answer within a bounded time, the request SHALL
-return `Err(PinwinError::Internal)`, so the host thread never blocks indefinitely. The
-library SHALL own no transport for the request. The host decides how a request reaches it.
+The panel SHALL NOT change the glyph size, the cell size, the panel width or any size that
+the panel reports. At a fractional output scale, the distance between the origins of two
+adjacent cells can differ by one device pixel.
 
-#### Scenario: Focus from a hotkey
-- **WHEN** a tiled window has the keyboard, the panel runs in `on-demand` mode, and the host
-  requests focus
-- **THEN** the call returns `Ok` and the next typed key goes to the pty master. If the accent
-  is enabled, it appears.
+#### Scenario: Identical letters render alike at a fractional scale
+- **WHEN** the panel runs at an output scale of 1.8 and a row holds the same letter in every
+  cell
+- **THEN** the device pixels of the glyph, taken from each cell's snapped top-left corner,
+  are the same in every cell
 
-#### Scenario: Release by click
-- **WHEN** the panel gained focus from a request and the user clicks a tiled window
-- **THEN** keys go to the tiled window, not the panel
+#### Scenario: Cell height that is not a whole device pixel count
+- **WHEN** the output scale is 1.8, the cell is 19 logical pixels high and several rows hold
+  the same letter
+- **THEN** the glyph sits at the same device pixel offset from the top of its cell in every
+  row
 
-#### Scenario: Gap unchanged
-- **WHEN** the panel pushes tiled windows and the host requests focus
-- **THEN** the tiled windows keep their position and size
+#### Scenario: Constrained glyph
+- **WHEN** the output scale is 1.5 and a nerd-font glyph that the constraints scale and
+  centre appears in cells at different columns
+- **THEN** the glyph sits at the same device pixel offset inside each cell
 
-#### Scenario: Mode without on-demand focus
-- **WHEN** the panel runs in `none` mode and the host requests focus
-- **THEN** the call returns `Ok` and keyboard input stays with the window that had it
+#### Scenario: Text sizes stay logical
+- **WHEN** the output scale is 1.8
+- **THEN** the cell size, the panel width and the reply to `CSI 16 t` equal their values at
+  an output scale of 1
 
-#### Scenario: Request on a dead panel
-- **WHEN** the panel's GTK side ended on its own and the host requests focus
+### Requirement: Key repeat follows the compositor
+While the panel holds keyboard focus and the user holds down a key, the panel SHALL repeat
+that key at the delay and rate that the compositor sends. Each repeat SHALL reach the
+terminal as a repeat event. With the kitty keyboard protocol and event types enabled, the
+child receives a repeat report. Under the other encodings, the child receives the key again.
+Modifier keys SHALL NOT repeat. When the user releases the key, the repeat SHALL stop. When
+the panel loses keyboard focus, the repeat SHALL also stop. If the compositor sends a repeat rate of 0, no key SHALL
+repeat.
+
+#### Scenario: Held key repeats
+- **WHEN** the panel has keyboard focus and the user holds `j` past the compositor's repeat
+  delay
+- **THEN** the pty master receives `j` once for the press and again at the compositor's
+  repeat rate until the release
+
+#### Scenario: Focus loss stops the repeat
+- **WHEN** the user holds `j` in the panel and clicks a tiled window with the mouse
+- **THEN** the pty master receives no further `j` after the panel loses keyboard focus
+
+#### Scenario: Repeat disabled
+- **WHEN** the compositor sends a repeat rate of 0 and the user holds `j`
+- **THEN** the pty master receives `j` once
+
+### Requirement: Pointer cursor over the panel
+If the compositor offers the cursor-shape protocol, the panel SHALL set the default pointer
+cursor shape each time the pointer enters the panel. Without that protocol, the panel SHALL
+leave the pointer cursor unset.
+
+#### Scenario: Cursor on enter
+- **WHEN** the pointer moves from a tiled window that shows a text cursor into the panel on
+  niri
+- **THEN** the pointer shows the default cursor shape over the panel
+
+### Requirement: No toolkit libraries
+The library and the `pinwin` binary SHALL NOT link these libraries: GTK, GDK, GLib, GObject,
+GIO, Pango, Cairo, gdk-pixbuf and HarfBuzz. The rule also covers a link through another
+library.
+
+#### Scenario: Dynamic dependencies
+- **WHEN** the dynamic library dependencies of the built `pinwin` binary are listed
+- **THEN** no GTK, GDK, GLib, GObject, GIO, Pango, Cairo, gdk-pixbuf or HarfBuzz library
+  appears in the list
+
+### Requirement: Show and hide on request
+The `Panel` handle SHALL offer a toggle. The host can call it from any thread, and it returns
+`Result<(), PinwinError>`. A toggle hides a shown panel and shows a hidden one. The panel is
+shown at start.
+
+Hiding SHALL unmap the panel surface and release the held reservation. A width animation in
+progress SHALL end at its target layout first. The terminal and the pty keep running while
+the panel is hidden, and the host's child keeps receiving input from the pty.
+
+Showing SHALL map the panel surface again, draw the current grid and restore the held
+reservation. In `on-demand` mode, the panel SHALL map with `on-demand` keyboard
+interactivity, so a compositor that focuses a newly mapped `on-demand` surface gives it the
+keyboard without a click. In `exclusive` mode, the panel maps as `exclusive`. In `none` mode,
+the panel only appears. After a show, the panel keeps and gives up focus by the rules of its
+keyboard mode.
+
+Neither hiding nor showing SHALL change the terminal grid or the pty window size, and neither
+SHALL raise a `SIGWINCH`. No frame SHALL show the panel at another size. Two cases are
+exempt. A width animation that a hide ends runs its deferred grid resize as it would at its
+own end. If the output's height changed while the panel was hidden, the configure that a show
+receives resizes the grid and the pty like any other configure with a new height. While the panel is
+hidden, a layout apply SHALL validate and store the layout as it does when shown, with no
+animation and nothing on screen. The next show uses that layout.
+
+If the panel is no longer live, the toggle SHALL return `Err(PinwinError::NotRunning)` without
+blocking. If the panel thread does not answer within a bounded time, the toggle SHALL return
+`Err(PinwinError::Internal)`, so the host thread never blocks indefinitely. The library SHALL
+own no transport for the request.
+
+#### Scenario: Show takes focus
+- **WHEN** the panel runs in `on-demand` mode on niri, is hidden, a tiled window has the
+  keyboard, and the host toggles
+- **THEN** the call returns `Ok`, the panel appears, and the next typed key goes to the pty
+  master. If the accent is enabled, it appears.
+
+#### Scenario: Hide
+- **WHEN** the panel is shown and the host toggles
+- **THEN** the call returns `Ok`, the panel leaves the screen, and keys go to a compositor
+  window
+
+#### Scenario: Grid and pty untouched
+- **WHEN** the host's child draws a layout that depends on the terminal size and the host
+  toggles twice
+- **THEN** the child observes no window size change and receives no `SIGWINCH`, and no frame
+  shows the panel drawn at another size
+
+#### Scenario: Show in none mode
+- **WHEN** the panel runs in `none` mode, is hidden, and the host toggles
+- **THEN** the panel appears and keyboard input stays with the window that had it
+
+#### Scenario: Hide releases the reservation
+- **WHEN** the panel pushes tiled windows and the host toggles twice
+- **THEN** the tiled windows take the panel's strip after the first toggle and move back
+  beside the panel after the second
+
+#### Scenario: Apply while hidden
+- **WHEN** the panel is hidden and the host applies a layout with more columns, animated with
+  a duration of 200 ms
+- **THEN** the call returns `Ok`, nothing appears, and the next toggle shows the panel at the
+  new width with no animation
+
+#### Scenario: Toggle on a dead panel
+- **WHEN** the panel's thread ended on its own and the host toggles
 - **THEN** the call returns `Err(PinwinError::NotRunning)` without blocking
 
-### Requirement: Focus request from the command line
-The `pinwin` program SHALL accept focus requests for its panel from other processes on the
+### Requirement: Toggle from the command line
+The `pinwin` program SHALL accept toggle requests for its panel from other processes on the
 same Wayland display. The program SHALL read `PINWIN_NAME`, with the default `default`. A
-name has 1..=64 characters from `[A-Za-z0-9_-]`. Another process SHALL request focus with
-`pinwin --focus [name]`, and the name defaults to `default`.
+name has 1..=64 characters from `[A-Za-z0-9_-]`. Another process SHALL request a toggle with
+`pinwin --toggle [name]`, and the name defaults to `default`. The host SHALL pass the request
+to its panel's toggle.
 
 If the named instance accepts the request, the client SHALL exit 0. If no instance with that
 name answers on the display, the client SHALL print a message on stderr and exit 1. A name in
-`PINWIN_NAME` or after `--focus` can be invalid. Then `pinwin` SHALL print a message on
+`PINWIN_NAME` or after `--toggle` can be invalid. Then `pinwin` SHALL print a message on
 stderr and exit 2, and the host SHALL open nothing.
 
 A live instance on the same display can already use the name. Then a second host SHALL print
 a message and exit 2 before any surface opens. A name from an instance that no longer runs
 SHALL NOT block a new host. Different names and different displays SHALL NOT interfere.
 
-#### Scenario: Focus the default instance
-- **WHEN** `pinwin htop` runs and the user runs `pinwin --focus`
-- **THEN** the panel gets keyboard focus and the client exits 0
+#### Scenario: Toggle the default instance
+- **WHEN** `pinwin htop` runs in `on-demand` mode on niri and a compositor key binding runs
+  `pinwin --toggle` twice
+- **THEN** the first run hides the panel, the second shows it with keyboard focus, and the
+  client exits 0 each time
 
-#### Scenario: Focus a named instance
-- **WHEN** `PINWIN_NAME=notes pinwin nvim` and `pinwin htop` both run and the user runs
-  `pinwin --focus notes`
-- **THEN** the `notes` panel gets keyboard focus, the other panel does not, and the client
-  exits 0
+#### Scenario: Toggle a named instance
+- **WHEN** `PINWIN_NAME=notes pinwin nvim` and `pinwin htop` both run, and a compositor key
+  binding runs `pinwin --toggle notes`
+- **THEN** the `notes` panel hides, the other panel does not change, and the client exits 0
 
 #### Scenario: No instance
-- **WHEN** no `pinwin` with the name `notes` runs and the user runs `pinwin --focus notes`
+- **WHEN** no `pinwin` with the name `notes` runs and a key binding runs `pinwin --toggle notes`
 - **THEN** the client prints a message and exits 1
 
 #### Scenario: Invalid name
-- **WHEN** `PINWIN_NAME=a/b` is set, or the user runs `pinwin --focus a/b`
+- **WHEN** `PINWIN_NAME=a/b` is set, or the user runs `pinwin --toggle a/b`
 - **THEN** `pinwin` prints a message, exits 2 and opens nothing
 
 #### Scenario: Duplicate name
@@ -707,4 +846,4 @@ SHALL NOT block a new host. Different names and different displays SHALL NOT int
 #### Scenario: Instance that crashed
 - **WHEN** a `pinwin` named `notes` was killed with SIGKILL and the user starts a new one
   with the same name
-- **THEN** the new `pinwin` starts normally and answers `pinwin --focus notes`
+- **THEN** the new `pinwin` starts normally and answers `pinwin --toggle notes`
