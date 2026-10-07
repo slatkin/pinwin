@@ -79,7 +79,8 @@ while the reservation stays where the last pushing layout put it.
 `apply_layout_animated` clamps its duration to 1000 ms. `toggle` hides a
 shown panel and shows a hidden one; hiding unmaps the panel and releases
 its reservation, and the terminal and the child keep running while it is
-hidden.
+hidden. `show` shows a hidden panel and leaves a shown one unchanged; on
+a shown panel it returns `Ok` and changes nothing on screen.
 Dropping the handle closes the panel and cancels any running
 animation. The library never closes the fd and never exits the host.
 
@@ -114,6 +115,54 @@ fn run(fd: RawFd) -> Result<(), PinwinError> {
     )?;
 
     drop(panel); // stops the panel
+    Ok(())
+}
+```
+
+A host that wants `pinwin --toggle [name]` and `pinwin --show [name]` to
+reach its panel opts into the instance socket: bind an `InstanceSocket`
+for a name, then hand it to the start with `Startup::with_instance`. The
+bind needs no panel, so a duplicate name fails with the typed `Duplicate`
+error before any surface opens, and a socket file left by a killed
+instance does not block a new bind. A start without a socket listens on
+nothing. A panel started with a socket answers `toggle` and `show`
+requests until the handle drops; dropping it removes the socket file, so
+the name is free at once. From another process, `instance::send` sends
+one `Request` to the named instance on this display; its `SendError`
+tells a missing runtime directory or display apart from no listening
+instance, a refused request, and a missing answer.
+
+```rust
+use std::num::NonZeroU16;
+use std::os::fd::RawFd;
+
+use pinwin::Panel;
+use pinwin::instance::{InstanceName, InstanceSocket, Request};
+use pinwin::layout::{Keyboard, Layout, Side};
+use pinwin::panel::Startup;
+
+fn run(fd: RawFd) -> Result<(), Box<dyn std::error::Error>> {
+    let name = InstanceName::parse("notes")?;
+    // Bind first, before any surface opens: a live owner of the name fails
+    // here with the typed duplicate error.
+    let socket = InstanceSocket::bind(&name)?;
+    let layout = Layout::new(
+        Side::Left,
+        NonZeroU16::new(60).expect("60 columns is non-zero"),
+        0,
+        0,
+        0,
+        12,
+    );
+    let startup = Startup::new(fd, layout, Keyboard::OnDemand, None).with_instance(socket);
+    let panel = Panel::start(startup)?;
+
+    // Show a hidden panel; a shown one stays as it is.
+    panel.show()?;
+    // The same request from another process is one client call.
+    pinwin::instance::send(&name, Request::Show)?;
+
+    drop(panel); // removes the socket file; the name is free at once
     Ok(())
 }
 ```
@@ -173,11 +222,14 @@ instance already uses prints a message, exits 2 and opens nothing. A socket
 file left by a killed instance does not block a new host.
 
 `pinwin --toggle [name]` asks the instance with that name to hide its shown
-panel or show its hidden one, then exits. The name defaults to `default`.
+panel or show its hidden one, then exits. `pinwin --show [name]` asks it to
+show its hidden panel and leaves a shown one unchanged, then exits. Both
+reach any panel bound to that name, whether the `pinwin` program or a
+library host started it. The name defaults to `default`.
 The client exits 0 when the named instance accepts the request. With no
 instance on that name it prints a message and exits 1. A bad name prints a
 message and exits 2 in both places: in `PINWIN_NAME`, where the host opens
-nothing, and after `--toggle`. The client reads no environment besides the
+nothing, and after `--toggle` or `--show`. The client reads no environment besides the
 display.
 
 `PINWIN_ZONE` chooses what a toggle moves. With `reserve` (the default) the
@@ -202,12 +254,12 @@ Mod+P { spawn "pinwin" "--toggle"; }
 Version 0.2.0 replaces GTK with a direct Wayland client. A host program that
 used 0.1.0 changes these things:
 
-- **`Panel::request_focus` is gone; call `Panel::toggle`.** A toggle hides a
-  shown panel and shows a hidden one. Focus is the effect of showing: niri
-  focuses a newly mapped `on-demand` or `exclusive` layer surface. The call
-  is not a focus request, so a host that needs "focus the panel, never hide
-  it" must track the shown state itself, because `Panel` has no query for it.
-  The panel is shown at start.
+- **`Panel::request_focus` is gone; call `Panel::toggle` or `Panel::show`.**
+  A toggle hides a shown panel and shows a hidden one; a show shows a hidden
+  panel and leaves a shown one unchanged. Focus is the effect of showing:
+  niri focuses a newly mapped `on-demand` or `exclusive` layer surface. The
+  calls are not focus requests, so a host that needs "focus the panel, never
+  hide it" calls `Panel::show`. The panel is shown at start.
 - **`pinwin --focus [name]` is gone; run `pinwin --toggle [name]`.** It uses
   the same socket and the same `PINWIN_NAME`. Rebind the niri key:
   `Mod+P { spawn "pinwin" "--toggle"; }`. Hosts that send the request
@@ -236,6 +288,23 @@ used 0.1.0 changes these things:
 - **Unchanged:** `Panel::start`, `Layout`, `Keyboard`, `Accent`,
   `PinwinError` and the `COLS`, `GUTTER`, `PINWIN_KEYBOARD`, `PINWIN_ACCENT*`
   and `PINWIN_NAME` variables.
+
+## Migrating to 0.3.0
+
+Version 0.3.0 moves the instance socket into the library and breaks one
+host type:
+
+- **`Startup` is no longer `Copy` — nor `Clone`.** It can own a bound
+  instance socket, an owned fd with one owner, so the startup moves into
+  `Panel::start`. Hosts that copied or cloned it keep one value and move it.
+- **The instance socket is opt-in and new.** Bind it with
+  `InstanceSocket::bind(&name)` and hand it to the start with
+  `Startup::with_instance`; a start without a socket listens on nothing, as
+  before. A panel started with a socket answers `toggle` and `show` on it
+  until the handle drops, so `pinwin --toggle [name]` and
+  `pinwin --show [name]` reach library-hosted panels. `Panel::show` and
+  `instance::send` are new with the socket: see "Use as a Cargo dependency"
+  for the shape.
 
 ## Behaviour
 
