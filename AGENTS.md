@@ -42,7 +42,6 @@ binary; the build is Cargo only. The pre-port C and Zig sources (`src/*.c`,
   publish verdict and the held-gap rules (`gap.rs`, `publish.rs`); the former
   GTK layer-shell surfaces now live in the panel thread
   (`src/panel/wayland_side/`).
-- `src/activation.rs` — the `ActivationToken` newtype for xdg-activation.
 - `src/anim.rs` — the animated width transition's pure tween step.
 - `src/pty.rs` + `src/pty/` — the host-supplied pty fd, winsize and `SIGWINCH`,
   plus the calloop read source (`calloop.rs`).
@@ -52,9 +51,9 @@ binary; the build is Cargo only. The pre-port C and Zig sources (`src/*.c`,
 - `src/ghostty_sys.rs` + `src/ghostty_sys/` — the hand-written `extern`
   declarations for the pinned libghostty-vt (the only module that talks to C).
 - `src/main.rs` — the `pinwin` host program: runs a command in a panel over
-  the library API, owning the pty, the child's process and the focus socket;
-  its pure parts live in `src/cli.rs` (arguments, `--focus`), `src/ipc.rs`
-  (the focus socket's identity, bind, listener and client) and
+  the library API, owning the pty, the child's process and the toggle socket;
+  its pure parts live in `src/cli.rs` (arguments, `--toggle`), `src/ipc.rs`
+  (the toggle socket's identity, bind, listener and client) and
   `src/settings.rs` (the environment contract).
 - `examples/demo.rs` — the dev-only demo example, never installed.
 - `build.rs` — fetches and builds the pinned libghostty-vt.

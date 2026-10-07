@@ -55,11 +55,10 @@ and returns once the panel is on screen or has failed. Layouts push by
 default; `Layout::covering` opts a layout into covering the tiled windows
 while the reservation stays where the last pushing layout put it.
 `apply_layout` and `apply_layout_animated` are methods on the handle;
-`apply_layout_animated` clamps its duration to 1000 ms.
-`request_focus(ActivationToken::new(token)?)` asks the compositor to give
-the panel keyboard focus with an xdg-activation token; `ActivationToken` is
-re-exported from the crate root and validates the token before any request
-is made.
+`apply_layout_animated` clamps its duration to 1000 ms. `toggle` hides a
+shown panel and shows a hidden one; hiding unmaps the panel and releases
+its reservation, and the terminal and the child keep running while it is
+hidden.
 Dropping the handle closes the panel and cancels any running
 animation. The library never closes the fd and never exits the host.
 
@@ -118,8 +117,7 @@ width outside 1..=65535 cannot be expressed (pass `None` for "no accent").
 
 ```text
 pinwin [--] [command...]    # default command: $SHELL, else /bin/sh; needs niri
-pinwin --focus [name]       # ask the named running panel for focus, then exit;
-                            # needs XDG_ACTIVATION_TOKEN, exits 2 without it
+pinwin --toggle [name]      # hide or show the named running panel, then exit
 ```
 
 The binary owns the pty and the child: it sets `TERM=xterm-256color` and
@@ -135,6 +133,7 @@ Environment:
 | `COLS` | 1..=65535 | 40 |
 | `GUTTER` | 0..=65535 (the right gutter) | 0 |
 | `PINWIN_KEYBOARD` | `on-demand`, `exclusive`, `none` | `on-demand` |
+| `PINWIN_ZONE` | `reserve`, `overlay` | `reserve` |
 | `PINWIN_ACCENT` | `on`, `off` | `on` |
 | `PINWIN_ACCENT_COLOR` | `#RRGGBB` or `RRGGBB` | `#dabc7f` |
 | `PINWIN_ACCENT_WIDTH` | 1..=65535 (read only when the accent is on) | 1 |
@@ -143,7 +142,7 @@ Environment:
 An invalid value exits 2 with a message on stderr before any surface opens.
 Only the binary reads these; the library reads no pinwin-owned configuration.
 
-## Focus request
+## Toggle request
 
 Every instance reads `PINWIN_NAME`. The default name is `default`. A name has
 1..=64 characters from `A-Za-z0-9_-`. While its command runs, the instance
@@ -152,32 +151,29 @@ Wayland display and the name. A second instance with a name that a live
 instance already uses prints a message, exits 2 and opens nothing. A socket
 file left by a killed instance does not block a new host.
 
-`pinwin --focus [name]` asks the instance with that name for keyboard focus
-and exits. The name defaults to `default`. The client exits 0 when the named
-instance accepts the request. With no instance on that name it prints a
-message and exits 1. A bad name prints a message and exits 2 in both places:
-in `PINWIN_NAME`, where the host opens nothing, and after `--focus`.
+`pinwin --toggle [name]` asks the instance with that name to hide its shown
+panel or show its hidden one, then exits. The name defaults to `default`.
+The client exits 0 when the named instance accepts the request. With no
+instance on that name it prints a message and exits 1. A bad name prints a
+message and exits 2 in both places: in `PINWIN_NAME`, where the host opens
+nothing, and after `--toggle`. The client reads no environment besides the
+display.
 
-The client reads the activation token from `XDG_ACTIVATION_TOKEN`, which the
-compositor sets for a process it launches from a key binding. A token is
-1..=255 bytes of visible ASCII. With the variable unset, or with a value
-that is not a valid token, the client prints a message and exits 2 without
-contacting any instance. The host passes the token to its panel's focus
-request, which asks the compositor to focus the panel through xdg-activation.
+`PINWIN_ZONE` chooses what a toggle moves. With `reserve` (the default) the
+panel starts with a pushing layout and reserves its strip, so tiled windows
+sit beside it and take the strip back while it is hidden. With `overlay` it
+starts with a covering layout, reserves nothing, draws over the tiles and
+moves no window on a toggle; `overlay` is kitty's `--exclusive-zone=0`.
 
-On-demand focus through xdg-activation needs a compositor that honours the
-request for layer surfaces. Stock niri ignores it for layer surfaces; a niri
-patch — one added branch in niri's `request_activation`, branch
-`spike/xdg-activation-layer-focus` — enables it and is pending upstream, not
-merged. Click focus works on every compositor. A stale token — one the
-compositor already used, or one that is too old — does nothing: the
-compositor's choice is invisible to the client, so the request still exits
-0.
+Showing the panel maps a new layer surface, so focus on show depends on the
+compositor focusing a newly mapped surface. Niri does this in `on-demand`
+and `exclusive` mode; in `none` mode the panel only appears. Clicking a
+shown panel also gives it focus in `on-demand` mode.
 
 In niri, bind a key to the client:
 
 ```kdl
-Mod+P { spawn "pinwin" "--focus"; }
+Mod+P { spawn "pinwin" "--toggle"; }
 ```
 
 ## Behaviour
@@ -195,10 +191,11 @@ Mod+P { spawn "pinwin" "--focus"; }
   choices — where the strip sits, what a side switch does — are stated once
   on `pinwin::layout::Coverage` in the library docs.
 - Keyboard interactivity is fixed at start: `on-demand` (the default) takes
-  focus only after a click, `exclusive` takes it immediately, `none` never
-  does. While focused, the panel draws its own focus accent in the configured
-  colour and width, because the compositor draws no focus ring on layer
-  surfaces.
+  focus after a click, or when a toggle shows it on a compositor that
+  focuses a newly mapped surface; `exclusive` takes it immediately, `none`
+  never does. While focused, the panel draws its own focus accent in the
+  configured colour and width, because the compositor draws no focus ring on
+  layer surfaces.
 - Applying a layout updates the columns, all four gutters, the docking side
   and the push/cover choice as one operation, follows the reservation rules
   above, and resizes the existing terminal grid and pty winsize without
@@ -235,16 +232,16 @@ toolkit-free CPU painter — tiny-skia fills the canvas, swash shapes and
 rasterizes the text, fontconfig resolves the fonts, and the kitty image pass
 decodes PNGs; `src/surfaces.rs` and `src/surfaces/` hold the pure
 layout-validation and held-gap rules that the panel thread applies against
-its own Wayland surfaces; `src/activation.rs` is the xdg-activation token;
-`src/anim.rs` eases the width; `src/pty.rs` and `src/pty/` drive the
-host-supplied fd as a calloop source; `src/fontconfig.rs` reads the Ghostty
-font and theme; `src/nerd_font.rs` is a generated glyph table; `src/guard.rs`
+its own Wayland surfaces; `src/anim.rs` eases the width; `src/pty.rs` and
+`src/pty/` drive the host-supplied fd as a calloop source;
+`src/fontconfig.rs` reads the Ghostty font and theme; `src/nerd_font.rs`
+is a generated glyph table; `src/guard.rs`
 is the panic guard; `src/ghostty_sys.rs` and `src/ghostty_sys/` are the
 hand-written FFI to the pinned libghostty-vt. The `pinwin` host program
-`src/main.rs` owns the pty, the child's process and the focus socket; its
-pure parts are `src/cli.rs` (arguments, `--focus`), `src/ipc.rs` (the focus
-socket's identity, bind, listener and client) and `src/settings.rs` (the
-environment contract). `build.rs` fetches and builds that pinned commit.
+`src/main.rs` owns the pty, the child's process and the toggle socket; its
+pure parts are `src/cli.rs` (arguments, `--toggle`), `src/ipc.rs` (the
+toggle socket's identity, bind, listener and client) and `src/settings.rs`
+(the environment contract). `build.rs` fetches and builds that pinned commit.
 
 The behaviour spec lives in `openspec/specs/pinwin-panel/spec.md`; the
 archived design decisions code comments cite as D-numbers are under
