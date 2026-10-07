@@ -426,7 +426,11 @@ fn read_bounded(stream: &mut net::UnixStream) -> Option<Vec<u8>> {
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline
-                    || !poll_ready(stream.as_raw_fd(), libc::POLLIN, HANDSHAKE_TIMEOUT)
+                    || !poll_ready(
+                        stream.as_raw_fd(),
+                        libc::POLLIN,
+                        deadline.saturating_duration_since(Instant::now()),
+                    )
                 {
                     return None;
                 }
@@ -450,7 +454,11 @@ fn write_bounded(stream: &mut net::UnixStream, reply: &[u8]) {
             Ok(n) => written += n,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline
-                    || !poll_ready(stream.as_raw_fd(), libc::POLLOUT, HANDSHAKE_TIMEOUT)
+                    || !poll_ready(
+                        stream.as_raw_fd(),
+                        libc::POLLOUT,
+                        deadline.saturating_duration_since(Instant::now()),
+                    )
                 {
                     return;
                 }
@@ -518,12 +526,6 @@ impl InstanceSocket {
     /// drop removes the path before the teardown.
     pub(crate) fn into_parts(self) -> (net::UnixListener, SocketFile) {
         (self.listener, self.file)
-    }
-
-    /// The bound listener, for a host that serves the socket itself.
-    #[must_use]
-    pub fn listener(&self) -> &net::UnixListener {
-        &self.listener
     }
 }
 

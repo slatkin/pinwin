@@ -133,7 +133,7 @@ impl Panel {
         // built inside and handed to the panel thread.
         let latch = Poisoned::new();
         guard(&latch, || Self::start_inner(startup))
-            .map_err(|_| PinwinError::Internal)
+            .map_err(|_spawn_error| PinwinError::Internal)
             .and_then(std::convert::identity)
     }
 
@@ -194,29 +194,24 @@ impl Panel {
                 Phase::Idle
             }
         };
-        match outcome {
-            Ok(()) => {
-                let mut panel = Panel {
-                    inner,
-                    thread,
-                    serving: None,
-                };
-                // The bound instance socket is served now that the
-                // handshake succeeded (serve-instance-socket D2). A failed
-                // spawn drops the panel — its teardown removes the socket
-                // file — and reports `Internal`.
-                if let Some(socket) = socket
-                    && let Err(_spawn_error) = panel.serve_instance(socket)
-                {
-                    drop(panel);
-                    return Err(PinwinError::Internal);
-                }
-                Ok(panel)
-            }
-            // A failed start drops the unused socket here, whose drop
-            // removes the file (serve-instance-socket D1).
-            Err(error) => Err(error),
+        // A failed start drops the unused socket here, whose drop removes
+        // the file (serve-instance-socket D1).
+        outcome?;
+        let mut panel = Panel {
+            inner,
+            thread,
+            serving: None,
+        };
+        // The bound instance socket is served now that the handshake
+        // succeeded (serve-instance-socket D2). A failed spawn drops the
+        // panel — its teardown removes the socket file — and reports
+        // `Internal`.
+        if let Some(socket) = socket {
+            panel
+                .serve_instance(socket)
+                .map_err(|_spawn_error| PinwinError::Internal)?;
         }
+        Ok(panel)
     }
 
     /// Serve the bound instance socket (serve-instance-socket D2): take
@@ -336,7 +331,7 @@ pub(crate) fn apply_via_inner(
     guard(&inner.poisoned, || {
         post_apply(inner, layout, duration_ms, post)
     })
-    .map_err(|_| PinwinError::Internal)
+    .map_err(|_spawn_error| PinwinError::Internal)
     .and_then(std::convert::identity)
 }
 

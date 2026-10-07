@@ -34,7 +34,7 @@ mod cli;
 mod settings;
 
 use cli::{Mode, default_command, parse_args};
-use pinwin::instance::{InstanceError, InstanceName, InstanceSocket, Request, SendError, send};
+use pinwin::instance::{InstanceName, InstanceSocket, Request, SendError, send};
 use settings::{Settings, Zone, read_settings};
 
 /// The child's process id, read by the signal handler; zero means "no child
@@ -218,12 +218,6 @@ fn run() -> i32 {
     host_panel(&settings, &command)
 }
 
-/// The host's report for a failed bind: every [`InstanceError`] keeps the
-/// environment errors' exit 2, and the message carries the `pinwin:` prefix.
-fn bind_error(error: &InstanceError) -> (i32, String) {
-    (2, format!("pinwin: {error}"))
-}
-
 /// Host the panel over the command's pty (the `Mode::Host` path): bind the
 /// instance socket, fork the command onto a new pty, and start the panel on
 /// the master with the bound socket — the panel's own listener thread serves
@@ -235,9 +229,8 @@ fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
     let socket = match InstanceSocket::bind(&settings.name) {
         Ok(socket) => socket,
         Err(error) => {
-            let (status, message) = bind_error(&error);
-            eprintln!("{message}");
-            return status;
+            eprintln!("pinwin: {error}");
+            return 2;
         }
     };
 
@@ -404,24 +397,6 @@ mod tests {
         let name = Some(InstanceName::parse("no-such-instance").expect("valid"));
         assert_eq!(run_client(name.clone(), Request::Toggle), 1);
         assert_eq!(run_client(name, Request::Show), 1);
-    }
-
-    /// The bind-error mapping: every `InstanceError` keeps the environment
-    /// errors' exit 2, with a message that carries the `pinwin:` prefix.
-    /// The bind's own duplicate detection is `instance.rs`'s contract; the
-    /// live run is task 5.2.
-    #[test]
-    fn every_instance_error_maps_to_exit_2_with_a_pinwin_message() {
-        let errors = [
-            InstanceError::Duplicate,
-            InstanceError::Path(PathError::NoRuntimeDir),
-            InstanceError::Io(io::Error::from_raw_os_error(libc::EACCES)),
-        ];
-        for error in &errors {
-            let (status, message) = bind_error(error);
-            assert_eq!(status, 2, "{error:?}");
-            assert!(message.starts_with("pinwin: "), "{error:?}: {message}");
-        }
     }
 
     /// The exec arguments are the C strings of the command, with the pointer
