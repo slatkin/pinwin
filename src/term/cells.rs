@@ -146,8 +146,12 @@ impl Terminal {
     pub fn image_next(&mut self) -> Option<Image> {
         let cell_w = self.cell_w();
         let cell_h = self.cell_h();
+        // The shared scale note, the same one `size_report` answers from
+        // (device-pixel-image-size D1): the drawn size and the reported size
+        // can never use different scales.
+        let scale_120 = self.ctx.scale_120.get();
         let handles = self.handles.as_mut()?;
-        images::image_next(&mut self.frame, handles, cell_w, cell_h)
+        images::image_next(&mut self.frame, handles, cell_w, cell_h, scale_120)
     }
 
     /// Finish the frame and clear the render state's dirty flags — both

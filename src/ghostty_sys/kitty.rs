@@ -34,6 +34,8 @@ pub type GhosttyKittyGraphicsPlacementData = c_int;
 
 pub const GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID: GhosttyKittyGraphicsPlacementData = 1;
 pub const GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL: GhosttyKittyGraphicsPlacementData = 3;
+pub const GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_COLUMNS: GhosttyKittyGraphicsPlacementData = 10;
+pub const GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_ROWS: GhosttyKittyGraphicsPlacementData = 11;
 pub const GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z: GhosttyKittyGraphicsPlacementData = 12;
 
 /// An image info id (`GhosttyKittyGraphicsImageData`, `kitty_graphics.h`).

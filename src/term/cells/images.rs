@@ -15,15 +15,17 @@ use std::ptr;
 
 use crate::ghostty_sys::GHOSTTY_SUCCESS;
 use crate::ghostty_sys::kitty::{
-    GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
-    GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z,
-    GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, GHOSTTY_KITTY_IMAGE_DATA_GENERATION,
-    GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, GHOSTTY_KITTY_IMAGE_DATA_WIDTH, GhosttyKittyGraphics,
-    GhosttyKittyGraphicsImage, GhosttyKittyGraphicsImageData,
-    GhosttyKittyGraphicsPlacementIterator, GhosttyKittyGraphicsPlacementRenderInfo,
-    ghostty_kitty_graphics_get, ghostty_kitty_graphics_image,
-    ghostty_kitty_graphics_image_get_multi, ghostty_kitty_graphics_placement_get,
-    ghostty_kitty_graphics_placement_next, ghostty_kitty_graphics_placement_render_info,
+    GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_COLUMNS,
+    GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
+    GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_ROWS,
+    GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z, GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
+    GHOSTTY_KITTY_IMAGE_DATA_GENERATION, GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
+    GHOSTTY_KITTY_IMAGE_DATA_WIDTH, GhosttyKittyGraphics, GhosttyKittyGraphicsImage,
+    GhosttyKittyGraphicsImageData, GhosttyKittyGraphicsPlacementIterator,
+    GhosttyKittyGraphicsPlacementRenderInfo, ghostty_kitty_graphics_get,
+    ghostty_kitty_graphics_image, ghostty_kitty_graphics_image_get_multi,
+    ghostty_kitty_graphics_placement_get, ghostty_kitty_graphics_placement_next,
+    ghostty_kitty_graphics_placement_render_info,
 };
 use crate::ghostty_sys::terminal::{GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, ghostty_terminal_get};
 use crate::term::Handles;
@@ -105,20 +107,41 @@ pub(super) struct Rect {
     pub(super) sh: i32,
 }
 
+/// One device pixel size in logical pixels (device-pixel-image-size D2):
+/// `device * 120 / scale_120`, rounded half up in exact integer arithmetic —
+/// the inverse of the size report's `device_cell`. At scale 1
+/// (`scale_120 == 120`) it is the identity. A zero note (a broken
+/// compositor's preferred scale) is treated as scale 1, the note's initial
+/// value, so the image pass cannot panic on a division by zero.
+#[must_use]
+fn logical_from_device(device: u32, scale_120: u32) -> u32 {
+    if scale_120 == 0 {
+        return device;
+    }
+    // Half up: floor((device*120/scale_120) + 1/2) computed as
+    // (2*num + den) / (2*den); the product cannot overflow `u64`.
+    let numerator = u64::from(device) * 120;
+    let denominator = u64::from(scale_120);
+    u32::try_from((2 * numerator + denominator) / (2 * denominator)).unwrap_or(u32::MAX)
+}
+
 /// A virtual placement is drawn at its placeholder origin, at the image's own
-/// pixel size (the program sizes it to that cell box).
+/// pixel size divided by the scale (device-pixel-image-size D2): one image
+/// pixel is one device pixel. The source rectangle stays in image pixels
+/// (D4).
 pub(super) fn virtual_rect(
     origin: PlaceholderOrigin,
     cell_w: u32,
     cell_h: u32,
     image_w: u32,
     image_h: u32,
+    scale_120: u32,
 ) -> Rect {
     Rect {
         x: origin.col * cell_w.cast_signed(),
         y: origin.row * cell_h.cast_signed(),
-        w: image_w.cast_signed(),
-        h: image_h.cast_signed(),
+        w: logical_from_device(image_w, scale_120).cast_signed(),
+        h: logical_from_device(image_h, scale_120).cast_signed(),
         sx: 0,
         sy: 0,
         sw: image_w.cast_signed(),
@@ -126,18 +149,54 @@ pub(super) fn virtual_rect(
     }
 }
 
-/// A viewport placement is drawn at its resolved viewport column/row and pixel
-/// size, with the resolved source rectangle.
+/// A placement's destination size. A placement that gives neither a column
+/// nor a row count is sized from its own pixels — device pixels, so they
+/// divide by the scale (device-pixel-image-size D3). A placement that gives
+/// either count is sized from the logical cell already: ghostty resolves
+/// `pixel_width`/`pixel_height` from it, and dividing again would shrink
+/// the image.
+#[must_use]
+fn destination_size(
+    pixel_width: u32,
+    pixel_height: u32,
+    columns: u32,
+    rows: u32,
+    scale_120: u32,
+) -> (i32, i32) {
+    if columns == 0 && rows == 0 {
+        (
+            logical_from_device(pixel_width, scale_120).cast_signed(),
+            logical_from_device(pixel_height, scale_120).cast_signed(),
+        )
+    } else {
+        (pixel_width.cast_signed(), pixel_height.cast_signed())
+    }
+}
+
+/// A viewport placement is drawn at its resolved viewport column/row and
+/// pixel size, with the resolved source rectangle. `columns`/`rows` are the
+/// placement's own counts (0 = not given); only an image-sized placement's
+/// destination divides by the scale (device-pixel-image-size D3).
 pub(super) fn viewport_rect(
     info: &GhosttyKittyGraphicsPlacementRenderInfo,
     cell_w: u32,
     cell_h: u32,
+    scale_120: u32,
+    columns: u32,
+    rows: u32,
 ) -> Rect {
+    let (w, h) = destination_size(
+        info.pixel_width,
+        info.pixel_height,
+        columns,
+        rows,
+        scale_120,
+    );
     Rect {
         x: info.viewport_col * cell_w.cast_signed(),
         y: info.viewport_row * cell_h.cast_signed(),
-        w: info.pixel_width.cast_signed(),
-        h: info.pixel_height.cast_signed(),
+        w,
+        h,
         sx: info.source_x.cast_signed(),
         sy: info.source_y.cast_signed(),
         sw: info.source_width.cast_signed(),
@@ -269,12 +328,38 @@ fn placement_pixels(
     Some((image, pixels, image_w, image_h, generation))
 }
 
-/// The next image placement of the frame, or `None` at the end.
+/// Read the placement's column and row counts (0 when the placement does
+/// not give one).
+#[must_use]
+fn placement_cell_counts(iterator: GhosttyKittyGraphicsPlacementIterator) -> (u32, u32) {
+    let mut columns: u32 = 0;
+    let mut rows: u32 = 0;
+    // SAFETY: each out pointer is writable storage of the type its data
+    // selector names; the placement iterator is live.
+    unsafe {
+        ghostty_kitty_graphics_placement_get(
+            iterator,
+            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_COLUMNS,
+            (&raw mut columns).cast(),
+        );
+        ghostty_kitty_graphics_placement_get(
+            iterator,
+            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_ROWS,
+            (&raw mut rows).cast(),
+        );
+    };
+    (columns, rows)
+}
+
+/// The next image placement of the frame, or `None` at the end. `scale_120`
+/// is the terminal's shared scale note (device-pixel-image-size D1), the
+/// same note `size_report` answers from.
 pub(super) fn image_next(
     frame: &mut FrameState,
     handles: &mut Handles,
     cell_w: u32,
     cell_h: u32,
+    scale_120: u32,
 ) -> Option<Image> {
     if !frame.flags.open {
         return None;
@@ -314,7 +399,7 @@ pub(super) fn image_next(
             let Some(origin) = frame.placeholders.origin(image_id) else {
                 continue;
             };
-            let rect = virtual_rect(origin, cell_w, cell_h, image_w, image_h);
+            let rect = virtual_rect(origin, cell_w, cell_h, image_w, image_h, scale_120);
             out.apply_rect(rect);
             return Some(out);
         }
@@ -335,7 +420,10 @@ pub(super) fn image_next(
         if !resolved || !info.viewport_visible {
             continue;
         }
-        out.apply_rect(viewport_rect(&info, cell_w, cell_h));
+        let (columns, rows) = placement_cell_counts(iterator);
+        out.apply_rect(viewport_rect(
+            &info, cell_w, cell_h, scale_120, columns, rows,
+        ));
         return Some(out);
     }
     None
@@ -416,13 +504,28 @@ mod tests {
     }
 
     #[test]
+    fn device_pixels_convert_to_logical_pixels_at_the_scale() {
+        // Scale 1 (the note's 120) is the identity.
+        assert_eq!(logical_from_device(576, 120), 576);
+        assert_eq!(logical_from_device(324, 120), 324);
+        assert_eq!(logical_from_device(0, 120), 0);
+
+        // Scale 1.8 (216): the proposal's 576x324 thumbnail becomes 320x180.
+        assert_eq!(logical_from_device(576, 216), 320);
+        assert_eq!(logical_from_device(324, 216), 180);
+
+        // Rounded half up: 2.5 rounds to 3 at scale 1.2 (144).
+        assert_eq!(logical_from_device(3, 144), 3);
+    }
+
+    #[test]
     fn virtual_placement_uses_the_origin_cell_box() {
         let origin = PlaceholderOrigin {
             image_id: 1,
             row: 2,
             col: 3,
         };
-        let rect = virtual_rect(origin, 8, 16, 32, 48);
+        let rect = virtual_rect(origin, 8, 16, 32, 48, 120);
         assert_eq!(
             rect,
             Rect {
@@ -435,6 +538,26 @@ mod tests {
                 sw: 32,
                 sh: 48,
             }
+        );
+    }
+
+    #[test]
+    fn virtual_placement_divides_the_destination_at_a_fractional_scale() {
+        let origin = PlaceholderOrigin {
+            image_id: 1,
+            row: 0,
+            col: 0,
+        };
+        let rect = virtual_rect(origin, 8, 16, 576, 324, 216);
+        assert_eq!(
+            (rect.w, rect.h),
+            (320, 180),
+            "one image pixel, one device pixel"
+        );
+        assert_eq!(
+            (rect.sx, rect.sy, rect.sw, rect.sh),
+            (0, 0, 576, 324),
+            "the source rect stays in image pixels (D4)"
         );
     }
 
@@ -454,11 +577,44 @@ mod tests {
             source_width: 40,
             source_height: 20,
         };
-        let rect = viewport_rect(&info, 8, 16);
+        let rect = viewport_rect(&info, 8, 16, 120, 0, 0);
         assert_eq!(rect.x, 32);
         assert_eq!(rect.y, 16);
         assert_eq!((rect.w, rect.h), (40, 20));
         assert_eq!((rect.sx, rect.sy, rect.sw, rect.sh), (2, 3, 40, 20));
+    }
+
+    #[test]
+    fn only_an_image_sized_viewport_placement_divides_the_resolved_size() {
+        let info = GhosttyKittyGraphicsPlacementRenderInfo {
+            size: mem::size_of::<GhosttyKittyGraphicsPlacementRenderInfo>(),
+            pixel_width: 576,
+            pixel_height: 324,
+            grid_cols: 72,
+            grid_rows: 20,
+            viewport_col: 0,
+            viewport_row: 0,
+            viewport_visible: true,
+            source_x: 0,
+            source_y: 0,
+            source_width: 576,
+            source_height: 324,
+        };
+
+        // Neither count given: the destination is image-sized device pixels,
+        // so it divides by the scale; the source rect stays in image pixels.
+        let rect = viewport_rect(&info, 8, 16, 216, 0, 0);
+        assert_eq!((rect.w, rect.h), (320, 180));
+        assert_eq!((rect.sw, rect.sh), (576, 324));
+
+        // One count given: ghostty derives the other from the logical cell,
+        // so the resolved size is already logical and stays.
+        let rect = viewport_rect(&info, 8, 16, 216, 10, 0);
+        assert_eq!((rect.w, rect.h), (576, 324));
+
+        // Both given: the size is the cells', unchanged.
+        let rect = viewport_rect(&info, 8, 16, 216, 10, 5);
+        assert_eq!((rect.w, rect.h), (576, 324));
     }
 
     struct ReplaySink;
