@@ -257,7 +257,6 @@ mod tests {
         Arc::new(Inner {
             poisoned: Poisoned::new(),
             live: AtomicBool::new(true),
-            keyboard: Keyboard::OnDemand,
         })
     }
 

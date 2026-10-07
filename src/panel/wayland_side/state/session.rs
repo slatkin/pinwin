@@ -12,7 +12,6 @@ use smithay_client_toolkit::shm::Shm;
 use wayland_client::QueueHandle;
 use wayland_client::globals::GlobalList;
 
-use super::super::activation::Activation;
 use super::super::buffers::Scale;
 use super::super::frame_log::Presentation;
 use super::super::seat::SeatSide;
@@ -38,7 +37,6 @@ impl PanelState {
         let shell = LayerShell::bind(&globals, qh).map_err(|_bind| BindFailure::NoDisplay)?;
         let mut scale = Scale::bind(&globals, qh);
         let presentation = Presentation::bind(&globals, qh);
-        let activation = Activation::bind(&globals, qh);
         // The seat state (row 8.1's seat wiring): the wl_seat globals bind
         // here and their capability events queue until the loop dispatches
         // them, so the keyboard and the pointer come from the loop's first
@@ -84,7 +82,6 @@ impl PanelState {
             resolved: None,
             scale,
             presentation,
-            activation,
             qh: qh.clone(),
         });
         Ok(())

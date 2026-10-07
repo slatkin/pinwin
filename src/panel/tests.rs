@@ -4,7 +4,7 @@
 //! and fake posts without a display.
 
 use super::*;
-use crate::layout::Side;
+use crate::layout::{Keyboard, Side};
 use std::cell::Cell;
 use std::num::NonZeroU16;
 use std::os::fd::AsRawFd;
@@ -32,12 +32,6 @@ fn startup(fd: RawFd) -> Startup {
         keyboard: Keyboard::OnDemand,
         accent: None,
     }
-}
-
-/// A valid test token, the argument every focus request carries from
-/// row 7.2 on.
-fn token() -> ActivationToken {
-    ActivationToken::new("pinwin-test-token").expect("test token is valid")
 }
 
 /// A fd that is not an open descriptor is `InvalidFd` before any thread
@@ -98,16 +92,9 @@ fn poisoned_beats_not_running() {
     let inner = Inner {
         poisoned: Poisoned::latched(),
         live: AtomicBool::new(false),
-        keyboard: Keyboard::OnDemand,
     };
     assert_eq!(
         apply_via_inner(&inner, layout(), 0, |_, _| Err(PinwinError::Internal)),
-        Err(PinwinError::Internal)
-    );
-    // The focus request follows the same precedence: a latched handle
-    // reports `Internal`, never `NotRunning`.
-    assert_eq!(
-        request_focus_via_inner(&inner, token(), |_| Err(PinwinError::Internal)),
         Err(PinwinError::Internal)
     );
     // The toggle follows the same precedence: a latched handle reports
@@ -127,7 +114,6 @@ fn apply_on_a_dead_panel_is_not_running_without_blocking() {
     let inner = Inner {
         poisoned: Poisoned::new(),
         live: AtomicBool::new(false),
-        keyboard: Keyboard::OnDemand,
     };
     let started = std::time::Instant::now();
     assert_eq!(
@@ -140,27 +126,6 @@ fn apply_on_a_dead_panel_is_not_running_without_blocking() {
     );
 }
 
-/// A focus request on a handle whose panel is no longer live reports
-/// `NotRunning` without blocking: the post is skipped, the reply path is
-/// not entered (the dead-panel scenario).
-#[test]
-fn a_focus_request_on_a_dead_panel_is_not_running_without_blocking() {
-    let inner = Inner {
-        poisoned: Poisoned::new(),
-        live: AtomicBool::new(false),
-        keyboard: Keyboard::OnDemand,
-    };
-    let started = std::time::Instant::now();
-    assert_eq!(
-        request_focus_via_inner(&inner, token(), |_| Err(PinwinError::Internal)),
-        Err(PinwinError::NotRunning)
-    );
-    assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "the dead-panel focus request does not wait"
-    );
-}
-
 /// A toggle on a handle whose panel is no longer live reports
 /// `NotRunning` without blocking: the post is skipped, the reply path is
 /// not entered (the spec's dead-panel toggle scenario, row 9.1).
@@ -169,7 +134,6 @@ fn a_toggle_on_a_dead_panel_is_not_running_without_blocking() {
     let inner = Inner {
         poisoned: Poisoned::new(),
         live: AtomicBool::new(false),
-        keyboard: Keyboard::OnDemand,
     };
     let started = std::time::Instant::now();
     assert_eq!(
@@ -182,62 +146,22 @@ fn a_toggle_on_a_dead_panel_is_not_running_without_blocking() {
     );
 }
 
-/// A live handle's toggle posts to the panel thread in every keyboard
-/// mode — show and hide are not focus requests, so no mode
-/// short-circuits the post (row 9.1, D4).
+/// A live handle's toggle posts to the panel thread (row 9.1, D4): show
+/// and hide are not focus requests, so every keyboard mode posts — the
+/// mode short-circuit the focus request had went with it.
 #[test]
-fn a_live_toggle_posts_in_every_keyboard_mode() {
-    for keyboard in [Keyboard::None, Keyboard::OnDemand, Keyboard::Exclusive] {
-        let inner = Inner {
-            poisoned: Poisoned::new(),
-            live: AtomicBool::new(true),
-            keyboard,
-        };
-        let posted = Cell::new(0);
-        let result = toggle_via_inner(&inner, || {
-            posted.set(posted.get() + 1);
-            Ok(())
-        });
-        assert_eq!(result, Ok(()), "the toggle posts in {keyboard:?}");
-        assert_eq!(posted.get(), 1, "the toggle posted in {keyboard:?}");
-    }
-}
-
-/// In the `none` and `exclusive` modes a focus request is `Ok(())` and
-/// posts nothing: the post closure fails the result if it ran, so `Ok`
-/// can only come from the mode short-circuit.
-#[test]
-fn a_focus_request_outside_on_demand_is_ok_and_posts_nothing() {
-    for keyboard in [Keyboard::None, Keyboard::Exclusive] {
-        let inner = Inner {
-            poisoned: Poisoned::new(),
-            live: AtomicBool::new(true),
-            keyboard,
-        };
-        assert_eq!(
-            request_focus_via_inner(&inner, token(), |_| Err(PinwinError::Internal)),
-            Ok(())
-        );
-    }
-}
-
-/// A live `on-demand` handle's request posts the token to the panel
-/// thread: the post closure receives the very token the caller built
-/// (replace-gtk-with-wayland D4).
-#[test]
-fn a_focus_request_on_demand_posts_the_token() {
+fn a_live_toggle_posts_to_the_panel_thread() {
     let inner = Inner {
         poisoned: Poisoned::new(),
         live: AtomicBool::new(true),
-        keyboard: Keyboard::OnDemand,
     };
-    let posted = Cell::new(None);
-    let result = request_focus_via_inner(&inner, token(), |token| {
-        posted.set(Some(token));
+    let posted = Cell::new(0);
+    let result = toggle_via_inner(&inner, || {
+        posted.set(posted.get() + 1);
         Ok(())
     });
     assert_eq!(result, Ok(()));
-    assert_eq!(posted.take().as_ref(), Some(&token()));
+    assert_eq!(posted.get(), 1, "the toggle posted once");
 }
 
 /// A panic in a guarded closure at the panel boundary yields
@@ -258,7 +182,6 @@ fn a_panic_in_a_guarded_closure_is_internal_and_stays_internal() {
     let inner = Inner {
         poisoned: Poisoned::new(),
         live: AtomicBool::new(true),
-        keyboard: Keyboard::OnDemand,
     };
 
     // The boundary's own expression: `guard` catches the panic, latches
@@ -297,7 +220,6 @@ fn teardown_of_a_dead_panel_is_a_noop_that_releases_the_slot() {
     let inner = Inner {
         poisoned: Poisoned::new(),
         live: AtomicBool::new(false),
-        keyboard: Keyboard::OnDemand,
     };
     let started = std::time::Instant::now();
     let _ = guard_always(&inner.poisoned, || {
@@ -325,7 +247,6 @@ fn a_live_teardown_posts_once_and_releases_the_slot() {
     let inner = Inner {
         poisoned: Poisoned::new(),
         live: AtomicBool::new(true),
-        keyboard: Keyboard::OnDemand,
     };
     let posted = Cell::new(0);
     let _ = guard_always(&inner.poisoned, || {

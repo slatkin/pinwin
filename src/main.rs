@@ -7,17 +7,15 @@
 //! PINWIN_ACCENT=on|off PINWIN_ACCENT_COLOR=#RRGGBB PINWIN_ACCENT_WIDTH=2
 //! PINWIN_NAME=default
 //! pinwin htop
-//! pinwin --focus [name]   # asks for keyboard focus with the activation
-//!                         # token in $XDG_ACTIVATION_TOKEN, which the
-//!                         # compositor sets when a key binding spawns it;
-//!                         # without it, exit 2
+//! pinwin --toggle [name]   # asks the named running panel to show or hide
+//!                          # itself, for a niri key binding
 //! ```
 //!
 //! A thin host over the library API ([`pinwin::panel`]), the port of
 //! `host/main.c` (port-to-rust D8): it owns the pty, the child's environment
 //! and the process lifetime; the library owns the panel. The pure parts live
 //! in testable modules — argument parsing ([`cli`]), environment parsing
-//! ([`settings`]) and the focus-socket identity ([`ipc`]); the process parts
+//! ([`settings`]) and the toggle-socket identity ([`ipc`]); the process parts
 //! (`forkpty`, signals, waiting) stay in [`run`] and [`host_panel`].
 
 use std::env;
@@ -28,7 +26,6 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use pinwin::activation::ActivationToken;
 use pinwin::layout::{Layout, Side};
 use pinwin::panel::{Panel, PinwinError, Startup};
 
@@ -37,7 +34,7 @@ mod ipc;
 mod settings;
 
 use cli::{Mode, default_command, parse_args};
-use ipc::{BindError, FocusError, InstanceName};
+use ipc::{BindError, InstanceName, ToggleError};
 use settings::{Settings, read_settings};
 
 /// The child's process id, read by the signal handler; zero means "no child
@@ -160,34 +157,24 @@ fn child_exec(child: &ChildCommand) -> ! {
     unsafe { libc::_exit(127) }
 }
 
-/// The `--focus` client side (keyboard-focus-request row 3.5, the token
-/// protocol of replace-gtk-with-wayland D4): build the activation token
-/// from `get` — `XDG_ACTIVATION_TOKEN` in [`run`] — and only then ask the
-/// host that owns the name's socket for focus and report the reply. A
-/// missing or invalid token exits 2 without contacting any instance; `ok`
-/// exits 0, a missing or failing host exits 1, and an environment error —
-/// an unusable socket path — exits 2 like the other environment errors.
-fn run_focus_client(name: Option<InstanceName>, get: impl Fn(&str) -> Option<String>) -> i32 {
-    // The token comes first: without one there is nothing to ask for, and
-    // no instance is contacted (the spec's "No token" scenario).
-    let token = match settings::read_focus_token(get) {
-        Ok(token) => token,
-        Err(message) => {
-            eprintln!("{message}");
-            return 2;
-        }
-    };
+/// The `--toggle` client side (replace-gtk-with-wayland D4): ask the host
+/// that owns the name's socket to toggle its panel and report the reply.
+/// The client reads no environment besides the display — the request itself
+/// carries nothing. `ok` exits 0, a missing or failing host exits 1, and an
+/// environment error — an unusable socket path — exits 2 like the other
+/// environment errors.
+fn run_toggle_client(name: Option<InstanceName>) -> i32 {
     let name = name.unwrap_or_else(InstanceName::default_instance);
     let result = ipc::socket_path_from_env(&name)
-        .map_err(FocusError::Environment)
-        .and_then(|path| ipc::focus_client(&path, &token));
+        .map_err(ToggleError::Environment)
+        .and_then(|path| ipc::toggle_client(&path));
     match result {
         Ok(()) => 0,
-        Err(FocusError::Environment(message)) => {
+        Err(ToggleError::Environment(message)) => {
             eprintln!("{message}");
             2
         }
-        Err(FocusError::NotAnswered(message)) => {
+        Err(ToggleError::NotAnswered(message)) => {
             eprintln!("{message}");
             1
         }
@@ -213,16 +200,11 @@ fn run() -> i32 {
             return 2;
         }
     };
-    // The focus client builds its token from the environment before it
-    // contacts any instance (replace-gtk-with-wayland D4), then asks the
-    // host that owns the name's socket for focus and reports the reply
-    // (keyboard-focus-request row 3.5).
+    // The toggle client asks the host that owns the name's socket to
+    // toggle its panel and reports the reply (replace-gtk-with-wayland
+    // D4); it reads no environment besides the display.
     let command = match mode {
-        Mode::Focus { name } => {
-            return run_focus_client(name, |name| {
-                env::var_os(name).map(|value| value.to_string_lossy().into_owned())
-            });
-        }
+        Mode::Toggle { name } => return run_toggle_client(name),
         Mode::Host { command } => command,
     };
     let command = if command.is_empty() {
@@ -322,18 +304,19 @@ fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
             return 1;
         }
     };
-    let status = serve_focus_until_exit(&panel, &listener, socket_file, pid);
+    let status = serve_toggle_until_exit(&panel, &listener, socket_file, pid);
     // Dropping the handle closes the panel (the C's `pinwin_stop`).
     drop(panel);
     child_exit_status(status)
 }
 
-/// Serve focus requests on the bound socket while the child runs (row 3.4):
-/// a scoped thread borrows the panel — the request is bounded like
-/// `Panel::apply_layout` — and ends within one accept poll of the shutdown
-/// flag set once the child exits. The socket file goes with it: the host
-/// removes the file it created. Returns the child's raw wait status.
-fn serve_focus_until_exit(
+/// Serve toggle requests on the bound socket while the child runs
+/// (replace-gtk-with-wayland D4): a scoped thread borrows the panel — the
+/// request is bounded like `Panel::apply_layout` — and ends within one
+/// accept poll of the shutdown flag set once the child exits. The socket
+/// file goes with it: the host removes the file it created. Returns the
+/// child's raw wait status.
+fn serve_toggle_until_exit(
     panel: &Panel,
     listener: &net::UnixListener,
     socket_file: ipc::SocketFile,
@@ -342,11 +325,7 @@ fn serve_focus_until_exit(
     let shutdown = AtomicBool::new(false);
     std::thread::scope(|scope| {
         scope.spawn(|| {
-            ipc::serve_focus_requests(
-                listener,
-                &|token: &ActivationToken| panel.request_focus(token.clone()),
-                &shutdown,
-            );
+            ipc::serve_toggle_requests(listener, &|| panel.toggle(), &shutdown);
         });
         let status = wait_for_child(pid);
         shutdown.store(true, Ordering::Relaxed);
@@ -399,27 +378,17 @@ mod tests {
         assert_eq!(child_exit_status(9), 1);
     }
 
-    /// The `--focus` client reads the token before it contacts any
-    /// instance: a missing token exits 2 even when no instance answers (a
-    /// connect would exit 1), an invalid token exits 2, and a valid token
-    /// with no listener exits 1. The environment is injected, so the test
-    /// never touches the process environment; the name has no listener.
+    /// The `--toggle` client maps the outcomes: a name with no listener is
+    /// a not-answered request, exit 1. The invalid-name and socket-path
+    /// environment classes are covered by the `InstanceName::parse` and
+    /// `socket_path` contracts in `ipc.rs`; here the no-host path holds.
+    /// The name has no listener, and the test never touches the process
+    /// environment (the display variables it resolves are inherited, which
+    /// only changes the message, not the status).
     #[test]
-    fn the_focus_client_reads_the_token_before_it_connects() {
-        let name = Some(InstanceName::parse("--focus", "no-such-instance").expect("valid"));
-        let none = |_: &str| None;
-
-        // No token: exit 2, no instance contacted (that would be exit 1).
-        assert_eq!(run_focus_client(name.clone(), none), 2);
-
-        // An invalid token: exit 2 as well.
-        let spaced = |_: &str| Some("niri spawn".to_owned());
-        assert_eq!(run_focus_client(name.clone(), spaced), 2);
-
-        // A valid token with no listener on the name: the request is not
-        // answered, exit 1.
-        let valid = |_: &str| Some("niri-spawn:pinwin-172839".to_owned());
-        assert_eq!(run_focus_client(name, valid), 1);
+    fn the_toggle_client_without_a_listener_exits_1() {
+        let name = Some(InstanceName::parse("--toggle", "no-such-instance").expect("valid"));
+        assert_eq!(run_toggle_client(name), 1);
     }
 
     /// The exec arguments are the C strings of the command, with the pointer

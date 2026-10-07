@@ -46,7 +46,6 @@ use crate::term::Terminal;
 
 use super::super::handshake::{Handshake, StartOutcome};
 use super::Startup;
-use super::activation::Activation;
 use super::buffers::{Scale, viewport_destination};
 use super::frame_log::{FrameLog, Presentation};
 use super::seat::SeatLinks;
@@ -81,10 +80,6 @@ pub(crate) struct Session {
     /// frame callbacks' times otherwise. Its absence degrades the frame
     /// log, never the start (D1).
     pub(crate) presentation: Presentation,
-    /// The optional xdg-activation global (row 7.2, replace-gtk-with-wayland
-    /// D4): the focus request's transport; its absence degrades the request
-    /// to a no-op, never the start (D1).
-    pub(crate) activation: Activation,
     /// The globals the session bound (row 8.1's seat wiring): the list the
     /// pointer's cursor-shape device binds from when the pointer capability
     /// arrives (row 5.5).
@@ -649,7 +644,6 @@ mod tests {
         Arc::new(super::super::Inner {
             poisoned: GuardPoisoned::new(),
             live: AtomicBool::new(true),
-            keyboard: Keyboard::OnDemand,
         })
     }
 

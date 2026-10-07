@@ -6,7 +6,7 @@
 //! The shape follows `src/pinwin_api.c`: start validates its arguments before
 //! any thread work, then hands the startup to the panel thread and waits for
 //! a handshake that completes when the panel is on screen with live metrics.
-//! Applies, focus requests and toggles post a command on the thread's calloop
+//! Applies, toggles and the teardown post a command on the thread's calloop
 //! channel
 //! and wait up to five seconds for the reply (a wedged thread is `Internal`,
 //! never a hang). Drop posts a teardown, waits for its bounded reply and
@@ -36,9 +36,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
-use crate::activation::ActivationToken;
 use crate::guard::{Poisoned, guard, guard_always};
-use crate::layout::{Keyboard, Layout};
+use crate::layout::Layout;
 
 use handshake::{Handshake, wait_for_start};
 use wayland_side::{PanelThread, StartCommand, spawn_panel_thread};
@@ -64,36 +63,29 @@ static INSTANCE: Mutex<Instance> = Mutex::new(Instance { phase: Phase::Idle });
 
 /// The display-free handle state (D10): the panel's one shared D5
 /// latch — the same flag every glue closure of this panel guards against —
-/// whether the panel thread is still live, and the keyboard mode fixed at
-/// start time (a focus request short-circuits on it before posting, D10).
-/// The thread holds a clone of the `Arc` and clears `live` when the panel
-/// ends on its own, so an apply, a focus request or a toggle on a dead
-/// panel reports `NotRunning` without posting anything.
+/// and whether the panel thread is still live. The thread holds a clone of
+/// the `Arc` and clears `live` when the panel ends on its own, so an apply
+/// or a toggle on a dead panel reports `NotRunning` without posting
+/// anything.
 #[derive(Debug)]
 pub(crate) struct Inner {
     pub(crate) poisoned: Poisoned,
     pub(crate) live: AtomicBool,
-    /// The startup keyboard mode; `request_focus` is a no-op outside
-    /// `on-demand`.
-    pub(crate) keyboard: Keyboard,
 }
 
 /// A running panel, the host's handle. Dropping it closes the panel.
 ///
-/// Besides applies, the handle offers a focus request
-/// ([`Panel::request_focus`]) and the show/hide toggle
-/// ([`Panel::toggle`]): in `on-demand` mode the focus request passes the
-/// request's activation token to the compositor as an xdg-activation request
-/// (replace-gtk-with-wayland D4), the other modes are a no-op `Ok`; the
-/// toggle hides a shown panel and shows a hidden one (D4).
+/// Besides applies, the handle offers the show/hide toggle
+/// ([`Panel::toggle`]): it hides a shown panel and shows a hidden one
+/// (replace-gtk-with-wayland D4).
 ///
 /// Not `Clone`: one handle per panel, so the single-instance rule is
 /// ownership, not bookkeeping.
 #[derive(Debug)]
 pub struct Panel {
     inner: Arc<Inner>,
-    /// The panel thread the start spawned; the applies, the focus requests
-    /// and the drop's teardown post through it (D2).
+    /// The panel thread the start spawned; the applies, the toggle and the
+    /// drop's teardown post through it (D2).
     thread: PanelThread,
 }
 
@@ -133,7 +125,6 @@ impl Panel {
         let inner = Arc::new(Inner {
             poisoned: poisoned.clone(),
             live: AtomicBool::new(true),
-            keyboard: startup.keyboard,
         });
 
         // Claim the single-instance slot before touching the Wayland side, so
@@ -216,30 +207,6 @@ impl Panel {
         })
     }
 
-    /// Ask the compositor to give the panel keyboard focus (issue #15's
-    /// focus on request). In `on-demand` mode the panel passes `token` to
-    /// the compositor as an xdg-activation request for the panel surface
-    /// (replace-gtk-with-wayland D4): the request itself maps and unmaps
-    /// nothing — a show and a hide belong to [`Panel::toggle`] — and it
-    /// changes neither the terminal grid, the pty window size nor the
-    /// reserved gap. On a compositor without xdg-activation, or for a
-    /// stale token — one the compositor already used, or one that is too
-    /// old — the request does nothing; the compositor's choice is invisible
-    /// to the caller, so the call returns `Ok(())` once the request is sent
-    /// either way. In the `none` and `exclusive` modes the call returns
-    /// `Ok(())` and changes nothing — the host chose the mode, and an
-    /// activation request could not gain focus there anyway. The keyboard
-    /// mode itself is fixed at start time; the request never changes it.
-    ///
-    /// The token is the one-use permission a compositor gives a program it
-    /// launches; the library owns no transport for the request, the host
-    /// decides how a request and its token reach it. Taken by value: the
-    /// request posts the token to the panel thread, which hands it to the
-    /// compositor (replace-gtk-with-wayland D4).
-    pub fn request_focus(&self, token: ActivationToken) -> Result<(), PinwinError> {
-        request_focus_via_inner(&self.inner, token, |token| self.thread.request_focus(token))
-    }
-
     /// Toggle the panel (row 9.1, replace-gtk-with-wayland D4): hide a
     /// shown panel, show a hidden one. The panel is shown at start. Hiding
     /// unmaps the panel surface and releases the held reservation, and a
@@ -301,46 +268,8 @@ fn post_apply(
     post(layout, duration_ms)
 }
 
-/// A focus request through the display-free inner handle (D10): the same
-/// order as [`apply_via_inner`] — the poisoned check first (D5: a panic
-/// reports `Internal`, never `NotRunning`), then the ended check — then the
-/// mode short-circuit and the request itself.
-pub(crate) fn request_focus_via_inner(
-    inner: &Inner,
-    token: ActivationToken,
-    post: impl FnOnce(ActivationToken) -> Result<(), PinwinError>,
-) -> Result<(), PinwinError> {
-    match guard(&inner.poisoned, || post_focus(inner, token, post)) {
-        Ok(result) => result,
-        Err(_) => Err(PinwinError::Internal),
-    }
-}
-
-/// The unguarded body of [`request_focus_via_inner`]: the ended check, the
-/// mode short-circuit, then the request itself.
-fn post_focus(
-    inner: &Inner,
-    token: ActivationToken,
-    post: impl FnOnce(ActivationToken) -> Result<(), PinwinError>,
-) -> Result<(), PinwinError> {
-    // Not running → `NotRunning` without blocking, unconditionally (the
-    // spec's dead-panel scenario; pinwin_api.c's order).
-    if !inner.live.load(Ordering::Relaxed) {
-        return Err(PinwinError::NotRunning);
-    }
-    // The mode is fixed at start time and recorded on the handle: an
-    // activation request cannot gain focus outside `on-demand`, so the
-    // request is `Ok` and posts nothing.
-    if inner.keyboard != Keyboard::OnDemand {
-        return Ok(());
-    }
-    // The token posts to the panel thread, which makes the xdg-activation
-    // request for the panel surface (replace-gtk-with-wayland D4).
-    post(token)
-}
-
 /// A toggle through the display-free inner handle (D10): the same order as
-/// [`request_focus_via_inner`] — the poisoned check first (D5: a panic
+/// [`apply_via_inner`] — the poisoned check first (D5: a panic
 /// reports `Internal`, never `NotRunning`), then the ended check — then the
 /// toggle itself. No mode short-circuit: every keyboard mode toggles.
 pub(crate) fn toggle_via_inner(

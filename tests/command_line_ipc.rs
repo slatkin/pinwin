@@ -1,22 +1,17 @@
 //! The `pinwin` binary's command-line IPC end to end, without a display
-//! (`keyboard-focus-request` rows 3.4 and 3.5). Both tests redirect the
-//! socket path into a private runtime directory, so they never touch the
-//! real session's sockets:
+//! (`keyboard-focus-request`'s socket plumbing, the toggle protocol of
+//! `replace-gtk-with-wayland` D4). The tests redirect the socket path into
+//! a private runtime directory, so they never touch the real session's
+//! sockets:
 //!
 //! - After `pinwin true` exits, the socket file the host bound is gone. The
 //!   panel cannot start here (the temporary runtime directory has no
 //!   Wayland socket), which still covers the row: the host removes the file
 //!   on the shutdown path it takes, whatever the child's outcome.
-//! - `pinwin --focus notes` with no `XDG_ACTIVATION_TOKEN` prints a
-//!   `pinwin:` message on stderr naming the variable and exits 2 without
-//!   contacting any instance (replace-gtk-with-wayland D4).
-//!
-//! The with-token exit-1 path has no binary-level test here on purpose:
-//! while the binary still links GTK (removed later in
-//! `replace-gtk-with-wayland`), GTK's own startup constructor consumes
-//! `XDG_ACTIVATION_TOKEN` before `main` runs, so a spawned `pinwin --focus`
-//! cannot see a token at all. That path is covered in `src/main.rs`'s unit
-//! test with the injected environment; it goes live once GTK is unlinked.
+//! - `pinwin --toggle notes` with no instance answers exit 1 with a
+//!   `pinwin:` message on stderr.
+//! - `pinwin --toggle a/b` prints a message naming the option and exits 2
+//!   without contacting any instance.
 
 use std::fs;
 use std::path::PathBuf;
@@ -45,8 +40,7 @@ fn display_free_env(command: &mut Command, dir: &PathBuf) {
     command
         .env("XDG_RUNTIME_DIR", dir)
         .env("WAYLAND_DISPLAY", "wayland-test")
-        .env_remove("DISPLAY")
-        .env_remove("XDG_ACTIVATION_TOKEN");
+        .env_remove("DISPLAY");
 }
 
 #[test]
@@ -73,28 +67,54 @@ fn the_socket_file_is_gone_after_pinwin_true_exits() {
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 
-/// Without `XDG_ACTIVATION_TOKEN` the client exits 2 naming the variable,
-/// before it contacts any instance: the reply it never got is the no-host
-/// exit 1, so the two statuses tell the order apart.
+/// With no instance listening on the name, the client reports the request
+/// as not answered and exits 1: the socket path resolved (the runtime
+/// directory is set), so this is the no-host status, not the environment
+/// error's exit 2.
 #[test]
-fn the_focus_client_prints_a_message_and_exits_2_without_a_token() {
-    let dir = temp_dir("focus");
+fn the_toggle_client_without_an_instance_exits_1() {
+    let dir = temp_dir("no-instance");
 
     let output = {
         let mut command = Command::new(env!("CARGO_BIN_EXE_pinwin"));
         display_free_env(&mut command, &dir);
         command
-            .arg("--focus")
+            .arg("--toggle")
             .arg("notes")
             .output()
             .expect("run pinwin")
     };
 
-    assert_eq!(output.status.code(), Some(2), "no token, status");
+    assert_eq!(output.status.code(), Some(1), "no instance, status");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("pinwin:") && stderr.contains("XDG_ACTIVATION_TOKEN"),
-        "the variable is named on stderr: {stderr}"
+        stderr.contains("pinwin:") && stderr.contains("no pinwin is listening"),
+        "the failure is reported on stderr: {stderr}"
+    );
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// An invalid name after `--toggle` exits 2 naming the option, before any
+/// socket path is resolved and without contacting any instance.
+#[test]
+fn the_toggle_client_rejects_an_invalid_name_with_exit_2() {
+    let dir = temp_dir("bad-name");
+
+    let output = {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pinwin"));
+        display_free_env(&mut command, &dir);
+        command
+            .arg("--toggle")
+            .arg("a/b")
+            .output()
+            .expect("run pinwin")
+    };
+
+    assert_eq!(output.status.code(), Some(2), "invalid name, status");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("pinwin: --toggle:"),
+        "the rejection names the option: {stderr}"
     );
     fs::remove_dir_all(&dir).expect("cleanup");
 }

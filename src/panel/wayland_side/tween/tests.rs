@@ -33,7 +33,6 @@ fn live_inner() -> Arc<Inner> {
     Arc::new(Inner {
         poisoned: Poisoned::new(),
         live: AtomicBool::new(true),
-        keyboard: Keyboard::OnDemand,
     })
 }
 

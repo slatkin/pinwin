@@ -1,5 +1,5 @@
 //! The panel thread's command-channel handling (replace-gtk-with-wayland D2):
-//! the apply, focus, toggle and teardown commands the host posts and the closed
+//! the apply, toggle and teardown commands the host posts and the closed
 //! command channel, split from the surface-event handlers in
 //! `super::state` so both stay small. The teardown and the closed channel
 //! are stop relays (D5): they end the loop and drop the surfaces even on a
@@ -53,10 +53,6 @@ fn handle_command(state: &mut PanelState, command: super::PanelCommand) {
         } => {
             let _ = reply.send(state.apply(layout, duration_ms));
         }
-        super::PanelCommand::Focus { token, reply } => {
-            super::activation::on_focus(state, &token);
-            let _ = reply.send(());
-        }
         super::PanelCommand::Toggle { reply } => {
             // The toggle itself answers nothing: the reply says the hide's
             // null-buffer commit or the show's commit without a buffer went
@@ -81,7 +77,6 @@ fn handle_command(state: &mut PanelState, command: super::PanelCommand) {
 mod tests {
     use super::super::{PanelCommand, Startup};
     use super::*;
-    use crate::activation::ActivationToken;
     use crate::guard::Poisoned as GuardPoisoned;
     use crate::layout::{CellSize, Keyboard, Layout, Side};
     use crate::panel::handshake::Handshake;
@@ -120,7 +115,6 @@ mod tests {
         Arc::new(super::super::Inner {
             poisoned: GuardPoisoned::new(),
             live: AtomicBool::new(true),
-            keyboard: Keyboard::OnDemand,
         })
     }
 
@@ -149,33 +143,6 @@ mod tests {
             Err(crate::panel::PinwinError::NotRunning)
         );
         assert!(!state.done, "an apply does not end the thread");
-    }
-
-    /// A valid test token, the argument every focus request carries from
-    /// row 7.2 on.
-    fn token() -> ActivationToken {
-        ActivationToken::new("pinwin-test-token").expect("test token is valid")
-    }
-
-    /// A focus request posted to a thread without an activation path is a
-    /// no-op answered `Ok` through the same bounded reply (row 7.2: without
-    /// xdg-activation the request does nothing and still succeeds).
-    #[test]
-    fn a_focus_request_without_an_activation_path_is_ok() {
-        let (tx, _rx) = mpsc::channel();
-        let mut state = headless_state(Handshake::new(tx));
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        handle_command(
-            &mut state,
-            PanelCommand::Focus {
-                token: token(),
-                reply: reply_tx,
-            },
-        );
-        assert_eq!(
-            crate::panel::handshake::wait_for_unit(&reply_rx, std::time::Duration::from_secs(1)),
-            Ok(())
-        );
     }
 
     /// A toggle command flips the headless state's visibility and replies

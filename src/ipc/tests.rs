@@ -3,7 +3,6 @@
 //! `use super::*`).
 
 use super::*;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 
 /// A unique scratch directory under the system temp dir, so the tests
@@ -21,14 +20,9 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// The request line for `token`: `focus <token>\n`
+/// The request line the protocol defines: exactly `toggle\n`
 /// (replace-gtk-with-wayland D4).
-fn request(token: &[u8]) -> Vec<u8> {
-    let mut line = REQUEST_PREFIX.to_vec();
-    line.extend_from_slice(token);
-    line.push(b'\n');
-    line
-}
+const REQUEST_LINE: &[u8] = b"toggle\n";
 
 /// A valid name parses, and the boundaries of the character set, the
 /// length range and the error message hold.
@@ -105,44 +99,6 @@ fn socket_path_composes_the_runtime_path() {
     // A missing or empty runtime directory is an exit-2 error.
     socket_path(None, Some(os("wayland-0")), &name).expect_err("no runtime directory");
     socket_path(Some(os("")), Some(os("wayland-0")), &name).expect_err("empty runtime directory");
-}
-
-/// The request parser accepts exactly `focus <token>\n` with a token the
-/// constructor accepts, and rejects every other shape: the old bare
-/// `focus\n`, an empty token after the space, a space inside the token, a
-/// non-ASCII byte, a 256-byte token, a missing newline and a non-UTF-8
-/// byte.
-#[test]
-fn parse_request_takes_only_a_valid_token_line() {
-    assert_eq!(
-        parse_request(&request(b"niri-spawn:1"))
-            .as_ref()
-            .map(ActivationToken::as_str),
-        Some("niri-spawn:1")
-    );
-
-    // The longest valid token parses.
-    let longest = "a".repeat(MAX_TOKEN_BYTES);
-    assert_eq!(
-        parse_request(&request(longest.as_bytes()))
-            .as_ref()
-            .map(ActivationToken::as_str),
-        Some(longest.as_str())
-    );
-
-    for bad in [
-        &b"focus\n"[..],
-        b"focus \n",
-        b"focus a b\n",
-        b"focus a\tb\n",
-        "focus é\n".as_bytes(),
-        &request("a".repeat(MAX_TOKEN_BYTES + 1).as_bytes()),
-        b"focus niri-spawn:1",
-        b"niri-spawn:1\n",
-        b"focus",
-    ] {
-        assert!(parse_request(bad).is_none(), "bad = {bad:?}");
-    }
 }
 
 /// A stale file on the socket path is removed and bound again, and the
@@ -248,32 +204,30 @@ fn the_bound_listener_is_close_on_exec() {
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 
-/// The token protocol over a real bound socket: a valid token reaches the
-/// focus callback and is answered `ok`, a failing callback `error`, and
-/// every malformed line — no token, an empty token, an invalid token, a
-/// line one byte over the bound — is answered `error` without the callback
-/// running. The longest valid request (a 255-byte token) is accepted. A
-/// connection that sends nothing is dropped after the bounded wait without
-/// stopping the next request, and the listener stops on the shutdown flag.
-/// The retries bound the test, so a wedged loop fails it instead of
-/// hanging it.
+/// The listener answers exactly the `toggle\n` request: it runs the
+/// callback and is answered `ok`, a failing callback `error`, and every
+/// malformed line — any other command, an argument, an empty line, a line
+/// one byte over the bound — is answered `error` without the callback
+/// running. A connection that sends nothing is dropped after the bounded
+/// wait without stopping the next request, and the listener stops on the
+/// shutdown flag. The retries bound the test, so a wedged loop fails it
+/// instead of hanging it.
 #[test]
-fn the_listener_answers_the_token_protocol_and_stops_on_shutdown() {
+fn the_listener_answers_the_toggle_protocol_and_stops_on_shutdown() {
     let dir = temp_dir("listener");
     let path = dir.join("wayland-0-default.sock");
     let listener = bind_instance_socket(&path).expect("bind");
     let shutdown = AtomicBool::new(false);
     let fail = AtomicBool::new(false);
-    let seen: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    let stub = |token: &ActivationToken| {
-        seen.lock().expect("seen").push(token.as_str().to_owned());
+    let seen = AtomicUsize::new(0);
+    let stub = || {
+        seen.fetch_add(1, Ordering::Relaxed);
         if fail.load(Ordering::Relaxed) {
             Err(())
         } else {
             Ok(())
         }
     };
-    let longest = "a".repeat(MAX_TOKEN_BYTES);
 
     std::thread::scope(|scope| {
         // The thread reports its own exit through a flag the test polls
@@ -285,7 +239,7 @@ fn the_listener_answers_the_token_protocol_and_stops_on_shutdown() {
         let stub_ref = &stub;
         let shutdown_ref = &shutdown;
         scope.spawn(move || {
-            serve_focus_requests(listener_ref, stub_ref, shutdown_ref);
+            serve_toggle_requests(listener_ref, stub_ref, shutdown_ref);
             thread_stopped.store(true, Ordering::Relaxed);
         });
 
@@ -301,54 +255,36 @@ fn the_listener_answers_the_token_protocol_and_stops_on_shutdown() {
             reply
         };
 
-        // A valid token reaches the callback verbatim and is `ok`.
+        // The one valid request reaches the callback and is `ok`.
         let mut stream = net::UnixStream::connect(&path).expect("connect");
-        assert_eq!(
-            ask(&request(b"niri-spawn:1"), &mut stream),
-            REPLY_OK.to_vec()
-        );
-        assert_eq!(
-            seen.lock().expect("seen").as_slice(),
-            ["niri-spawn:1"],
-            "the callback saw the token"
-        );
+        assert_eq!(ask(REQUEST_LINE, &mut stream), REPLY_OK.to_vec());
+        assert_eq!(seen.load(Ordering::Relaxed), 1, "the callback ran");
 
-        // The longest valid request (a 255-byte token) is accepted too.
-        let mut stream = net::UnixStream::connect(&path).expect("connect");
-        assert_eq!(
-            ask(&request(longest.as_bytes()), &mut stream),
-            REPLY_OK.to_vec()
-        );
-        assert_eq!(seen.lock().expect("seen").len(), 2);
-
-        // A failing callback — the `request_focus` error case — is `error`.
+        // A failing callback — the panel thread's error case — is `error`.
         fail.store(true, Ordering::Relaxed);
         let mut stream = net::UnixStream::connect(&path).expect("connect");
-        assert_eq!(
-            ask(&request(b"niri-spawn:2"), &mut stream),
-            REPLY_ERROR.to_vec()
-        );
-        assert_eq!(seen.lock().expect("seen").len(), 3);
+        assert_eq!(ask(REQUEST_LINE, &mut stream), REPLY_ERROR.to_vec());
+        assert_eq!(seen.load(Ordering::Relaxed), 2);
 
-        // Malformed lines never reach the callback: the old bare request,
-        // an empty token after the space, an unknown command, a token with
-        // a space inside, a non-ASCII token, a 256-byte token (its line is
-        // one byte over the bound) and an oversized line without a
-        // newline.
+        // Malformed lines never reach the callback: the old focus request,
+        // an unknown command, a request with an argument, a bare word
+        // without a newline, an empty line and an oversized line without
+        // a newline.
         fail.store(false, Ordering::Relaxed);
         for bad in [
-            &b"focus\n"[..],
-            b"focus \n",
+            &b"focus niri-spawn:1\n"[..],
+            b"focus\n",
+            b"toggle niri-spawn:1\n",
+            b"toggle \n",
             b"hello\n",
-            b"focus a b\n",
-            "focus é\n".as_bytes(),
-            &request("a".repeat(MAX_TOKEN_BYTES + 1).as_bytes()),
-            &vec![b'x'; MAX_REQUEST + 1],
+            b"toggle",
+            b"\n",
+            &[b'x'; MAX_REQUEST + 1],
         ] {
             let mut stream = net::UnixStream::connect(&path).expect("connect");
             assert_eq!(ask(bad, &mut stream), REPLY_ERROR.to_vec(), "bad = {bad:?}");
         }
-        assert_eq!(seen.lock().expect("seen").len(), 3, "no malformed line ran");
+        assert_eq!(seen.load(Ordering::Relaxed), 2, "no malformed line ran");
 
         // A connection that sends nothing is dropped after the bounded
         // wait and answered with the error reply — the listener does not
@@ -358,11 +294,8 @@ fn the_listener_answers_the_token_protocol_and_stops_on_shutdown() {
 
         // ...and the next request is still served normally.
         let mut stream = net::UnixStream::connect(&path).expect("connect");
-        assert_eq!(
-            ask(&request(b"niri-spawn:3"), &mut stream),
-            REPLY_OK.to_vec()
-        );
-        assert_eq!(seen.lock().expect("seen").len(), 4);
+        assert_eq!(ask(REQUEST_LINE, &mut stream), REPLY_OK.to_vec());
+        assert_eq!(seen.load(Ordering::Relaxed), 3);
 
         // The shutdown flag ends the listener within a few accept polls.
         shutdown.store(true, Ordering::Relaxed);
@@ -381,16 +314,15 @@ fn the_listener_answers_the_token_protocol_and_stops_on_shutdown() {
 }
 
 /// The client's exchange against a scripted host: the request line goes
-/// out as `focus <token>\n`; `ok` succeeds, `error` and a garbage reply are
+/// out as `toggle\n`; `ok` succeeds, `error` and a garbage reply are
 /// reported as the request not being answered, a host that never replies
 /// is dropped after the bounded wait, and a stale path (connect
 /// refused) too.
 #[test]
-fn the_focus_client_sends_the_token_and_reports_the_reply() {
+fn the_toggle_client_sends_the_request_and_reports_the_reply() {
     let dir = temp_dir("client");
     let path = dir.join("wayland-0-default.sock");
-    let token = ActivationToken::new("niri-spawn:client-test").expect("valid token");
-    let expected_line = request(token.as_str().as_bytes());
+    let expected_line = REQUEST_LINE.to_vec();
 
     // Bind a one-shot host that asserts the request line and sends
     // `reply`. Dropping a listener leaves its socket file behind (a
@@ -417,15 +349,15 @@ fn the_focus_client_sends_the_token_and_reports_the_reply() {
 
     // `ok` succeeds.
     let host = scripted(REPLY_OK);
-    assert_eq!(focus_client(&path, &token), Ok(()));
+    assert_eq!(toggle_client(&path), Ok(()));
     host.join().expect("host thread");
 
     // `error` reports the request as refused.
     let host = scripted(REPLY_ERROR);
     assert!(
         matches!(
-            focus_client(&path, &token),
-            Err(FocusError::NotAnswered(message)) if message.contains("could not take focus")
+            toggle_client(&path),
+            Err(ToggleError::NotAnswered(message)) if message.contains("did not toggle")
         ),
         "an error reply is not answered"
     );
@@ -434,8 +366,8 @@ fn the_focus_client_sends_the_token_and_reports_the_reply() {
     // A garbage reply is no valid answer.
     let host = scripted(b"nope\n");
     assert!(matches!(
-        focus_client(&path, &token),
-        Err(FocusError::NotAnswered(message)) if message.contains("no valid answer")
+        toggle_client(&path),
+        Err(ToggleError::NotAnswered(message)) if message.contains("no valid answer")
     ));
     host.join().expect("host thread");
 
@@ -449,8 +381,8 @@ fn the_focus_client_sends_the_token_and_reports_the_reply() {
     });
     assert!(
         matches!(
-            focus_client(&path, &token),
-            Err(FocusError::NotAnswered(message)) if message.contains("no valid answer")
+            toggle_client(&path),
+            Err(ToggleError::NotAnswered(message)) if message.contains("no valid answer")
         ),
         "a silent host is not answered in time"
     );
@@ -460,8 +392,8 @@ fn the_focus_client_sends_the_token_and_reports_the_reply() {
     // (nothing answers the connect).
     assert!(
         matches!(
-            focus_client(&path, &token),
-            Err(FocusError::NotAnswered(message)) if message.contains("no pinwin")
+            toggle_client(&path),
+            Err(ToggleError::NotAnswered(message)) if message.contains("no pinwin")
         ),
         "a stale path is not answered"
     );

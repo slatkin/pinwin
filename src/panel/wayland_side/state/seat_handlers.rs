@@ -749,7 +749,6 @@ xkb_keymap {
         Arc::new(Inner {
             poisoned: GuardPoisoned::new(),
             live: AtomicBool::new(true),
-            keyboard: Keyboard::OnDemand,
         })
     }
 

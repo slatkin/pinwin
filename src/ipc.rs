@@ -1,11 +1,11 @@
-//! The command-line IPC identity, socket setup, listener and `--focus`
-//! client for the `pinwin` program (change `keyboard-focus-request`, the
-//! token protocol of `replace-gtk-with-wayland` D4): the validated instance
-//! name, the socket path under `$XDG_RUNTIME_DIR/pinwin`, the duplicate
-//! check, stale-file removal and bind that all happen before any surface
-//! opens, the listener that parses `focus <token>\n` and answers `ok\n` or
-//! `error\n` until the host's child ends, and the client that asks a running
-//! host for focus with the token it was given. The transport is the standard
+//! The command-line IPC identity, socket setup, listener and `--toggle`
+//! client for the `pinwin` program (change `keyboard-focus-request`'s socket
+//! plumbing, the toggle protocol of `replace-gtk-with-wayland` D4): the
+//! validated instance name, the socket path under `$XDG_RUNTIME_DIR/pinwin`,
+//! the duplicate check, stale-file removal and bind that all happen before
+//! any surface opens, the listener that parses `toggle\n` and answers
+//! `ok\n` or `error\n` until the host's child ends, and the client that asks
+//! a running host to toggle its panel. The transport is the standard
 //! library's Unix sockets only, no new dependencies; every socket wait is
 //! bounded, so one peer cannot hang the listener or the client.
 
@@ -21,10 +21,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use std::{fs, os::unix::net};
 
-use pinwin::activation::{ActivationToken, MAX_TOKEN_BYTES};
 use pinwin::guard::{Poisoned, guard_default};
 
-/// A validated instance name (`PINWIN_NAME`, `--focus [name]`): 1..=64
+/// A validated instance name (`PINWIN_NAME`, `--toggle [name]`): 1..=64
 /// characters from `[A-Za-z0-9_-]`. The newtype keeps the socket path safe
 /// (no separators, no `.` or `..`) and inside the 108-byte `sun_path` limit
 /// of a socket address (keyboard-focus-request design).
@@ -38,7 +37,7 @@ impl InstanceName {
     }
 
     /// Validate `raw`, reporting a failure as the full `pinwin:` exit-2
-    /// message under `context` (`PINWIN_NAME` or `--focus`).
+    /// message under `context` (`PINWIN_NAME` or `--toggle`).
     pub fn parse(context: &str, raw: &str) -> Result<InstanceName, String> {
         let valid = (1..=64).contains(&raw.len())
             && raw
@@ -184,39 +183,38 @@ fn bind_fresh(path: &Path) -> Result<net::UnixListener, io::Error> {
     Ok(listener)
 }
 
-/// The request line's fixed prefix: the command and the one space before
-/// the token (`replace-gtk-with-wayland` D4).
-const REQUEST_PREFIX: &[u8] = b"focus ";
+/// The request line: the whole protocol is the one word (`replace-gtk-with-wayland`
+/// D4); there is no argument, so the line is `toggle\n` exactly.
+const REQUEST: &[u8] = b"toggle\n";
 /// The listener's reply for an accepted request.
 const REPLY_OK: &[u8] = b"ok\n";
 /// The listener's reply for a failed or unknown request.
 const REPLY_ERROR: &[u8] = b"error\n";
-/// The largest request the protocol reads: the prefix, the longest valid
-/// token ([`MAX_TOKEN_BYTES`]) and the newline. Derived from the token bound
-/// so the two cannot drift. Anything longer is not a request this protocol
-/// defines; the read stops there and the request is refused.
-const MAX_REQUEST: usize = REQUEST_PREFIX.len() + MAX_TOKEN_BYTES + 1;
+/// The largest request the protocol reads: the request line plus a
+/// tolerance, so an oversized or malformed line is refused instead of
+/// buffered without bound. Anything longer than this is not a request this
+/// protocol defines; the read stops there and the request is refused.
+const MAX_REQUEST: usize = 64;
 /// How long one side may wait on the other: a peer that stalls is dropped
 /// after this, so one connection cannot hang the listener or the client.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(500);
 /// How often the accept loop wakes to notice the shutdown flag.
 const ACCEPT_POLL: Duration = Duration::from_millis(100);
 
-/// Answer focus requests on `listener` until `shutdown` is set: each
-/// connection sends one request line; `focus <token>\n` with a token the
-/// constructor accepts runs `request_focus` with that token and is answered
-/// `ok\n`, or `error\n` when it fails. Every other line — no prefix, no
-/// token, an invalid token, or a line over [`MAX_REQUEST`] — is answered
-/// `error\n` without calling `request_focus`. Every connection's read and
-/// write are bounded in size and time, so one client cannot hang the
-/// listener; the loop ends within one accept poll of `shutdown` — the host
-/// sets it after its child exits.
+/// Answer toggle requests on `listener` until `shutdown` is set: each
+/// connection sends one request line; exactly `toggle\n` runs `toggle` and
+/// is answered `ok\n`, or `error\n` when it fails. Every other line — any
+/// other command, an argument, or a line over [`MAX_REQUEST`] — is answered
+/// `error\n` without calling `toggle`. Every connection's read and write are
+/// bounded in size and time, so one client cannot hang the listener; the
+/// loop ends within one accept poll of `shutdown` — the host sets it after
+/// its child exits.
 ///
 /// The body runs through the D5 guard with its own latch: a panic in the
 /// listener ends the loop quietly instead of unwinding out of the thread.
-pub(crate) fn serve_focus_requests<E>(
+pub(crate) fn serve_toggle_requests<E>(
     listener: &net::UnixListener,
-    request_focus: &(impl Fn(&ActivationToken) -> Result<(), E> + Sync),
+    toggle: &(impl Fn() -> Result<(), E> + Sync),
     shutdown: &AtomicBool,
 ) {
     let poisoned = Poisoned::new();
@@ -230,30 +228,16 @@ pub(crate) fn serve_focus_requests<E>(
             let Ok((mut stream, _)) = listener.accept() else {
                 continue;
             };
-            let reply = match read_bounded(&mut stream).and_then(|line| parse_request(&line)) {
-                Some(token) => match request_focus(&token) {
+            let reply = match read_bounded(&mut stream).as_deref() {
+                Some(line) if line == REQUEST => match toggle() {
                     Ok(()) => REPLY_OK,
                     Err(_) => REPLY_ERROR,
                 },
-                None => REPLY_ERROR,
+                _ => REPLY_ERROR,
             };
             write_bounded(&mut stream, reply);
         }
     });
-}
-
-/// Parse one request line into its activation token. The line is
-/// `focus <token>\n` (replace-gtk-with-wayland D4); the token must pass
-/// [`ActivationToken::new`], so a bare `focus\n`, an empty token after the
-/// space, a token with a space inside or any other shape is `None` — the
-/// caller answers the error reply without calling the focus callback.
-fn parse_request(line: &[u8]) -> Option<ActivationToken> {
-    let line = line.strip_suffix(b"\n")?;
-    let raw = line.strip_prefix(REQUEST_PREFIX)?;
-    // The token bytes must be visible ASCII, so valid token bytes are
-    // always UTF-8; a non-UTF-8 request is an invalid token, not a panic.
-    let raw = std::str::from_utf8(raw).ok()?;
-    ActivationToken::new(raw).ok()
 }
 
 /// Wait until `fd` reports `events` (`POLLIN`/`POLLOUT`), at most `timeout`.
@@ -360,40 +344,35 @@ pub(crate) fn socket_path_from_env(name: &InstanceName) -> Result<PathBuf, Strin
     socket_path(runtime_dir.as_deref(), display.as_deref(), name)
 }
 
-/// What asking a host for focus ended in.
+/// What asking a host to toggle ended in.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum FocusError {
+pub(crate) enum ToggleError {
     /// The environment did not provide a usable socket path (exit 2, the
     /// same class as a bad name).
     Environment(String),
-    /// No host answered `ok`: no host at all, a refusing host, or no valid
-    /// reply in time (exit 1).
+    /// No host answered `ok`: no host at all, a refusing host, a failing
+    /// host, or no valid reply in time (exit 1).
     NotAnswered(String),
 }
 
 /// The exchange itself against the socket at `path`: connect, send
-/// `focus <token>\n` (the token is never logged), and wait a bounded time
-/// for the reply. `ok\n` is [`Ok`]; everything else — a refused connect,
-/// `error\n`, a timeout, an invalid reply — is [`FocusError::NotAnswered`]
-/// with the message to print.
-pub(crate) fn focus_client(path: &Path, token: &ActivationToken) -> Result<(), FocusError> {
+/// `toggle\n`, and wait a bounded time for the reply. `ok\n` is [`Ok`];
+/// everything else — a refused connect, `error\n`, a timeout, an invalid
+/// reply — is [`ToggleError::NotAnswered`] with the message to print.
+pub(crate) fn toggle_client(path: &Path) -> Result<(), ToggleError> {
     let mut stream = net::UnixStream::connect(path).map_err(|error| {
-        FocusError::NotAnswered(format!(
+        ToggleError::NotAnswered(format!(
             "pinwin: no pinwin is listening on {} ({error})",
             path.display()
         ))
     })?;
-    let mut request = Vec::with_capacity(MAX_REQUEST);
-    request.extend_from_slice(REQUEST_PREFIX);
-    request.extend_from_slice(token.as_str().as_bytes());
-    request.push(b'\n');
-    write_bounded(&mut stream, &request);
+    write_bounded(&mut stream, REQUEST);
     match read_bounded(&mut stream) {
         Some(reply) if reply == REPLY_OK => Ok(()),
-        Some(reply) if reply == REPLY_ERROR => Err(FocusError::NotAnswered(
-            "pinwin: the panel could not take focus (the request failed on the host)".to_owned(),
+        Some(reply) if reply == REPLY_ERROR => Err(ToggleError::NotAnswered(
+            "pinwin: the panel did not toggle (the request failed on the host)".to_owned(),
         )),
-        _ => Err(FocusError::NotAnswered(format!(
+        _ => Err(ToggleError::NotAnswered(format!(
             "pinwin: no valid answer came from {} in time",
             path.display()
         ))),
