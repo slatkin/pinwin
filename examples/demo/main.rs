@@ -152,11 +152,40 @@ fn spawn_child(dense_mode: bool) -> Result<RawFd, std::io::Error> {
     Ok(master)
 }
 
-/// The live plain apply and its report line, the C's `apply`.
-fn apply(panel: &Panel, side: Side, cols: u16) {
-    let layout = canned_layout(side, cols);
-    let result = panel.apply_layout(layout);
-    println!("apply_layout(side={side:?}, cols={cols}) = {result:?}");
+/// Apply the tracked state's own layout and report the result: every apply
+/// the demo makes derives from the tracked `DemoLayout`, so the coverage and
+/// gutters the panel is really in are never rebuilt from side and columns
+/// alone.
+fn apply_state(panel: &Panel, state: DemoLayout) {
+    let result = panel.apply_layout(state.layout());
+    println!(
+        "apply_layout(side={:?}, cols={}) = {result:?}",
+        state.side, state.cols
+    );
+}
+
+/// The tracked state the demo starts from, matching the startup layout: the
+/// reserve zone starts pushing on the re-dock side, the overlay zone keeps
+/// the startup's covering layout on its own side (a covering side switch is
+/// not a move the panel makes).
+fn initial_state(cols: u16, overlay: bool) -> DemoLayout {
+    if overlay {
+        DemoLayout {
+            side: Side::Left,
+            cols,
+            coverage: Coverage::Cover,
+            inset: 0,
+            gutter: DEMO_GUTTER,
+        }
+    } else {
+        DemoLayout {
+            side: Side::Right,
+            cols,
+            coverage: Coverage::Push,
+            inset: 0,
+            gutter: DEMO_GUTTER,
+        }
+    }
 }
 
 /// The demo's startup accent, the niri focus-ring colour at width 1: the
@@ -394,24 +423,8 @@ fn run_commands(panel: Panel, cols: u16, overlay: bool) {
     // the panel makes, and the overlay run keeps nothing reserved until `c`
     // flips it.
     std::thread::sleep(SETTLE);
-    let mut state = if overlay {
-        DemoLayout {
-            side: Side::Left,
-            cols,
-            coverage: Coverage::Cover,
-            inset: 0,
-            gutter: DEMO_GUTTER,
-        }
-    } else {
-        DemoLayout {
-            side: Side::Right,
-            cols,
-            coverage: Coverage::Push,
-            inset: 0,
-            gutter: DEMO_GUTTER,
-        }
-    };
-    apply(&panel, state.side, state.cols);
+    let mut state = initial_state(cols, overlay);
+    apply_state(&panel, state);
 
     println!(
         "commands, typed in THIS terminal (not in the panel):\n          \
@@ -437,8 +450,17 @@ fn run_commands(panel: Panel, cols: u16, overlay: bool) {
             Some('b') => {
                 // The C applied cols 0; zero columns are unrepresentable in
                 // `Layout` now (D6), so the demo's rejected layout is one the
-                // monitor cannot hold instead: the full column range.
-                let bad = canned_layout(state.side, u16::MAX);
+                // monitor cannot hold instead: the full column range, built
+                // on the tracked state's side and gutters and pushing — the
+                // rejection is the width, not the coverage.
+                let bad = Layout::new(
+                    state.side,
+                    NonZeroU16::new(u16::MAX).expect("the full column range is non-zero"),
+                    state.inset,
+                    state.inset,
+                    0,
+                    state.gutter,
+                );
                 let result = panel.apply_layout(bad);
                 println!("apply_layout(invalid) = {result:?} (want Err(InvalidLayout))");
             }
@@ -593,6 +615,25 @@ mod tests {
         // And back.
         let (_, state) = state.step(Some('g'));
         assert_eq!(state.layout().right(), DEMO_GUTTER);
+    }
+
+    /// The post-settle apply uses the tracked state's layout, so the zone
+    /// the start chose survives it: reserve stays pushing, overlay stays
+    /// covering with exactly the startup's covering layout.
+    #[test]
+    fn the_post_settle_apply_matches_the_startup_zone() {
+        let startup = canned_layout(Side::Left, DEMO_COLS);
+        // Reserve starts pushing, on the re-dock side.
+        let reserve = initial_state(DEMO_COLS, false);
+        assert_eq!(reserve.layout().coverage(), Coverage::Push);
+        assert_eq!(reserve.layout().side(), Side::Right);
+        assert_eq!(reserve.layout().right(), DEMO_GUTTER);
+        // Overlay keeps the startup's covering layout on its own side, so
+        // the post-settle apply cannot flip it back to pushing.
+        let overlay = initial_state(DEMO_COLS, true);
+        assert_eq!(overlay.layout(), startup.covering());
+        assert_eq!(overlay.layout().coverage(), Coverage::Cover);
+        assert_eq!(overlay.layout().side(), Side::Left);
     }
 
     #[test]
