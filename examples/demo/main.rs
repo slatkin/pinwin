@@ -6,16 +6,24 @@
 //! It makes its own pty pair (`forkpty`), forks a canned child on the slave
 //! side and sets the child's terminal environment, then drives the panel API
 //! from this thread: a canned startup layout, a live apply, a rejected
-//! layout, an animated and a plain width toggle, a covering toggle, and a
-//! drop to stop. Fork and
-//! exec are fine here because this is a program; only the library must not.
+//! layout, an animated and a plain width toggle, a covering toggle, vertical
+//! insets, a negative gutter, a hide/show toggle, and a drop to stop. Fork
+//! and exec are fine here because this is a program; only the library must
+//! not.
 //!
 //! Commands on the demo's own stdin (one per line):
 //!   <enter>  toggle side/width and apply live (resize/re-dock)
-//!   e        animated width toggle 40 <-> 120 cols, same side (200 ms)
+//!   e        animated width toggle 40 <-> 120 cols, same side (200 ms);
+//!            press it again mid-tween to interrupt the animation
 //!   p        the same toggle through the plain snap apply
 //!   c        animated cover toggle: pushing 40 cols vs covering 120 cols,
 //!            same side (200 ms) — the reservation holds, tiles stay put
+//!   t        hide/show toggle (`Panel::toggle`): hide unmaps the panel and
+//!            releases the reservation, show draws the grid again; apply a
+//!            layout while hidden to see it come back at the show
+//!   i        vertical-inset toggle: top and bottom gutters 0 <-> 40
+//!   g        right-gutter toggle: 12 <-> -24, so the negative gutter moves
+//!            the panel's edge past the output edge
 //!   b        apply a rejected layout: expect `InvalidLayout`, host lives
 //!   q        stop the panel and exit
 //! Run `exit` inside the panel to watch a pty hangup leave the host alone.
@@ -24,25 +32,37 @@
 //! `on-demand` (the default — click-to-focus, so other windows keep the
 //! keyboard and the terminal that launched the demo keeps its stdin
 //! commands), `exclusive` (the C demo's `PINWIN_KEYBOARD_EXCLUSIVE` path,
-//! where the panel owns the keyboard outright) or `none`.
+//! where the panel owns the keyboard outright) or `none`. `t` toggles in
+//! every mode, so `DEMO_KEYBOARD=none` shows the hidden panel too.
+//!
+//! `DEMO_ZONE=reserve|overlay` mirrors `PINWIN_ZONE`: `reserve` (the
+//! default) starts pushing, so tiles sit beside the panel and a `t` toggle
+//! moves them; `overlay` starts covering, so nothing is reserved and a
+//! toggle moves no window. `c` flips the coverage either way mid-run.
+//!
+//! `DEMO_ACCENT=on|off` mirrors `PINWIN_ACCENT`: the default accent is on
+//! (the niri focus-ring colour); `off` starts with no accent, so focus
+//! shows no highlight.
+//!
+//! The environment reaches the library as it does for the host, so
+//! `PINWIN_FRAMELOG=1` records one summary line per tween from the `e` and
+//! `c` commands.
 //!
 //! `DEMO_DENSE=1` replaces the shell child with a dense stand-in: a full
 //! 120+ column text grid, kitty images on screen and light periodic traffic,
 //! retransmitting the images after every `SIGWINCH` like a real TUI host
-//! does. Image bytes come from a system icon PNG, as in the C demo.
+//! does. Its code lives in the `dense_child` module.
 
-use std::fmt::Write as _;
-use std::io::{BufRead as _, Write as _};
+use std::io::BufRead as _;
 use std::num::NonZeroU16;
 use std::os::fd::RawFd;
-use std::os::raw::c_char;
-use std::os::raw::c_void;
 use std::os::unix::process::CommandExt;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use pinwin::layout::{Accent, Coverage, Keyboard, Layout, Side};
 use pinwin::panel::{Panel, Startup};
+
+mod dense_child;
 
 const DEMO_COLS: u16 = 40;
 /// The wide end of the plain width and cover toggles, in columns.
@@ -50,16 +70,16 @@ const DEMO_WIDE_COLS: u16 = 120;
 const DEMO_GUTTER: i32 = 12;
 /// The default animated duration, `pinwin.h`'s `PINWIN_ANIM_DEFAULT_MS`.
 const DEMO_ANIM_MS: u32 = 200;
+/// The `i` key's inset: the top and bottom gutters the toggle applies.
+const DEMO_INSET: i32 = 40;
+/// The `g` key's negative gutter: it moves the panel's edge past the output
+/// edge (the layout type allows negative gutters).
+const DEMO_NEG_GUTTER: i32 = -24;
 /// How long the canned layout settles before the live re-dock, as the C's
 /// `SETTLE_US`.
 const SETTLE: Duration = Duration::from_millis(1500);
 /// The second argument the demo re-execs itself with for the dense child.
 const DENSE_CHILD_ARG: &str = "--dense-child";
-/// The dense child's image source (a system icon PNG, as in the C demo).
-const DENSE_IMAGE: &str = "/usr/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png";
-
-/// The dense child's `SIGWINCH` latch, the `volatile sig_atomic_t` of the C.
-static DENSE_RESIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// `demo/main.c`'s `canned_layout`: the demo layout with `DEMO_GUTTER` as the
 /// right gutter and no other reservation.
@@ -78,221 +98,6 @@ fn canned_layout(side: Side, cols: u16) -> Layout {
 /// type's range, D6). Anything else is ignored, like the C's `strtol` guard.
 fn parse_cols(arg: &str) -> Option<u16> {
     arg.parse::<u16>().ok().filter(|cols| *cols >= 1)
-}
-
-/// The dense child's `SIGWINCH` handler: set the repaint latch, nothing else
-/// (async-signal-safe). Ports `dense_on_winch`.
-extern "C" fn dense_on_winch(_sig: std::os::raw::c_int) {
-    DENSE_RESIZED.store(true, Ordering::Release);
-}
-
-/// RFC 4648 base64 (standard alphabet, padded) for the kitty payload: the
-/// local replacement for the `glib::base64_encode` the GTK path used. The
-/// RFC 4648 test vectors are asserted in the demo's test module.
-fn base64_encode(data: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = u32::from(chunk[0]);
-        let b1 = chunk.get(1).map_or(0, |&byte| u32::from(byte));
-        let b2 = chunk.get(2).map_or(0, |&byte| u32::from(byte));
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        let quad = [
-            TABLE[num_traits::cast::<u32, usize>((n >> 18) & 0x3f).expect("six bits")],
-            TABLE[num_traits::cast::<u32, usize>((n >> 12) & 0x3f).expect("six bits")],
-            if chunk.len() > 1 {
-                TABLE[num_traits::cast::<u32, usize>((n >> 6) & 0x3f).expect("six bits")]
-            } else {
-                b'='
-            },
-            if chunk.len() > 2 {
-                TABLE[num_traits::cast::<u32, usize>(n & 0x3f).expect("six bits")]
-            } else {
-                b'='
-            },
-        ];
-        out.push_str(std::str::from_utf8(&quad).expect("table bytes are ascii"));
-    }
-    out
-}
-
-/// The dense child's kitty image transmission: the PNG base64-encoded into
-/// four placements of distinct image ids, one per quadrant — a ~480 KB kitty
-/// burst per repaint, the same order as the real host's art re-encode.
-/// `q=1` so parse errors come back on stdin, where [`dump_stdin`] shows
-/// them.
-fn dense_send_image() {
-    // The C capped its fixed buffer at 128 KiB; keep the cap so the burst
-    // size stays the one the demo was tuned against.
-    let Ok(raw) = std::fs::read(DENSE_IMAGE) else {
-        return;
-    };
-    let raw = &raw[..raw.len().min(1 << 17)];
-    let b64 = base64_encode(raw);
-
-    let mut out = String::new();
-    for id in 1..=4u32 {
-        let slot = id - 1;
-        let _ = write!(
-            out,
-            "\x1b[{};{}H\x1b_Gf=24,a=T,i={id},q=1,c=20,r=20;{}\x1b\\",
-            2 + slot / 2 * 22,
-            2 + slot % 2 * 25,
-            b64
-        );
-    }
-    let mut stdout = std::io::stdout().lock();
-    let _ = stdout.write_all(out.as_bytes());
-    let _ = stdout.flush();
-}
-
-/// The dense child drains its own stdin (the panel side of the pty) so kitty
-/// responses (`q=1` errors) reach the demo log instead of sitting unread:
-/// non-blocking read, dumped to stderr. Ports `dump_stdin`.
-fn dump_stdin() {
-    // SAFETY: `F_GETFL`/`F_SETFL` on our own stdin descriptor, restored after
-    // the drain; `read` on our own descriptor with a writable buffer.
-    unsafe {
-        let flags = libc::fcntl(0, libc::F_GETFL);
-        if flags < 0 || libc::fcntl(0, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
-            return;
-        }
-        let mut buf = [0u8; 256];
-        loop {
-            let n = libc::read(0, buf.as_mut_ptr().cast::<c_void>(), buf.len());
-            if n > 0 {
-                eprint!("child got {n} bytes: ");
-                let _ = std::io::stderr().write_all(&buf[..n.cast_unsigned()]);
-                eprintln!();
-            } else {
-                if n < 0 {
-                    let error = std::io::Error::last_os_error();
-                    if error.kind() != std::io::ErrorKind::WouldBlock {
-                        eprintln!("child stdin: {error}");
-                    }
-                }
-                break;
-            }
-        }
-        libc::fcntl(0, libc::F_SETFL, flags);
-    }
-}
-
-/// The dense child's full-grid repaint: header/footer bars with reverse
-/// video, a body of dense varied text (the renderer pays per cell) and
-/// background-colour spans, like a real TUI's cards — then the kitty images.
-/// Ports `dense_draw_screen`.
-fn dense_draw_screen() {
-    let mut ws = libc::winsize {
-        ws_row: 0,
-        ws_col: 0,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    // SAFETY: `ws` is a writable winsize for the ioctl on our stdout (the
-    // slave pty).
-    if unsafe { libc::ioctl(1, libc::TIOCGWINSZ, &mut ws) } != 0 {
-        return;
-    }
-    let (rows, cols) = (usize::from(ws.ws_row), usize::from(ws.ws_col));
-    if rows < 1 || cols < 1 {
-        return;
-    }
-
-    let mut frame = String::with_capacity(rows * cols * 12);
-    frame.push_str("\x1b[?25l\x1b[H\x1b[2J");
-    for r in 0..rows {
-        let _ = write!(frame, "\x1b[{};1H", r + 1);
-        for c in 0..cols {
-            if r == 0 || r == rows - 1 {
-                if c == 0 {
-                    frame.push_str("\x1b[7m");
-                }
-                frame.push(if c % 2 == 0 {
-                    ' '
-                } else if r == 0 {
-                    '-'
-                } else {
-                    '='
-                });
-                if c == cols - 1 {
-                    frame.push_str("\x1b[27m");
-                }
-            } else if (c / 9) % 2 == 0 {
-                let _ = write!(frame, "\x1b[48;5;{}m", (r * 7 + c / 9) % 200 + 16);
-                let shade = u8::try_from((r * 31 + c * 7) % 26).expect("letter index in 0..=25");
-                frame.push((b'a' + shade) as char);
-            } else {
-                frame.push_str("\x1b[49m");
-                let digit = u8::try_from((r + c) % 10).expect("digit index in 0..=9");
-                frame.push((b'0' + digit) as char);
-            }
-        }
-        frame.push_str("\x1b[49m");
-    }
-    {
-        let mut stdout = std::io::stdout().lock();
-        let _ = stdout.write_all(frame.as_bytes());
-        let _ = stdout.flush();
-    }
-    dense_send_image();
-    let mut stdout = std::io::stdout().lock();
-    let _ = write!(stdout, "\x1b[{rows};1H");
-    let _ = stdout.flush();
-}
-
-/// The dense child's clock row: light periodic traffic so the pty is not
-/// idle, saved/restored around the cursor position like the C.
-fn dense_clock_row(now: libc::time_t) {
-    const FMT: &[u8] = b"\x1b[s%H:%M:%S\x1b[u\0";
-    // SAFETY: `zeroed` is a valid all-zero `tm` for `localtime_r` to
-    // overwrite; nothing reads it before that call.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: `now` is a plain `time_t` value and `tm` is our writable
-    // struct; `strftime` writes only inside our bounded buffer, whose format
-    // string is a NUL-terminated literal.
-    unsafe {
-        libc::localtime_r(&raw const now, &raw mut tm);
-        let mut buf = [0u8; 64];
-        let n = libc::strftime(
-            buf.as_mut_ptr().cast::<c_char>(),
-            buf.len(),
-            FMT.as_ptr().cast::<c_char>(),
-            &raw const tm,
-        );
-        let clock = &buf[..n];
-        let mut stdout = std::io::stdout().lock();
-        let _ = write!(stdout, "\x1b[1;1H\x1b[7m ");
-        let _ = stdout.write_all(clock);
-        let _ = write!(stdout, " \x1b[27m");
-        let _ = stdout.flush();
-    }
-}
-
-/// The dense child's main loop: repaint on `SIGWINCH`, one clock row per
-/// second otherwise, drain stdin, sleep. Ports `dense_child_main`.
-fn dense_child_main() {
-    // SAFETY: installing our own `SIGWINCH` disposition before any thread
-    // exists; the handler only stores to an atomic.
-    unsafe {
-        libc::signal(
-            libc::SIGWINCH,
-            dense_on_winch as *const () as libc::sighandler_t,
-        )
-    };
-    let mut last: libc::time_t = 0;
-    loop {
-        // SAFETY: `time` takes no argument.
-        let now = unsafe { libc::time(std::ptr::null_mut()) };
-        if DENSE_RESIZED.swap(false, Ordering::AcqRel) {
-            dense_draw_screen();
-        } else if now != last {
-            last = now;
-            dense_clock_row(now);
-        }
-        dump_stdin();
-        std::thread::sleep(Duration::from_millis(100));
-    }
 }
 
 /// The canned child on the slave side: the tester's shell, told it is a
@@ -354,13 +159,49 @@ fn apply(panel: &Panel, side: Side, cols: u16) {
     println!("apply_layout(side={side:?}, cols={cols}) = {result:?}");
 }
 
+/// The demo's startup accent, the niri focus-ring colour at width 1: the
+/// same accent the host's `PINWIN_ACCENT` default uses.
+fn default_accent() -> Accent {
+    Accent::new(
+        [0xda, 0xbc, 0x7f],
+        NonZeroU16::new(1).expect("accent width 1"),
+    )
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() == Some(DENSE_CHILD_ARG) {
-        dense_child_main();
+        dense_child::dense_child_main();
         return;
     }
     let dense_mode = std::env::var_os("DEMO_DENSE").is_some();
+    // `DEMO_ZONE` mirrors `PINWIN_ZONE`: `overlay` starts covering, so
+    // nothing is reserved and a `t` toggle moves no window (the same
+    // mapping `main.rs` applies to the host's starting layout).
+    let overlay = match std::env::var_os("DEMO_ZONE").as_deref() {
+        None => false,
+        Some(value) => match value.to_string_lossy().as_ref() {
+            "" | "reserve" => false,
+            "overlay" => true,
+            other => {
+                eprintln!("pinwin-demo: unknown DEMO_ZONE={other} (want reserve or overlay)");
+                std::process::exit(2);
+            }
+        },
+    };
+    // `DEMO_ACCENT` mirrors `PINWIN_ACCENT`: `off` starts with no accent, so
+    // focus shows no highlight.
+    let accent = match std::env::var_os("DEMO_ACCENT").as_deref() {
+        None => Some(default_accent()),
+        Some(value) => match value.to_string_lossy().as_ref() {
+            "" | "on" => Some(default_accent()),
+            "off" => None,
+            other => {
+                eprintln!("pinwin-demo: unknown DEMO_ACCENT={other} (want on or off)");
+                std::process::exit(2);
+            }
+        },
+    };
     // Default to click-to-focus so the launching terminal keeps the keyboard
     // and its stdin commands; `DEMO_KEYBOARD` opts into the other modes.
     let keyboard = match std::env::var_os("DEMO_KEYBOARD") {
@@ -399,19 +240,20 @@ fn main() {
     };
 
     let side = Side::Left;
+    let mut startup_layout = canned_layout(side, cols);
+    if overlay {
+        startup_layout = startup_layout.covering();
+    }
     let startup = Startup {
         fd: master,
-        layout: canned_layout(side, cols),
+        layout: startup_layout,
         keyboard,
-        accent: Some(Accent::new(
-            [0xda, 0xbc, 0x7f],
-            NonZeroU16::new(1).expect("accent width 1"),
-        )),
+        accent,
     };
     match Panel::start(startup) {
         Ok(panel) => {
             println!("pinwin_start = Ok(())");
-            run_commands(panel, cols);
+            run_commands(panel, cols, overlay);
         }
         Err(error) => {
             eprintln!("pinwin-demo: pinwin_start failed ({error:?})");
@@ -431,31 +273,45 @@ enum DemoAction {
     Plain,
     /// `c`: the cover toggle.
     CoverToggle,
+    /// `i`: the vertical-inset toggle.
+    InsetToggle,
+    /// `g`: the right-gutter toggle (into the negative gutter).
+    GutterToggle,
     /// `<enter>` (or anything else): the side/width re-dock.
     ReDock,
 }
 
 /// The demo's tracked layout state: the layout actually applied — side,
-/// columns and coverage — so a later `c` flips the coverage that is really
-/// on screen even after `e`, `p` or `<enter>` re-applied a pushing layout.
+/// columns, coverage and the top/bottom and right gutters — so a later `c`
+/// flips the coverage that is really on screen even after `e`, `p` or
+/// `<enter>` re-applied a pushing layout, and `i`/`g` carry the gutters the
+/// panel is really in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DemoLayout {
     side: Side,
     cols: u16,
     coverage: Coverage,
+    /// The top and bottom gutters the `i` toggle flips.
+    inset: i32,
+    /// The right gutter the `g` toggle flips.
+    gutter: i32,
 }
 
 impl DemoLayout {
     /// The next state and the action for one stdin command: `e`/`p` the width
-    /// toggle and `c` the cover toggle on the same side, anything else (an
-    /// empty line included) the `<enter>` side/width re-dock. Every command
-    /// applies a plain pushing layout except `c` flipping into covering, so
-    /// the coverage always tracks what the panel is actually in.
+    /// toggle, `c` the cover toggle, `i` the inset toggle and `g` the gutter
+    /// toggle on the same side, anything else (an empty line included) the
+    /// `<enter>` side/width re-dock. Every command applies a plain pushing
+    /// layout except `c` flipping into covering, so the coverage always
+    /// tracks what the panel is actually in. The `t` hide/show toggle is not
+    /// a layout change, so it never reaches this state machine.
     fn step(self, cmd: Option<char>) -> (DemoAction, Self) {
         let action = match cmd {
             Some('e') => DemoAction::Animated,
             Some('p') => DemoAction::Plain,
             Some('c') => DemoAction::CoverToggle,
+            Some('i') => DemoAction::InsetToggle,
+            Some('g') => DemoAction::GutterToggle,
             _ => DemoAction::ReDock,
         };
         let toggled = |wide| {
@@ -485,6 +341,18 @@ impl DemoLayout {
                     ..self
                 }
             }
+            DemoAction::InsetToggle => Self {
+                inset: if self.inset == 0 { DEMO_INSET } else { 0 },
+                ..self
+            },
+            DemoAction::GutterToggle => Self {
+                gutter: if self.gutter == DEMO_GUTTER {
+                    DEMO_NEG_GUTTER
+                } else {
+                    DEMO_GUTTER
+                },
+                ..self
+            },
             DemoAction::ReDock => Self {
                 side: match self.side {
                     Side::Left => Side::Right,
@@ -492,14 +360,23 @@ impl DemoLayout {
                 },
                 cols: toggled(DEMO_COLS + 8),
                 coverage: Coverage::Push,
+                ..self
             },
         };
         (action, state)
     }
 
-    /// The layout this state applies, covering only when the state says so.
+    /// The layout this state applies, covering only when the state says so
+    /// and carrying the state's top/bottom and right gutters.
     fn layout(self) -> Layout {
-        let layout = canned_layout(self.side, self.cols);
+        let layout = Layout::new(
+            self.side,
+            NonZeroU16::new(self.cols).expect("demo columns are non-zero"),
+            self.inset,
+            self.inset,
+            0,
+            self.gutter,
+        );
         if self.coverage == Coverage::Cover {
             layout.covering()
         } else {
@@ -510,19 +387,36 @@ impl DemoLayout {
 
 /// The command loop after a successful start: the C demo's settle, re-dock
 /// and stdin command handling, ending with the stop (drop).
-fn run_commands(panel: Panel, cols: u16) {
+fn run_commands(panel: Panel, cols: u16, overlay: bool) {
     // Let the canned layout dock, then re-dock live so the change is visible.
+    // With `DEMO_ZONE=overlay` the start covered, so the tracked state stays
+    // on the startup side covering — a covering side switch is not a move
+    // the panel makes, and the overlay run keeps nothing reserved until `c`
+    // flips it.
     std::thread::sleep(SETTLE);
-    let mut state = DemoLayout {
-        side: Side::Right,
-        cols,
-        coverage: Coverage::Push,
+    let mut state = if overlay {
+        DemoLayout {
+            side: Side::Left,
+            cols,
+            coverage: Coverage::Cover,
+            inset: 0,
+            gutter: DEMO_GUTTER,
+        }
+    } else {
+        DemoLayout {
+            side: Side::Right,
+            cols,
+            coverage: Coverage::Push,
+            inset: 0,
+            gutter: DEMO_GUTTER,
+        }
     };
     apply(&panel, state.side, state.cols);
 
     println!(
         "commands, typed in THIS terminal (not in the panel):\n          \
-         <enter> toggle side/width, 'c' cover toggle, 'b' rejected layout,\n          \
+         <enter> toggle side/width, 'c' cover toggle, 'i' vertical insets,\n          \
+         'g' negative gutter, 't' hide/show, 'b' rejected layout,\n          \
          'q' quit; run `exit` in the panel to see a pty hangup survive."
     );
 
@@ -530,6 +424,16 @@ fn run_commands(panel: Panel, cols: u16) {
         let Ok(line) = line else { break };
         match line.chars().next() {
             Some('q') => break,
+            Some('t') => {
+                // The hide/show toggle (row 9.1): hide unmaps the panel and
+                // releases the reservation, show draws the grid again. While
+                // hidden, the other keys' applies validate and store the
+                // layout, and the next `t` shows it. Like the applies, the
+                // result is printed as-is — a dead panel thread reports
+                // `NotRunning` here the same way.
+                let result = panel.toggle();
+                println!("toggle = {result:?}");
+            }
             Some('b') => {
                 // The C applied cols 0; zero columns are unrepresentable in
                 // `Layout` now (D6), so the demo's rejected layout is one the
@@ -559,6 +463,14 @@ fn run_commands(panel: Panel, cols: u16) {
                         ),
                         panel.apply_layout_animated(layout, DEMO_ANIM_MS),
                     ),
+                    DemoAction::InsetToggle => (
+                        format!("inset toggle(top/bottom={})", state.inset),
+                        panel.apply_layout(layout),
+                    ),
+                    DemoAction::GutterToggle => (
+                        format!("gutter toggle(right={})", state.gutter),
+                        panel.apply_layout(layout),
+                    ),
                     DemoAction::ReDock => (
                         format!("apply_layout(side={:?}, cols={})", state.side, state.cols),
                         panel.apply_layout(layout),
@@ -577,20 +489,6 @@ fn run_commands(panel: Panel, cols: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The encoder's RFC 4648 test vectors (the empty string through all
-    /// three padding shapes plus the full alphabet prefix).
-    #[test]
-    fn base64_encode_matches_the_rfc_4648_vectors() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
-        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
-    }
-
     #[test]
     fn canned_layout_reserves_only_the_right_gutter() {
         for side in [Side::Left, Side::Right] {
@@ -625,6 +523,8 @@ mod tests {
             side: Side::Right,
             cols: DEMO_COLS,
             coverage: Coverage::Push,
+            inset: 0,
+            gutter: DEMO_GUTTER,
         };
         // `c` covers 120.
         let (action, state) = start.step(Some('c'));
@@ -660,6 +560,39 @@ mod tests {
         assert_eq!(layout.coverage(), Coverage::Push);
         assert_eq!(layout.cols().get(), DEMO_COLS);
         assert_eq!(layout.side(), Side::Left);
+    }
+
+    #[test]
+    fn the_inset_and_gutter_toggles_carry_into_the_layout() {
+        let start = DemoLayout {
+            side: Side::Left,
+            cols: DEMO_COLS,
+            coverage: Coverage::Push,
+            inset: 0,
+            gutter: DEMO_GUTTER,
+        };
+        // `i` puts the 40 px top and bottom insets in; the right gutter and
+        // the rest of the state stay put.
+        let (action, state) = start.step(Some('i'));
+        assert_eq!(action, DemoAction::InsetToggle);
+        let layout = state.layout();
+        assert_eq!(layout.top(), DEMO_INSET);
+        assert_eq!(layout.bottom(), DEMO_INSET);
+        assert_eq!(layout.right(), DEMO_GUTTER);
+        assert_eq!(layout.cols().get(), DEMO_COLS);
+        // A second `i` is back to the flush start.
+        let (_, state) = state.step(Some('i'));
+        assert_eq!(state.layout().top(), 0);
+        // `g` puts the negative right gutter in, moving the panel's edge
+        // past the output edge; the insets stay where they were.
+        let (_, state) = start.step(Some('g'));
+        let layout = state.layout();
+        assert_eq!(layout.right(), DEMO_NEG_GUTTER);
+        assert_eq!(layout.top(), 0);
+        assert_eq!(layout.bottom(), 0);
+        // And back.
+        let (_, state) = state.step(Some('g'));
+        assert_eq!(state.layout().right(), DEMO_GUTTER);
     }
 
     #[test]

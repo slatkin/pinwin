@@ -33,12 +33,33 @@ cargo build --examples          # build the dev-only demo example
 ```
 
 `cargo run --example demo` builds and runs the demo, a dev-only driver that
-creates its own pty pair and never gets installed. In a running niri session
-it toggles the side and width (`<enter>`, `e`, `p`) and the push/cover choice
-(`c` animates pushing 40 columns vs covering 120 on the same side, so the
-reservation and the tiles stay still through the excursion); `DEMO_DENSE=1`
-gives it a full, busy grid with kitty images and resize traffic to test
-animation against.
+creates its own pty pair and never gets installed. Its keys, typed in the
+terminal that launched the demo:
+
+- `<enter>` toggles the side and width and applies live (resize/re-dock)
+- `e` animated width toggle 40 <-> 120 columns, same side (200 ms); press it
+  again mid-tween to interrupt the animation
+- `p` the same toggle through the plain snap apply
+- `c` animated cover toggle: pushing 40 columns vs covering 120 on the same
+  side, so the reservation holds and the tiles stay put through the
+  excursion
+- `t` the `Panel::toggle` hide/show: hiding unmaps the panel and releases
+  the reservation, showing draws the grid again; any layout key applied
+  while hidden is stored and comes back at the show
+- `i` vertical-inset toggle: top and bottom gutters 0 <-> 40 px
+- `g` right-gutter toggle: 12 <-> -24 px, so the panel's edge moves past
+  the output edge
+- `b` applies a rejected layout and expects `InvalidLayout`
+- `q` stops the panel and exits
+
+`DEMO_KEYBOARD=on-demand|exclusive|none` fixes the keyboard mode at start
+(default `on-demand`, so the launching terminal keeps its stdin; `t` toggles
+in every mode); `DEMO_ZONE=reserve|overlay` mirrors `PINWIN_ZONE`, the
+push/cover class the start applies; `DEMO_ACCENT=on|off` mirrors
+`PINWIN_ACCENT`; `DEMO_DENSE=1` swaps the shell child for a dense stand-in
+with a full grid, kitty images and resize traffic to test animation against.
+The environment reaches the library as it does for the host, so
+`PINWIN_FRAMELOG=1` records one summary line per tween.
 
 ## Use as a Cargo dependency
 
