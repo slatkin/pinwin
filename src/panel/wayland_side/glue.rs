@@ -22,6 +22,7 @@ use crate::render::png::PngCrateDecoder;
 use crate::term::Terminal;
 
 use super::super::handshake::StartOutcome;
+use super::buffers::FractionalScale;
 use super::renderer::{FontSetup, FontSetupError, Renderer};
 use super::seat::SeatLinks;
 use super::sizing::Grid;
@@ -98,7 +99,12 @@ pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd) -> BytePath {
     let pty = Pty::new(poisoned.clone(), fd);
     let repaint = Rc::new(Cell::new(false));
     let stale_grid_px = Rc::new(Cell::new(0));
-    let terminal = Rc::new(RefCell::new(Terminal::new(
+    // The shared output-scale note (device-pixel-cell-reports D3): scale 1
+    // until the compositor's preferred scale arrives, when
+    // `sync_renderer_scale` publishes into it and the terminal's
+    // `size_report` starts answering device pixels.
+    let scale_note = Rc::new(Cell::new(120));
+    let terminal = Rc::new(RefCell::new(Terminal::with_scale_note(
         poisoned,
         pty.writer(),
         PngCrateDecoder,
@@ -110,6 +116,7 @@ pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd) -> BytePath {
                 repaint.set(true);
             }
         },
+        Rc::clone(&scale_note),
     )));
     (terminal, repaint, stale_grid_px, pty)
 }
@@ -149,13 +156,32 @@ impl PanelState {
     /// never repeats one). The closure owns clones of the shared terminal
     /// and the repaint flag, so the callers hold `&mut self` while it runs.
     /// `None` on a headless state — the tests — where the sink degrades to
-    /// the winsize-only push the pre-8.1 thread had.
+    /// the winsize-only push the pre-8.1 thread had. The winsize goes out
+    /// at the session's resolved scale (device-pixel-cell-reports D4).
     pub(crate) fn grid_sink(&self) -> impl FnMut(Grid) + 'static {
+        self.grid_sink_at(self.resolved_scale())
+    }
+
+    /// The grid push sink at an explicit scale (device-pixel-cell-reports
+    /// D4): the scale-note re-push passes the new scale directly, so the
+    /// re-push pushes the new device pixels even though the session already
+    /// resolved them — and stays unit-testable without a session. Every
+    /// other caller uses [`PanelState::grid_sink`].
+    pub(crate) fn grid_sink_at(&self, output_scale: FractionalScale) -> impl FnMut(Grid) + 'static {
         let terminal = self.terminal.clone();
         let repaint = Rc::clone(&self.repaint);
         let stale = Rc::clone(&self.stale_grid_px);
         let fd = self.startup.fd();
-        move |grid| push_grid(terminal.as_ref(), &repaint, stale.as_ref(), fd, grid)
+        move |grid| {
+            push_grid(
+                terminal.as_ref(),
+                &repaint,
+                stale.as_ref(),
+                fd,
+                output_scale,
+                grid,
+            );
+        }
     }
 }
 
@@ -163,7 +189,9 @@ impl PanelState {
 /// path's `apply_size` order: the terminal first — a terminal that cannot
 /// be allocated leaves the previous grid and the pty winsize in place —
 /// then the winsize with `SIGWINCH`, then the repaint request the
-/// post-resize repaint needs. A widening push also records the previous
+/// post-resize repaint needs. The terminal keeps the grid's logical cell
+/// (device-pixel-cell-reports D2); only the winsize goes out at the device
+/// cell for `scale` (D1/D4). A widening push also records the previous
 /// grid's pixel width as the stale pre-resize content still on screen (the
 /// vt does not rewrap), the narrowest since the last terminal output; the
 /// terminal's own output latches the same flag later and clears the
@@ -173,6 +201,7 @@ fn push_grid(
     repaint: &Cell<bool>,
     stale: &Cell<i32>,
     fd: RawFd,
+    output_scale: FractionalScale,
     grid: Grid,
 ) {
     // Unreachable for a derived grid — the configure height bounds the rows
@@ -205,7 +234,7 @@ fn push_grid(
             });
         }
     }
-    apply_pty_size(fd, grid);
+    apply_pty_size(fd, grid, output_scale);
     repaint.set(true);
 }
 
@@ -389,7 +418,14 @@ mod tests {
         };
         // A widening push from 40 to 120 columns records 40 * 9.
         let push = |cols: u16, stale: &Cell<i32>, repaint: &Cell<bool>| {
-            push_grid(Some(&terminal), repaint, stale, -1, grid_of(cols));
+            push_grid(
+                Some(&terminal),
+                repaint,
+                stale,
+                -1,
+                FractionalScale::from_120ths(120),
+                grid_of(cols),
+            );
         };
         push(120, stale.as_ref(), repaint.as_ref());
         assert_eq!(stale.get(), 360, "the previous grid's pixel width");

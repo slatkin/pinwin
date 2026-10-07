@@ -17,8 +17,10 @@
 //! and [`PngDecoder`] traits, so nothing here depends on the windowing
 //! layer (D3).
 
+use std::cell::Cell;
 use std::os::raw::c_void;
 use std::ptr;
+use std::rc::Rc;
 
 use crate::guard::Poisoned;
 
@@ -98,6 +100,9 @@ struct CallbackContext {
     rows: u16,
     cell_w: u32,
     cell_h: u32,
+    /// The resolved scale in 1/120 units (device-pixel-cell-reports D3):
+    /// `size_report` scales the logical cell by it; 120 is scale 1.
+    scale_120: Rc<Cell<u32>>,
 }
 
 /// The owned ghostty handles. Each field is `Some` once the handle exists, so
@@ -273,12 +278,25 @@ impl Terminal {
         decoder: impl PngDecoder + 'static,
         queue_draw: impl Fn() + 'static,
     ) -> Self {
+        Self::with_scale_note(poisoned, sink, decoder, queue_draw, Rc::new(Cell::new(120)))
+    }
+
+    /// Build a terminal sharing the panel thread's scale note
+    /// (device-pixel-cell-reports D3): `size_report` reads it at reply time.
+    pub fn with_scale_note(
+        poisoned: Poisoned,
+        sink: impl PtySink + 'static,
+        decoder: impl PngDecoder + 'static,
+        queue_draw: impl Fn() + 'static,
+        scale_120: Rc<Cell<u32>>,
+    ) -> Self {
         Self::with_init(
             poisoned,
             Box::new(sink),
             Box::new(decoder),
             Box::new(queue_draw),
             Box::new(callbacks::init_ghostty),
+            scale_120,
         )
     }
 
@@ -288,6 +306,7 @@ impl Terminal {
         decoder: Box<dyn PngDecoder>,
         queue_draw: Box<dyn Fn()>,
         init: Box<InitFn>,
+        scale_120: Rc<Cell<u32>>,
     ) -> Self {
         Terminal {
             handles: None,
@@ -300,6 +319,7 @@ impl Terminal {
                 rows: DEFAULT_ROWS,
                 cell_w: 1,
                 cell_h: 1,
+                scale_120,
             }),
             init: Some(init),
             init_failed: false,
@@ -343,6 +363,13 @@ impl Terminal {
     #[must_use]
     pub fn cell_h(&self) -> u32 {
         self.ctx.cell_h
+    }
+
+    /// The shared scale note `size_report` reads, in 1/120 units
+    /// (device-pixel-cell-reports D3).
+    #[must_use]
+    pub fn scale_note(&self) -> Rc<Cell<u32>> {
+        Rc::clone(&self.ctx.scale_120)
     }
 
     /// The terminal handle, once created.
@@ -680,6 +707,7 @@ mod tests {
                 calls_for_init.fetch_add(1, Ordering::Relaxed);
                 Err(())
             }),
+            Rc::new(Cell::new(120)),
         );
 
         assert!(!terminal.push_size(80, 24, 9, 18));

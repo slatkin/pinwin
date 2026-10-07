@@ -137,6 +137,19 @@ impl Sizing {
         }
     }
 
+    /// The grid the terminal runs now (device-pixel-cell-reports D4): the
+    /// sizing's live columns with the rows of the last configure height —
+    /// the grid a scale-note re-push refreshes the winsize from. `None`
+    /// before the first configure, when no grid is live yet.
+    #[must_use]
+    pub(crate) fn current_grid(&self) -> Option<Grid> {
+        let Stage::Running { height } = self.stage else {
+            return None;
+        };
+        let rows = rows_for_height(height, self.cell)?;
+        Some(Grid::new(self.live.get(), rows, self.cell))
+    }
+
     /// The state right after the startup apply pushed the startup grid at
     /// `height` — a running panel thread's steady state between configures.
     /// Replaying the real path with a sink for the push keeps this

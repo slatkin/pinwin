@@ -81,10 +81,20 @@ The panel's terminal SHALL answer terminal queries on the PTY: primary device at
 column/row count and the pixel width/height, and SHALL be updated whenever the panel's size
 changes. The pixel sizes reported SHALL match the cell size actually drawn.
 
+The pixel sizes SHALL be in device pixels of the panel's output: the cell size reported by
+`CSI 16 t` is the panel's logical cell size scaled by the panel's resolved output scale and
+rounded to a whole device pixel, and `CSI 14 t` and the window size's pixel fields are the
+column and row counts times that reported device cell size. The column and row counts
+SHALL stay the
+layout's logical ones. When the output scale changes, the panel SHALL update the window
+size's pixel fields (raising `SIGWINCH` as any winsize update does) so later queries and
+reads answer the new scale; the grid's column and row counts SHALL NOT change with the
+scale.
+
 #### Scenario: Cell size query
 - **WHEN** the host's child writes `CSI 16 t`
 - **THEN** it receives `CSI 6 ; <cell height px> ; <cell width px> t` matching the drawn
-  cell size
+  cell size in device pixels
 
 #### Scenario: Images are not clipped
 - **WHEN** the host's child shows a poster image in the panel
@@ -93,7 +103,20 @@ changes. The pixel sizes reported SHALL match the cell size actually drawn.
 #### Scenario: Pixel size in window size
 - **WHEN** the host's child reads the terminal size with `TIOCGWINSZ`
 - **THEN** `ws_col`/`ws_row` are the cell grid and `ws_xpixel`/`ws_ypixel` are the grid size
-  in pixels
+  in device pixels
+
+#### Scenario: Fractional scale reports device pixels
+- **WHEN** the panel runs at an output scale of 1.8 with a 9 logical pixel wide cell, 40
+  columns, and the host's child queries the cell size, the text-area size, or reads the
+  window size
+- **THEN** the cell width reported is 16 device pixels (9 × 1.8, rounded) and the `CSI 14 t`
+  text-area width and the window size's pixel width are 640 device pixels (40 columns ×
+  the reported 16-pixel cell)
+
+#### Scenario: Scale change updates the reports
+- **WHEN** the panel's output scale changes while the panel runs
+- **THEN** the window size's pixel fields are updated to the new device size and the
+  host's child receives `SIGWINCH`, while the column and row counts stay unchanged
 
 ### Requirement: Wayland layer-shell is required
 The library SHALL run only on a Wayland compositor that implements wlr-layer-shell. When
@@ -658,8 +681,9 @@ within one device pixel of its logical thickness times the output scale.
 
 #### Scenario: Sizes stay logical
 - **WHEN** the output scale is 1.5
-- **THEN** the cell size, the panel width and the reply to `CSI 16 t` equal their values at
-  an output scale of 1
+- **THEN** the logical cell size, the panel's logical width and the terminal's column and
+  row counts equal their values at an output scale of 1, while the sizes the panel reports
+  to the host carry device pixels (see Correct size reports)
 
 ### Requirement: Cell text on the device pixel lattice
 The panel SHALL place the origin of the text in each cell on a whole device pixel. A device
@@ -692,8 +716,9 @@ adjacent cells can differ by one device pixel.
 
 #### Scenario: Text sizes stay logical
 - **WHEN** the output scale is 1.8
-- **THEN** the cell size, the panel width and the reply to `CSI 16 t` equal their values at
-  an output scale of 1
+- **THEN** the logical cell size, the panel's logical width and the terminal's column and
+  row counts equal their values at an output scale of 1, while the sizes the panel reports
+  to the host carry device pixels (see Correct size reports)
 
 ### Requirement: Key repeat follows the compositor
 While the panel holds keyboard focus and the user holds down a key, the panel SHALL repeat
