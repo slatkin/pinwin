@@ -2,7 +2,7 @@
 
 ## 1. Experiment before implementation (B2 gate)
 
-- [ ] 1.1 Prove the premise with an ad hoc experiment, instant feedback: temporarily make `size_report` answer device pixels (hardcoded 1.8 multiply of the ctx cell), rebuild, point mbv's `pinwin` dependency at this checkout, run `mbv --pin` on the laptop's 1.8 output, and record in the proposal's Experiment result section: the picker's font size (`startup.image_picker.initialized` log), the transmitted bitmap's pixel size, and whether posters render sharp side-by-side with ghostty. Revert the hardcode. If the images are not sharp, stop: the premise is wrong, and the remaining tasks wait for re-planning.
+- [ ] 1.1 Prove the premise with an ad hoc experiment, instant feedback: temporarily make `size_report` answer device pixels (hardcoded 1.8 multiply of the ctx cell), rebuild, run the demo's dense child (`DEMO_DENSE=1`) on the laptop's 1.8 output with a kitty image sized from the `CSI 16 t` reply, and record in the proposal's Experiment result section: the reported cell size, the transmitted bitmap's pixel size, and whether the image renders sharp side-by-side with the same image in ghostty. Revert the hardcode. If the image is not sharp, stop: the premise is wrong, and the remaining tasks wait for re-planning.
 - [ ] 1.2 Move the cell-size probe out of `/tmp` into the repo (`scripts/probe-winsize.sh`, the TIOCGWINSZ + CSI 16 t reader the live checks cite) and verify it runs against a started panel (`bash -n` plus one live run).
 
 ## 2. Device-pixel reports
@@ -14,4 +14,4 @@
 ## 3. Integration checks
 
 - [ ] 3.1 Run `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo nextest run`; fix findings without lint suppression (`make check-code-file-lines` before pushing).
-- [ ] 3.2 Live niri check at a fractional scale using `scripts/probe-winsize.sh`: `CSI 16 t` and `TIOCGWINSZ` report device pixels; with `DEMO_DENSE=1` and mbv pinned, posters render sharp next to the same host in ghostty; mouse cell mapping still hits the right cells; text and accent are unchanged; restore the scale afterwards.
+- [ ] 3.2 Live niri check at a fractional scale using `scripts/probe-winsize.sh`: `CSI 16 t` and `TIOCGWINSZ` report device pixels; with `DEMO_DENSE=1`, images sized from the report render sharp next to ghostty; mouse cell mapping still hits the right cells; text and accent are unchanged; restore the scale afterwards.

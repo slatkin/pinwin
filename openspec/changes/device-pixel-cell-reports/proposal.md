@@ -3,7 +3,7 @@
 ## Why
 
 At a fractional output scale (the user's laptop runs 1.8), kitty images shown by a host
-such as mbv render visibly pixelated in the panel while the same host in ghostty renders
+program render visibly pixelated in the panel while the same host in ghostty renders
 them sharp. The cause: pinwin reports the terminal cell size in **logical** pixels (pty
 winsize `ws_xpixel`/`ws_ypixel` and the `CSI 14/16/18 t` size reports), while real
 terminals — ghostty measured directly: ~18 px/cell at scale 1.8 versus pinwin's constant
@@ -28,7 +28,7 @@ Text is unaffected because the panel rasterises glyphs itself at device scale.
 
 **BREAKING**: hosts that read cell pixels and assume they are logical-scale-invariant
 see different numbers at fractional scales. This is the intended convergence with
-every real terminal; hosts that size images from the report (mbv) gain device
+every real terminal; hosts that size images from the report gain device
 resolution automatically.
 
 ## Capabilities
@@ -62,9 +62,9 @@ None.
 ## Experiment result
 
 Filled by task 1.1 before the implementation tasks run: whether the device-pixel cell
-report makes mbv's panel images sharp at scale 1.8 (the picker's font size from the
-`startup.image_picker.initialized` log line, the transmitted bitmap size, and a
-side-by-side against ghostty). If the images are not sharp, the premise is wrong and the
+report makes a kitty image sized from `CSI 16 t` sharp in the panel at scale 1.8 (the
+cell size the probe reads, the transmitted bitmap size, and a side-by-side against
+ghostty showing the same image sized from its own report). If the images are not sharp, the premise is wrong and the
 rest of the change stops for re-planning.
 
 - [ ] recorded

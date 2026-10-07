@@ -13,14 +13,14 @@ sizes; nothing host-visible reads it.
 
 Measured on niri at scale 1.8, same font: ghostty reports ~18 device px per cell,
 pinwin a constant 9. Hosts size kitty transmissions from `CSI 16 t`
-(`ratatui_image::Picker::from_query_stdio`), so panel images arrive under-resolution.
+(any host that queries it), so panel images arrive under-resolution.
 
 ## Goals / Non-Goals
 
 **Goals:**
 - `CSI 16 t` and the winsize pixel fields answer device pixels at the resolved scale,
   updated on scale change.
-- Hosts (mbv) transmit device-resolution bitmaps in the panel with no host change.
+- Hosts transmit device-resolution bitmaps in the panel with no host change.
 - Zero change to layout, drawing, placement geometry or pointer→cell mapping.
 
 **Non-Goals:**
@@ -97,8 +97,8 @@ own: they are integer multiples of the reported cell (D1).
 
 - [Hosts that assume scale-invariant cell pixels] A host hardcoding "cell px are
   logical" sees different numbers at fractional scales. → Mitigation: this is the
-  convergence every real terminal already has; mbv and ratatui_image consumers read the
-  report, so they gain resolution automatically. Documented as the proposal's breaking
+  convergence every real terminal already has; hosts that read the
+  report gain resolution automatically. Documented as the proposal's breaking
   change.
 - [Mid-run scale change and cached pickers] A host that queried `CSI 16 t` once and
   caches the size keeps its stale value until it re-queries. → Mitigation: the scale
