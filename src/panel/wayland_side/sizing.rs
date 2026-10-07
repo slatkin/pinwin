@@ -15,10 +15,18 @@
 //! them and a metrics-less state is unrepresentable. A sizing that silently
 //! derived nothing would never size the pty, which is the bug this guards
 //! against.
+//!
+//! The device-pixel sizes the panel reports to the host
+//! (device-pixel-cell-reports D1) are pure conversions here too: the
+//! reported device cell and the size-report mapping, both on the scale
+//! helpers of [`super::buffers`], so the reports round exactly as the
+//! drawn grid's device size does.
 
 use std::num::NonZeroU16;
 
 use crate::layout::CellSize;
+
+use super::buffers::{FractionalScale, device_size};
 
 /// The grid one push carries: the applied columns, the rows derived from the
 /// latest configure height, and the cell metrics the winsize's pixel fields
@@ -215,6 +223,115 @@ impl Sizing {
 pub fn rows_for_height(height: u32, cell: CellSize) -> Option<u32> {
     let cell_height = u32::try_from(cell.height().get()).ok()?;
     Some((height / cell_height).max(1))
+}
+
+/// The reported device cell size (device-pixel-cell-reports D1): each
+/// dimension of the logical cell scaled with
+/// [`FractionalScale::scale_dimension`] — the rounding the drawn grid's
+/// device size uses, so the report and the draw never disagree by
+/// rounding path. `None` when a dimension is not a non-negative pixel
+/// count, scales to zero, or the scaled cell does not fit `i32`.
+#[must_use]
+pub fn device_cell(cell: CellSize, scale: FractionalScale) -> Option<CellSize> {
+    let width = scaled_dimension(cell.width().get(), scale)?;
+    let height = scaled_dimension(cell.height().get(), scale)?;
+    CellSize::new(width, height)
+}
+
+/// One logical pixel count scaled to device pixels and back into the
+/// cell dimensions' `i32` (device-pixel-cell-reports D1).
+fn scaled_dimension(logical: i32, scale: FractionalScale) -> Option<i32> {
+    let device = scale.scale_dimension(u32::try_from(logical).ok()?)?;
+    i32::try_from(device).ok()
+}
+
+/// The device-pixel values the panel reports to the host
+/// (device-pixel-cell-reports D1): the terminal size queries' cell pixels
+/// and the pty winsize's pixel fields. The column and row counts pass
+/// through unchanged; the cell pixels are the logical cell scaled per
+/// dimension, and the grid pixels are the logical grid size scaled — the
+/// drawn grid's device size, which the cell pixels times the counts need
+/// not equal at a fractional scale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceSizeReport {
+    cols: u16,
+    rows: u16,
+    cell_width: u32,
+    cell_height: u32,
+    grid_width: u32,
+    grid_height: u32,
+}
+
+impl DeviceSizeReport {
+    /// The reported column count: the layout's logical one.
+    #[must_use]
+    pub const fn cols(&self) -> u16 {
+        self.cols
+    }
+
+    /// The reported row count: the logical one.
+    #[must_use]
+    pub const fn rows(&self) -> u16 {
+        self.rows
+    }
+
+    /// The cell's width in device pixels: the `CSI 16 t` value.
+    #[must_use]
+    pub const fn cell_width(&self) -> u32 {
+        self.cell_width
+    }
+
+    /// The cell's height in device pixels: the `CSI 16 t` value.
+    #[must_use]
+    pub const fn cell_height(&self) -> u32 {
+        self.cell_height
+    }
+
+    /// The grid's width in device pixels: the drawn panel's width, the
+    /// `CSI 14 t` and winsize value.
+    #[must_use]
+    pub const fn grid_width(&self) -> u32 {
+        self.grid_width
+    }
+
+    /// The grid's height in device pixels: the drawn panel's height, the
+    /// `CSI 14 t` and winsize value.
+    #[must_use]
+    pub const fn grid_height(&self) -> u32 {
+        self.grid_height
+    }
+}
+
+/// The size-report mapping (device-pixel-cell-reports D1): the logical
+/// counts and cell plus the resolved scale, mapped onto the device-pixel
+/// values the panel reports. `None` when the logical grid does not fit
+/// `u32` — a grid no buffer could hold — or a scaled dimension does not
+/// fit.
+#[must_use]
+pub fn device_size_report(
+    cols: u16,
+    rows: u16,
+    cell: CellSize,
+    scale: FractionalScale,
+) -> Option<DeviceSizeReport> {
+    let logical_width = u32::try_from(cell.width().get()).ok()?;
+    let logical_height = u32::try_from(cell.height().get()).ok()?;
+    let device_cell = device_cell(cell, scale)?;
+    let cell_width = u32::try_from(device_cell.width().get()).ok()?;
+    let cell_height = u32::try_from(device_cell.height().get()).ok()?;
+    // The logical grid size, not the device cell times the counts: the
+    // drawn grid's device size is the scaled logical one (D1).
+    let logical_grid_width = u32::try_from(u64::from(cols) * u64::from(logical_width)).ok()?;
+    let logical_grid_height = u32::try_from(u64::from(rows) * u64::from(logical_height)).ok()?;
+    let (grid_width, grid_height) = device_size((logical_grid_width, logical_grid_height), scale)?;
+    Some(DeviceSizeReport {
+        cols,
+        rows,
+        cell_width,
+        cell_height,
+        grid_width,
+        grid_height,
+    })
 }
 
 #[cfg(test)]
@@ -417,5 +534,96 @@ mod tests {
         sizing.apply_columns(cols(60), &mut |grid| pushed.push(grid));
         assert_eq!(pushed.grids.len(), 1, "the finish derives and pushes");
         assert_eq!(pushed.grids[0].cols(), 60);
+    }
+
+    /// The row 1.1 scenario at the user's laptop scale: a 9 logical pixel
+    /// wide cell at 1.8 reports 16 device pixels (9 × 1.8 = 16.2, rounded),
+    /// and the drawn grid's device size is the scaled logical one — 40
+    /// columns of 9 logical pixels are 360 logical, 648 device.
+    #[test]
+    fn the_1_8_scale_reports_a_9_pixel_cell_as_16_device_pixels() {
+        let scale = FractionalScale::from_120ths(216);
+        let device = device_cell(cell(9, 16), scale).expect("the cell scales");
+        assert_eq!(device.width().get(), 16, "9 × 1.8 = 16.2, rounded down");
+        assert_eq!(device.height().get(), 29, "16 × 1.8 = 28.8, rounded up");
+
+        let grid = device_size((40 * 9, 24 * 16), scale).expect("the grid scales");
+        assert_eq!(grid, (648, 691), "the scaled logical grid size");
+    }
+
+    /// Scale 1 is the identity: the reported cell and the drawn grid's
+    /// device size equal their logical sizes.
+    #[test]
+    fn scale_1_leaves_the_cell_and_grid_sizes_unchanged() {
+        let scale = FractionalScale::from_120ths(120);
+        let device = device_cell(cell(9, 16), scale).expect("the cell scales");
+        assert_eq!((device.width().get(), device.height().get()), (9, 16));
+        assert_eq!(
+            device_size((40 * 9, 24 * 16), scale),
+            Some((40 * 9, 24 * 16)),
+        );
+    }
+
+    /// Non-exact products round exactly as `scale_dimension` does, per
+    /// dimension — including a half-way product, which rounds up.
+    #[test]
+    fn non_exact_products_round_as_scale_dimension_does() {
+        let scale = FractionalScale::from_120ths(180);
+        for logical in [7_u32, 11, 9, 16, 3] {
+            let expected = scale
+                .scale_dimension(logical)
+                .expect("the test dimension scales");
+            let logical = i32::try_from(logical).expect("the test dimension fits i32");
+            let device = device_cell(cell(logical, logical), scale).expect("the test cell scales");
+            assert_eq!(
+                device.width().get(),
+                i32::try_from(expected).expect("the scaled test dimension fits i32")
+            );
+            assert_eq!(
+                device.height().get(),
+                i32::try_from(expected).expect("the scaled test dimension fits i32")
+            );
+        }
+    }
+
+    /// The size-report mapping (row 1.2): the column and row counts pass
+    /// through unchanged, while the cell pixels and the grid pixels come
+    /// from the device conversion, at scale 1 and at 1.8.
+    #[test]
+    fn the_size_report_passes_the_counts_through_and_scales_the_pixels() {
+        let exact = device_size_report(40, 24, cell(9, 16), FractionalScale::from_120ths(120))
+            .expect("the report maps");
+        assert_eq!((exact.cols(), exact.rows()), (40, 24));
+        assert_eq!(exact.cell_width(), 9);
+        assert_eq!(exact.cell_height(), 16);
+        assert_eq!(exact.grid_width(), 40 * 9);
+        assert_eq!(exact.grid_height(), 24 * 16);
+
+        let fractional = device_size_report(40, 24, cell(9, 16), FractionalScale::from_120ths(216))
+            .expect("the report maps");
+        assert_eq!(
+            (fractional.cols(), fractional.rows()),
+            (40, 24),
+            "the counts stay the logical ones"
+        );
+        assert_eq!(fractional.cell_width(), 16, "the CSI 16 t cell width");
+        assert_eq!(fractional.cell_height(), 29, "the CSI 16 t cell height");
+        assert_eq!(fractional.grid_width(), 648, "the CSI 14 t grid width");
+        assert_eq!(fractional.grid_height(), 691, "the CSI 14 t grid height");
+    }
+
+    /// The grid pixels are the scaled logical grid size, not the device
+    /// cell times the counts: at 1.8 the two differ (D1) — 40 × 16 = 640
+    /// against the drawn grid's 648.
+    #[test]
+    fn the_grid_pixels_are_the_drawn_size_not_the_cell_pixels_times_the_counts() {
+        let report = device_size_report(40, 24, cell(9, 16), FractionalScale::from_120ths(216))
+            .expect("the report maps");
+        assert_eq!(report.grid_width(), 648);
+        assert_ne!(
+            report.grid_width(),
+            u32::from(report.cols()) * report.cell_width(),
+            "the cell pixels times the columns is not the drawn width"
+        );
     }
 }
