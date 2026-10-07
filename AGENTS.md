@@ -55,7 +55,9 @@ binary; the build is Cargo only. The pre-port C and Zig sources (`src/*.c`,
   its pure parts live in `src/cli.rs` (arguments, `--toggle`), `src/ipc.rs`
   (the toggle socket's identity, bind, listener and client) and
   `src/settings.rs` (the environment contract).
-- `examples/demo.rs` — the dev-only demo example, never installed.
+- `examples/demo/` — the dev-only demo example, never installed; it drives,
+  through the `Panel` API, the live niri checks: hide/show toggle `t`,
+  cover/inset/gutter toggles, `DEMO_ZONE`, `DEMO_KEYBOARD` and `DEMO_DENSE`.
 - `build.rs` — fetches and builds the pinned libghostty-vt.
 
 `openspec/specs/pinwin-panel/spec.md` is the behaviour spec.
