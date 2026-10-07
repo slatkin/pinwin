@@ -52,7 +52,7 @@ const DEMO_GUTTER: i32 = 12;
 const DEMO_ANIM_MS: u32 = 200;
 /// How long the canned layout settles before the live re-dock, as the C's
 /// `SETTLE_US`.
-const SETTLE: Duration = Duration::from_micros(1_500_000);
+const SETTLE: Duration = Duration::from_millis(1500);
 /// The second argument the demo re-execs itself with for the dense child.
 const DENSE_CHILD_ARG: &str = "--dense-child";
 /// The dense child's image source (a system icon PNG, as in the C demo).
@@ -124,9 +124,8 @@ fn base64_encode(data: &[u8]) -> String {
 fn dense_send_image() {
     // The C capped its fixed buffer at 128 KiB; keep the cap so the burst
     // size stays the one the demo was tuned against.
-    let raw = match std::fs::read(DENSE_IMAGE) {
-        Ok(raw) => raw,
-        Err(_) => return,
+    let Ok(raw) = std::fs::read(DENSE_IMAGE) else {
+        return;
     };
     let raw = &raw[..raw.len().min(1 << 17)];
     let b64 = base64_encode(raw);
@@ -163,7 +162,7 @@ fn dump_stdin() {
             let n = libc::read(0, buf.as_mut_ptr().cast::<c_void>(), buf.len());
             if n > 0 {
                 eprint!("child got {n} bytes: ");
-                let _ = std::io::stderr().write_all(&buf[..n as usize]);
+                let _ = std::io::stderr().write_all(&buf[..n.cast_unsigned()]);
                 eprintln!();
             } else {
                 if n < 0 {
@@ -195,12 +194,12 @@ fn dense_draw_screen() {
     if unsafe { libc::ioctl(1, libc::TIOCGWINSZ, &mut ws) } != 0 {
         return;
     }
-    let (rows, cols) = (i32::from(ws.ws_row), i32::from(ws.ws_col));
+    let (rows, cols) = (usize::from(ws.ws_row), usize::from(ws.ws_col));
     if rows < 1 || cols < 1 {
         return;
     }
 
-    let mut frame = String::with_capacity(rows as usize * cols as usize * 12);
+    let mut frame = String::with_capacity(rows * cols * 12);
     frame.push_str("\x1b[?25l\x1b[H\x1b[2J");
     for r in 0..rows {
         let _ = write!(frame, "\x1b[{};1H", r + 1);
@@ -221,10 +220,12 @@ fn dense_draw_screen() {
                 }
             } else if (c / 9) % 2 == 0 {
                 let _ = write!(frame, "\x1b[48;5;{}m", (r * 7 + c / 9) % 200 + 16);
-                frame.push((b'a' + ((r * 31 + c * 7) % 26) as u8) as char);
+                let shade = u8::try_from((r * 31 + c * 7) % 26).expect("letter index in 0..=25");
+                frame.push((b'a' + shade) as char);
             } else {
                 frame.push_str("\x1b[49m");
-                frame.push((b'0' + ((r + c) % 10) as u8) as char);
+                let digit = u8::try_from((r + c) % 10).expect("digit index in 0..=9");
+                frame.push((b'0' + digit) as char);
             }
         }
         frame.push_str("\x1b[49m");
@@ -243,21 +244,23 @@ fn dense_draw_screen() {
 /// The dense child's clock row: light periodic traffic so the pty is not
 /// idle, saved/restored around the cursor position like the C.
 fn dense_clock_row(now: libc::time_t) {
+    const FMT: &[u8] = b"\x1b[s%H:%M:%S\x1b[u\0";
+    // SAFETY: `zeroed` is a valid all-zero `tm` for `localtime_r` to
+    // overwrite; nothing reads it before that call.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     // SAFETY: `now` is a plain `time_t` value and `tm` is our writable
     // struct; `strftime` writes only inside our bounded buffer, whose format
     // string is a NUL-terminated literal.
     unsafe {
-        libc::localtime_r(&now, &mut tm);
+        libc::localtime_r(&raw const now, &raw mut tm);
         let mut buf = [0u8; 64];
-        const FMT: &[u8] = b"\x1b[s%H:%M:%S\x1b[u\0";
         let n = libc::strftime(
             buf.as_mut_ptr().cast::<c_char>(),
             buf.len(),
             FMT.as_ptr().cast::<c_char>(),
-            &tm,
+            &raw const tm,
         );
-        let clock = &buf[..n as usize];
+        let clock = &buf[..n];
         let mut stdout = std::io::stdout().lock();
         let _ = write!(stdout, "\x1b[1;1H\x1b[7m ");
         let _ = stdout.write_all(clock);
@@ -275,8 +278,8 @@ fn dense_child_main() {
         libc::signal(
             libc::SIGWINCH,
             dense_on_winch as *const () as libc::sighandler_t,
-        );
-    }
+        )
+    };
     let mut last: libc::time_t = 0;
     loop {
         // SAFETY: `time` takes no argument.
@@ -303,7 +306,7 @@ fn spawn_child(dense_mode: bool) -> Result<RawFd, std::io::Error> {
     unsafe {
         std::env::set_var("TERM", "xterm-256color");
         std::env::set_var("COLORTERM", "truecolor");
-    }
+    };
 
     let mut master: libc::c_int = -1;
     // SAFETY: `forkpty` writes the master fd through our pointer and leaves
@@ -311,7 +314,7 @@ fn spawn_child(dense_mode: bool) -> Result<RawFd, std::io::Error> {
     // branch below never returns.
     let pid = unsafe {
         libc::forkpty(
-            &mut master,
+            &raw mut master,
             std::ptr::null_mut(),
             std::ptr::null(),
             std::ptr::null(),
@@ -326,9 +329,7 @@ fn spawn_child(dense_mode: bool) -> Result<RawFd, std::io::Error> {
         // child die on a closed pipe as demo/main.c's SIG_DFL child did.
         // SAFETY: a plain disposition change in the forked child, before any
         // thread exists and before exec.
-        unsafe {
-            libc::signal(libc::SIGPIPE, libc::SIG_DFL as libc::sighandler_t);
-        }
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
         if dense_mode {
             // Re-exec self in dense-child mode: no shell, no session.
             let _ = std::process::Command::new("/proc/self/exe")
@@ -366,16 +367,14 @@ fn main() {
         None => Keyboard::OnDemand,
         Some(value) => {
             let value = value.to_string_lossy();
-            match Keyboard::parse(&value) {
-                Some(keyboard) => keyboard,
-                None => {
-                    eprintln!(
-                        "pinwin-demo: unknown DEMO_KEYBOARD={value} \
-                         (want on-demand, exclusive or none)"
-                    );
-                    std::process::exit(2);
-                }
-            }
+            let Some(keyboard) = Keyboard::parse(&value) else {
+                eprintln!(
+                    "pinwin-demo: unknown DEMO_KEYBOARD={value} \
+                     (want on-demand, exclusive or none)"
+                );
+                std::process::exit(2);
+            };
+            keyboard
         }
     };
     let mut cols = DEMO_COLS;
@@ -389,7 +388,7 @@ fn main() {
     // SAFETY: a plain disposition change, no handler state.
     unsafe {
         libc::signal(libc::SIGCHLD, libc::SIG_IGN);
-    }
+    };
 
     let master = match spawn_child(dense_mode) {
         Ok(master) => master,
@@ -412,7 +411,7 @@ fn main() {
     match Panel::start(startup) {
         Ok(panel) => {
             println!("pinwin_start = Ok(())");
-            run_commands(panel, cols)
+            run_commands(panel, cols);
         }
         Err(error) => {
             eprintln!("pinwin-demo: pinwin_start failed ({error:?})");
@@ -528,10 +527,7 @@ fn run_commands(panel: Panel, cols: u16) {
     );
 
     for line in std::io::stdin().lock().lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(_) => break,
-        };
+        let Ok(line) = line else { break };
         match line.chars().next() {
             Some('q') => break,
             Some('b') => {
