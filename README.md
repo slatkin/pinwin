@@ -97,12 +97,12 @@ fn run(fd: RawFd) -> Result<(), PinwinError> {
         NonZeroU16::new(60).expect("60 columns is non-zero"),
         0, 0, 0, 12,
     );
-    let startup = Startup {
+    let startup = Startup::new(
         fd,
         layout,
-        keyboard: Keyboard::OnDemand,
-        accent: Some(Accent::new([0xda, 0xbc, 0x7f], NonZeroU16::new(2).unwrap())),
-    };
+        Keyboard::OnDemand,
+        Some(Accent::new([0xda, 0xbc, 0x7f], NonZeroU16::new(2).unwrap())),
+    );
 
     let panel = Panel::start(startup)?;
 
@@ -231,7 +231,9 @@ used 0.1.0 changes these things:
   Pango, Cairo or gdk-pixbuf library; the `pinwin` binary links 13 shared
   libraries in place of 113. The system needs libwayland, libxkbcommon and
   fontconfig.
-- **Unchanged:** `Panel::start`, `Startup`, `Layout`, `Keyboard`, `Accent`,
+- **`Startup` is built with `Startup::new(fd, layout, keyboard, accent)`.** Its
+  fields are private; read them through the accessors of the same names.
+- **Unchanged:** `Panel::start`, `Layout`, `Keyboard`, `Accent`,
   `PinwinError` and the `COLS`, `GUTTER`, `PINWIN_KEYBOARD`, `PINWIN_ACCENT*`
   and `PINWIN_NAME` variables.
 
