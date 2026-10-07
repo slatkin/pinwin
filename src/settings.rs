@@ -94,8 +94,13 @@ fn accent_color(raw: Option<&str>) -> Result<[u8; 3], String> {
     if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(bad());
     }
-    let value = u32::from_str_radix(hex, 16).map_err(|_| bad())?;
-    Ok([(value >> 16) as u8, (value >> 8) as u8, value as u8])
+    let Ok(value) = u32::from_str_radix(hex, 16) else {
+        return Err(bad());
+    };
+    // Six hex digits fit in the low 24 bits: the big-endian bytes' first is
+    // zero and the rest are the three channels.
+    let [_, red, green, blue] = value.to_be_bytes();
+    Ok([red, green, blue])
 }
 
 /// `PINWIN_NAME`: the instance name the focus socket is published under.
@@ -148,14 +153,16 @@ pub(crate) fn read_settings(get: impl Fn(&str) -> Option<String>) -> Result<Sett
         )?;
         Some(Accent::new(
             rgb,
-            NonZeroU16::new(width as u16).expect("width in 1..=65535"),
+            NonZeroU16::new(u16::try_from(width).expect("width in 1..=65535"))
+                .expect("width in 1..=65535"),
         ))
     } else {
         None
     };
     Ok(Settings {
-        cols: NonZeroU16::new(cols as u16).expect("cols in 1..=65535"),
-        right: right as i32,
+        cols: NonZeroU16::new(u16::try_from(cols).expect("cols in 1..=65535"))
+            .expect("cols in 1..=65535"),
+        right: i32::try_from(right).expect("gutter in 0..=65535"),
         keyboard,
         accent,
         name: instance_name(get("PINWIN_NAME").as_deref())?,
@@ -310,7 +317,7 @@ mod tests {
 
         // A keyboard mode that the type cannot express is still an env error.
         let map = HashMap::from([("PINWIN_KEYBOARD".to_owned(), "sometimes".to_owned())]);
-        assert!(call(&map).is_err());
+        call(&map).unwrap_err();
     }
 
     /// `XDG_ACTIVATION_TOKEN` builds the client's token: unset is an error

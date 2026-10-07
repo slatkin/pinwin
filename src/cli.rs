@@ -162,21 +162,25 @@ mod tests {
         // before the test ends so the other tests see the real environment.
         unsafe {
             env::set_var("SHELL", "/bin/zsh");
-        }
+        };
         assert_eq!(
             default_command(),
             vec![OsStr::new("/bin/zsh").to_os_string()]
         );
+        // SAFETY: single-threaded test process; the variable is restored
+        // before the test ends so the other tests see the real environment.
         unsafe {
             env::set_var("SHELL", "");
-        }
+        };
         assert_eq!(
             default_command(),
             vec![OsStr::new(FALLBACK_SHELL).to_os_string()]
         );
+        // SAFETY: single-threaded test process; the variable is restored
+        // before the test ends so the other tests see the real environment.
         unsafe {
             env::remove_var("SHELL");
-        }
+        };
         assert_eq!(
             default_command(),
             vec![OsStr::new(FALLBACK_SHELL).to_os_string()]
