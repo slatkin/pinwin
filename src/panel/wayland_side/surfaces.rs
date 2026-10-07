@@ -35,7 +35,6 @@ use wayland_client::QueueHandle;
 use wayland_client::protocol::wl_surface;
 
 use crate::layout::{CellSize, Keyboard, Layout, Side};
-use crate::surfaces::gap::start_held_gap;
 
 use super::apply::SurfaceGeometry;
 use super::buffers::{BufferPool, BufferPoolError};
@@ -81,16 +80,6 @@ pub fn grid_width_px(cols: NonZeroU16, cell: CellSize) -> Option<i32> {
     i32::try_from(width).ok()
 }
 
-/// The exclusive zone the reserve holds at startup, the startup held gap
-/// (overlay-expand D5): a pushing start reserves its own strip
-/// `left + panel width + right`, a covering start reserves nothing until the
-/// first pushing layout applies. The decision is `gap::start_held_gap`'s,
-/// shared with the panel state's held gap (row 3.5).
-#[must_use]
-pub fn startup_reserve_zone(layout: Layout, cell: CellSize) -> i32 {
-    start_held_gap(layout, cell.width().get()).zone()
-}
-
 /// The keyboard interactivity a mode maps with (D3): `on-demand` maps with
 /// none — niri grants a layer surface focus only on the map itself, so the
 /// launch must take no focus — while `exclusive` and `none` map directly.
@@ -119,7 +108,7 @@ pub fn post_buffer_interactivity(keyboard: Keyboard) -> KeyboardInteractivity {
 /// keeping it costs nothing and removes the ordering question.
 struct Reserve {
     surface: LayerSurface,
-    _region: Region,
+    region: Region,
 }
 
 /// The panel thread's two layer surfaces plus the shared memory pool their
@@ -131,9 +120,7 @@ pub(crate) struct PanelSurfaces {
     /// The two-buffer pool the transparent placeholder buffers and, from
     /// row 4.3 on, the drawn frames come from (D5).
     pool: BufferPool,
-    layout: Layout,
     keyboard: Keyboard,
-    cell: CellSize,
     /// Whether the `on-demand` switch (D3) has run: it follows the first
     /// buffer, exactly once.
     switched_to_on_demand: bool,
@@ -149,9 +136,9 @@ impl PanelSurfaces {
     /// interactivity. The initial commit with no buffer asks the compositor
     /// for the first configure.
     ///
-    /// `cell` is the measured cell metrics the start command carried: a
-    /// required input, because a
-    /// panel without them cannot ask for its width and would never map.
+    /// The layout and the cell metrics the caller carries decide that
+    /// geometry; the show and the applies re-send the applied geometry from
+    /// the panel state, so the surfaces keep no copy of their own.
     ///
     /// # Errors
     /// The shared memory pool for the placeholder buffers could not be
@@ -176,9 +163,7 @@ impl PanelSurfaces {
             panel,
             reserve: None,
             pool,
-            layout,
             keyboard,
-            cell,
             switched_to_on_demand: false,
             reserve_buffer_size: None,
         })
@@ -187,21 +172,22 @@ impl PanelSurfaces {
     /// Take the reserve surface and its empty input region the state module
     /// created on the panel's resolved output (rows 3.1 and 3.2) and apply
     /// the reservation: the layer-shell `Bottom` layer's surface, anchored
-    /// like the panel, carrying the startup held gap's exclusive zone, one
-    /// pixel wide and taking no input. The initial commit asks for the
-    /// configure whose size the transparent buffer then fills.
-    pub fn attach_reserve(&mut self, reserve: LayerSurface, region: Region) {
-        reserve.set_anchor(panel_anchor(self.layout.side()));
-        // The startup held gap (overlay-expand D5): the pushing strip is the
-        // layout's side geometry around the panel's pixel width.
-        reserve.set_exclusive_zone(startup_reserve_zone(self.layout, self.cell));
+    /// to the held gap's side, carrying its exclusive zone, one pixel wide
+    /// and taking no input. The initial commit asks for the configure whose
+    /// size the transparent buffer then fills.
+    pub fn attach_reserve(&mut self, reserve: LayerSurface, region: Region, side: Side, zone: i32) {
+        reserve.set_anchor(panel_anchor(side));
+        // The held gap (overlay-expand D5): the pushing strip is the layout's
+        // side geometry around the panel's pixel width — the startup held gap
+        // at the resolution, the current one at a show-time recreation.
+        reserve.set_exclusive_zone(zone);
         reserve.set_size(1, 0);
         // The reserve takes no input (D3): an empty region covers no point.
         reserve.set_input_region(Some(region.wl_region()));
         reserve.commit();
         self.reserve = Some(Reserve {
             surface: reserve,
-            _region: region,
+            region,
         });
     }
 
@@ -232,6 +218,70 @@ impl PanelSurfaces {
             return;
         }
         self.reserve_buffer_size = Some((width, height));
+    }
+
+    /// Whether the reserve surface exists (row 9.1): a show recreates it
+    /// when the compositor closed it while the panel was hidden.
+    #[must_use]
+    pub(crate) fn has_reserve(&self) -> bool {
+        self.reserve.is_some()
+    }
+
+    /// Hide (row 9.1, replace-gtk-with-wayland D4): attach a null buffer to
+    /// the panel surface and commit, which unmaps it, and unmap the reserve
+    /// the same way, which releases the held strip. The surfaces and their
+    /// globals stay alive; a show re-sends the layer state an unmap reset.
+    /// Clearing the reserve's buffer-size note makes its next configure
+    /// attach the transparent buffer again — the unmap made the cached size
+    /// stale, and the skip would leave the reserve unmapped.
+    pub(crate) fn hide(&mut self) {
+        self.panel.wl_surface().attach(None, 0, 0);
+        self.panel.commit();
+        if let Some(reserve) = &self.reserve {
+            reserve.surface.wl_surface().attach(None, 0, 0);
+            reserve.surface.commit();
+        }
+        self.reserve_buffer_size = None;
+    }
+
+    /// Show (row 9.1, replace-gtk-with-wayland D4): an unmap resets a layer
+    /// surface to its state after `get_layer_surface`, so re-send the panel's
+    /// layer state — anchor, margins, exclusive zone -1, the applied width
+    /// and the keyboard interactivity, `on-demand` directly in `on-demand`
+    /// mode (the launch keeps its no-interactivity first map) — and commit
+    /// without a buffer. The configure that follows draws the current grid
+    /// and maps the panel. The reserve gets its anchor, held exclusive zone,
+    /// one-pixel size and empty input region again, and maps with the held
+    /// strip at its configure.
+    pub(crate) fn show(&mut self, geometry: &SurfaceGeometry) {
+        self.panel.set_anchor(panel_anchor(geometry.panel_side));
+        let (top, right, bottom, left) = geometry.panel_margins;
+        self.panel.set_margin(top, right, bottom, left);
+        self.panel.set_exclusive_zone(-1);
+        // A validated layout's width always fits; a skipped `set_size` is
+        // the same skip the startup and the applies take.
+        if let Some(width) = geometry.panel_width
+            && let Ok(width) = u32::try_from(width)
+        {
+            self.panel.set_size(width, 0);
+        }
+        // A toggle's map is a later map: `on-demand` goes out before the
+        // first commit, so a compositor that focuses a newly mapped
+        // `on-demand` surface gives the panel the keyboard (D3, D4).
+        self.panel
+            .set_keyboard_interactivity(post_buffer_interactivity(self.keyboard));
+        self.panel.commit();
+        if let Some(reserve) = &self.reserve {
+            reserve
+                .surface
+                .set_anchor(panel_anchor(geometry.reserve_side));
+            reserve.surface.set_exclusive_zone(geometry.reserve_zone);
+            reserve.surface.set_size(1, 0);
+            reserve
+                .surface
+                .set_input_region(Some(reserve.region.wl_region()));
+            reserve.surface.commit();
+        }
     }
 
     /// The compositor closed the reserve surface: drop it, taking the
@@ -511,14 +561,22 @@ mod tests {
     }
 
     /// The startup reservation: a pushing start reserves its own strip, a
-    /// covering start reserves nothing (overlay-expand D5).
+    /// covering start reserves nothing (overlay-expand D5). The decision is
+    /// [`crate::surfaces::gap::start_held_gap`]'s, shared with the panel
+    /// state's held gap (row 3.5).
     #[test]
     fn the_startup_reserve_zone_follows_the_coverage_choice() {
         let pushing = layout(Side::Left, 40, 0, 0, 0, 12);
-        assert_eq!(startup_reserve_zone(pushing, cell(9, 16)), 372);
+        assert_eq!(
+            crate::surfaces::gap::start_held_gap(pushing, cell(9, 16).width().get()).zone(),
+            372
+        );
 
         let covering = layout(Side::Left, 120, 0, 0, 0, 12).covering();
-        assert_eq!(startup_reserve_zone(covering, cell(9, 16)), 0);
+        assert_eq!(
+            crate::surfaces::gap::start_held_gap(covering, cell(9, 16).width().get()).zone(),
+            0
+        );
     }
 
     /// A negative gutter shrinks the pushing strip (the spec's "Negative
@@ -526,7 +584,10 @@ mod tests {
     #[test]
     fn a_negative_gutter_shrinks_the_startup_strip() {
         let negative = layout(Side::Left, 40, 0, 0, -40, 12);
-        assert_eq!(startup_reserve_zone(negative, cell(9, 16)), 332);
+        assert_eq!(
+            crate::surfaces::gap::start_held_gap(negative, cell(9, 16).width().get()).zone(),
+            332
+        );
     }
 
     /// The keyboard interactivity mapping (D3): an `on-demand` panel maps

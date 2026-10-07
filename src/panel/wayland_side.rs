@@ -5,7 +5,7 @@
 //! [`spawn_panel_thread`] opens the connection from the display name (or the
 //! environment when none is given), answers a socket that is missing or does
 //! not speak Wayland with `NoDisplay` through the start handshake, and then
-//! runs the calloop loop: apply, focus and teardown commands arrive on a
+//! runs the calloop loop: apply, focus, toggle and teardown commands arrive on a
 //! calloop channel, each answered through the bounded replies of the start
 //! handshake in `super::handshake`. A teardown ends the loop and the thread ends on its
 //! own, like the drop contract promises; a closed compositor connection
@@ -59,7 +59,7 @@ use crate::surfaces::PublishOutcome;
 use super::Inner;
 use super::PinwinError;
 use super::Startup;
-use super::handshake::{APPLY_WAIT, Handshake, StartOutcome, wait_for_apply, wait_for_focus};
+use super::handshake::{APPLY_WAIT, Handshake, StartOutcome, wait_for_apply, wait_for_unit};
 
 pub(crate) mod activation;
 pub(crate) mod apply;
@@ -74,6 +74,7 @@ pub mod seat;
 pub mod sizing;
 pub(crate) mod state;
 mod surfaces;
+pub(crate) mod toggle;
 pub mod tween;
 pub(crate) mod tween_draw;
 pub(crate) mod watchdog;
@@ -81,8 +82,8 @@ pub(crate) mod watchdog;
 use state::{BindFailure, PanelState};
 
 /// A command the host posts to a running panel thread (D2), the wayland twin
-/// of the GTK side's dispatched glue: an apply, a focus request or a
-/// teardown, each carrying its own bounded reply channel from
+/// of the GTK side's dispatched glue: an apply, a focus request, a toggle or
+/// a teardown, each carrying its own bounded reply channel from
 /// [`super::handshake`].
 #[derive(Debug)]
 pub(crate) enum PanelCommand {
@@ -103,6 +104,14 @@ pub(crate) enum PanelCommand {
     Focus {
         /// The token the request passes to the compositor.
         token: ActivationToken,
+        /// The bounded reply the host waits on.
+        reply: mpsc::SyncSender<()>,
+    },
+    /// Toggle the panel (row 9.1, replace-gtk-with-wayland D4): hide a
+    /// shown panel, show a hidden one, answered with `()` — the reply is
+    /// the hide's null-buffer commit or the show's commit without a buffer;
+    /// the rest of a show follows the configure.
+    Toggle {
         /// The bounded reply the host waits on.
         reply: mpsc::SyncSender<()>,
     },
@@ -218,7 +227,34 @@ impl PanelThread {
             token,
             reply: reply_tx,
         });
-        wait_for_focus(&reply_rx, APPLY_WAIT)
+        wait_for_unit(&reply_rx, APPLY_WAIT)
+    }
+
+    /// Post the toggle (row 9.1, replace-gtk-with-wayland D4) and wait for
+    /// its bounded reply: the same order as the apply — the poisoned check
+    /// first (D5: a panic reports `Internal`, never `NotRunning`), then the
+    /// ended check, then the bounded reply. The reply is the hide's
+    /// null-buffer commit or the show's commit without a buffer; the rest of
+    /// a show follows the configure, after the reply.
+    ///
+    /// # Errors
+    /// `NotRunning` on a dead panel, `Internal` on a caught panic or a
+    /// wedged or ended thread.
+    pub fn toggle(&self) -> Result<(), PinwinError> {
+        match guard(&self.inner.poisoned, || self.post_toggle()) {
+            Ok(result) => result,
+            Err(_) => Err(PinwinError::Internal),
+        }
+    }
+
+    /// The unguarded body of [`PanelThread::toggle`].
+    fn post_toggle(&self) -> Result<(), PinwinError> {
+        if !self.inner.live.load(Ordering::Relaxed) {
+            return Err(PinwinError::NotRunning);
+        }
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let _ = self.commands.send(PanelCommand::Toggle { reply: reply_tx });
+        wait_for_unit(&reply_rx, APPLY_WAIT)
     }
 
     /// Post the teardown and wait for its bounded reply. The thread then
@@ -720,7 +756,7 @@ mod tests {
                         PanelCommand::Apply { reply, .. } => {
                             let _ = reply.send(PublishOutcome::Applied);
                         }
-                        PanelCommand::Focus { reply, .. } => {
+                        PanelCommand::Focus { reply, .. } | PanelCommand::Toggle { reply, .. } => {
                             let _ = reply.send(());
                         }
                         PanelCommand::Teardown { reply } => {
@@ -746,6 +782,7 @@ mod tests {
             thread.request_focus(ActivationToken::new("pinwin-test-token").expect("token")),
             Ok(())
         );
+        assert_eq!(thread.toggle(), Ok(()), "the toggle posts and answers");
         thread.teardown();
         server.join().expect("the fake server thread");
     }

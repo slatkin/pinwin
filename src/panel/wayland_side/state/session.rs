@@ -80,6 +80,7 @@ impl PanelState {
             loop_handle,
             surfaces: Some(surfaces),
             pending_output: None,
+            panel_output: None,
             resolved: None,
             scale,
             presentation,

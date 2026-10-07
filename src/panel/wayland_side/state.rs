@@ -53,6 +53,7 @@ use super::seat::SeatLinks;
 use super::seat::SeatSide;
 use super::sizing::{Grid, Sizing};
 use super::surfaces::{PanelSurfaces, SurfaceId};
+use super::toggle::Visibility;
 use super::tween::TweenDriver;
 use super::tween_draw::{TweenDraw, TweenRender};
 
@@ -115,6 +116,10 @@ pub(crate) struct Session {
     /// The output the panel's first `wl_surface.enter` named (D3), whose
     /// xdg-output logical size is still awaited.
     pending_output: Option<wl_output::WlOutput>,
+    /// The output the panel's first `wl_surface.enter` named, kept after the
+    /// resolution (row 9.1): a show recreates the reserve on it when the
+    /// compositor closed the reserve while the panel was hidden.
+    pub(crate) panel_output: Option<wl_output::WlOutput>,
     /// The resolved output and its xdg-output logical size (D3). `None` until
     /// both the enter and the logical size have arrived.
     pub(crate) resolved: Option<OutputSize>,
@@ -188,6 +193,11 @@ pub(crate) struct PanelState {
     /// callbacks and the watchdog timer drive it from row 6.2's animated
     /// apply on.
     pub(crate) tween: TweenDriver,
+    /// Whether the panel's surfaces are mapped ([`Visibility::Shown`]) or
+    /// unmapped ([`Visibility::Hidden`], row 9.1): the toggle, the hidden
+    /// apply and the repaint service branch on it. The panel is shown at
+    /// start (the spec's show-and-hide requirement).
+    pub(crate) visibility: Visibility,
     /// The running tween's wide cache (row 6.2, [`super::tween_draw`]):
     /// `Some` exactly while a tween runs and its wide buffer is presentable,
     /// dropped when the tween stops.
@@ -238,6 +248,7 @@ impl PanelState {
             held: start_held_gap(startup.layout, cell.width().get()),
             applied: startup.layout,
             tween: TweenDriver::default(),
+            visibility: Visibility::Shown,
             tween_draw: None,
             render: None,
             session: None,
@@ -291,9 +302,9 @@ impl PanelState {
         // A torn-down session (the watchdog's fire dropped the surfaces)
         // attaches no reserve and completes no handshake: its start already
         // failed and its loop is already ending.
-        let Some(surfaces) = session.surfaces.as_mut() else {
+        if session.surfaces.is_none() {
             return;
-        };
+        }
         // A logical size of zero is a compositor that has not decided its
         // layout yet: the same retry as a missing info.
         let Some((width, height)) = info.logical_size else {
@@ -302,10 +313,39 @@ impl PanelState {
         let Some(size) = OutputSize::new(width, height) else {
             return;
         };
-        // The reserve is created on the same output (D3). A region the
-        // compositor refused degrades to no reservation: the panel still
-        // runs, the tiles just are not held back (port-to-rust D3 — the
-        // library never exits over an environment failure).
+        // The panel's output, kept for a show-time reserve recreation
+        // (row 9.1).
+        if let Some(session) = self.session.as_mut() {
+            session.panel_output = Some(output.clone());
+        }
+        // The reserve is created on the same output (D3).
+        self.create_reserve(&output, qh);
+        if let Some(session) = self.session.as_mut() {
+            session.pending_output = None;
+            session.resolved = Some(size);
+        }
+        // The start handshake completes here (D3), like the GTK side's
+        // first-draw monitor resolution: the panel's output and its logical
+        // size are live.
+        self.handshake.report(StartOutcome::Started);
+    }
+
+    /// Create the reserve surface on `output` and map it with the held gap
+    /// (D3, row 9.1): called at the output's resolution and again from a
+    /// show whose reserve the compositor closed while the panel was hidden.
+    /// A region the compositor refused degrades to no reservation: the panel
+    /// still runs, the tiles just are not held back (port-to-rust D3 — the
+    /// library never exits over an environment failure).
+    pub(super) fn create_reserve(&mut self, output: &wl_output::WlOutput, qh: &QueueHandle<Self>) {
+        // The held gap the reserve maps with, read before the session borrow.
+        let (side, zone) = (self.held.side(), self.held.zone());
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        // A torn-down session attaches no reserve: its surfaces are gone.
+        let Some(surfaces) = session.surfaces.as_mut() else {
+            return;
+        };
         if let Ok(region) = Region::new(&session.compositor) {
             let surface =
                 session
@@ -317,16 +357,10 @@ impl PanelState {
                 surface,
                 Layer::Bottom,
                 Some("pinwin-reserve"),
-                Some(&output),
+                Some(output),
             );
-            surfaces.attach_reserve(reserve, region);
+            surfaces.attach_reserve(reserve, region, side, zone);
         }
-        session.pending_output = None;
-        session.resolved = Some(size);
-        // The start handshake completes here (D3), like the GTK side's
-        // first-draw monitor resolution: the panel's output and its logical
-        // size are live.
-        self.handshake.report(StartOutcome::Started);
     }
 
     /// One layer-surface configure (rows 3.3 and 3.4): the panel's configure

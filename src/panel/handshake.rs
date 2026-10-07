@@ -84,13 +84,13 @@ pub(crate) fn map_start(outcome: StartOutcome) -> Result<(), PinwinError> {
     }
 }
 
-/// Wait for a focus request's reply within `timeout`, like [`wait_for_apply`]:
-/// a timeout and a closed channel are both `Internal`. The reply carries no
-/// outcome: the request is either made (`Ok(())`) or the panel side failed
-/// to answer (replace-gtk-with-wayland D4 — the compositor's choice is
-/// invisible to the client, and the lifecycle states short-circuit before
-/// the post).
-pub(crate) fn wait_for_focus(
+/// Wait for a reply that carries no outcome — a focus request's or a
+/// toggle's — within `timeout`, like [`wait_for_apply`]: a timeout and a
+/// closed channel are both `Internal`. The reply says only that the panel
+/// side acted (a focus request was made, a toggle's hide or show committed;
+/// replace-gtk-with-wayland D4 — the compositor's choice is invisible to
+/// the client, and the lifecycle states short-circuit before the post).
+pub(crate) fn wait_for_unit(
     receiver: &mpsc::Receiver<()>,
     timeout: Duration,
 ) -> Result<(), PinwinError> {

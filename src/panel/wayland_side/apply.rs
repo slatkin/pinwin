@@ -27,6 +27,7 @@ use super::crop::TweenCrop;
 use super::sizing::Grid;
 use super::state::PanelState;
 use super::surfaces::{grid_width_px, panel_margins};
+use super::toggle::Visibility;
 use super::tween;
 use super::tween_draw::TweenDraw;
 
@@ -145,6 +146,14 @@ impl PanelState {
         {
             return PublishOutcome::NotLive;
         }
+        // While hidden (row 9.1, replace-gtk-with-wayland D4): the apply
+        // validates and stores the layout and resizes the grid as usual,
+        // with no animation and nothing on screen — the next show uses it.
+        // A hidden panel runs no tween (a hide ended any), so the animate
+        // decision never even runs.
+        if self.visibility == Visibility::Hidden {
+            return self.apply_hidden(output, layout);
+        }
         // The animate decision (row 6.2) against the applied layout, the
         // GTK path's `should_animate` rule. An animated apply whose columns
         // and coverage the applied layout already has animates nothing (the
@@ -167,6 +176,20 @@ impl PanelState {
     /// changes neither restages quietly.
     fn animates_width(applied: &Layout, layout: &Layout) -> bool {
         layout.cols().get() != applied.cols().get() || layout.coverage() != applied.coverage()
+    }
+
+    /// The hidden apply (row 9.1, replace-gtk-with-wayland D4): validate
+    /// and store the layout and push the derived grid through the sizing
+    /// path as usual — the same half a shown snap apply runs — but with no
+    /// tween, no surface write and no commit, so nothing appears and the
+    /// next show uses the stored layout. The display-free seam is the
+    /// staging itself ([`Self::apply_against`], `port-to-rust` D10).
+    pub(crate) fn apply_hidden(&mut self, output: OutputSize, layout: Layout) -> PublishOutcome {
+        let mut push = self.grid_sink();
+        match self.apply_against(output, layout, &mut push) {
+            Ok(_geometry) => PublishOutcome::Applied,
+            Err(outcome) => outcome,
+        }
     }
 
     /// The geometry write the snap and quiet applies share: the two

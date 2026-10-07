@@ -38,6 +38,7 @@ use crate::render::geom::{DeviceRect, FrameInput};
 use super::buffers::{self, FractionalScale};
 use super::crop::upload_wide;
 use super::state::PanelState;
+use super::toggle::Visibility;
 
 /// What a frame's present step does with the renderer's outcome (dispatch
 /// D4c): nothing at all when the frame drew nothing or a tween owns the
@@ -357,6 +358,14 @@ impl PanelState {
     pub fn service_repaint_request(&mut self) {
         let requested = self.take_repaint_request();
         if !requested {
+            return;
+        }
+        // A hidden panel consumes the request without a commit (row 9.1,
+        // replace-gtk-with-wayland D4): the terminal and the pty keep
+        // running while the panel is hidden, and the show's configure draws
+        // the current grid — a live frame committed here would remap the
+        // panel behind the host's back.
+        if self.visibility == Visibility::Hidden {
             return;
         }
         match output_disposition(self.tween_draw.is_some()) {

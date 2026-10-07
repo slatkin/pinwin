@@ -1,5 +1,5 @@
 //! The panel thread's command-channel handling (replace-gtk-with-wayland D2):
-//! the apply, focus and teardown commands the host posts and the closed
+//! the apply, focus, toggle and teardown commands the host posts and the closed
 //! command channel, split from the surface-event handlers in
 //! `super::state` so both stay small. The teardown and the closed channel
 //! are stop relays (D5): they end the loop and drop the surfaces even on a
@@ -55,6 +55,13 @@ fn handle_command(state: &mut PanelState, command: super::PanelCommand) {
         }
         super::PanelCommand::Focus { token, reply } => {
             super::activation::on_focus(state, &token);
+            let _ = reply.send(());
+        }
+        super::PanelCommand::Toggle { reply } => {
+            // The toggle itself answers nothing: the reply says the hide's
+            // null-buffer commit or the show's commit without a buffer went
+            // out (row 9.1, D4); the rest of a show follows the configure.
+            state.toggle();
             let _ = reply.send(());
         }
         super::PanelCommand::Teardown { reply } => {
@@ -166,9 +173,35 @@ mod tests {
             },
         );
         assert_eq!(
-            crate::panel::handshake::wait_for_focus(&reply_rx, std::time::Duration::from_secs(1)),
+            crate::panel::handshake::wait_for_unit(&reply_rx, std::time::Duration::from_secs(1)),
             Ok(())
         );
+    }
+
+    /// A toggle command flips the headless state's visibility and replies
+    /// `Ok` through the same bounded reply (row 9.1): the first hides, the
+    /// second shows again (D10 — the state machine runs without a display;
+    /// the surface writes are the session-guarded tail).
+    #[test]
+    fn a_toggle_command_flips_the_visibility_and_replies() {
+        let (tx, _rx) = mpsc::channel();
+        let mut state = headless_state(Handshake::new(tx));
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        handle_command(&mut state, PanelCommand::Toggle { reply: reply_tx });
+        assert_eq!(
+            crate::panel::handshake::wait_for_unit(&reply_rx, std::time::Duration::from_secs(1)),
+            Ok(())
+        );
+        assert_eq!(state.visibility, super::super::toggle::Visibility::Hidden);
+        assert!(!state.done, "a toggle does not end the thread");
+
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        handle_command(&mut state, PanelCommand::Toggle { reply: reply_tx });
+        assert_eq!(
+            reply_rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(())
+        );
+        assert_eq!(state.visibility, super::super::toggle::Visibility::Shown);
     }
 
     /// A teardown command tears the panel down — the surfaces drop and the
