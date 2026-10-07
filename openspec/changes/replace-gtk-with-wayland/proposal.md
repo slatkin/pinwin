@@ -31,8 +31,7 @@ no clipboard.
 - A focus request never changes the terminal grid or the pty window size and raises no
   `SIGWINCH`. This closes #19.
 - Stock niri ignores xdg-activation for layer surfaces, so on stock niri a focus request
-  gives no focus until niri accepts a patch. The change writes that niri patch and opens the
-  upstream pull request. Click focus works on every compositor.
+  gives no focus. Click focus works on every compositor.
 - In `on-demand` mode, the panel maps with no keyboard interactivity and switches to
   `on-demand` after its first frame. niri focuses a newly mapped `on-demand` surface, so
   this keeps the existing "no focus steal on launch" rule true on niri.
@@ -78,4 +77,3 @@ None.
   apply `snap-text-origins`. `device-pixel-grid` stays parked, and this change does not need it.
   `adopt-libghostty-rs` changes `src/ghostty_sys/` and `src/term/`, which this change does
   not restructure, so either change can land first and the second one rebases.
-- External: a pull request to niri.
