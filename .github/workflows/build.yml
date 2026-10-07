@@ -58,11 +58,13 @@ jobs:
           # The wayland client stack and the fonts the display-free font
           # tests resolve (replace-gtk-with-wayland row 2.1). GTK and
           # gtk4-layer-shell left with row 8.2: the ldd step below fails the
-          # build if anything pulled them back in.
+          # build if anything pulled them back in. wqy-zenhei covers the CJK
+          # wide glyph (U+3000) the cursor tests draw: without it the
+          # fallback .notdef tofu fails the wide-head cursor test.
           pacman_retry pacman -S --noconfirm --needed rustup clang zig \
             git \
             wayland libxkbcommon fontconfig \
-            ttf-jetbrains-mono-nerd noto-fonts-emoji
+            ttf-jetbrains-mono-nerd noto-fonts-emoji wqy-zenhei
 
       - uses: actions/checkout@v7
 
