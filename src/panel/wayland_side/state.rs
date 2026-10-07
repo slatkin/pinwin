@@ -22,7 +22,6 @@
 //! still ends.
 
 use std::cell::{Cell, RefCell};
-use std::os::fd::RawFd;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -40,7 +39,6 @@ use wayland_client::protocol::wl_output;
 
 use crate::guard::Poisoned;
 use crate::layout::{CellSize, Layout, OutputSize};
-use crate::pty::apply_winsize;
 use crate::surfaces::gap::{HeldGap, start_held_gap};
 use crate::term::Terminal;
 
@@ -56,9 +54,12 @@ use super::toggle::Visibility;
 use super::tween::TweenDriver;
 use super::tween_draw::{TweenDraw, TweenRender};
 
+mod device;
 mod handlers;
 mod seat_handlers;
 mod session;
+
+pub(crate) use device::apply_pty_size;
 
 /// The globals and surfaces one bound panel thread session holds (D2). The
 /// fields live here and not on [`PanelState`] because every one of them needs
@@ -553,22 +554,31 @@ impl PanelState {
 
     /// Note the integer preferred buffer scale the compositor reported for
     /// one surface: the fallback source of the resolution order (D5), read
-    /// only while no fractional preferred scale has arrived.
+    /// only while no fractional preferred scale has arrived. Re-pushes the
+    /// winsize when the device pixel size changed
+    /// (device-pixel-cell-reports D4).
     pub(crate) fn note_integer_scale(&mut self, factor: i32) {
+        let before = self.resolved_scale();
         if let Some(session) = &mut self.session {
             session.scale.note_integer(factor);
         }
         self.sync_renderer_scale();
+        let after = self.resolved_scale();
+        self.repush_for_scale(before, after);
     }
 
     /// Note the fractional preferred scale the `wp_fractional_scale_v1`
     /// object of one surface reported, in 1/120 units: the primary source
-    /// of the resolution order (D5).
+    /// of the resolution order (D5). Re-pushes the winsize when the device
+    /// pixel size changed (device-pixel-cell-reports D4).
     pub(crate) fn note_preferred_scale(&mut self, units_120: u32) {
+        let before = self.resolved_scale();
         if let Some(session) = &mut self.session {
             session.scale.note_preferred_scale(units_120);
         }
         self.sync_renderer_scale();
+        let after = self.resolved_scale();
+        self.repush_for_scale(before, after);
     }
 
     /// The frame log a new tween begins with (row 6.3,
@@ -613,24 +623,6 @@ impl PanelState {
             surfaces.reserve_closed();
         }
     }
-}
-
-/// Apply a pushed grid to the pty: the winsize ioctl with the grid and its
-/// pixel size, `SIGWINCH` raised inside [`apply_winsize`] on success. The
-/// single grid push sink in [`super::glue`] runs this after the terminal's
-/// own `push_size`, so the terminal and the pty change together (row 8.1);
-/// the child's `TIOCGWINSZ` reads the result.
-pub(crate) fn apply_pty_size(fd: RawFd, grid: Grid) {
-    let Ok(rows) = i32::try_from(grid.rows()) else {
-        return;
-    };
-    let (Ok(cell_w), Ok(cell_h)) = (
-        u32::try_from(grid.cell_width()),
-        u32::try_from(grid.cell_height()),
-    ) else {
-        return;
-    };
-    let _ = apply_winsize(fd, i32::from(grid.cols()), rows, cell_w, cell_h);
 }
 
 #[cfg(test)]
