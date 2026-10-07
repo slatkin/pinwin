@@ -128,9 +128,11 @@ buffer. The rest of a show follows the configure, after the reply.
 Hide attaches a null buffer to the panel surface and commits, which unmaps it. A running
 width tween ends first at its target layout, including its deferred grid resize. The terminal, the pty source and the child keep
 running, and the grid stays as it is. Hide also unmaps the reserve, so the held strip is
-released. An unmap resets a layer surface to its state after `get_layer_surface`, so show
-sends the panel's layer state again before its first commit: size, anchor, margins,
-exclusive zone -1 and keyboard interactivity. It commits without a buffer, waits for the
+released. The protocol text says an unmap returns a layer surface to its state after `get_layer_surface`,
+but smithay, which niri uses, resets the whole pending state to defaults, and its default layer
+is `background`. So show sends the panel's layer state again before its first commit: the layer
+(`overlay`; `bottom` for the reserve), size, anchor, margins, exclusive zone -1 and keyboard
+interactivity. It commits without a buffer, waits for the
 configure, and attaches a freshly drawn buffer. The reserve gets its size, anchor, held
 exclusive zone and empty input region again, and maps with the held strip. If the panel's
 output went away while hidden, the show follows the same path as an output loss while
