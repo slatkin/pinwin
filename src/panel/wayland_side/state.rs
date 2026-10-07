@@ -532,7 +532,9 @@ impl PanelState {
     /// the bind — the preferred scale arrives with the surfaces' events,
     /// dispatched only from the loop on — and from the two scale-note
     /// handlers, so the metrics the frames and the wide draw read follow
-    /// the compositor's preferred scale.
+    /// the compositor's preferred scale. The terminal's scale note moves
+    /// with it (device-pixel-cell-reports D3), so the `CSI 16 t` reply and
+    /// the renderer can never drift.
     pub(crate) fn sync_renderer_scale(&mut self) {
         let Some(scale) = self
             .session
@@ -541,6 +543,9 @@ impl PanelState {
         else {
             return;
         };
+        if let Some(terminal) = &self.terminal {
+            terminal.borrow().scale_note().set(scale.units_120());
+        }
         if let Some(render) = &self.render {
             render.renderer.borrow_mut().set_scale(scale.as_f64());
         }

@@ -162,8 +162,18 @@ unsafe extern "C" fn write_pty(
     });
 }
 
+/// One logical cell dimension in device pixels (device-pixel-cell-reports
+/// D1/D5): `logical * units_120 / 120`, rounded half up in exact integer
+/// arithmetic — the same rule as the buffers' `scale_dimension`, so a
+/// reported size never disagrees with a drawn one by rounding-path alone.
+/// Saturates instead of overflowing: a cell that size has no drawable grid.
+fn device_cell(logical: u32, units_120: u32) -> u32 {
+    let scaled = u64::from(logical) * u64::from(units_120) + 60;
+    u32::try_from(scaled / 120).unwrap_or(u32::MAX)
+}
+
 /// `GHOSTTY_TERMINAL_OPT_SIZE`: answer `CSI 14/16/18 t` with the live grid
-/// (D5 guard).
+/// in device pixels (device-pixel-cell-reports D1/D3, D5 guard).
 ///
 /// # Safety
 /// Same contract as [`write_pty`]; `out` must be writable.
@@ -182,12 +192,18 @@ unsafe extern "C" fn size_report(
     }
     let poisoned = ctx.poisoned.clone();
     guard_default(&poisoned, false, || {
+        // Device pixels: the logical cell times the panel thread's scale
+        // note, rounded (D1/D3) — rows and columns answer unchanged.
+        let (cell_w, cell_h) = (
+            device_cell(ctx.cell_w, ctx.scale_120.get()),
+            device_cell(ctx.cell_h, ctx.scale_120.get()),
+        );
         // SAFETY: the caller guarantees `out` is writable.
         unsafe {
             (*out).rows = ctx.rows;
             (*out).columns = ctx.cols;
-            (*out).cell_width = ctx.cell_w;
-            (*out).cell_height = ctx.cell_h;
+            (*out).cell_width = cell_w;
+            (*out).cell_height = cell_h;
         };
         true
     })
@@ -302,9 +318,79 @@ unsafe extern "C" fn decode_png(
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::term::{DecodedPng, PngDecoder, PtySink, Terminal};
+
+    /// Records writes so the size replies can be asserted.
+    struct RecordingSink {
+        writes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl PtySink for RecordingSink {
+        fn write_pty(&mut self, data: &[u8]) {
+            self.writes
+                .lock()
+                .expect("sink lock")
+                .extend_from_slice(data);
+        }
+    }
+
+    /// Rejects every image; the size-report unit does not decode PNGs.
+    struct NoDecoder;
+
+    impl PngDecoder for NoDecoder {
+        fn decode_png(&mut self, _data: &[u8]) -> Option<DecodedPng> {
+            None
+        }
+    }
+
+    /// Drain the replies the terminal wrote so far.
+    fn drain(writes: &Mutex<Vec<u8>>) -> Vec<u8> {
+        std::mem::take(&mut *writes.lock().expect("sink lock"))
+    }
+
+    /// The size report answers device pixels (device-pixel-cell-reports
+    /// D1/D3): the logical cell times the shared scale note, rounded half
+    /// up in exact 1/120 arithmetic — while rows and columns answer
+    /// unchanged.
+    #[test]
+    fn size_report_answers_the_note_scaled_cell_and_the_live_grid() {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let mut terminal = Terminal::new(
+            crate::guard::Poisoned::new(),
+            RecordingSink {
+                writes: Arc::clone(&writes),
+            },
+            NoDecoder,
+            || {},
+        );
+        assert!(terminal.push_size(40, 24, 9, 20));
+        assert_eq!(terminal.scale_note().get(), 120, "scale 1 by default");
+
+        terminal.push_pty_data(b"\x1b[16t");
+        assert_eq!(
+            drain(&writes),
+            b"\x1b[6;20;9t",
+            "scale 1 answers the logical cell"
+        );
+
+        terminal.scale_note().set(216);
+        terminal.push_pty_data(b"\x1b[16t");
+        assert_eq!(
+            drain(&writes),
+            b"\x1b[6;36;16t",
+            "scale 1.8 answers device pixels"
+        );
+
+        terminal.push_pty_data(b"\x1b[18t");
+        assert_eq!(
+            drain(&writes),
+            b"\x1b[8;24;40t",
+            "the grid answers unchanged"
+        );
+    }
 
     /// A sink with nowhere to write; the decode tests only exercise the PNG
     /// path.

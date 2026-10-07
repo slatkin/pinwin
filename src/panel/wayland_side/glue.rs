@@ -98,7 +98,12 @@ pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd) -> BytePath {
     let pty = Pty::new(poisoned.clone(), fd);
     let repaint = Rc::new(Cell::new(false));
     let stale_grid_px = Rc::new(Cell::new(0));
-    let terminal = Rc::new(RefCell::new(Terminal::new(
+    // The shared output-scale note (device-pixel-cell-reports D3): scale 1
+    // until the compositor's preferred scale arrives, when
+    // `sync_renderer_scale` publishes into it and the terminal's
+    // `size_report` starts answering device pixels.
+    let scale_note = Rc::new(Cell::new(120));
+    let terminal = Rc::new(RefCell::new(Terminal::with_scale_note(
         poisoned,
         pty.writer(),
         PngCrateDecoder,
@@ -110,6 +115,7 @@ pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd) -> BytePath {
                 repaint.set(true);
             }
         },
+        Rc::clone(&scale_note),
     )));
     (terminal, repaint, stale_grid_px, pty)
 }
