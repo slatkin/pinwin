@@ -2,15 +2,15 @@
 
 ## Why
 
-At a fractional (high-DPI) output scale, kitty images shown by a host such as mbv
-render visibly pixelated in the panel while the same host in ghostty renders them
-sharp. The cause: pinwin reports the terminal cell size in **logical** pixels (pty
+At a fractional output scale (the user's laptop runs 1.8), kitty images shown by a host
+such as mbv render visibly pixelated in the panel while the same host in ghostty renders
+them sharp. The cause: pinwin reports the terminal cell size in **logical** pixels (pty
 winsize `ws_xpixel`/`ws_ypixel` and the `CSI 14/16/18 t` size reports), while real
-terminals report **device** pixels. Hosts size their transmitted bitmaps from that
-report, so in the panel every image arrives below device resolution and the image
-pass must upscale it; the resolution is lost at transmit time and no renderer
-setting recovers it. Text is unaffected because the panel rasterises glyphs itself
-at device scale.
+terminals — ghostty measured directly: ~18 px/cell at scale 1.8 versus pinwin's constant
+9 px — report **device** pixels. Hosts size their transmitted bitmaps from that report,
+so in the panel every image arrives at ~56% of device resolution and the image pass must
+upscale it; the resolution is lost at transmit time and no renderer setting recovers it.
+Text is unaffected because the panel rasterises glyphs itself at device scale.
 
 ## What Changes
 
