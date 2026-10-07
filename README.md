@@ -197,6 +197,44 @@ In niri, bind a key to the client:
 Mod+P { spawn "pinwin" "--toggle"; }
 ```
 
+## Migrating from `request_focus`
+
+Version 0.2.0 replaces GTK with a direct Wayland client. A host program that
+used 0.1.0 changes these things:
+
+- **`Panel::request_focus` is gone; call `Panel::toggle`.** A toggle hides a
+  shown panel and shows a hidden one. Focus is the effect of showing: niri
+  focuses a newly mapped `on-demand` or `exclusive` layer surface. The call
+  is not a focus request, so a host that needs "focus the panel, never hide
+  it" must track the shown state itself, because `Panel` has no query for it.
+  The panel is shown at start.
+- **`pinwin --focus [name]` is gone; run `pinwin --toggle [name]`.** It uses
+  the same socket and the same `PINWIN_NAME`. Rebind the niri key:
+  `Mod+P { spawn "pinwin" "--toggle"; }`. Hosts that send the request
+  themselves send the line `toggle\n` to the instance socket instead of
+  `focus\n`.
+- **Hiding no longer resizes anything.** The terminal grid and the pty window
+  size stay as they were, and the child gets no `SIGWINCH`. The child keeps
+  running while the panel is hidden. This is the fix for the flash of a
+  different layout (issue #19).
+- **Hiding releases the reserved strip and showing restores it.** To keep
+  tiled windows still on a toggle, start with `PINWIN_ZONE=overlay` (binary)
+  or a `Layout::covering` layout (library). With `overlay` the panel draws
+  over the tiles and a toggle moves no window.
+- **Apply while hidden is stored.** `apply_layout` and `apply_layout_animated`
+  validate the layout, store it with no animation and return; the next show
+  uses it.
+- **`gtk-enable-animations` is no longer read.** To apply a layout without
+  animation, pass a duration of 0 to `apply_layout_animated`, or call
+  `apply_layout`.
+- **No GTK at run time.** The library and the binary link no GTK, GLib,
+  Pango, Cairo or gdk-pixbuf library; the `pinwin` binary links 13 shared
+  libraries in place of 113. The system needs libwayland, libxkbcommon and
+  fontconfig.
+- **Unchanged:** `Panel::start`, `Startup`, `Layout`, `Keyboard`, `Accent`,
+  `PinwinError` and the `COLS`, `GUTTER`, `PINWIN_KEYBOARD`, `PINWIN_ACCENT*`
+  and `PINWIN_NAME` variables.
+
 ## Behaviour
 
 - The panel is a layer-shell surface on the `overlay` layer, flush against the
