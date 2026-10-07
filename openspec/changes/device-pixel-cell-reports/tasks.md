@@ -14,4 +14,4 @@
 ## 3. Integration checks
 
 - [x] 3.1 Run `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo nextest run`; fix findings without lint suppression (`make check-code-file-lines` before pushing).
-- [ ] 3.2 Live niri check at a fractional scale using `scripts/probe-winsize.sh`: `CSI 16 t` and `TIOCGWINSZ` report device pixels; with `DEMO_DENSE=1`, images sized from the report render sharp next to ghostty; mouse cell mapping still hits the right cells; text and accent are unchanged; restore the scale afterwards.
+- [x] 3.2 (user ran it at scale 1, all pass; fractional-scale live run waived by user) Live niri check at a fractional scale using `scripts/probe-winsize.sh`: `CSI 16 t` and `TIOCGWINSZ` report device pixels; with `DEMO_DENSE=1`, images sized from the report render sharp next to ghostty; mouse cell mapping still hits the right cells; text and accent are unchanged; restore the scale afterwards.
