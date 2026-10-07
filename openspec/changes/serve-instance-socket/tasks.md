@@ -19,8 +19,8 @@
 
 ## 4. The pinwin binary
 
-- [ ] 4.1 Make `host_panel` bind through `InstanceSocket::bind` before `forkpty` and pass the socket through `Startup::with_instance`. Delete `serve_toggle_until_exit` and the binary's own listener thread, and wait for the child directly. Verify: `cargo nextest run`, plus a display-free main.rs test of the bind-error mapping: every `InstanceError` (`Duplicate`, `Path`, `Io`) maps to exit 2 with a `pinwin:` message, which keeps today's behavior. The bind's own duplicate detection is covered by task 1.3, and the live run is task 5.2.
-- [ ] 4.2 Parse `--show [name]` like `--toggle`, with its own name-error label, and route both client modes through `instance::send`: `Environment` exits 2, every other error exits 1. Verify: `cli.rs` tests for `--show`, `--show notes`, `--show a/b` (exit 2), `-- --show`, and the main.rs test that `--show` with no listener exits 1.
+- [x] 4.1 Make `host_panel` bind through `InstanceSocket::bind` before `forkpty` and pass the socket through `Startup::with_instance`. Delete `serve_toggle_until_exit` and the binary's own listener thread, and wait for the child directly. Verify: `cargo nextest run`, plus a display-free main.rs test of the bind-error mapping: every `InstanceError` (`Duplicate`, `Path`, `Io`) maps to exit 2 with a `pinwin:` message, which keeps today's behavior. The bind's own duplicate detection is covered by task 1.3, and the live run is task 5.2.
+- [x] 4.2 Parse `--show [name]` like `--toggle`, with its own name-error label, and route both client modes through `instance::send`: `Environment` exits 2, every other error exits 1. Verify: `cli.rs` tests for `--show`, `--show notes`, `--show a/b` (exit 2), `-- --show`, and the main.rs test that `--show` with no listener exits 1.
 
 ## 5. Release
 
