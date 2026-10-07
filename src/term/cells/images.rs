@@ -115,7 +115,7 @@ pub(super) struct Rect {
 /// value, so the image pass cannot panic on a division by zero.
 #[must_use]
 fn logical_from_device(device: u32, scale_120: u32) -> u32 {
-    if scale_120 == 0 || scale_120 == 120 {
+    if scale_120 == 0 {
         return device;
     }
     // Half up: floor((device*120/scale_120) + 1/2) computed as
