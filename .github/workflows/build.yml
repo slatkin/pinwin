@@ -110,12 +110,17 @@ jobs:
       # binary must not link GTK, GDK, GLib, GObject, GIO, Pango, Cairo,
       # gdk-pixbuf or HarfBuzz, directly or through another library. ldd
       # prints the whole transitive closure, so one grep covers both paths.
-      # The negation makes a forbidden match fail the step; a clean list
-      # exits 0 because grep then exits 1.
+      # `test -x` fails loudly when the binary is missing: ldd then errors
+      # and grep finds nothing, which must not read as a clean list.
       - name: Check dynamic dependencies
         run: |
           forbidden='lib(gtk|gdk|glib|gobject|gio|pango|cairo|pixbuf|harfbuzz)'
-          ! ldd target/debug/pinwin | grep -Ei "$forbidden"
+          test -x target/debug/pinwin
+          if ldd target/debug/pinwin | grep -Eiq "$forbidden"; then
+            echo 'Forbidden toolkit library linked into pinwin:'
+            ldd target/debug/pinwin | grep -Ei "$forbidden"
+            exit 1
+          fi
 
       - name: Check code file lines
         run: ./scripts/check-code-file-lines.sh
