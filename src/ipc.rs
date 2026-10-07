@@ -234,7 +234,8 @@ pub(crate) fn serve_toggle_requests<E>(
                 // client that already gave up — its 500 ms wait ran out
                 // while this loop was busy in an earlier toggle — must not
                 // flip the panel later, when the loop reaches the queued
-                // request. A closed peer shows up as end-of-file.
+                // request. A fully closed peer shows up as a hang-up; a
+                // half-closed one that still reads the reply is kept.
                 Some(line) if line == REQUEST && !peer_gone(&stream) => match toggle() {
                     Ok(()) => REPLY_OK,
                     Err(_) => REPLY_ERROR,
@@ -246,23 +247,24 @@ pub(crate) fn serve_toggle_requests<E>(
     });
 }
 
-/// Whether the peer has closed its end: a non-blocking `MSG_PEEK` recv that
-/// reports zero bytes means no data is pending and the peer shut down.
-/// Pending data, no data yet (`EAGAIN`), or an unreadable error keep the
-/// peer — only a definite close skips the callback.
+/// Whether the peer has fully closed its end: an immediate `poll` reports
+/// `POLLHUP` when the peer's whole socket is gone. A half-close — a peer
+/// that only stopped writing and is still reading the reply, the shape of
+/// a piped-in `socat` client — shows up as a readable end-of-file
+/// instead, and keeps the callback. No data yet or a failed poll keeps
+/// the peer: only a definite hang-up skips it.
 fn peer_gone(stream: &net::UnixStream) -> bool {
-    let mut byte = 0u8;
-    // SAFETY: `byte` is one valid byte buffer for the duration of the call,
-    // and `MSG_PEEK` never consumes the data it reads.
-    let read = unsafe {
-        libc::recv(
-            stream.as_raw_fd(),
-            std::ptr::addr_of_mut!(byte).cast(),
-            1,
-            libc::MSG_PEEK | libc::MSG_DONTWAIT,
-        )
+    let mut fds = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: 0,
+        revents: 0,
     };
-    read == 0
+    // SAFETY: `fds` is one valid pollfd entry for the duration of the
+    // call, and the zero timeout makes the wait non-blocking. With
+    // `events` empty only the always-reported hang-up and error bits can
+    // come back.
+    let ready = unsafe { libc::poll(std::ptr::addr_of_mut!(fds), 1, 0) };
+    ready > 0 && fds.revents & libc::POLLHUP != 0
 }
 
 /// Wait until `fd` reports `events` (`POLLIN`/`POLLOUT`), at most `timeout`.

@@ -368,6 +368,50 @@ fn a_peer_that_left_before_the_callback_does_not_run_it() {
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 
+/// A peer that half-closes — sends the request, shuts down its write side
+/// and keeps reading — still gets the toggle: an end-of-file on the read
+/// side is only a write-side shutdown, not the peer leaving, so the
+/// piped-in client shape (a `socat` whose stdin closed) keeps working.
+/// The `peer_gone` check must tell a full close (the test above, no
+/// callback) from this half-close (the callback runs, the reply goes
+/// out).
+#[test]
+fn a_half_closed_peer_still_gets_the_toggle() {
+    let dir = temp_dir("half-close");
+    let path = dir.join("wayland-0-default.sock");
+    let listener = bind_instance_socket(&path).expect("bind");
+    let shutdown = AtomicBool::new(false);
+    let seen = AtomicUsize::new(0);
+    let stub = || {
+        seen.fetch_add(1, Ordering::Relaxed);
+        Ok::<(), ()>(())
+    };
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| serve_toggle_requests(&listener, &stub, &shutdown));
+
+        // The client sends the request line, half-closes its write side
+        // and stays connected to read the reply.
+        let mut half = net::UnixStream::connect(&path).expect("connect");
+        write_bounded(&mut half, REQUEST_LINE);
+        half.shutdown(std::net::Shutdown::Write)
+            .expect("half close");
+
+        // The ok reply itself proves the loop handled this connection and
+        // ran the callback for it.
+        let reply = (0..20).find_map(|_| read_bounded(&mut half).filter(|reply| !reply.is_empty()));
+        assert_eq!(reply, Some(REPLY_OK.to_vec()), "the half-closed exchange");
+        assert_eq!(
+            seen.load(Ordering::Relaxed),
+            1,
+            "the half-closed peer's request ran the callback"
+        );
+
+        shutdown.store(true, Ordering::Relaxed);
+    });
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
 /// The client's exchange against a scripted host: the request line goes
 /// out as `toggle\n`; `ok` succeeds, `error` and a garbage reply are
 /// reported as the request not being answered, a host that never replies
