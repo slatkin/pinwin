@@ -96,7 +96,10 @@ the panel only appears. After a show, the panel keeps and gives up focus by the 
 keyboard mode.
 
 Neither hiding nor showing SHALL change the terminal grid or the pty window size, and neither
-SHALL raise a `SIGWINCH`. No frame SHALL show the panel at another size. While the panel is
+SHALL raise a `SIGWINCH`. No frame SHALL show the panel at another size. Two cases are
+exempt. A width animation that a hide ends runs its deferred grid resize as it would at its
+own end. If the output's height changed while the panel was hidden, the configure that a show
+receives resizes the grid and the pty like any other configure with a new height. While the panel is
 hidden, a layout apply SHALL validate and store the layout as it does when shown, with no
 animation and nothing on screen. The next show uses that layout.
 

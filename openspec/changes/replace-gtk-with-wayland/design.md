@@ -110,25 +110,31 @@ The pty size has one source: the layout's column count and the height in the lat
 configure. Rows are that height divided by the cell height. The grid and the pty change only
 on a layout apply or a configure with a new height. No interim allocation exists, so nothing
 else can reach the pty. A toggle touches neither input. A hidden panel gets no configure, so
-its height holds until the next show.
+its height holds until the next show. The configure that a show receives is handled like any
+other: a new height, from an output change while hidden, resizes the grid and the pty.
 
 In `on-demand` mode, the panel's first map at launch has no keyboard interactivity and
 switches to `on-demand` in the commit after its first buffer. niri grants focus only on the
-map itself, so the launch takes no focus. A later map from a toggle keeps `on-demand`, so niri
-focuses it. `exclusive` mode maps as `exclusive`.
+map itself, so the launch takes no focus. A later map from a toggle sends `on-demand` before
+its first commit, so niri focuses it. `exclusive` mode maps as `exclusive`.
 
 ### 4. Focus by show and hide
 
 `Panel::toggle(&self)` hides a shown panel and shows a hidden one. It keeps the `NotRunning`
 and `Internal` guards and the bounded reply of the other commands. It returns `Ok(())` once
-the panel thread has committed the change.
+the panel thread has sent the hide's null-buffer commit, or the show's commit without a
+buffer. The rest of a show follows the configure, after the reply.
 
 Hide attaches a null buffer to the panel surface and commits, which unmaps it. A running
-width tween ends first at its target layout. The terminal, the pty source and the child keep
+width tween ends first at its target layout, including its deferred grid resize. The terminal, the pty source and the child keep
 running, and the grid stays as it is. Hide also unmaps the reserve, so the held strip is
-released. Show commits the panel surface without a buffer, waits for the configure, and
-attaches a freshly drawn buffer at the same grid. It maps the reserve again with the held
-strip. In `on-demand` and `exclusive` mode, niri focuses the new map. In `none` mode, the
+released. An unmap resets a layer surface to its state after `get_layer_surface`, so show
+sends the panel's layer state again before its first commit: size, anchor, margins,
+exclusive zone -1 and keyboard interactivity. It commits without a buffer, waits for the
+configure, and attaches a freshly drawn buffer. The reserve gets its size, anchor, held
+exclusive zone and empty input region again, and maps with the held strip. If the panel's
+output went away while hidden, the show follows the same path as an output loss while
+shown. In `on-demand` and `exclusive` mode, niri focuses the new map. In `none` mode, the
 panel only appears.
 
 While the panel is hidden, a layout apply validates and stores the layout and resizes the
