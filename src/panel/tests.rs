@@ -4,10 +4,15 @@
 //! and fake posts without a display.
 
 use super::*;
+use crate::instance::{bind_at, send_to};
 use crate::layout::{Keyboard, Side};
 use std::cell::Cell;
+use std::io::Write as _;
 use std::num::NonZeroU16;
 use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 /// Serializes every test that touches the process-global single-instance
@@ -27,6 +32,23 @@ fn layout() -> Layout {
 
 fn startup(fd: RawFd) -> Startup {
     Startup::new(fd, layout(), Keyboard::OnDemand, None)
+}
+
+/// A unique scratch directory with the socket path inside it, like the
+/// `instance` tests' scratch directories, so these tests never touch the
+/// process environment and never share a parent with anything else (D10):
+/// the bind chmods the socket's parent to 0700, so that parent must be
+/// the test's own directory.
+fn instance_socket_path(tag: &str) -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "pinwin-panel-test-{}-{}-{}",
+        std::process::id(),
+        tag,
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&dir).expect("scratch dir");
+    dir.join("wayland-0-pinwin-test.sock")
 }
 
 /// A fd that is not an open descriptor is `InvalidFd` before any thread
@@ -390,4 +412,81 @@ fn a_full_lifecycle_opens_applies_and_closes() {
     drop(panel);
     // A later start MAY succeed; whether it does is compositor
     // behaviour, so only the drop returning is asserted here.
+}
+
+/// A start that fails `InvalidFd` with a bound instance socket leaves no
+/// socket file (serve-instance-socket row 3.2; the spec's failed-start
+/// scenario): the owned socket drops with the failed start, and its drop
+/// removes the path, so the name is free again at once. Display-free: the
+/// fd check runs before any thread work (D7).
+#[test]
+fn a_failed_start_with_a_bound_socket_leaves_no_socket_file() {
+    let path = instance_socket_path("invalid-fd");
+    let socket = bind_at(&path).expect("the bind");
+    let started = Panel::start(startup(-1).with_instance(socket));
+    assert!(matches!(started, Err(PinwinError::InvalidFd)));
+    assert!(!path.exists(), "the socket file is gone");
+}
+
+/// A full lifecycle with a bound instance socket in a real compositor
+/// session (serve-instance-socket row 3.3, D2): the started panel serves
+/// `toggle` and `show` requests on the socket through the client call,
+/// the drop removes the socket file, and the drop returns within the
+/// teardown bound — the detached listener is never joined. Ignored
+/// because it needs a Wayland compositor with wlr-layer-shell and opens
+/// real surfaces on the panel thread (D2).
+#[test]
+#[ignore = "needs a Wayland compositor with wlr-layer-shell; opens real surfaces"]
+fn a_serving_panel_answers_requests_and_drops_without_waiting() {
+    let path = instance_socket_path("serve");
+    let socket = bind_at(&path).expect("the bind");
+    let file = std::fs::File::open("/dev/null").expect("/dev/null");
+    let panel = Panel::start(startup(file.as_raw_fd()).with_instance(socket))
+        .expect("the panel starts in a layer-shell session");
+
+    // The toggle hides the panel, the show shows it again; both answer
+    // `ok` through the detached listener thread (D2).
+    send_to(&path, Request::Toggle).expect("the toggle");
+    send_to(&path, Request::Show).expect("the show");
+
+    let started = std::time::Instant::now();
+    drop(panel);
+    assert!(
+        started.elapsed() < handshake::APPLY_WAIT,
+        "the drop does not wait past the teardown bound"
+    );
+    assert!(!path.exists(), "the socket file is gone");
+}
+
+/// The half-request variant of the drop contract (serve-instance-socket
+/// row 3.3, D2): a client connection with half a request line keeps the
+/// detached listener blocked in its bounded read, and the drop still
+/// returns long before that read bound — a joining drop would wait out
+/// the listener's 500 ms read, so 250 ms discriminates. Ignored because
+/// it needs a Wayland compositor with wlr-layer-shell (D2).
+#[test]
+#[ignore = "needs a Wayland compositor with wlr-layer-shell; opens real surfaces"]
+fn a_half_written_request_does_not_hold_the_drop() {
+    let path = instance_socket_path("half-request");
+    let socket = bind_at(&path).expect("the bind");
+    let file = std::fs::File::open("/dev/null").expect("/dev/null");
+    let panel = Panel::start(startup(file.as_raw_fd()).with_instance(socket))
+        .expect("the panel starts in a layer-shell session");
+
+    // Half a request line, the connection left open: the listener accepts
+    // within one accept poll and then blocks in its bounded read (D2).
+    // The write lands just before the drop.
+    let mut client = UnixStream::connect(&path).expect("the connection");
+    client.write_all(b"tog").expect("the half line");
+    // One accept poll (100 ms) plus margin, so the listener is inside its
+    // read when the drop happens.
+    std::thread::sleep(Duration::from_millis(200));
+
+    let started = std::time::Instant::now();
+    drop(panel);
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "the drop does not wait out the listener's read bound"
+    );
+    assert!(!path.exists(), "the socket file is gone");
 }

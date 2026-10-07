@@ -490,19 +490,14 @@ impl Drop for SocketFile {
 }
 
 /// The instance's bound socket: the listener plus the socket file its bind
-/// created (`serve-instance-socket` D1). Dropping it removes the file, so an
-/// unused bind leaves no path behind and the name is free again at once.
+/// created (`serve-instance-socket` D1). Dropping it drops the file, which
+/// removes the path, so an unused bind leaves no file behind and the name
+/// is free again at once.
 #[derive(Debug)]
 pub struct InstanceSocket {
     listener: net::UnixListener,
-    /// The socket file's path; dropping the socket removes the file.
-    path: PathBuf,
-}
-
-impl Drop for InstanceSocket {
-    fn drop(&mut self) {
-        remove_socket_file(&self.path);
-    }
+    /// The socket file the bind created; its drop removes the path.
+    file: SocketFile,
 }
 
 impl InstanceSocket {
@@ -515,6 +510,14 @@ impl InstanceSocket {
     pub fn bind(name: &InstanceName) -> Result<InstanceSocket, InstanceError> {
         let path = socket_path_from_env(name).map_err(InstanceError::Path)?;
         bind_at(&path)
+    }
+
+    /// Take the listener and the socket file apart
+    /// (`serve-instance-socket` D2): the panel's detached listener thread
+    /// owns the listener, and the `Panel` handle keeps the file so its own
+    /// drop removes the path before the teardown.
+    pub(crate) fn into_parts(self) -> (net::UnixListener, SocketFile) {
+        (self.listener, self.file)
     }
 
     /// The bound listener, for a host that serves the socket itself.
@@ -530,7 +533,7 @@ impl InstanceSocket {
 pub(crate) fn bind_at(path: &Path) -> Result<InstanceSocket, InstanceError> {
     Ok(InstanceSocket {
         listener: bind_instance_socket(path)?,
-        path: path.to_owned(),
+        file: SocketFile::new(path.to_owned()),
     })
 }
 
