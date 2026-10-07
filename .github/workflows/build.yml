@@ -130,8 +130,13 @@ jobs:
             exit 1
           fi
 
+      # The checkout lands owned by another uid than the step user, so git
+      # calls the line-count script makes refuse with dubious-ownership.
+      # Marking the workspace safe is the documented container-job fix.
       - name: Check code file lines
-        run: ./scripts/check-code-file-lines.sh
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ./scripts/check-code-file-lines.sh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
