@@ -51,10 +51,11 @@ binary; the build is Cargo only. The pre-port C and Zig sources (`src/*.c`,
 - `src/ghostty_sys.rs` + `src/ghostty_sys/` — the hand-written `extern`
   declarations for the pinned libghostty-vt (the only module that talks to C).
 - `src/main.rs` — the `pinwin` host program: runs a command in a panel over
-  the library API, owning the pty, the child's process and the toggle socket;
-  its pure parts live in `src/cli.rs` (arguments, `--toggle`), `src/ipc.rs`
-  (the toggle socket's identity, bind, listener and client) and
-  `src/settings.rs` (the environment contract).
+  the library API, owning the pty and the child's process (the panel serves
+  the instance socket); its pure parts live in `src/cli.rs` (arguments,
+  `--toggle`, `--show`) and `src/settings.rs` (the environment contract).
+- `src/instance.rs` — the library's instance socket: identity, bind, listener
+  and client (`InstanceSocket`, `Request`, `instance::send`).
 - `examples/demo/` — the dev-only demo example, never installed; it drives,
   through the `Panel` API, the live niri checks: hide/show toggle `t`,
   cover/inset/gutter toggles, `DEMO_ZONE`, `DEMO_KEYBOARD` and `DEMO_DENSE`.

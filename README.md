@@ -368,10 +368,11 @@ its own Wayland surfaces; `src/anim.rs` eases the width; `src/pty.rs` and
 is a generated glyph table; `src/guard.rs`
 is the panic guard; `src/ghostty_sys.rs` and `src/ghostty_sys/` are the
 hand-written FFI to the pinned libghostty-vt. The `pinwin` host program
-`src/main.rs` owns the pty, the child's process and the toggle socket; its
-pure parts are `src/cli.rs` (arguments, `--toggle`), `src/ipc.rs` (the
-toggle socket's identity, bind, listener and client) and `src/settings.rs`
-(the environment contract). `build.rs` fetches and builds that pinned commit.
+`src/main.rs` owns the pty and the child's process, and binds the instance
+socket that the panel serves; its pure parts are `src/cli.rs` (arguments,
+`--toggle`, `--show`) and `src/settings.rs` (the environment contract). The
+socket itself (identity, bind, listener and client) lives in the library, in
+`src/instance.rs`. `build.rs` fetches and builds that pinned commit.
 
 The behaviour spec lives in `openspec/specs/pinwin-panel/spec.md`; the
 archived design decisions code comments cite as D-numbers are under
