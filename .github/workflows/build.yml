@@ -105,7 +105,13 @@ jobs:
       - name: Audit dependencies
         run: cargo audit
 
+      # The client tests assume a session-like environment: XDG_RUNTIME_DIR
+      # must resolve to a directory so the no-listener tests reach the
+      # connect failure (exit 1) instead of the environment error (exit 2).
+      # The container has no Wayland session, so point it at scratch.
       - name: Build and test
+        env:
+          XDG_RUNTIME_DIR: /tmp
         run: cargo nextest run && cargo build
 
       # "No toolkit libraries" (replace-gtk-with-wayland): the built pinwin
