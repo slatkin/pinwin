@@ -55,12 +55,12 @@ jobs:
           # comes from the pinned rust-toolchain.toml instead, so it changes
           # only when that pin is bumped deliberately. clang stays a system
           # package (native build-script tooling, not a cache-keyed compiler).
+          # The wayland client stack and the fonts the display-free font
+          # tests resolve (replace-gtk-with-wayland row 2.1). GTK and
+          # gtk4-layer-shell left with row 8.2: the ldd step below fails the
+          # build if anything pulled them back in.
           pacman_retry pacman -S --noconfirm --needed rustup clang zig \
             git \
-            # The wayland client stack and the fonts the display-free font
-            # tests resolve (replace-gtk-with-wayland row 2.1). GTK and
-            # gtk4-layer-shell left with row 8.2: the ldd step below fails the
-            # build if anything pulled them back in.
             wayland libxkbcommon fontconfig \
             ttf-jetbrains-mono-nerd noto-fonts-emoji
 
