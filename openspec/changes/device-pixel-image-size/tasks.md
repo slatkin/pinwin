@@ -14,4 +14,4 @@
 ## 3. Integration checks
 
 - [x] 3.1 Run `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo nextest run` and `make check-code-file-lines`; fix findings without lint suppression.
-- [ ] 3.2 (user-run) On the laptop at scale 1.8, run the host with the built binary and confirm the image fits the panel without covering the rows below; at scale 1 confirm images are unchanged.
+- [x] 3.2 (user-run) On the laptop at scale 1.8, run the host with the built binary and confirm the image fits the panel without covering the rows below; at scale 1 confirm images are unchanged.
