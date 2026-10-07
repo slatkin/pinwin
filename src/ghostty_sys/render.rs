@@ -29,12 +29,33 @@ pub struct GhosttyRenderStateRowCells(pub *mut c_void);
 pub type GhosttyRenderStateData = c_int;
 
 pub const GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR: GhosttyRenderStateData = 4;
+/// The frame's global dirty state (`GhosttyRenderStateDirty`); see the enum
+/// constants below.
+pub const GHOSTTY_RENDER_STATE_DATA_DIRTY: GhosttyRenderStateData = 3;
 pub const GHOSTTY_RENDER_STATE_DATA_CURSOR: GhosttyRenderStateData = 18;
 pub const GHOSTTY_RENDER_STATE_DATA_COLORS: GhosttyRenderStateData = 19;
+
+/// The global dirty state of a render state after an update
+/// (`GhosttyRenderStateDirty`, render.h). `FALSE` means the frame is
+/// unchanged and rendering can be skipped, `PARTIAL` means some rows
+/// changed and the renderer can redraw incrementally, `FULL` means global
+/// state changed and the renderer should redraw everything. The two dirty
+/// layers (this one and the per-row flags) are independent: `update` only
+/// updates them, `ghostty_render_state_clean` unsets both after a consumed
+/// frame, and setting one never unsets the other.
+pub type GhosttyRenderStateDirty = c_int;
+
+pub const GHOSTTY_RENDER_STATE_DIRTY_FALSE: GhosttyRenderStateDirty = 0;
+pub const GHOSTTY_RENDER_STATE_DIRTY_PARTIAL: GhosttyRenderStateDirty = 1;
+pub const GHOSTTY_RENDER_STATE_DIRTY_FULL: GhosttyRenderStateDirty = 2;
 
 /// A row query id (`GhosttyRenderStateRowData`, render.h).
 pub type GhosttyRenderStateRowData = c_int;
 
+/// Whether the current row is dirty (bool, render.h). The flag is
+/// conservative: a row may be marked dirty without its content changing
+/// (after a viewport scroll every row is marked dirty).
+pub const GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY: GhosttyRenderStateRowData = 1;
 pub const GHOSTTY_RENDER_STATE_ROW_DATA_CELLS: GhosttyRenderStateRowData = 3;
 /// The row's viewport Y position; one of the two data paths the rejected
 /// `libghostty-vt` crate could not reach against the pin (D2).
@@ -106,7 +127,10 @@ unsafe extern "C" {
         terminal: GhosttyTerminal,
     ) -> GhosttyResult;
 
-    /// Clear the dirty state after a frame was consumed (render.h).
+    /// Clear the dirty state after a frame was consumed (render.h): sets
+    /// the global dirty state to `DIRTY_FALSE` and clears every per-row
+    /// dirty flag, so the caller needs no per-row setter after a complete
+    /// frame.
     pub fn ghostty_render_state_clean(state: GhosttyRenderState) -> GhosttyResult;
 
     /// Query render state; `out`'s type depends on `data` (render.h).

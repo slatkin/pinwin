@@ -56,7 +56,13 @@ jobs:
           # only when that pin is bumped deliberately. clang stays a system
           # package (native build-script tooling, not a cache-keyed compiler).
           pacman_retry pacman -S --noconfirm --needed rustup clang zig \
-            gtk4 gtk4-layer-shell git
+            git \
+            # The wayland client stack and the fonts the display-free font
+            # tests resolve (replace-gtk-with-wayland row 2.1). GTK and
+            # gtk4-layer-shell left with row 8.2: the ldd step below fails the
+            # build if anything pulled them back in.
+            wayland libxkbcommon fontconfig \
+            ttf-jetbrains-mono-nerd noto-fonts-emoji
 
       - uses: actions/checkout@v7
 
@@ -99,6 +105,22 @@ jobs:
 
       - name: Build and test
         run: cargo nextest run && cargo build
+
+      # "No toolkit libraries" (replace-gtk-with-wayland): the built pinwin
+      # binary must not link GTK, GDK, GLib, GObject, GIO, Pango, Cairo,
+      # gdk-pixbuf or HarfBuzz, directly or through another library. ldd
+      # prints the whole transitive closure, so one grep covers both paths.
+      # `test -x` fails loudly when the binary is missing: ldd then errors
+      # and grep finds nothing, which must not read as a clean list.
+      - name: Check dynamic dependencies
+        run: |
+          forbidden='lib(gtk|gdk|glib|gobject|gio|pango|cairo|pixbuf|harfbuzz)'
+          test -x target/debug/pinwin
+          if ldd target/debug/pinwin | grep -Eiq "$forbidden"; then
+            echo 'Forbidden toolkit library linked into pinwin:'
+            ldd target/debug/pinwin | grep -Ei "$forbidden"
+            exit 1
+          fi
 
       - name: Check code file lines
         run: ./scripts/check-code-file-lines.sh

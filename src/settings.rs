@@ -1,7 +1,7 @@
 //! The host settings parsed from the environment (`host/main.c`'s
 //! environment contract, port-to-rust D8): the numbers, the keyboard mode,
-//! the accent, and — new with `keyboard-focus-request` — `PINWIN_NAME`, the
-//! instance name the focus socket is published under.
+//! the accent, the starting zone, and — new with `keyboard-focus-request` —
+//! `PINWIN_NAME`, the instance name the focus socket is published under.
 //!
 //! Every value lands in the library's argument types (`port-to-rust` D6: the
 //! invalid classes are unrepresentable, so the only rejections left are the
@@ -14,6 +14,17 @@ use std::num::NonZeroU16;
 use pinwin::layout::{Accent, Keyboard};
 
 use crate::ipc::InstanceName;
+
+/// Which layout class the panel starts in (`PINWIN_ZONE`,
+/// `replace-gtk-with-wayland` D4): `reserve` starts with a pushing layout,
+/// so tiled windows sit beside the panel and a toggle moves them; `overlay`
+/// starts with a covering layout, so nothing is ever reserved and a toggle
+/// moves no window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Zone {
+    Reserve,
+    Overlay,
+}
 
 /// The default column count and gutter (`host/main.c`'s fallbacks).
 const DEFAULT_COLS: i64 = 40;
@@ -35,6 +46,8 @@ pub(crate) struct Settings {
     pub(crate) accent: Option<Accent>,
     /// The instance name the focus socket is published under.
     pub(crate) name: InstanceName,
+    /// The layout class the panel starts in.
+    pub(crate) zone: Zone,
 }
 
 /// One environment variable as a whole number in `min..=max`; unset or empty
@@ -93,8 +106,25 @@ fn accent_color(raw: Option<&str>) -> Result<[u8; 3], String> {
     if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(bad());
     }
-    let value = u32::from_str_radix(hex, 16).map_err(|_| bad())?;
-    Ok([(value >> 16) as u8, (value >> 8) as u8, value as u8])
+    let Ok(value) = u32::from_str_radix(hex, 16) else {
+        return Err(bad());
+    };
+    // Six hex digits fit in the low 24 bits: the big-endian bytes' first is
+    // zero and the rest are the three channels.
+    let [_, red, green, blue] = value.to_be_bytes();
+    Ok([red, green, blue])
+}
+
+/// `PINWIN_ZONE`: `reserve` (the default) starts with a pushing layout and
+/// `overlay` with a covering one; anything else is an exit-2 error.
+fn zone(raw: Option<&str>) -> Result<Zone, String> {
+    match raw.filter(|raw| !raw.is_empty()) {
+        None | Some("reserve") => Ok(Zone::Reserve),
+        Some("overlay") => Ok(Zone::Overlay),
+        Some(raw) => Err(format!(
+            "pinwin: PINWIN_ZONE: expected reserve or overlay, got '{raw}'"
+        )),
+    }
 }
 
 /// `PINWIN_NAME`: the instance name the focus socket is published under.
@@ -127,17 +157,20 @@ pub(crate) fn read_settings(get: impl Fn(&str) -> Option<String>) -> Result<Sett
         )?;
         Some(Accent::new(
             rgb,
-            NonZeroU16::new(width as u16).expect("width in 1..=65535"),
+            NonZeroU16::new(u16::try_from(width).expect("width in 1..=65535"))
+                .expect("width in 1..=65535"),
         ))
     } else {
         None
     };
     Ok(Settings {
-        cols: NonZeroU16::new(cols as u16).expect("cols in 1..=65535"),
-        right: right as i32,
+        cols: NonZeroU16::new(u16::try_from(cols).expect("cols in 1..=65535"))
+            .expect("cols in 1..=65535"),
+        right: i32::try_from(right).expect("gutter in 0..=65535"),
         keyboard,
         accent,
         name: instance_name(get("PINWIN_NAME").as_deref())?,
+        zone: zone(get("PINWIN_ZONE").as_deref())?,
     })
 }
 
@@ -244,6 +277,7 @@ mod tests {
                     NonZeroU16::new(1).expect("1")
                 )),
                 name: InstanceName::default_instance(),
+                zone: Zone::Reserve,
             })
         );
 
@@ -267,6 +301,7 @@ mod tests {
                     NonZeroU16::new(3).expect("3")
                 )),
                 name: InstanceName::default_instance(),
+                zone: Zone::Reserve,
             })
         );
 
@@ -284,12 +319,54 @@ mod tests {
                 keyboard: Keyboard::OnDemand,
                 accent: None,
                 name: InstanceName::default_instance(),
+                zone: Zone::Reserve,
             })
         );
 
         // A keyboard mode that the type cannot express is still an env error.
         let map = HashMap::from([("PINWIN_KEYBOARD".to_owned(), "sometimes".to_owned())]);
-        assert!(call(&map).is_err());
+        call(&map).unwrap_err();
+    }
+
+    /// `zone` accepts `reserve` (default) and `overlay`, and rejects
+    /// everything else — `both`, the spec's example invalid value.
+    #[test]
+    fn zone_parses_reserve_and_overlay() {
+        assert_eq!(zone(None), Ok(Zone::Reserve));
+        assert_eq!(zone(Some("")), Ok(Zone::Reserve));
+        assert_eq!(zone(Some("reserve")), Ok(Zone::Reserve));
+        assert_eq!(zone(Some("overlay")), Ok(Zone::Overlay));
+
+        for raw in ["both", "push", "cover", "OVERLAY"] {
+            let error = zone(Some(raw)).expect_err(raw);
+            assert_eq!(
+                error,
+                format!("pinwin: PINWIN_ZONE: expected reserve or overlay, got '{raw}'"),
+                "raw = {raw:?}"
+            );
+        }
+    }
+
+    /// `PINWIN_ZONE` flows through `read_settings` into the startup
+    /// arguments: unset is the pushing default and `overlay` is carried as
+    /// the covering start.
+    #[test]
+    fn read_settings_parses_the_zone() {
+        let empty: HashMap<String, String> = HashMap::new();
+        assert_eq!(call(&empty).expect("defaults").zone, Zone::Reserve);
+
+        let map = HashMap::from([("PINWIN_ZONE".to_owned(), "overlay".to_owned())]);
+        assert_eq!(call(&map).expect("overlay").zone, Zone::Overlay);
+
+        let map = HashMap::from([("PINWIN_ZONE".to_owned(), "reserve".to_owned())]);
+        assert_eq!(call(&map).expect("reserve").zone, Zone::Reserve);
+
+        let map = HashMap::from([("PINWIN_ZONE".to_owned(), "both".to_owned())]);
+        let error = call(&map).expect_err("both");
+        assert_eq!(
+            error,
+            "pinwin: PINWIN_ZONE: expected reserve or overlay, got 'both'"
+        );
     }
 
     /// `PINWIN_NAME` parses into the validated instance name: unset is the

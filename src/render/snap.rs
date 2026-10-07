@@ -1,6 +1,6 @@
 //! Device-pixel snapping for the grid geometry (`snap-grid-edges` D2, D4).
 //! At a fractional output scale a cell edge often falls between two device
-//! pixels; GSK blends the pixels at that edge and a visible line appears
+//! pixels; blending the pixels at that edge leaves a visible line
 //! between cells. Every rectangle the grid pass draws therefore snaps each
 //! of its edges to a whole device pixel with `round(edge * scale) / scale`.
 //!
@@ -8,9 +8,9 @@
 //! (`snap-grid-edges` D2).
 
 /// The output scale a frame is drawn at (`snap-grid-edges` D2): positive and
-/// finite, defaulting to 1. The value is carried in [`CellMetrics`]
-/// (`crate::render::metrics::CellMetrics`) and read from
-/// `gdk::Surface::scale()` at each draw (`snap-grid-edges` D3).
+/// finite, defaulting to 1. The value is carried in
+/// [`crate::render::cell_metrics::CellMetrics`] and read from the output's
+/// preferred scale at each bind (`snap-grid-edges` D3).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct OutputScale(f64);
 

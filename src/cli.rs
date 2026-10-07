@@ -1,9 +1,10 @@
 //! The host's command-line parsing (`host/main.c`'s argv contract,
-//! port-to-rust D8), plus the `--focus [name]` client mode of
-//! `keyboard-focus-request`: `--focus` before `--` asks a running panel for
-//! keyboard focus, anything else is the command to run in the panel. `--`
-//! ends option parsing, so `-- --focus` runs a command literally named
-//! `--focus`, and an unknown `--`-prefixed option is rejected.
+//! port-to-rust D8), plus the `--toggle [name]` client mode of
+//! `replace-gtk-with-wayland` D4: `--toggle` before `--` asks a running
+//! panel to show or hide itself, anything else is the command to run in the
+//! panel. `--` ends option parsing, so `-- --toggle` runs a command
+//! literally named `--toggle`, and an unknown `--`-prefixed option is
+//! rejected.
 
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -14,31 +15,31 @@ use crate::ipc::InstanceName;
 /// The shell used when `$SHELL` is unset or empty.
 const FALLBACK_SHELL: &str = "/bin/sh";
 
-/// What the host's arguments ask for. `--focus [name]` before `--` selects
-/// the client mode that asks a running panel for keyboard focus; anything
-/// else is the command to run in the panel.
+/// What the host's arguments ask for. `--toggle [name]` before `--` selects
+/// the client mode that asks a running panel to show or hide itself;
+/// anything else is the command to run in the panel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {
     Host {
         /// An empty command means "use the default shell".
         command: Vec<OsString>,
     },
-    Focus {
+    Toggle {
         /// `None` is the default instance name.
         name: Option<InstanceName>,
     },
 }
 
-/// Parse the host's arguments. The optional `--focus` name is the next
+/// Parse the host's arguments. The optional `--toggle` name is the next
 /// argument, whatever it is; the client mode runs no command.
 pub(crate) fn parse_args(args: &[OsString]) -> Result<Mode, String> {
     let mut rest = args;
     if let Some(first) = rest.first() {
-        if first.as_bytes() == b"--focus" {
-            return Ok(Mode::Focus {
+        if first.as_bytes() == b"--toggle" {
+            return Ok(Mode::Toggle {
                 name: rest
                     .get(1)
-                    .map(|raw| InstanceName::parse("--focus", &raw.to_string_lossy()))
+                    .map(|raw| InstanceName::parse("--toggle", &raw.to_string_lossy()))
                     .transpose()?,
             });
         } else if first.as_bytes() == b"--" {
@@ -108,10 +109,10 @@ mod tests {
         );
     }
 
-    /// `--focus [name]` before `--` selects the client mode with the same
+    /// `--toggle [name]` before `--` selects the client mode with the same
     /// name check; after `--` it is an ordinary command argument.
     #[test]
-    fn parse_args_parses_the_focus_mode() {
+    fn parse_args_parses_the_toggle_mode() {
         let os = |slice: &[&str]| -> Vec<OsString> {
             slice
                 .iter()
@@ -122,35 +123,36 @@ mod tests {
 
         // No name is the default instance.
         assert_eq!(
-            parse_args(&os(&["--focus"])),
-            Ok(Mode::Focus { name: None })
+            parse_args(&os(&["--toggle"])),
+            Ok(Mode::Toggle { name: None })
         );
         assert_eq!(
-            parse_args(&os(&["--focus", "notes"])),
-            Ok(Mode::Focus {
-                name: Some(InstanceName::parse("--focus", "notes").expect("valid"))
+            parse_args(&os(&["--toggle", "notes"])),
+            Ok(Mode::Toggle {
+                name: Some(InstanceName::parse("--toggle", "notes").expect("valid"))
             })
         );
 
-        // The same name check as `PINWIN_NAME`, under the `--focus` label:
+        // The same name check as `PINWIN_NAME`, under the `--toggle` label:
         // a bad name, the empty one included, is an exit-2 error. The exact
         // wording is `InstanceName::parse`'s contract, asserted in `ipc.rs`;
         // here only the error class holds: the rejection names the option.
         for raw in ["", "a/b"] {
             assert!(
                 matches!(
-                    parse_args(&os(&["--focus", raw])),
-                    Err(message) if message.contains("pinwin: --focus:")
+                    parse_args(&os(&["--toggle", raw])),
+                    Err(message) if message.contains("pinwin: --toggle:")
                 ),
                 "raw = {raw:?}"
             );
         }
 
-        // `--` ends option parsing: a command literally named `--focus` runs.
+        // `--` ends option parsing: a command literally named `--toggle`
+        // runs.
         assert_eq!(
-            parse_args(&os(&["--", "--focus"])),
+            parse_args(&os(&["--", "--toggle"])),
             Ok(Mode::Host {
-                command: os(&["--focus"])
+                command: os(&["--toggle"])
             })
         );
     }
@@ -162,21 +164,25 @@ mod tests {
         // before the test ends so the other tests see the real environment.
         unsafe {
             env::set_var("SHELL", "/bin/zsh");
-        }
+        };
         assert_eq!(
             default_command(),
             vec![OsStr::new("/bin/zsh").to_os_string()]
         );
+        // SAFETY: single-threaded test process; the variable is restored
+        // before the test ends so the other tests see the real environment.
         unsafe {
             env::set_var("SHELL", "");
-        }
+        };
         assert_eq!(
             default_command(),
             vec![OsStr::new(FALLBACK_SHELL).to_os_string()]
         );
+        // SAFETY: single-threaded test process; the variable is restored
+        // before the test ends so the other tests see the real environment.
         unsafe {
             env::remove_var("SHELL");
-        }
+        };
         assert_eq!(
             default_command(),
             vec![OsStr::new(FALLBACK_SHELL).to_os_string()]

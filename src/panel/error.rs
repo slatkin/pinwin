@@ -21,15 +21,16 @@ pub enum PinwinError {
     /// The pty master fd supplied at start is not an open descriptor (D7);
     /// nothing opened.
     InvalidFd,
-    /// No GTK display, or the session's compositor lacks wlr-layer-shell
+    /// No Wayland display, or the session's compositor lacks wlr-layer-shell
     /// (the spec's "Wayland layer-shell is required" case); nothing opened.
     NoDisplay,
     /// A panel is already running: at most one exists per process.
     AlreadyRunning,
-    /// The handle's panel is no longer live (its GTK side ended on its own).
+    /// The handle's panel is no longer live (its panel thread ended on its
+    /// own).
     NotRunning,
-    /// An unexpected failure: a caught panic inside the library, a wedged GTK
-    /// side, or a terminal grid that could not be allocated.
+    /// An unexpected failure: a caught panic inside the library, a wedged
+    /// panel side, or a terminal grid that could not be allocated.
     Internal,
 }
 

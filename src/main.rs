@@ -7,15 +7,16 @@
 //! PINWIN_ACCENT=on|off PINWIN_ACCENT_COLOR=#RRGGBB PINWIN_ACCENT_WIDTH=2
 //! PINWIN_NAME=default
 //! pinwin htop
-//! pinwin --focus [name]
+//! pinwin --toggle [name]   # asks the named running panel to show or hide
+//!                          # itself, for a niri key binding
 //! ```
 //!
 //! A thin host over the library API ([`pinwin::panel`]), the port of
 //! `host/main.c` (port-to-rust D8): it owns the pty, the child's environment
 //! and the process lifetime; the library owns the panel. The pure parts live
 //! in testable modules — argument parsing ([`cli`]), environment parsing
-//! ([`settings`]) and the focus-socket identity ([`ipc`]); the process parts
-//! (`forkpty`, signals, waiting) stay in [`run`].
+//! ([`settings`]) and the toggle-socket identity ([`ipc`]); the process parts
+//! (`forkpty`, signals, waiting) stay in [`run`] and [`host_panel`].
 
 use std::env;
 use std::ffi::{CString, OsString};
@@ -33,8 +34,8 @@ mod ipc;
 mod settings;
 
 use cli::{Mode, default_command, parse_args};
-use ipc::{BindError, FocusError, InstanceName};
-use settings::read_settings;
+use ipc::{BindError, InstanceName, ToggleError};
+use settings::{Settings, Zone, read_settings};
 
 /// The child's process id, read by the signal handler; zero means "no child
 /// yet". `signal(2)` handlers may only touch async-signal-safe state, which
@@ -60,9 +61,7 @@ extern "C" fn on_term(_sig: i32) {
     let pid = CHILD_PID.load(Ordering::Relaxed);
     if pid > 0 {
         // SAFETY: `pid` is this process's child, `SIGHUP` a plain signal.
-        unsafe {
-            libc::kill(pid, libc::SIGHUP);
-        }
+        unsafe { libc::kill(pid, libc::SIGHUP) };
     }
 }
 
@@ -74,7 +73,7 @@ fn wait_for_child(pid: i32) -> i32 {
     let mut status: i32 = 0;
     loop {
         // SAFETY: `pid` is this process's child and `status` is writable.
-        let rc = unsafe { libc::waitpid(pid, &mut status, 0) };
+        let rc = unsafe { libc::waitpid(pid, &raw mut status, 0) };
         if rc == pid {
             return status;
         }
@@ -93,9 +92,7 @@ fn wait_for_child(pid: i32) -> i32 {
 /// the start failure (`host/main.c` kills and waits before exiting 1).
 fn hang_up_child_and_wait(pid: i32) {
     // SAFETY: `pid` is this process's child, `SIGHUP` a plain signal.
-    unsafe {
-        libc::kill(pid, libc::SIGHUP);
-    }
+    unsafe { libc::kill(pid, libc::SIGHUP) };
     wait_for_child(pid);
 }
 
@@ -151,9 +148,7 @@ fn child_exec(child: &ChildCommand) -> ! {
     child_signal_setup();
     // SAFETY: the pointers are NUL-terminated C strings and the array is
     // null-terminated; on success this call never returns.
-    unsafe {
-        libc::execvp(child.argv[0].as_ptr(), child.pointers.as_ptr());
-    }
+    unsafe { libc::execvp(child.argv[0].as_ptr(), child.pointers.as_ptr()) };
     // execvp only returns on failure.
     let error = io::Error::last_os_error();
     eprintln!("pinwin: {}: {error}", child.argv[0].to_string_lossy());
@@ -162,22 +157,24 @@ fn child_exec(child: &ChildCommand) -> ! {
     unsafe { libc::_exit(127) }
 }
 
-/// The `--focus` client side (keyboard-focus-request row 3.5): ask the host
-/// that owns the name's socket for focus and report the reply. `ok` exits 0,
-/// a missing or failing host exits 1, and an environment error — an unusable
-/// socket path — exits 2 like the other environment errors.
-fn run_focus_client(name: Option<InstanceName>) -> i32 {
+/// The `--toggle` client side (replace-gtk-with-wayland D4): ask the host
+/// that owns the name's socket to toggle its panel and report the reply.
+/// The client reads no environment besides the display — the request itself
+/// carries nothing. `ok` exits 0, a missing or failing host exits 1, and an
+/// environment error — an unusable socket path — exits 2 like the other
+/// environment errors.
+fn run_toggle_client(name: Option<InstanceName>) -> i32 {
     let name = name.unwrap_or_else(InstanceName::default_instance);
     let result = ipc::socket_path_from_env(&name)
-        .map_err(FocusError::Environment)
-        .and_then(|path| ipc::focus_client(&path));
+        .map_err(ToggleError::Environment)
+        .and_then(|path| ipc::toggle_client(&path));
     match result {
         Ok(()) => 0,
-        Err(FocusError::Environment(message)) => {
+        Err(ToggleError::Environment(message)) => {
             eprintln!("{message}");
             2
         }
-        Err(FocusError::NotAnswered(message)) => {
+        Err(ToggleError::NotAnswered(message)) => {
             eprintln!("{message}");
             1
         }
@@ -203,10 +200,11 @@ fn run() -> i32 {
             return 2;
         }
     };
-    // The focus client asks the host that owns the name's socket for focus
-    // and reports the reply (keyboard-focus-request row 3.5).
+    // The toggle client asks the host that owns the name's socket to
+    // toggle its panel and reports the reply (replace-gtk-with-wayland
+    // D4); it reads no environment besides the display.
     let command = match mode {
-        Mode::Focus { name } => return run_focus_client(name),
+        Mode::Toggle { name } => return run_toggle_client(name),
         Mode::Host { command } => command,
     };
     let command = if command.is_empty() {
@@ -214,7 +212,14 @@ fn run() -> i32 {
     } else {
         command
     };
+    host_panel(&settings, &command)
+}
 
+/// Host the panel over the command's pty (the `Mode::Host` path): bind the
+/// instance's focus socket, fork the command onto a new pty, start the panel
+/// on the master and serve focus requests until the child exits. Returns the
+/// host's exit status.
+fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
     // The focus socket must be ours before any surface opens: a live host
     // with the same name on this display makes this start exit 2 instead
     // (keyboard-focus-request design).
@@ -227,8 +232,15 @@ fn run() -> i32 {
     };
 
     // The layout the C host built: docked left, top/bottom/left gutters zero,
-    // `COLS` columns wide, `GUTTER` on the right.
+    // `COLS` columns wide, `GUTTER` on the right. `PINWIN_ZONE=overlay` opts
+    // into a covering start, so nothing is ever reserved and a toggle moves
+    // no window (replace-gtk-with-wayland D4); the library needs no new code
+    // for it, because a covering start already reserves nothing.
     let layout = Layout::new(Side::Left, settings.cols, 0, 0, 0, settings.right);
+    let layout = match settings.zone {
+        Zone::Reserve => layout,
+        Zone::Overlay => layout.covering(),
+    };
 
     // The library sets no child environment: say we are a colour terminal
     // before the fork, so the child inherits it.
@@ -237,12 +249,12 @@ fn run() -> i32 {
     unsafe {
         env::set_var("TERM", "xterm-256color");
         env::set_var("COLORTERM", "truecolor");
-    }
+    };
 
     // Build the child's exec arguments before the fork, so the child between
     // `forkpty` and `exec` only calls `signal`/`execvp`/`_exit`; an interior
     // NUL is reported here and exits 127 without any child.
-    let child = match build_child_command(&command) {
+    let child = match build_child_command(command) {
         Ok(child) => child,
         Err(message) => {
             eprintln!("{message}");
@@ -256,7 +268,7 @@ fn run() -> i32 {
     // null, keeping the child's defaults.
     let pid = unsafe {
         libc::forkpty(
-            &mut master,
+            &raw mut master,
             std::ptr::null_mut(),
             std::ptr::null(),
             std::ptr::null(),
@@ -276,24 +288,18 @@ fn run() -> i32 {
     // SAFETY: `on_term` is async-signal-safe and the libc signal handler
     // signature matches.
     unsafe {
-        libc::signal(
-            libc::SIGINT,
-            on_term as extern "C" fn(i32) as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGTERM,
-            on_term as extern "C" fn(i32) as libc::sighandler_t,
-        );
-    }
+        libc::signal(libc::SIGINT, on_term as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, on_term as *const () as libc::sighandler_t);
+    };
 
     // Start the panel on the pty master. On failure the child is hung up and
     // reaped and the host exits 1.
-    let panel = match Panel::start(Startup {
-        fd: master.as_raw_fd(),
+    let panel = match Panel::start(Startup::new(
+        master.as_raw_fd(),
         layout,
-        keyboard: settings.keyboard,
-        accent: settings.accent,
-    }) {
+        settings.keyboard,
+        settings.accent,
+    )) {
         Ok(panel) => panel,
         Err(error) => {
             let reason = match error {
@@ -305,25 +311,34 @@ fn run() -> i32 {
             return 1;
         }
     };
+    let status = serve_toggle_until_exit(&panel, &listener, socket_file, pid);
+    // Dropping the handle closes the panel (the C's `pinwin_stop`).
+    drop(panel);
+    child_exit_status(status)
+}
 
-    // The listener answers focus requests while the child runs (row 3.4):
-    // a scoped thread borrows the panel — the request posts to the GTK
-    // thread exactly like `Panel::apply_layout` — and ends within one accept
-    // poll of the shutdown flag the main thread sets once the child exits.
-    // The socket file goes with it: the host removes the file it created.
+/// Serve toggle requests on the bound socket while the child runs
+/// (replace-gtk-with-wayland D4): a scoped thread borrows the panel — the
+/// request is bounded like `Panel::apply_layout` — and ends within one
+/// accept poll of the shutdown flag set once the child exits. The socket
+/// file goes with it: the host removes the file it created. Returns the
+/// child's raw wait status.
+fn serve_toggle_until_exit(
+    panel: &Panel,
+    listener: &net::UnixListener,
+    socket_file: ipc::SocketFile,
+    pid: i32,
+) -> i32 {
     let shutdown = AtomicBool::new(false);
-    let status = std::thread::scope(|scope| {
+    std::thread::scope(|scope| {
         scope.spawn(|| {
-            ipc::serve_focus_requests(&listener, &|| panel.request_focus(), &shutdown);
+            ipc::serve_toggle_requests(listener, &|| panel.toggle(), &shutdown);
         });
         let status = wait_for_child(pid);
         shutdown.store(true, Ordering::Relaxed);
         drop(socket_file);
         status
-    });
-    // Dropping the handle closes the panel (the C's `pinwin_stop`).
-    drop(panel);
-    child_exit_status(status)
+    })
 }
 
 /// Bind the focus socket for this instance, before any surface opens: a live
@@ -368,6 +383,19 @@ mod tests {
         assert_eq!(child_exit_status(1), 1);
         // Killed by SIGKILL (signal 9).
         assert_eq!(child_exit_status(9), 1);
+    }
+
+    /// The `--toggle` client maps the outcomes: a name with no listener is
+    /// a not-answered request, exit 1. The invalid-name and socket-path
+    /// environment classes are covered by the `InstanceName::parse` and
+    /// `socket_path` contracts in `ipc.rs`; here the no-host path holds.
+    /// The name has no listener, and the test never touches the process
+    /// environment (the display variables it resolves are inherited, which
+    /// only changes the message, not the status).
+    #[test]
+    fn the_toggle_client_without_a_listener_exits_1() {
+        let name = Some(InstanceName::parse("--toggle", "no-such-instance").expect("valid"));
+        assert_eq!(run_toggle_client(name), 1);
     }
 
     /// The exec arguments are the C strings of the command, with the pointer
@@ -430,6 +458,29 @@ mod tests {
     fn the_execed_child_sees_the_default_sigpipe_disposition() {
         use std::path::Path;
 
+        /// Drain the reporting pipe's read end, retrying an interrupted
+        /// read and panicking on any other failure.
+        fn drain_read_end(read_end: libc::c_int) -> Vec<u8> {
+            let mut output = Vec::new();
+            loop {
+                let mut chunk = [0u8; 512];
+                // SAFETY: `read_end` is the open read end and `chunk` is
+                // writable.
+                let n = unsafe { libc::read(read_end, chunk.as_mut_ptr().cast(), chunk.len()) };
+                if n == 0 {
+                    return output;
+                }
+                if n < 0 {
+                    let error = io::Error::last_os_error();
+                    match error.raw_os_error() {
+                        Some(libc::EINTR) => continue,
+                        _ => panic!("read: {error}"),
+                    }
+                }
+                output.extend_from_slice(&chunk[..n.cast_unsigned()]);
+            }
+        }
+
         fn sigpipe_ignored(reset: bool) -> bool {
             // `cat` installs no signal handlers, so its `SigIgn` mask is
             // exactly what the exec delivered. Everything is built in the
@@ -448,7 +499,7 @@ mod tests {
             let arg0 = CString::new("cat").expect("no NUL");
             let file = CString::new("/proc/self/status").expect("no NUL");
 
-            let mut fds = [0 as libc::c_int; 2];
+            let mut fds = [0; 2];
             // SAFETY: `fds` is writable.
             assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
             // SAFETY: fork in a threaded test process; the child between the
@@ -457,10 +508,13 @@ mod tests {
             let pid = unsafe { libc::fork() };
             assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
             if pid == 0 {
+                // SAFETY: single-threaded forked child between fork and exec;
+                // the read end is this child's to close and stdout is the
+                // write end's destination.
                 unsafe {
                     libc::close(fds[0]);
-                    libc::dup2(fds[1], libc::STDOUT_FILENO);
-                }
+                    libc::dup2(fds[1], libc::STDOUT_FILENO)
+                };
                 if reset {
                     // The real child path, reset and exec included; it
                     // never returns.
@@ -468,50 +522,26 @@ mod tests {
                 }
                 // The control: the same exec without the reset; it never
                 // returns.
+                // SAFETY: the C strings are NUL-terminated, the pointer
+                // array null-terminated, and `execve` never returns here.
                 unsafe {
-                    let argv = [arg0.as_ptr(), file.as_ptr(), std::ptr::null()];
-                    libc::execve(program.as_ptr(), argv.as_ptr(), std::ptr::null());
+                    let execve_argv = [arg0.as_ptr(), file.as_ptr(), std::ptr::null()];
+                    libc::execve(program.as_ptr(), execve_argv.as_ptr(), std::ptr::null());
                     libc::_exit(127);
                 }
             }
             // SAFETY: each end is closed by its own process only.
-            unsafe {
-                libc::close(fds[1]);
-            }
-            let mut output = Vec::new();
-            loop {
-                let mut chunk = [0u8; 512];
-                // SAFETY: `fds[0]` is the read end, `chunk` is writable.
-                let n = unsafe { libc::read(fds[0], chunk.as_mut_ptr().cast(), chunk.len()) };
-                if n == 0 {
-                    break;
-                }
-                if n < 0 {
-                    let error = io::Error::last_os_error();
-                    if error.raw_os_error() == Some(libc::EINTR) {
-                        continue;
-                    }
-                    panic!("read: {error}");
-                }
-                output.extend_from_slice(&chunk[..n as usize]);
-            }
-            // SAFETY: the read end is drained.
-            unsafe {
-                libc::close(fds[0]);
-            }
+            unsafe { libc::close(fds[1]) };
+            let output = drain_read_end(fds[0]);
             let mut status: i32 = 0;
             // SAFETY: `pid` is this test's child, `status` writable.
-            assert_eq!(
-                unsafe { libc::waitpid(pid, &mut status, 0) },
-                pid,
-                "waitpid"
-            );
+            let rc = unsafe { libc::waitpid(pid, &raw mut status, 0) };
+            assert_eq!(rc, pid, "waitpid");
             assert!(
                 libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
                 "cat failed: {:?}",
                 String::from_utf8_lossy(&output)
             );
-
             let text = String::from_utf8(output).expect("utf-8");
             let line = text
                 .lines()

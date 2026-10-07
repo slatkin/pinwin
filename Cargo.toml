@@ -1,12 +1,12 @@
 [package]
 name = "pinwin"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Pin a Ghostty window (e.g. mbv) to the edge of niri as a fixed sidebar."
 license = "MIT"
 repository = "https://github.com/slatkin/pinwin"
-keywords = ["terminal", "niri", "layer-shell", "gtk4"]
+keywords = ["terminal", "niri", "layer-shell", "wayland"]
 categories = ["command-line-utilities"]
 # The pinned libghostty-vt archive is built by build.rs from the commit in
 # build.rs (port-to-rust D2); it is deliberately not a Cargo dependency.
@@ -26,19 +26,42 @@ path = "src/main.rs"
 # already in the lock as a transitive dependency.
 libc = "0.2"
 
-# The v4_12 features on gtk4/gdk4 enable `ScrollUnit` (the scroll
-# controller's unit, which the scroll translation needs — port-to-rust row
-# 3.7) and `Surface::scale()` (the fractional output scale the grid snapping
-# reads — snap-grid-edges D3); both are otherwise plain transitive
-# dependencies.
-gtk4 = { version = "0.11", features = ["v4_12"] }
-gtk4-layer-shell = "0.8"
-pango = "0.22"
-pangocairo = "0.22"
-cairo-rs = "0.22"
-gdk-pixbuf = "0.22"
+# The direct Wayland client stack (replace-gtk-with-wayland D1, row 2.1). The
+# toolkit's defaults are the calloop and xkbcommon features the row names; the
+# connection is the pure-Rust wayland backend, so
+# no libwayland link step is needed.
+wayland-client = "0.31"
+# `staging` adds wp_fractional_scale_v1 (D5's preferred-scale source); the
+# stable `client` set already carries wp_viewporter.
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+smithay-client-toolkit = "0.21"
+calloop = "0.14"
+calloop-wayland-source = "0.4"
 
-gdk4 = { version = "0.11", features = ["v4_12"] }
+# The keyboard handler's own xkbcommon state (replace-gtk-with-wayland D8,
+# row 5.1): the toolkit hands the keymap over as a string and its KeyEvent
+# carries no consumed modifiers or level-0 keysym, so the seat side keeps a
+# keymap and state of its own. Same 0.8 line the toolkit pins, so one shared
+# build.
+xkbcommon = "0.8"
+
+# The renderer's CPU stack (replace-gtk-with-wayland D5/D6, row 2.1):
+# tiny-skia fills and scales, swash shapes and rasterizes, fontconfig resolves
+# the Ghostty family (D6) and png decodes the kitty images.
+tiny-skia = "0.12"
+swash = "0.2"
+fontconfig = "0.11"
+# The `fontconfig` wrapper exposes no charset accessor; the fallback lookup
+# decides coverage from the candidate patterns' own `charset` property
+# through the underlying -sys crate (already linked as the wrapper's
+# dependency, same version).
+yeslogic-fontconfig-sys = "6"
+png = "0.18"
+
+# The renderer's one f64-to-integer seam (`render::geom::device_px`):
+# tiny-skia takes i32/f32 geometry while the snapped edges are f64, and a
+# NumCast conversion keeps the cast lints quiet without a suppression.
+num-traits = "0.2"
 
 # port-to-rust D5: panics must never cross the public API, so the unwind
 # runtime is required for the catch_unwind guards at every boundary. Setting

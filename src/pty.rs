@@ -9,25 +9,32 @@
 //! process lifetime is untouched.
 //!
 //! The core — non-blocking setup, the winsize ioctl, the write loop and the
-//! budgeted drain — is GTK-free and takes the fd as a parameter, so unit
-//! tests exercise it against a real pipe or pty master (D10). The glib fd
-//! source is the only GTK-thread piece; its callback is a C trampoline, so it
-//! catches unwinds like every other boundary (D5) through the shared
-//! [`crate::guard`] helper.
+//! budgeted drain — is display-free and takes the fd as a parameter, so unit
+//! tests exercise it against a real pipe or pty master (D10). The read
+//! source itself is a calloop registration; its twin for the panel thread
+//! lives in the `calloop` submodule, whose readiness callback runs the same
+//! `drain` under the shared [`crate::guard`] helper (D5).
 //!
 //! The GTK-widget-dependent piece of `src/pty.c` — applying the drawing
-//! area's allocation to the grid before resizing — is not ported here: it
-//! belongs to the render/surface rows (tasks 3.6/3.7/4.1) and drives
-//! [`Pty::resize`] once the grid is known.
+//! area's allocation to the grid before resizing — has no counterpart
+//! here: the panel thread's grid sizing (`panel::wayland_side::sizing`)
+//! decides the grid and applies the winsize through the caller-supplied
+//! callback that drives [`Pty::resize`].
+//!
+//! The read source for the panel thread lives beside it in the `calloop`
+//! submodule (`replace-gtk-with-wayland` D2); the thread attaches it in
+//! `run_loop`, and a teardown or a hangup retires the shared fd slot.
+
+mod calloop;
+
+pub use self::calloop::{PtySource, attach_calloop};
 
 use std::io;
 use std::os::fd::RawFd;
-use std::os::raw::c_int;
-use std::os::raw::c_void;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 
-use crate::guard::{Poisoned, guard};
+use crate::guard::Poisoned;
 use crate::layout::pty_yield;
 use crate::term::PtySink;
 
@@ -116,11 +123,10 @@ fn errno() -> i32 {
 /// The outcome of one main-loop dispatch of the pty read source.
 #[derive(Debug, PartialEq, Eq)]
 enum Drain {
-    /// The dispatch drained to `EAGAIN` without a hangup condition, or
-    /// yielded within its budget: the source stays installed.
+    /// The dispatch drained to `EAGAIN` or yielded within its budget: the
+    /// source stays installed.
     Dispatched,
-    /// EOF, a read error, or `EAGAIN` with a hangup condition: the child side
-    /// is gone. Drop the read source and leave the host's process lifetime
+    /// EOF or a read error: the child side is gone. Drop the read source and leave the host's process lifetime
     /// alone (`src/pty.c`).
     HungUp,
 }
@@ -133,7 +139,6 @@ enum Drain {
 /// 64 KB (`src/pty.c`).
 fn drain(
     fd: RawFd,
-    hangup_condition: bool,
     feed: &mut dyn FnMut(&[u8]),
     started_us: i64,
     budget_us: i64,
@@ -159,12 +164,7 @@ fn drain(
         if n < 0 {
             match errno() {
                 libc::EINTR => continue,
-                libc::EAGAIN => {
-                    if hangup_condition {
-                        return Drain::HungUp;
-                    }
-                    return Drain::Dispatched;
-                }
+                libc::EAGAIN => return Drain::Dispatched,
                 _ => return Drain::HungUp,
             }
         }
@@ -199,45 +199,28 @@ impl PtySink for PtyWriter {
     }
 }
 
-/// The pty state for one panel: the host-supplied master fd, its glib read
-/// source, the cell size used for the winsize pixel fields, and the tween
-/// switch that bounds the drain. Lives on the GTK thread (D4); the shared fd
-/// slot is the only state the [`PtyWriter`] needs across objects.
+/// The pty state for one panel: the host-supplied master fd. The shared fd slot is the only
+/// state the [`PtyWriter`] needs across objects; the read source is a
+/// calloop registration the panel thread attaches (`calloop::attach_calloop`)
+/// and retire is the shared slot going to -1.
 #[derive(Debug)]
 pub struct Pty {
     /// The host-owned master fd, retired to -1 when the read source is gone.
     /// The library never closes the real descriptor (D7).
     fd: Arc<AtomicI32>,
-    cell_w: u32,
-    cell_h: u32,
-    /// Whether a width tween is running: the read drain then bounds itself to
-    /// [`PTY_BUDGET_US`] per dispatch. The anim row drives this (task 3.7),
-    /// standing in for `glue_anim_active()` in `src/pty.c`.
-    tween_active: Arc<AtomicBool>,
     /// Latched when a read-source panic is caught (D5).
     poisoned: Poisoned,
-    /// The glib source id, 0 once the source removed itself or teardown
-    /// removed it. Shared so the callback can retire it on hangup.
-    source: Arc<AtomicU32>,
-    /// Whether the fd was attached; sticky once set, like `g_attached`
-    /// (`src/pty.c`).
-    attached: bool,
 }
 
 impl Pty {
-    /// Take the host-supplied master fd and the current cell size.
-    /// `poisoned` is the panel's shared D5 latch: a read-source panic latches
-    /// it so the rest of the panel's glue code stops too.
+    /// Take the host-supplied master fd. `poisoned` is the panel's shared D5
+    /// latch: a read-source panic latches it so the rest of the panel's glue
+    /// code stops too.
     #[must_use]
-    pub fn new(poisoned: Poisoned, fd: RawFd, cell_w: u32, cell_h: u32) -> Self {
+    pub fn new(poisoned: Poisoned, fd: RawFd) -> Self {
         Pty {
             fd: Arc::new(AtomicI32::new(fd)),
-            cell_w,
-            cell_h,
-            tween_active: Arc::new(AtomicBool::new(false)),
             poisoned,
-            source: Arc::new(AtomicU32::new(0)),
-            attached: false,
         }
     }
 
@@ -248,243 +231,6 @@ impl Pty {
             fd: Arc::clone(&self.fd),
         }
     }
-
-    /// Record a new cell size for the winsize pixel fields (the glue updates
-    /// this when the font changes).
-    pub fn set_cell_size(&mut self, cell_w: u32, cell_h: u32) {
-        self.cell_w = cell_w;
-        self.cell_h = cell_h;
-    }
-
-    /// Set whether a width tween is running (the anim row, task 3.7).
-    pub fn set_tween_active(&self, active: bool) {
-        self.tween_active.store(active, Ordering::Relaxed);
-    }
-
-    /// Whether a callback panic was caught in the read source (D5).
-    #[must_use]
-    pub fn poisoned(&self) -> bool {
-        self.poisoned.is_poisoned()
-    }
-
-    /// Whether the fd was attached (sticky, like `g_attached`).
-    #[must_use]
-    pub fn attached(&self) -> bool {
-        self.attached
-    }
-
-    /// Whether the read source is gone (hangup or teardown): writes and
-    /// resizes are no-ops from here on.
-    #[must_use]
-    pub fn hung_up(&self) -> bool {
-        self.fd.load(Ordering::Relaxed) < 0
-    }
-
-    /// Take the host-supplied master fd: non-blocking, the initial winsize
-    /// (grid plus pixel size) and the read source. The host owns the child
-    /// side, so there is nothing else to set up (D7). A fd that cannot be
-    /// used only degrades to no terminal; it never exits (D3).
-    ///
-    /// Like `src/pty.c`, a failed winsize ioctl does not stop the attach: the
-    /// source is installed with the previous winsize. A failed non-blocking
-    /// switch does, and since the attached flag was already set the failure is
-    /// sticky. `cols`/`rows` are the effective grid at attach time.
-    pub fn attach(
-        &mut self,
-        cols: i32,
-        rows: i32,
-        feed: impl FnMut(&[u8]) + 'static,
-    ) -> io::Result<()> {
-        if self.attached {
-            return Ok(());
-        }
-        let fd = self.fd.load(Ordering::Relaxed);
-        if fd < 0 {
-            return Err(io::Error::from_raw_os_error(libc::EBADF));
-        }
-        self.attached = true;
-        set_non_blocking(fd)?;
-        let _ = apply_winsize(fd, cols, rows, self.cell_w, self.cell_h);
-
-        let state = Box::into_raw(Box::new(SourceState {
-            fd: Arc::clone(&self.fd),
-            tween_active: Arc::clone(&self.tween_active),
-            poisoned: self.poisoned.clone(),
-            source: Arc::clone(&self.source),
-            feed: Box::new(feed),
-        }));
-        // SAFETY: `g_unix_fd_add_full` is stable GLib API (2.36) that glib-sys
-        // does not declare; the library is linked against the same
-        // libglib-2.0. `state` is an owned Box handed to the source, freed by
-        // `destroy_source_state` when the source is destroyed, and the
-        // callback/notify pair match the signature GLib expects.
-        let id = unsafe {
-            g_unix_fd_add_full(
-                gtk4::glib::ffi::G_PRIORITY_DEFAULT,
-                fd,
-                gtk4::glib::ffi::G_IO_IN | gtk4::glib::ffi::G_IO_HUP | gtk4::glib::ffi::G_IO_ERR,
-                Some(on_pty_readable),
-                state.cast(),
-                Some(destroy_source_state),
-            )
-        };
-        if id == 0 {
-            // The docs give no failure semantics beyond "the ID (greater than
-            // 0)" (docs.gtk.org/glib-unix/func.fd_add_full.html); the
-            // implementation does: `g_unix_fd_add_full` (glib `glib-unix.c`)
-            // registers the destroy notify with `g_source_set_callback` and
-            // then calls `g_source_attach` + `g_source_unref`, and the final
-            // unref finalizes the source, whose callback teardown invokes the
-            // destroy notify (`gmain.c` `g_source_unref_internal` →
-            // `g_source_callback_unref`). So a 0 from a failed attach has
-            // already freed `state` by the time the 0 is returned — freeing
-            // here would double-free. The other 0 path, the `function != NULL`
-            // guard, fires before the notify is registered, but is
-            // unreachable because we pass a compile-time `Some`. Either way
-            // the notify owns the state exactly once and this arm only
-            // reports the failure.
-            return Err(io::Error::last_os_error());
-        }
-        self.source.store(id, Ordering::Relaxed);
-        Ok(())
-    }
-
-    /// Apply a new winsize for the current grid, raising `SIGWINCH` only
-    /// after a successful ioctl. A no-op once the fd is retired.
-    pub fn resize(&self, cols: i32, rows: i32) {
-        let fd = self.fd.load(Ordering::Relaxed);
-        if fd < 0 {
-            return;
-        }
-        let _ = apply_winsize(fd, cols, rows, self.cell_w, self.cell_h);
-    }
-
-    /// Remove the read source at teardown. The fd stays open — the host owns
-    /// it (D7) — but it is retired, so later writes and resizes are no-ops.
-    pub fn detach(&mut self) {
-        let id = self.source.swap(0, Ordering::Relaxed);
-        if id != 0 {
-            // SAFETY: `id` is a live source id this module installed and has
-            // not removed itself.
-            unsafe { gtk4::glib::ffi::g_source_remove(id) };
-        }
-        self.fd.store(-1, Ordering::Relaxed);
-        self.attached = false;
-    }
-}
-
-/// Removing the source at teardown keeps no read closure outliving the panel;
-/// the fd itself stays open for the host.
-impl Drop for Pty {
-    fn drop(&mut self) {
-        self.detach();
-    }
-}
-
-/// The byte feeder one read source drives: the glue's
-/// `Terminal::push_pty_data` closure, or a test recorder.
-type Feed = Box<dyn FnMut(&[u8])>;
-
-/// The state one glib read source owns: the shared fd slot it retires on
-/// hangup, the tween and poison flags it shares with the [`Pty`], and the
-/// byte feeder (the glue's `Terminal::push_pty_data`).
-struct SourceState {
-    fd: Arc<AtomicI32>,
-    tween_active: Arc<AtomicBool>,
-    poisoned: Poisoned,
-    source: Arc<AtomicU32>,
-    feed: Feed,
-}
-
-/// Retire the fd slot and the source id once the source stops.
-fn retire(fd: &AtomicI32, source: &AtomicU32) {
-    fd.store(-1, Ordering::Relaxed);
-    source.store(0, Ordering::Relaxed);
-}
-
-/// The `GUnixFDSourceFunc` trampoline: drain the pty for one dispatch (D5
-/// guard; unwinding out of here would cross into `GLib`).
-///
-/// # Safety
-/// `user_data` must be the `SourceState` pointer `g_unix_fd_add_full` was
-/// given, alive until the source's destroy notify runs.
-unsafe extern "C" fn on_pty_readable(
-    fd: c_int,
-    condition: gtk4::glib::ffi::GIOCondition,
-    user_data: *mut c_void,
-) -> c_int {
-    if user_data.is_null() {
-        return gtk4::glib::ffi::G_SOURCE_REMOVE;
-    }
-    // SAFETY: the caller guarantees `user_data` points at the live state, and
-    // GLib never re-enters the callback for one source concurrently.
-    let state = unsafe { &mut *user_data.cast::<SourceState>() };
-    if state.poisoned.is_poisoned() {
-        retire(&state.fd, &state.source);
-        return gtk4::glib::ffi::G_SOURCE_REMOVE;
-    }
-    let result = guard(&state.poisoned, || {
-        let budget = if state.tween_active.load(Ordering::Relaxed) {
-            PTY_BUDGET_US
-        } else {
-            0
-        };
-        let started = gtk4::glib::monotonic_time();
-        let hangup_condition =
-            condition & (gtk4::glib::ffi::G_IO_HUP | gtk4::glib::ffi::G_IO_ERR) != 0;
-        drain(
-            fd,
-            hangup_condition,
-            state.feed.as_mut(),
-            started,
-            budget,
-            &|| gtk4::glib::monotonic_time(),
-        )
-    });
-    match result {
-        Ok(Drain::Dispatched) => gtk4::glib::ffi::G_SOURCE_CONTINUE,
-        // Hangup, or a panic was caught: stop reading. The host's process
-        // lifetime and its descriptor stay untouched.
-        Ok(Drain::HungUp) | Err(_) => {
-            retire(&state.fd, &state.source);
-            gtk4::glib::ffi::G_SOURCE_REMOVE
-        }
-    }
-}
-
-/// # Safety
-/// `user_data` must be the `SourceState` pointer `g_unix_fd_add_full` was
-/// given, not yet freed.
-unsafe extern "C" fn destroy_source_state(user_data: *mut c_void) {
-    if user_data.is_null() {
-        return;
-    }
-    // The notify runs on GLib's teardown path, not behind a poisoned flag:
-    // there is no latch left to set, but it still must not unwind across the
-    // C boundary (D5). The shared guard swallows the unwind and logs the
-    // payload on a throwaway flag. The source is already being destroyed
-    // either way.
-    let _ = guard(&Poisoned::new(), || {
-        // SAFETY: the caller guarantees the pointer came from `Box::into_raw` and
-        // the source is being destroyed, so no dispatch is using it.
-        drop(unsafe { Box::from_raw(user_data.cast::<SourceState>()) });
-    });
-}
-
-// Declared here because glib-sys does not bind `g_unix_fd_add_full` (its gir
-// bindings skip the glib-unix header); the symbol comes from the same
-// libglib-2.0 glib-sys links.
-unsafe extern "C" {
-    fn g_unix_fd_add_full(
-        priority: c_int,
-        fd: c_int,
-        condition: gtk4::glib::ffi::GIOCondition,
-        function: Option<
-            unsafe extern "C" fn(c_int, gtk4::glib::ffi::GIOCondition, *mut c_void) -> c_int,
-        >,
-        user_data: *mut c_void,
-        notify: Option<unsafe extern "C" fn(*mut c_void)>,
-    ) -> u32;
 }
 
 #[cfg(test)]
@@ -495,7 +241,7 @@ mod tests {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::sync::Mutex;
     use std::sync::Once;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     /// The winsize ioctls need a real tty; a `/dev/ptmx` master answers
     /// `TIOCSWINSZ`/`TIOCGWINSZ` without unlocking its slave.
@@ -634,8 +380,7 @@ mod tests {
     /// A writer over a retired fd slot is a no-op, like `g_pty_fd < 0`.
     #[test]
     fn writer_over_a_retired_fd_writes_nothing() {
-        let pty = Pty::new(Poisoned::new(), -1, 8, 16);
-        assert!(pty.hung_up());
+        let pty = Pty::new(Poisoned::new(), -1);
         let mut writer = pty.writer();
         writer.write_pty(b"gone");
     }
@@ -652,7 +397,6 @@ mod tests {
         let fed_for_feed = Arc::clone(&fed);
         let outcome = drain(
             read_end.as_raw_fd(),
-            false,
             &mut |data| {
                 fed_for_feed.fetch_add(data.len(), Ordering::Relaxed);
             },
@@ -679,7 +423,6 @@ mod tests {
         let clock = AtomicUsize::new(0);
         let outcome = drain(
             read_end.as_raw_fd(),
-            false,
             &mut |data| {
                 fed_for_feed.fetch_add(data.len(), Ordering::Relaxed);
             },
@@ -703,7 +446,6 @@ mod tests {
         let fed_for_feed = Arc::clone(&fed);
         let outcome = drain(
             read_end.as_raw_fd(),
-            false,
             &mut |data| {
                 fed_for_feed.fetch_add(data.len(), Ordering::Relaxed);
             },
@@ -713,76 +455,5 @@ mod tests {
         );
         assert_eq!(outcome, Drain::HungUp);
         assert_eq!(fed.load(Ordering::Relaxed), 0);
-    }
-
-    /// `EAGAIN` together with a hangup condition hangs the source up even
-    /// though the read itself would just be retried.
-    #[test]
-    fn drain_hangs_up_on_eagain_with_a_hangup_condition() {
-        let (read_end, _write_end) = pipe_pair();
-        set_non_blocking(read_end.as_raw_fd()).expect("non-blocking");
-        let outcome = drain(read_end.as_raw_fd(), true, &mut |_| {}, 1000, 0, &|| 1000);
-        assert_eq!(outcome, Drain::HungUp);
-    }
-
-    /// Attach puts the fd into non-blocking mode, applies the initial
-    /// winsize and installs the glib read source; detach removes the source
-    /// and retires the fd slot without closing the descriptor.
-    #[test]
-    fn attach_installs_the_source_and_initial_winsize() {
-        let master = pty_master();
-        let raw = master.as_raw_fd();
-        let mut pty = Pty::new(Poisoned::new(), raw, 8, 16);
-        let fed = Arc::new(AtomicUsize::new(0));
-        let fed_for_feed = Arc::clone(&fed);
-        let seen = sigwinch_during(|| {
-            pty.attach(80, 24, move |data| {
-                fed_for_feed.fetch_add(data.len(), Ordering::Relaxed);
-            })
-            .expect("attach a pty master");
-        });
-        assert!(seen, "the initial winsize raises SIGWINCH");
-        assert!(pty.attached());
-        assert!(!pty.hung_up());
-        assert!(!pty.poisoned());
-
-        let ws = read_winsize(raw);
-        assert_eq!((ws.ws_col, ws.ws_row), (80, 24));
-        assert_eq!((ws.ws_xpixel, ws.ws_ypixel), (640, 384));
-        // SAFETY: `raw` is open; F_GETFL takes no argument.
-        let flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
-        assert_ne!(flags & libc::O_NONBLOCK, 0, "attached fd is non-blocking");
-
-        // A second attach is a no-op, and a resize through the still-open fd
-        // applies without another attach. The resize raises `SIGWINCH` like
-        // any successful winsize ioctl, so it runs under the same lock as
-        // every other raising test instead of interleaving with them.
-        pty.attach(80, 24, |_| {})
-            .expect("second attach is a no-op");
-        sigwinch_during(|| pty.resize(100, 30));
-        let ws = read_winsize(raw);
-        assert_eq!((ws.ws_col, ws.ws_row), (100, 30));
-
-        pty.detach();
-        assert!(pty.hung_up());
-        assert!(!pty.attached());
-        // The descriptor itself is still open and usable (the host owns it).
-        let ws = read_winsize(raw);
-        assert_eq!((ws.ws_col, ws.ws_row), (100, 30));
-    }
-
-    /// Attaching an already-retired fd is an error, not a panic.
-    #[test]
-    fn attach_with_a_dead_fd_is_an_error() {
-        let mut pty = Pty::new(Poisoned::new(), -1, 8, 16);
-        assert!(pty.attach(80, 24, |_| {}).is_err());
-        assert!(!pty.attached());
-    }
-
-    /// Resizing a retired fd is a no-op, like `g_pty_fd < 0`.
-    #[test]
-    fn resize_over_a_retired_fd_is_a_noop() {
-        let pty = Pty::new(Poisoned::new(), -1, 8, 16);
-        pty.resize(80, 24);
     }
 }

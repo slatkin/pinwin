@@ -20,44 +20,55 @@ binary; the build is Cargo only. The pre-port C and Zig sources (`src/*.c`,
 
 - `src/lib.rs` — the crate root: the module tree and the `Panel`/`PinwinError`
   re-exports.
-- `src/panel.rs` + `src/panel/` — the public API and the GTK-thread lifecycle (`error.rs`,
-  `gtk_side.rs`, `handshake.rs`): the `Panel` handle, `Startup`,
-  the parked `pinwin-gtk` thread and the start handshake.
-- `src/layout.rs` — the GTK-free layout core: `Layout`/`Side`, `CellSize`,
+- `src/panel.rs` + `src/panel/` — the public API and the panel-thread lifecycle
+  (`error.rs`, `handshake.rs`, `startup.rs`): the `Panel` handle, `Startup`,
+  the start handshake and the apply replies. `src/panel/wayland_side/` runs the
+  panel thread: one `smithay-client-toolkit` connection and calloop loop per
+  start, the two layer-shell surfaces, the shared-memory buffers, the seat,
+  the width tween and the frame present step (`state/`, `surfaces.rs`,
+  `buffers.rs`, `sizing.rs`, `apply.rs`, `commands.rs`, `tween.rs`, `crop.rs`,
+  `present.rs`, `renderer.rs`, `seat/`). The thread ends when the handle drops.
+- `src/layout.rs` — the display-free layout core: `Layout`/`Side`, `CellSize`,
   `OutputSize`, `Accent`, `Keyboard`, checked geometry validation and the pty
   yield decision.
-- `src/term/` — the pinned libghostty-vt terminal wrapper and its parts:
-  `cells/`, `keys.rs`, `input.rs`, `callbacks.rs`.
-- `src/render.rs` + `src/render/` — cairo/pangocairo drawing and the GSK render-node snapshot
-  path with a cairo fallback, the retained tween grid node, the focus accent
-  and the kitty image surfaces (`text.rs`, `nodes.rs`,
-  `snapshot.rs`, `sprites.rs`, `metrics.rs`, `images.rs`, `snap.rs`).
-- `src/surfaces.rs` + `src/surfaces/` — the layer-shell panel and reservation surfaces and layout
-  application (`area.rs`, `gap.rs`, `hooks.rs`, `tests.rs`).
-- `src/input.rs` — the GDK controllers and their translation into terminal
-  encoders.
-- `src/anim.rs` — the animated width transition.
-- `src/pty.rs` — the host-supplied pty fd, winsize and `SIGWINCH`.
-- `src/fontconfig.rs` — the Ghostty font and theme reader.
+- `src/term.rs` + `src/term/` — the pinned libghostty-vt terminal wrapper and
+  its parts: `cells/`, `keys.rs`, `input.rs`, `callbacks.rs`.
+- `src/render.rs` + `src/render/` — the toolkit-free CPU painter: the
+  tiny-skia canvas (`canvas.rs`), the font, glyph and shaper modules
+  (`font.rs`, `glyph.rs`, `shape.rs`), the text and kitty image passes
+  (`text_pass.rs`, `image_pass.rs`), the grid painter (`painter.rs`), the
+  device-pixel snapping (`snap.rs`) and the frame gate (`frame_gate.rs`).
+- `src/surfaces.rs` + `src/surfaces/` — the pure layout-validation gate, the
+  publish verdict and the held-gap rules (`gap.rs`, `publish.rs`); the former
+  GTK layer-shell surfaces now live in the panel thread
+  (`src/panel/wayland_side/`).
+- `src/anim.rs` — the animated width transition's pure tween step.
+- `src/pty.rs` + `src/pty/` — the host-supplied pty fd, winsize and `SIGWINCH`,
+  plus the calloop read source (`calloop.rs`).
+- `src/fontconfig.rs` + `src/fontconfig/` — the Ghostty font and theme reader.
 - `src/nerd_font.rs` — the generated glyph-constraint table.
 - `src/guard.rs` — the shared panic guard.
-- `src/ghostty_sys/` — the hand-written `extern` declarations for the pinned
-  libghostty-vt (the only module that talks to C).
+- `src/ghostty_sys.rs` + `src/ghostty_sys/` — the hand-written `extern`
+  declarations for the pinned libghostty-vt (the only module that talks to C).
 - `src/main.rs` — the `pinwin` host program: runs a command in a panel over
-  the library API, owning the pty, the child's process and the focus socket;
-  its pure parts live in `src/cli.rs` (arguments, `--focus`), `src/ipc.rs`
-  (the focus socket's identity, bind, listener and client) and
+  the library API, owning the pty, the child's process and the toggle socket;
+  its pure parts live in `src/cli.rs` (arguments, `--toggle`), `src/ipc.rs`
+  (the toggle socket's identity, bind, listener and client) and
   `src/settings.rs` (the environment contract).
-- `examples/demo.rs` — the dev-only demo example, never installed.
+- `examples/demo/` — the dev-only demo example, never installed; it drives,
+  through the `Panel` API, the live niri checks: hide/show toggle `t`,
+  cover/inset/gutter toggles, `DEMO_ZONE`, `DEMO_KEYBOARD` and `DEMO_DENSE`.
 - `build.rs` — fetches and builds the pinned libghostty-vt.
 
 `openspec/specs/pinwin-panel/spec.md` is the behaviour spec.
 `openspec/changes/archive/` holds the archived design decisions code comments
 reference as D-numbers; the port's own decisions are
 `openspec/changes/port-to-rust/design.md` (D1–D11) and new code cites them as
-`port-to-rust D<n>`. `pinwin.sh` is the legacy pre-library bash script, kept
-for reference only. `README.md` documents installation, library use,
-behaviour, architecture and known caveats.
+`port-to-rust D<n>`. The Wayland rewrite's decisions are in
+`openspec/changes/replace-gtk-with-wayland/design.md` (D1–D11), cited as
+`replace-gtk-with-wayland D<n>`. `pinwin.sh` is the legacy pre-library bash
+script, kept for reference only. `README.md` documents installation, library
+use, behaviour, architecture and known caveats.
 
 ## Build, Test, and Development Commands
 
@@ -79,9 +90,9 @@ exception (generated table). The build needs Zig 0.16 on PATH: `build.rs` fetche
 pinned libghostty-vt commit and builds ghostty's own static VT library with
 `zig build`, so a cold cache also needs `git` and network access. Set
 `PINWIN_GHOSTTY_SRC=<dir>` to build against an existing git checkout instead of
-fetching; its `HEAD` must be the pinned commit. The system GTK4,
-gtk4-layer-shell-0 and pangocairo are required. Live runs require niri. If
-touching the legacy `pinwin.sh`, check it with `bash -n pinwin.sh`.
+fetching; its `HEAD` must be the pinned commit. The system needs libxkbcommon
+and fontconfig. Live runs require a Wayland compositor with wlr-layer-shell
+(niri). If touching the legacy `pinwin.sh`, check it with `bash -n pinwin.sh`.
 
 ## Coding Style & Naming Conventions
 
@@ -96,23 +107,24 @@ Both are excluded in `scripts/check-code-file-lines.sh`. Public
 types keep their fields private and expose constructors and accessors, so the
 invariant lives in the field type rather than a runtime check (`port-to-rust`
 D6). Panics must never cross the library's API: run any body that can panic —
-the public `Panel` entry points, GTK/glib closures and `extern "C"` terminal
-callbacks — through the shared `guard` helper (`src/guard.rs`), which latches a
-poisoned flag (`port-to-rust` D5). Quote path and command arguments where
-expansion should remain one argument. Keep comments focused on niri, GTK or
-timing behaviour that is not obvious from the code, and keep D-number
-references pointing at the design they came from (an archived change, or
-`port-to-rust` for the port's own decisions).
+the public `Panel` entry points, calloop callbacks and Wayland event handlers,
+and `extern "C"` terminal callbacks — through the shared `guard` helper
+(`src/guard.rs`), which latches a poisoned flag (`port-to-rust` D5). Quote
+path and command arguments where expansion should remain one argument. Keep
+comments focused on niri, Wayland or timing behaviour that is not obvious
+from the code, and keep D-number references pointing at the design they came
+from (an archived change, or the design of the change that added the code:
+`port-to-rust` or `replace-gtk-with-wayland`).
 
 ## Testing Guidelines
 
 Run `cargo test` after any change; it covers layout validation, the pty yield
 decision, the font/theme parser, the tween step, the FFI layouts against the
 pinned headers, and the `Panel` handle's error and panic-containment paths.
-Build the display-free inner handle rather than GTK for handle tests, and take
-the fd and terminal as parameters in `pty`/`term` tests, so the tests run
-without a display (`port-to-rust` D10). Tests that need a real compositor or
-GTK session are `#[ignore]`d and run explicitly. Exercise visual or
+Build the display-free inner handle rather than a panel thread for handle
+tests, and take the fd and terminal as parameters in `pty`/`term` tests, so
+the tests run without a display (`port-to-rust` D10). Tests that need a real
+compositor are `#[ignore]`d and run explicitly. Exercise visual or
 behavioural changes with the demo example in a running niri session (`cargo
 run --example demo`; `DEMO_DENSE=1` adds a full grid with kitty images and
 resize traffic). Verify launch, width animation both ways, focus accent and

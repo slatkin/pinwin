@@ -3,10 +3,11 @@
 //! moves them, and what a frame draws. GTK-free so every decision is unit
 //! tested here, like [`crate::layout`].
 //!
-//! The state lives on the [`Surfaces`] struct as a `Cell`; these helpers
+//! The state lives on the panel thread's surface state as a `Cell`; these
+//! helpers
 //! own the decisions about it — when a publish moves it and what a frame
-//! draws from it — while `Surfaces` itself only stores and fetches what
-//! they compute.
+//! draws from it — while the surface state itself only stores and fetches
+//! what they compute.
 
 use super::metrics_valid;
 use crate::layout::{Coverage, Layout, Side};
@@ -16,15 +17,29 @@ use crate::layout::{Coverage, Layout, Side};
 /// (overlay-expand D5): no pushing layout has ever applied, so there is no
 /// earlier pushing width to hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct HeldGap {
+pub(crate) struct HeldGap {
     side: Side,
     zone: i32,
+}
+
+impl HeldGap {
+    /// The side the reserve surface anchors to.
+    #[must_use]
+    pub(crate) const fn side(self) -> Side {
+        self.side
+    }
+
+    /// The exclusive zone the reserve surface carries.
+    #[must_use]
+    pub(crate) const fn zone(self) -> i32 {
+        self.zone
+    }
 }
 
 /// The held gap a panel starts with (overlay-expand D2, D5): a pushing start
 /// reserves its own strip from the first frame; a covering start holds an
 /// empty strip on its side until the first pushing apply establishes one.
-pub(super) fn start_held_gap(layout: Layout, cell_w: i32) -> HeldGap {
+pub(crate) fn start_held_gap(layout: Layout, cell_w: i32) -> HeldGap {
     let zone = match layout.coverage() {
         Coverage::Push => pushing_strip(layout, cell_w).unwrap_or(0),
         Coverage::Cover => 0,
@@ -91,13 +106,35 @@ fn pushing_strip_at(layout: Layout, panel_px: i32) -> Option<i32> {
         .map(|g| g.reservation())
 }
 
-/// The decision half of [`Surfaces::publish`] (overlay-expand D4), split out
+/// [`reserve_gap`] over the held gap's plain parts, for a caller that holds
+/// the side and zone as separate values: the wayland tween's per-frame crop
+/// plan (replace-gtk-with-wayland row 6.2) reads them from the panel state,
+/// and the decision itself stays here, stated once.
+pub fn reserve_gap_parts(
+    held_side: Side,
+    held_zone: i32,
+    gap_tweening: bool,
+    layout: Layout,
+    panel_px: i32,
+) -> (Side, i32) {
+    reserve_gap(
+        HeldGap {
+            side: held_side,
+            zone: held_zone,
+        },
+        gap_tweening,
+        layout,
+        panel_px,
+    )
+}
+
+/// The decision half of a publish (overlay-expand D4), split out
 /// so the reject-before-mutate ordering is unit testable without a display:
 /// validate the staged layout against the live output metrics first, and only
 /// a validated layout yields the staged mutation — the applied layout, column
 /// count and held gap. `None` is a rejected publish, which leaves the applied
 /// layout and the held gap untouched.
-pub(super) fn staged_publish(
+pub(crate) fn staged_publish(
     output_w: i32,
     output_h: i32,
     cell_w: i32,
@@ -121,7 +158,9 @@ pub(super) fn staged_publish(
 /// mutates the held gap, so a covering excursion's shrink-back — whose
 /// target strip equals the held one — holds the gap still, while a pure
 /// pushing expand, whose strip is new, reflows the tiles alongside.
-pub(super) fn gap_tween_decision(
+/// `pub(crate)`: the wayland apply's staging half reads the same decision
+/// (replace-gtk-with-wayland row 6.2), so it stays stated once here.
+pub(crate) fn gap_tween_decision(
     gap_rests_at: i32,
     animate: bool,
     layout: Layout,

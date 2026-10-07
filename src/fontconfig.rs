@@ -4,15 +4,16 @@
 //! This is the Rust port of `fontconfig.c` (port-to-rust D3). The parsing
 //! functions are pure: they take the file contents as a `&str` and return
 //! plain data, so they are testable without a display or a config file. The
-//! thin wrappers at the bottom resolve the XDG config paths and read the
-//! files.
+//! thin wrappers that resolve the XDG config paths and read the files live in
+//! the `load` submodule.
 //!
 //! The C parser is deliberately quirky in places (it was written against
 //! Ghostty's real config syntax, and `sscanf` does the tokenizing); the port
 //! reproduces those quirks rather than "fixing" them, and the tests pin them.
 
-use std::fs;
-use std::path::{Path, PathBuf};
+mod load;
+
+pub use load::{load_font_config, load_theme_colours};
 
 /// The fallback font family when the Ghostty config names none.
 pub const DEFAULT_FONT_FAMILY: &str = "monospace";
@@ -136,68 +137,6 @@ pub fn parse_theme_file(contents: &str, colours: &mut ThemeColours) {
     for line in contents.split('\n') {
         apply_theme_colour_line(line, colours);
     }
-}
-
-/// Load the font from `$XDG_CONFIG_HOME/ghostty/config` (default
-/// `~/.config/ghostty/config`); a missing or unreadable file falls back to
-/// [`FontConfig::default`] (``monospace 11``).
-#[must_use]
-pub fn load_font_config() -> FontConfig {
-    load_font_config_at(&user_config_dir())
-}
-
-/// Load the theme colours from the Ghostty config and, when it names a
-/// `theme`, the matching theme file (user themes first, then
-/// `/usr/share/ghostty/themes`); a missing config leaves the defaults.
-#[allow(clippy::must_use_candidate, reason = "approved #13: pure loader")]
-pub fn load_theme_colours() -> ThemeColours {
-    load_theme_colours_at(&user_config_dir())
-}
-
-fn load_font_config_at(config_dir: &Path) -> FontConfig {
-    let path = config_dir.join("ghostty").join("config");
-    match read_text(&path) {
-        Some(contents) => parse_font_config(&contents),
-        None => FontConfig::default(),
-    }
-}
-
-fn load_theme_colours_at(config_dir: &Path) -> ThemeColours {
-    let mut colours = ThemeColours::default();
-
-    let config_path = config_dir.join("ghostty").join("config");
-    let Some(contents) = read_text(&config_path) else {
-        return colours;
-    };
-    let Some(theme) = parse_theme_config(&contents, &mut colours) else {
-        return colours;
-    };
-
-    // Theme files live next to the config or in Ghostty's install directory.
-    let user_theme = config_dir.join("ghostty").join("themes").join(&theme);
-    let theme_contents = read_text(&user_theme)
-        .or_else(|| read_text(&Path::new("/usr/share/ghostty/themes").join(&theme)));
-    if let Some(contents) = theme_contents {
-        parse_theme_file(&contents, &mut colours);
-    }
-
-    colours
-}
-
-/// `g_get_user_config_dir`: `$XDG_CONFIG_HOME` when set and non-empty (`GLib`
-/// uses it verbatim, even when relative), else `$HOME/.config`, falling back
-/// to the passwd entry when `$HOME` is unset. Delegating keeps the fallback
-/// identical to the C code; the parsing functions stay pure.
-fn user_config_dir() -> PathBuf {
-    gtk4::glib::user_config_dir()
-}
-
-/// `g_file_get_contents`, loosely: read the file if it exists and is
-/// readable. Non-UTF-8 bytes are replaced rather than treated as a missing
-/// file, since the C parser is byte-oriented.
-fn read_text(path: &Path) -> Option<String> {
-    let bytes = fs::read(path).ok()?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// `theme_colour_parse`: read a `background` / `foreground` line of a theme
@@ -510,14 +449,6 @@ fn parse_hex_float(rest: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-
-    fn temp_config_dir(tag: &str) -> PathBuf {
-        let dir = env::temp_dir().join(format!("pinwin-fontconfig-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join("ghostty").join("themes")).unwrap();
-        dir
-    }
 
     #[test]
     fn configured_font_family_and_size() {
@@ -677,55 +608,6 @@ mod tests {
         // Trailing text after the colour token is ignored.
         parse_theme_file("background = #1e1e2e trailing\n", &mut colours);
         assert_eq!(colours.background, [0x1e, 0x1e, 0x2e]);
-    }
-
-    #[test]
-    fn load_resolves_config_and_theme_files() {
-        let dir = temp_config_dir("resolve");
-        fs::write(
-            dir.join("ghostty").join("config"),
-            "font-family = \"Test Mono\"\nfont-size = 9\ntheme = mytheme\n",
-        )
-        .unwrap();
-        fs::write(
-            dir.join("ghostty").join("themes").join("mytheme"),
-            "background = #102030\nforeground = #405060\n",
-        )
-        .unwrap();
-
-        let font = load_font_config_at(&dir);
-        assert_eq!(font.family.as_deref(), Some("Test Mono"));
-        assert_eq!(font.size, 9.0);
-
-        let colours = load_theme_colours_at(&dir);
-        assert_eq!(colours.background, [0x10, 0x20, 0x30]);
-        assert_eq!(colours.foreground, [0x40, 0x50, 0x60]);
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_without_config_uses_defaults() {
-        let dir = temp_config_dir("missing");
-        let font = load_font_config_at(&dir);
-        assert_eq!(font, FontConfig::default());
-        assert_eq!(font.effective_family(), "monospace");
-        assert_eq!(font.size, 11.0);
-        assert_eq!(load_theme_colours_at(&dir), ThemeColours::default());
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn missing_theme_file_keeps_defaults() {
-        let dir = temp_config_dir("no-theme-file");
-        fs::write(
-            dir.join("ghostty").join("config"),
-            "theme = does-not-exist-anywhere\n",
-        )
-        .unwrap();
-        // The user theme and /usr/share both miss; defaults survive.
-        assert_eq!(load_theme_colours_at(&dir), ThemeColours::default());
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

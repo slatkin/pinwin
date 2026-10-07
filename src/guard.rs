@@ -2,9 +2,11 @@
 //! boundary that must not unwind, with a shared poisoned latch.
 //!
 //! `Cargo.toml` sets `panic = "unwind"` in every profile, so a panic caught
-//! here unwinds out of the guarded body only; letting one cross the GTK/glib
-//! or libghostty C frames instead is undefined behaviour and aborts. Every
-//! module that registers GTK closures or `extern "C"` trampolines runs its
+//! here unwinds out of the guarded body only; letting one cross a foreign
+//! C frame — libghostty's FFI or a Wayland or calloop callback —
+//! instead is undefined behaviour and aborts. Every
+//! module that registers `extern "C"` trampolines or event-loop callbacks
+//! runs its
 //! bodies through [`guard`] or [`guard_default`] with one shared
 //! [`Poisoned`] flag, so a single panic stops that panel's glue code instead
 //! of killing the host.

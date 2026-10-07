@@ -337,9 +337,9 @@ impl Accent {
 
 /// The panel's keyboard interactivity mode, fixed at start time: no runtime
 /// override exists. In `on-demand` mode the panel keeps and gives up the
-/// keyboard by the click rules, and the host can add focus on request with
-/// [`Panel::request_focus`](crate::Panel::request_focus); a focus request in
-/// the `none` and `exclusive` modes is a no-op `Ok`.
+/// keyboard by the click rules; a toggle shows the panel in `on-demand`
+/// interactivity, so a compositor that focuses a newly mapped surface gives
+/// it the keyboard (replace-gtk-with-wayland D4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Keyboard {
     None,

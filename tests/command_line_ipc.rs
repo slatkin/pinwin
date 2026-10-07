@@ -1,14 +1,17 @@
 //! The `pinwin` binary's command-line IPC end to end, without a display
-//! (`keyboard-focus-request` rows 3.4 and 3.5). Both tests redirect the
-//! socket path into a private runtime directory, so they never touch the
-//! real session's sockets:
+//! (`keyboard-focus-request`'s socket plumbing, the toggle protocol of
+//! `replace-gtk-with-wayland` D4). The tests redirect the socket path into
+//! a private runtime directory, so they never touch the real session's
+//! sockets:
 //!
 //! - After `pinwin true` exits, the socket file the host bound is gone. The
 //!   panel cannot start here (the temporary runtime directory has no
 //!   Wayland socket), which still covers the row: the host removes the file
 //!   on the shutdown path it takes, whatever the child's outcome.
-//! - `pinwin --focus notes` with no host prints a `pinwin:` message on
-//!   stderr and exits 1.
+//! - `pinwin --toggle notes` with no instance answers exit 1 with a
+//!   `pinwin:` message on stderr.
+//! - `pinwin --toggle a/b` prints a message naming the option and exits 2
+//!   without contacting any instance.
 
 use std::fs;
 use std::path::PathBuf;
@@ -32,7 +35,7 @@ fn temp_dir(tag: &str) -> PathBuf {
 
 /// The environment for a display-free run: the runtime directory is the
 /// scratch dir (no Wayland socket in it) and the display names a file that
-/// does not exist, so GTK cannot open a display anywhere.
+/// does not exist, so the panel cannot open a display anywhere.
 fn display_free_env(command: &mut Command, dir: &PathBuf) {
     command
         .env("XDG_RUNTIME_DIR", dir)
@@ -64,23 +67,54 @@ fn the_socket_file_is_gone_after_pinwin_true_exits() {
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 
+/// With no instance listening on the name, the client reports the request
+/// as not answered and exits 1: the socket path resolved (the runtime
+/// directory is set), so this is the no-host status, not the environment
+/// error's exit 2.
 #[test]
-fn the_focus_client_prints_a_message_and_exits_1_without_a_host() {
-    let dir = temp_dir("focus");
+fn the_toggle_client_without_an_instance_exits_1() {
+    let dir = temp_dir("no-instance");
 
     let output = {
         let mut command = Command::new(env!("CARGO_BIN_EXE_pinwin"));
         display_free_env(&mut command, &dir);
         command
-            .arg("--focus")
+            .arg("--toggle")
             .arg("notes")
             .output()
             .expect("run pinwin")
     };
 
-    assert_eq!(output.status.code(), Some(1), "no host, status");
+    assert_eq!(output.status.code(), Some(1), "no instance, status");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("pinwin:"), "message on stderr: {stderr}");
-    assert!(stderr.contains("notes"), "the name is in the message");
+    assert!(
+        stderr.contains("pinwin:") && stderr.contains("no pinwin is listening"),
+        "the failure is reported on stderr: {stderr}"
+    );
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// An invalid name after `--toggle` exits 2 naming the option, before any
+/// socket path is resolved and without contacting any instance.
+#[test]
+fn the_toggle_client_rejects_an_invalid_name_with_exit_2() {
+    let dir = temp_dir("bad-name");
+
+    let output = {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pinwin"));
+        display_free_env(&mut command, &dir);
+        command
+            .arg("--toggle")
+            .arg("a/b")
+            .output()
+            .expect("run pinwin")
+    };
+
+    assert_eq!(output.status.code(), Some(2), "invalid name, status");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("pinwin: --toggle:"),
+        "the rejection names the option: {stderr}"
+    );
     fs::remove_dir_all(&dir).expect("cleanup");
 }
