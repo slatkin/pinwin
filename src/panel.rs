@@ -248,8 +248,10 @@ impl Panel {
     /// maps the panel again — in `on-demand` mode with `on-demand` keyboard
     /// interactivity, so a compositor that focuses a newly mapped surface
     /// gives it the keyboard without a click — draws the current grid and
-    /// restores the held reservation. Neither direction changes the terminal
-    /// grid or the pty window size on its own. While hidden, an apply
+    /// restores the held reservation. Neither direction resizes the terminal
+    /// grid or the pty window size on its own; the one exception is a hide
+    /// that ends a running width animation, whose deferred grid resize lands
+    /// at the target — the animation's own end state. While hidden, an apply
     /// validates and stores the layout with no animation; the next show
     /// uses it.
     ///

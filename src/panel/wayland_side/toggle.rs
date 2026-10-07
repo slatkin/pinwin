@@ -112,6 +112,16 @@ impl PanelState {
                 .expect("the session a reserve is recreated in");
             self.create_reserve(&output, &qh);
         }
+        // The show-time configure must attach a buffer even for an idle
+        // panel (row 9.1, D4): the remap happens when that configure draws,
+        // and a frame gate whose last frame was clean plans nothing — the
+        // panel would stay unmapped until pty output or a focus change.
+        // Forcing the next frame to repaint everything makes the show's
+        // configure always present. The gate lives on the thread's one
+        // renderer, so the flag survives until that draw consumes it.
+        if let Some(render) = &self.render {
+            render.renderer.borrow_mut().invalidate();
+        }
         if let Some(session) = self.session.as_mut()
             && let Some(surfaces) = session.surfaces.as_mut()
         {
@@ -132,16 +142,111 @@ impl PanelState {
 
 #[cfg(test)]
 mod tests {
+    use super::super::renderer::{FontSetup, Renderer};
+    use super::super::tween_draw::TweenRender;
     use super::super::{Inner, Startup};
     use super::*;
+    use crate::fontconfig::{FontConfig, ThemeColours};
     use crate::guard::Poisoned;
     use crate::layout::{CellSize, Keyboard, Layout, OutputSize, Side};
     use crate::panel::handshake::Handshake;
+    use crate::render::font::FontBook;
+    use crate::render::frame_gate::{Damage, FrameOutcome};
+    use crate::render::geom::{FrameInput, device_px};
     use crate::surfaces::PublishOutcome;
+    use crate::term::{PngDecoder, PtySink, Terminal};
+    use std::cell::RefCell;
     use std::num::NonZeroU16;
+    use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
+
+    /// The family the tests pin; CI installs it. The same family the
+    /// renderer tests pin, and the same skip when the machine lacks it.
+    const FAMILY: &str = "JetBrainsMono Nerd Font";
+    /// The size in points the tests run at: the Ghostty default 11.
+    const SIZE: f64 = 11.0;
+    /// The test theme, distinct from every colour the tests draw.
+    const THEME: ThemeColours = ThemeColours {
+        background: [10, 20, 30],
+        foreground: [200, 150, 100],
+    };
+
+    /// A sink with nowhere to write (the tests never write to a pty).
+    struct NullSink;
+    impl PtySink for NullSink {
+        fn write_pty(&mut self, _data: &[u8]) {}
+    }
+
+    /// Decodes nothing; these tests place no kitty images.
+    struct NoDecoder;
+    impl PngDecoder for NoDecoder {
+        fn decode_png(&mut self, _data: &[u8]) -> Option<crate::term::DecodedPng> {
+            None
+        }
+    }
+
+    /// The test family's font setup, or `None` (printed) when the machine
+    /// lacks it — the font-dependent tests skip with a printed message only
+    /// then; a broken `FontBook` or a failed lookup is an `expect`, so a
+    /// regression cannot hide behind "not installed".
+    fn setup() -> Option<FontSetup> {
+        let book = FontBook::new().expect("the font book opens");
+        if !book.has_family(FAMILY) {
+            println!("skipped: {FAMILY} is not installed");
+            return None;
+        }
+        Some(FontSetup::resolve_over(book, &config()).expect("the family resolves"))
+    }
+
+    /// The config the tests resolve: the test family at the test size.
+    fn config() -> FontConfig {
+        FontConfig {
+            family: Some(FAMILY.to_owned()),
+            size: SIZE,
+        }
+    }
+
+    /// The test setup's cell as the plain `(width, height)` pair.
+    fn cell_of(setup: &FontSetup) -> (i32, i32) {
+        let cell = setup.cell().expect("the cell fits");
+        (cell.width().get(), cell.height().get())
+    }
+
+    /// A renderer over `setup`'s font at scale 1, with the test theme.
+    fn renderer(setup: FontSetup) -> Renderer {
+        Renderer::new(setup, 1.0, THEME, None).expect("the renderer builds")
+    }
+
+    /// An 8-column, 4-row terminal at the `cell` pitch, with a line of text
+    /// pushed into its first row.
+    fn terminal(cell: (i32, i32)) -> Rc<RefCell<Terminal>> {
+        let mut terminal = Terminal::new(Poisoned::new(), NullSink, NoDecoder, || {});
+        assert!(
+            terminal.push_size(8, 4, cell.0, cell.1),
+            "the test grid pushes"
+        );
+        Rc::new(RefCell::new(terminal))
+    }
+
+    /// Frame input for the 8-column, 4-row frame at `cell`, scale 1.
+    fn frame(cell: (i32, i32)) -> FrameInput {
+        let (cw, ch) = cell;
+        let (lw, lh) = (8 * cw, 4 * ch);
+        let device_w = u32::try_from(device_px(f64::from(lw))).expect("frame fits u32");
+        let device_h = u32::try_from(device_px(f64::from(lh))).expect("frame fits u32");
+        FrameInput::new(
+            u32::try_from(lw).expect("logical fits u32"),
+            u32::try_from(lh).expect("logical fits u32"),
+            device_w,
+            device_h,
+            0.0,
+            false,
+            THEME,
+            None,
+        )
+    }
 
     /// A startup for the tests; the thread does not touch the pty fd until
     /// the surfaces push a grid, so a placeholder fd is fine here.
@@ -316,5 +421,87 @@ mod tests {
             "the rejected layout is not stored"
         );
         assert_eq!(state.held.zone(), 360, "the held gap is untouched");
+    }
+
+    /// A configure that arrives while hidden records the size and drives
+    /// the grid sizing — a new height resizes the grid and the pty as any
+    /// configure does — and the panel stays hidden (D4): the stale configure
+    /// queued before the hide's commit maps nothing, and the show's own
+    /// configure draws and maps later.
+    #[test]
+    fn a_hidden_configure_records_the_height_and_pushes_the_grid() {
+        let mut state = headless_state();
+        state.sizing.configure(1080, &mut |_| {});
+        state.toggle();
+        assert_eq!(state.visibility, Visibility::Hidden);
+
+        let mut pushed: Vec<crate::panel::wayland_side::sizing::Grid> = Vec::new();
+        state.configure_hidden_panel(1920, 1040, &mut |grid| pushed.push(grid));
+        assert_eq!(
+            state.panel_size,
+            Some((1920, 1040)),
+            "the hidden configure records the size"
+        );
+        assert_eq!(pushed.len(), 1, "a new height resizes the grid and the pty");
+        assert_eq!(pushed[0].rows(), 1040 / 16, "the rows follow the height");
+        assert_eq!(
+            state.visibility,
+            Visibility::Hidden,
+            "the configure maps nothing"
+        );
+
+        // A repeat configure at the same height pushes nothing more.
+        let mut pushed: Vec<crate::panel::wayland_side::sizing::Grid> = Vec::new();
+        state.configure_hidden_panel(1920, 1040, &mut |grid| pushed.push(grid));
+        assert!(pushed.is_empty(), "the same height pushes nothing");
+    }
+
+    /// A show invalidates the frame gate (D4): after a clean frame, a hide
+    /// and a show make the show-time configure's draw present anyway — an
+    /// idle panel would otherwise stay unmapped until pty output or a focus
+    /// change remounted the frame. The draw here is the same gated draw the
+    /// configure path runs ([`super::super::present`]).
+    #[test]
+    fn a_show_invalidates_the_gate_so_an_idle_panel_maps() {
+        let Some(setup) = setup() else {
+            return;
+        };
+        let cell = cell_of(&setup);
+        let mut state = headless_state();
+        let term = terminal(cell);
+        term.borrow_mut().push_pty_data(b"\x1b[?25lhi");
+        let test_frame = frame(cell);
+        state.render = Some(TweenRender {
+            terminal: Rc::clone(&term),
+            renderer: Rc::new(RefCell::new(renderer(setup))),
+        });
+
+        // Two identical draws: the second plans nothing, the gate's clean
+        // verdict — the case that left a re-shown idle panel unmapped.
+        {
+            let panel = state.render.as_ref().expect("the render state");
+            let mut renderer = panel.renderer.borrow_mut();
+            let _first = renderer.draw(&mut term.borrow_mut(), &test_frame);
+            assert_eq!(
+                renderer.draw(&mut term.borrow_mut(), &test_frame),
+                FrameOutcome::Clean,
+                "the idle panel's gate is clean"
+            );
+        };
+
+        // Hide and show: the show invalidates, so the next draw — the
+        // show-time configure's — presents the whole surface.
+        state.toggle();
+        state.toggle();
+        let panel = state.render.as_ref().expect("the render state");
+        let (w, h) = test_frame.device_size();
+        assert_eq!(
+            panel
+                .renderer
+                .borrow_mut()
+                .draw(&mut term.borrow_mut(), &test_frame),
+            FrameOutcome::Damage(Damage::whole_surface(w, h)),
+            "the shown panel's configure draw presents"
+        );
     }
 }

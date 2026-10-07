@@ -393,6 +393,18 @@ impl PanelState {
                 .as_ref()
                 .is_some_and(|surfaces| surfaces.is_reserve(layer));
         if is_panel {
+            // A configure that arrives while hidden (row 9.1, D4): a stale
+            // one queued before the hide's null-buffer commit must not remap
+            // the panel — the hidden repaint service would swallow every
+            // later frame and the panel would freeze, wrongly mapped. The
+            // height is recorded and the grid sizing runs (a new height
+            // resizes the grid and the pty as any configure does), but
+            // nothing is drawn or mapped; the show's own configure does
+            // that.
+            if self.visibility == Visibility::Hidden {
+                self.configure_hidden_panel(width, height, &mut push);
+                return;
+            }
             if self.tween_draw.is_some() {
                 // A tween owns the panel surface's size, viewport and buffer
                 // commits until it finishes (row 6.2): this configure only
@@ -444,6 +456,13 @@ impl PanelState {
             }
             self.configure_grid(height, &mut push);
         } else if is_reserve && let Some(session) = self.session.as_mut() {
+            // A stale configure of the reserve while hidden (row 9.1) maps
+            // nothing: attaching the transparent buffer here would remap the
+            // reservation behind the hide's back, and the show's own
+            // configure attaches it again.
+            if self.visibility == Visibility::Hidden {
+                return;
+            }
             if let Some((width_i, height_i)) = viewport_destination(width, height) {
                 session
                     .scale
@@ -453,6 +472,23 @@ impl PanelState {
                 surfaces.reserve_configured(width, height);
             }
         }
+    }
+
+    /// One configure of the panel surface while hidden (row 9.1, D4):
+    /// record the size and drive the grid sizing — a new height resizes
+    /// the grid and the pty as any configure does, and the design's
+    /// "a hidden panel gets no configure" keeps its height until the next
+    /// show — but draw and map nothing: the show's own configure draws the
+    /// grid and maps the panel. Display-free seam (`port-to-rust` D10): the
+    /// tests observe the recorded size and the pushes without a session.
+    pub(crate) fn configure_hidden_panel(
+        &mut self,
+        width: u32,
+        height: u32,
+        push: &mut dyn FnMut(Grid),
+    ) {
+        self.panel_size = Some((width, height));
+        self.configure_grid(height, push);
     }
 
     /// The grid size decision for one configure height (D3, row 3.3): the
