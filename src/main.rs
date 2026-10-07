@@ -9,6 +9,7 @@
 //! pinwin htop
 //! pinwin --toggle [name]   # asks the named running panel to show or hide
 //!                          # itself, for a niri key binding
+//! pinwin --show [name]     # shows the named running panel if it is hidden
 //! ```
 //!
 //! A thin host over the library API ([`pinwin::panel`]), the port of
@@ -24,8 +25,7 @@ use std::ffi::{CString, OsString};
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use pinwin::layout::{Layout, Side};
 use pinwin::panel::{Panel, PinwinError, Startup};
@@ -34,10 +34,7 @@ mod cli;
 mod settings;
 
 use cli::{Mode, default_command, parse_args};
-use pinwin::instance::{
-    InstanceError, InstanceName, Request, SendError, SocketFile, bind_instance_socket, send,
-    serve_requests, socket_path_from_env,
-};
+use pinwin::instance::{InstanceError, InstanceName, InstanceSocket, Request, SendError, send};
 use settings::{Settings, Zone, read_settings};
 
 /// The child's process id, read by the signal handler; zero means "no child
@@ -171,15 +168,16 @@ fn send_exit(result: &Result<(), SendError>) -> i32 {
     }
 }
 
-/// The `--toggle` client side (replace-gtk-with-wayland D4): ask the host
-/// that owns the name's socket to toggle its panel and report the reply.
-/// The client reads no environment besides the display — the request itself
+/// The `--toggle`/`--show` client side (replace-gtk-with-wayland D4;
+/// `--show` is new with `serve-instance-socket`): ask the host that owns the
+/// name's socket to toggle or show its panel and report the reply. The
+/// client reads no environment besides the display — the request itself
 /// carries nothing. `ok` exits 0, a missing or failing host exits 1, and an
 /// environment error — an unusable socket path — exits 2 like the other
 /// environment errors.
-fn run_toggle_client(name: Option<InstanceName>) -> i32 {
+fn run_client(name: Option<InstanceName>, request: Request) -> i32 {
     let name = name.unwrap_or_else(InstanceName::default_instance);
-    let result = send(&name, Request::Toggle);
+    let result = send(&name, request);
     if let Err(error) = &result {
         eprintln!("pinwin: {error}");
     }
@@ -205,11 +203,11 @@ fn run() -> i32 {
             return 2;
         }
     };
-    // The toggle client asks the host that owns the name's socket to
-    // toggle its panel and reports the reply (replace-gtk-with-wayland
-    // D4); it reads no environment besides the display.
+    // The client asks the host that owns the name's socket to toggle or
+    // show its panel and reports the reply (replace-gtk-with-wayland D4);
+    // it reads no environment besides the display.
     let command = match mode {
-        Mode::Toggle { name } => return run_toggle_client(name),
+        Mode::Client { request, name } => return run_client(name, request),
         Mode::Host { command } => command,
     };
     let command = if command.is_empty() {
@@ -220,19 +218,26 @@ fn run() -> i32 {
     host_panel(&settings, &command)
 }
 
+/// The host's report for a failed bind: every [`InstanceError`] keeps the
+/// environment errors' exit 2, and the message carries the `pinwin:` prefix.
+fn bind_error(error: &InstanceError) -> (i32, String) {
+    (2, format!("pinwin: {error}"))
+}
+
 /// Host the panel over the command's pty (the `Mode::Host` path): bind the
-/// instance's focus socket, fork the command onto a new pty, start the panel
-/// on the master and serve focus requests until the child exits. Returns the
-/// host's exit status.
+/// instance socket, fork the command onto a new pty, and start the panel on
+/// the master with the bound socket — the panel's own listener thread serves
+/// the requests until the handle drops. Returns the host's exit status.
 fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
-    // The focus socket must be ours before any surface opens: a live host
+    // The instance socket must be ours before any surface opens: a live host
     // with the same name on this display makes this start exit 2 instead
     // (keyboard-focus-request design).
-    let (listener, socket_file) = match bind_focus_socket(&settings.name) {
-        Ok(listener) => listener,
-        Err(message) => {
+    let socket = match InstanceSocket::bind(&settings.name) {
+        Ok(socket) => socket,
+        Err(error) => {
+            let (status, message) = bind_error(&error);
             eprintln!("{message}");
-            return 2;
+            return status;
         }
     };
 
@@ -297,14 +302,19 @@ fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
         libc::signal(libc::SIGTERM, on_term as *const () as libc::sighandler_t);
     };
 
-    // Start the panel on the pty master. On failure the child is hung up and
-    // reaped and the host exits 1.
-    let panel = match Panel::start(Startup::new(
-        master.as_raw_fd(),
-        layout,
-        settings.keyboard,
-        settings.accent,
-    )) {
+    // Start the panel on the pty master, with the bound socket: the panel's
+    // listener thread takes the requests over from here. On failure the child
+    // is hung up and reaped and the host exits 1; dropping the failed start's
+    // startup removes the socket file, so the name is free again.
+    let panel = match Panel::start(
+        Startup::new(
+            master.as_raw_fd(),
+            layout,
+            settings.keyboard,
+            settings.accent,
+        )
+        .with_instance(socket),
+    ) {
         Ok(panel) => panel,
         Err(error) => {
             let reason = match error {
@@ -316,68 +326,13 @@ fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
             return 1;
         }
     };
-    let status = serve_toggle_until_exit(&panel, &listener, socket_file, pid);
-    // Dropping the handle closes the panel (the C's `pinwin_stop`).
+    // The panel serves the socket until the handle drops; the host only
+    // waits for its child.
+    let status = wait_for_child(pid);
+    // Dropping the handle closes the panel and removes the socket file (the
+    // C's `pinwin_stop`).
     drop(panel);
     child_exit_status(status)
-}
-
-/// Serve toggle requests on the bound socket while the child runs
-/// (replace-gtk-with-wayland D4): a scoped thread borrows the panel — the
-/// request is bounded like `Panel::apply_layout` — and ends within one
-/// accept poll of the shutdown flag set once the child exits. The socket
-/// file goes with it: the host removes the file it created. Returns the
-/// child's raw wait status.
-fn serve_toggle_until_exit(
-    panel: &Panel,
-    listener: &net::UnixListener,
-    socket_file: SocketFile,
-    pid: i32,
-) -> i32 {
-    let shutdown = AtomicBool::new(false);
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            serve_requests(
-                listener,
-                &|request| match request {
-                    Request::Toggle => panel.toggle(),
-                    // The panel's show command is task 3.1; until then a show
-                    // request is refused like an unknown line, so the binary's
-                    // behavior stays what it is today.
-                    Request::Show => Err(PinwinError::Internal),
-                },
-                &shutdown,
-            );
-        });
-        let status = wait_for_child(pid);
-        shutdown.store(true, Ordering::Relaxed);
-        drop(socket_file);
-        status
-    })
-}
-
-/// Bind the focus socket for this instance, before any surface opens: a live
-/// host with the same name on this display makes the start exit 2 instead
-/// (keyboard-focus-request design). Returns the listener together with the
-/// socket file's path, which the host removes after its child exits. Errors
-/// carry the full `pinwin:` message.
-fn bind_focus_socket(name: &InstanceName) -> Result<(net::UnixListener, SocketFile), String> {
-    let socket_path = socket_path_from_env(name).map_err(|error| format!("pinwin: {error}"))?;
-    match bind_instance_socket(&socket_path) {
-        Ok(listener) => Ok((listener, SocketFile::new(socket_path))),
-        Err(error) => Err(match error {
-            InstanceError::Duplicate => {
-                format!(
-                    "pinwin: another pinwin already owns {}",
-                    socket_path.display()
-                )
-            }
-            // A bind that takes the path already has it, so this arm is
-            // only the typed error's completeness.
-            InstanceError::Path(error) => format!("pinwin: {error}"),
-            InstanceError::Io(error) => format!("pinwin: {}: {error}", socket_path.display()),
-        }),
-    }
 }
 
 fn main() {
@@ -405,7 +360,7 @@ mod tests {
         assert_eq!(child_exit_status(9), 1);
     }
 
-    /// The `--toggle` client maps the outcomes: `ok` exits 0, an
+    /// The `--toggle`/`--show` client maps the outcomes: `ok` exits 0, an
     /// environment error — no usable socket path — exits 2, and every
     /// other send failure exits 1. The invalid-name class is covered by
     /// `InstanceName::parse`'s contract in `instance.rs` and, end to end,
@@ -427,7 +382,7 @@ mod tests {
         );
         assert_eq!(
             send_exit(&Err(SendError::Refused {
-                request: Request::Toggle
+                request: Request::Show
             })),
             1
         );
@@ -440,14 +395,33 @@ mod tests {
         );
     }
 
-    /// A name with no listener is a not-answered request, exit 1, against
-    /// a socket path that resolves (the display variables are inherited,
-    /// which only changes the message, not the status). The test never
-    /// touches the process environment.
+    /// A name with no listener is a not-answered request, exit 1, for both
+    /// client requests, against a socket path that resolves (the display
+    /// variables are inherited, which only changes the message, not the
+    /// status). The tests never touch the process environment.
     #[test]
-    fn the_toggle_client_without_a_listener_exits_1() {
+    fn the_client_without_a_listener_exits_1() {
         let name = Some(InstanceName::parse("no-such-instance").expect("valid"));
-        assert_eq!(run_toggle_client(name), 1);
+        assert_eq!(run_client(name.clone(), Request::Toggle), 1);
+        assert_eq!(run_client(name, Request::Show), 1);
+    }
+
+    /// The bind-error mapping: every `InstanceError` keeps the environment
+    /// errors' exit 2, with a message that carries the `pinwin:` prefix.
+    /// The bind's own duplicate detection is `instance.rs`'s contract; the
+    /// live run is task 5.2.
+    #[test]
+    fn every_instance_error_maps_to_exit_2_with_a_pinwin_message() {
+        let errors = [
+            InstanceError::Duplicate,
+            InstanceError::Path(PathError::NoRuntimeDir),
+            InstanceError::Io(io::Error::from_raw_os_error(libc::EACCES)),
+        ];
+        for error in &errors {
+            let (status, message) = bind_error(error);
+            assert_eq!(status, 2, "{error:?}");
+            assert!(message.starts_with("pinwin: "), "{error:?}: {message}");
+        }
     }
 
     /// The exec arguments are the C strings of the command, with the pointer

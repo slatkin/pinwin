@@ -8,10 +8,10 @@
 //!   panel cannot start here (the temporary runtime directory has no
 //!   Wayland socket), which still covers the row: the host removes the file
 //!   on the shutdown path it takes, whatever the child's outcome.
-//! - `pinwin --toggle notes` with no instance answers exit 1 with a
-//!   `pinwin:` message on stderr.
-//! - `pinwin --toggle a/b` prints a message naming the option and exits 2
-//!   without contacting any instance.
+//! - `pinwin --toggle notes` and `pinwin --show notes` with no instance
+//!   answer exit 1 with a `pinwin:` message on stderr.
+//! - `pinwin --toggle a/b` and `pinwin --show a/b` print a message naming
+//!   the option and exit 2 without contacting any instance.
 
 use std::fs;
 use std::path::PathBuf;
@@ -94,6 +94,31 @@ fn the_toggle_client_without_an_instance_exits_1() {
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 
+/// The show client behaves like the toggle one with no instance listening:
+/// the request is not answered, exit 1.
+#[test]
+fn the_show_client_without_an_instance_exits_1() {
+    let dir = temp_dir("no-instance-show");
+
+    let output = {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pinwin"));
+        display_free_env(&mut command, &dir);
+        command
+            .arg("--show")
+            .arg("notes")
+            .output()
+            .expect("run pinwin")
+    };
+
+    assert_eq!(output.status.code(), Some(1), "no instance, status");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("pinwin:") && stderr.contains("no pinwin is listening"),
+        "the failure is reported on stderr: {stderr}"
+    );
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
 /// An invalid name after `--toggle` exits 2 naming the option, before any
 /// socket path is resolved and without contacting any instance.
 #[test]
@@ -114,6 +139,30 @@ fn the_toggle_client_rejects_an_invalid_name_with_exit_2() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("pinwin: --toggle:"),
+        "the rejection names the option: {stderr}"
+    );
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// The same for `--show`: an invalid name exits 2 naming the option.
+#[test]
+fn the_show_client_rejects_an_invalid_name_with_exit_2() {
+    let dir = temp_dir("bad-name-show");
+
+    let output = {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pinwin"));
+        display_free_env(&mut command, &dir);
+        command
+            .arg("--show")
+            .arg("a/b")
+            .output()
+            .expect("run pinwin")
+    };
+
+    assert_eq!(output.status.code(), Some(2), "invalid name, status");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("pinwin: --show:"),
         "the rejection names the option: {stderr}"
     );
     fs::remove_dir_all(&dir).expect("cleanup");
