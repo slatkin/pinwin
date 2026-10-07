@@ -7,6 +7,8 @@ use crate::panel::handshake::Handshake;
 
 use super::super::{Inner, Startup};
 
+use super::super::state::FrameOp;
+use super::super::tween_draw::on_tween_frame;
 use super::*;
 
 /// A startup for the tests; the thread does not touch the pty fd until
@@ -81,6 +83,54 @@ fn scripted_frames_ease_to_the_target() {
     assert!(!driver.is_active());
     // A frame after the stop does nothing.
     assert_eq!(driver.frame(2000), FrameStep::Idle);
+}
+
+/// A tween frame requests its next callback before the commit it belongs
+/// to (row 9.8): a `wl_surface.frame` request binds to the commit that
+/// follows it, so a frame that commits first and requests second binds its
+/// callback to a commit no tween frame makes — no callback ever fires, and
+/// the watchdog snaps the tween to its target, which is what the live niri
+/// session showed for both directions. The recording seam captures the
+/// issue order of the two requests before either reads the session, so the
+/// headless state observes it (`port-to-rust` D10). The finish commits the
+/// target once and requests nothing after it.
+#[test]
+fn a_tween_frame_requests_its_callback_before_its_commit() {
+    let (tx, _rx) = mpsc::channel();
+    let mut state = headless_state(Handshake::new(tx));
+    state.tween.begin(360, 1080, 200, Instant::now(), None);
+
+    // Two eased frames: the begin callback's step and one eased step, each
+    // requesting its callback before its commit.
+    on_tween_frame(&mut state, 0);
+    on_tween_frame(&mut state, 100);
+    assert_eq!(
+        state.frame_ops.borrow().as_slice(),
+        [
+            FrameOp::RequestFrame,
+            FrameOp::CommitFrame,
+            FrameOp::RequestFrame,
+            FrameOp::CommitFrame,
+        ]
+        .as_slice(),
+        "the request precedes the commit it belongs to"
+    );
+
+    // The finish: the final frame commits at the target, and no callback
+    // is requested after it — the tween is over.
+    on_tween_frame(&mut state, 200);
+    assert_eq!(
+        state.frame_ops.borrow().as_slice(),
+        [
+            FrameOp::RequestFrame,
+            FrameOp::CommitFrame,
+            FrameOp::RequestFrame,
+            FrameOp::CommitFrame,
+            FrameOp::CommitFrame,
+        ]
+        .as_slice(),
+        "the finish commits without requesting a callback"
+    );
 }
 
 /// A retarget mid-tween starts from the current width: the caller reads

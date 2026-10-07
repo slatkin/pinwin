@@ -203,6 +203,26 @@ pub(crate) struct PanelState {
     /// apply draws its wide cache instead of snapping.
     pub(crate) render: Option<TweenRender>,
     pub(crate) session: Option<Session>,
+    /// The frame ops the tween glue issued, in issue order (row 9.8's
+    /// recording seam, see [`FrameOp`]): appended by
+    /// `request_tween_frame` and `commit_tween_frame` in test builds only,
+    /// before either reads the session, so a display-free test observes
+    /// the order the Wayland requests are issued in.
+    #[cfg(test)]
+    pub(crate) frame_ops: RefCell<Vec<FrameOp>>,
+}
+
+/// One frame operation the tween glue issued, in issue order (row 9.8's
+/// recording seam): a test build records each panel-surface
+/// `wl_surface.frame` request and each tween commit, so a display-free
+/// test can assert the request precedes the commit it belongs to — the
+/// Wayland rule the tween's animation loop lives by. Compiled out of
+/// production builds, so production behaviour is untouched.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FrameOp {
+    RequestFrame,
+    CommitFrame,
 }
 
 /// Why a start's bind failed: a required global is missing (the spec's
@@ -247,6 +267,8 @@ impl PanelState {
             tween_draw: None,
             render: None,
             session: None,
+            #[cfg(test)]
+            frame_ops: RefCell::new(Vec::new()),
         }
     }
 

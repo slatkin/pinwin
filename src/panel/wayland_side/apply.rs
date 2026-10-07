@@ -243,8 +243,9 @@ impl PanelState {
     /// The animated apply (row 6.2, D7): stage with the push deferred,
     /// begin the tween from the current width, draw the grid once into the
     /// wide cache — kept from an equal retarget, drawn fresh otherwise —
-    /// commit the begin frame at the from width and request the first
-    /// frame callback. The frames then carry the size, margins, viewport
+    /// commit the begin frame at the from width with the first frame
+    /// callback requested before that commit (row 9.8). The frames then
+    /// carry the size, margins, viewport
     /// crop, reserve zone and buffer until the tween's finish applies the
     /// final geometry and pushes the deferred grid.
     fn apply_animated(
@@ -285,8 +286,11 @@ impl PanelState {
             return self.apply_snap(output, layout);
         };
         self.tween_draw = Some(holder);
-        self.commit_tween_frame(staged.from_px);
-        self.request_tween_frame();
+        // The begin frame's Wayland order (row 9.8): the first callback is
+        // requested before the commit it belongs to, the same order every
+        // eased frame runs — committed first, the request would bind to a
+        // commit no tween frame makes and no callback would ever fire.
+        self.request_and_commit_tween_frame(staged.from_px);
         PublishOutcome::Applied
     }
 

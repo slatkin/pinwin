@@ -13,16 +13,14 @@ use super::{TweenAction, TweenDraw};
 
 /// One `wl_surface.frame` callback for the panel surface (row 6.2): the
 /// compositor's event time steps the tween driver, and the step decides the
-/// frame. An eased frame commits through [`PanelState::commit_tween_frame`] and
-/// requests the next callback; the finish relays the stop and applies the
-/// final geometry, requesting none.
+/// frame. An eased frame requests the next callback and commits through
+/// [`PanelState::request_and_commit_tween_frame`] in that order (row 9.8);
+/// the finish relays the stop and applies the final geometry, requesting
+/// none.
 pub(crate) fn on_tween_frame(state: &mut PanelState, time_ms: u32) {
     match state.tween.frame(time_ms) {
         FrameStep::Idle => {}
-        FrameStep::Frame(px) => {
-            state.commit_tween_frame(px);
-            state.request_tween_frame();
-        }
+        FrameStep::Frame(px) => state.request_and_commit_tween_frame(px),
         FrameStep::Finished(px) => {
             let mut push = state.grid_sink();
             state.tween_finished(px, &mut push);
@@ -31,6 +29,26 @@ pub(crate) fn on_tween_frame(state: &mut PanelState, time_ms: u32) {
 }
 
 impl PanelState {
+    /// Record one frame op (row 9.8's seam): test builds only.
+    #[cfg(test)]
+    fn record_frame_op(&self, op: super::super::state::FrameOp) {
+        self.frame_ops.borrow_mut().push(op);
+    }
+
+    /// One tween frame's Wayland order (row 9.8): the `wl_surface.frame`
+    /// request goes first and the eased commit second. A frame request
+    /// binds to the commit that follows it, so a committed frame's callback
+    /// fires when the compositor next repaints after that commit — the
+    /// callback that drives the next eased frame. Committed first and
+    /// requested second, the request would bind to a commit no tween frame
+    /// makes: no callback ever fires, and the watchdog snaps the tween to
+    /// its target. The tween's begin frame and every eased frame share
+    /// this one order.
+    pub(crate) fn request_and_commit_tween_frame(&mut self, px: i32) {
+        self.request_tween_frame();
+        self.commit_tween_frame(px);
+    }
+
     /// Commit one eased tween frame at `px` (row 6.2): the plan
     /// [`TweenDraw::commit_plan`] decided, executed in its order against
     /// the two surfaces. A scale change since the cache was drawn
@@ -38,6 +56,8 @@ impl PanelState {
     /// the tween at its deadline. A frame the plan refuses is skipped — the
     /// next one or the watchdog ends the tween.
     pub(crate) fn commit_tween_frame(&mut self, px: i32) {
+        #[cfg(test)]
+        self.record_frame_op(super::super::state::FrameOp::CommitFrame);
         let resolved = self
             .session
             .as_ref()
@@ -144,14 +164,18 @@ impl PanelState {
 
     /// Request the panel surface's next `wl_surface.frame` callback (row
     /// 6.2): the tween's frames are driven by these callbacks, so every
-    /// committed frame requests the next one. The queue handle lives on the
-    /// session, so the apply's begin frame can request one too. The same
-    /// committed frame requests its presentation feedback (row 6.3), tagged
-    /// with the tween's generation so a late `presented` from a tween that
-    /// already stopped cannot reach the next tween's log; without the
-    /// presentation-time global the request is skipped and the frame log
-    /// rides on the callbacks' times alone.
+    /// committed frame requests the next one — issued before the commit it
+    /// belongs to, by [`Self::request_and_commit_tween_frame`] (row 9.8).
+    /// The queue handle lives on the session, so the apply's begin frame
+    /// can request one too. The same committed frame requests its
+    /// presentation feedback (row 6.3), tagged with the tween's generation
+    /// so a late `presented` from a tween that already stopped cannot reach
+    /// the next tween's log; without the presentation-time global the
+    /// request is skipped and the frame log rides on the callbacks' times
+    /// alone.
     pub(crate) fn request_tween_frame(&self) {
+        #[cfg(test)]
+        self.record_frame_op(super::super::state::FrameOp::RequestFrame);
         let Some(session) = &self.session else {
             return;
         };
