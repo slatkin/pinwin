@@ -20,9 +20,10 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// The request line the protocol defines: exactly `toggle\n`
-/// (replace-gtk-with-wayland D4).
-const REQUEST_LINE: &[u8] = b"toggle\n";
+/// The request lines the protocol defines: exactly `toggle\n` and `show\n`
+/// (replace-gtk-with-wayland D4, `serve-instance-socket` D3).
+const TOGGLE_LINE: &[u8] = b"toggle\n";
+const SHOW_LINE: &[u8] = b"show\n";
 
 /// A valid name parses, and the boundaries of the character set, the
 /// length range and the [`InvalidName`] message hold.
@@ -272,24 +273,29 @@ fn bind_without_a_runtime_directory_is_a_path_error() {
     );
 }
 
-/// The listener answers exactly the `toggle\n` request: it runs the
-/// callback and is answered `ok`, a failing callback `error`, and every
-/// malformed line — any other command, an argument, an empty line, a line
-/// one byte over the bound — is answered `error` without the callback
-/// running. A connection that sends nothing is dropped after the bounded
-/// wait without stopping the next request, and the listener stops on the
-/// shutdown flag. The retries bound the test, so a wedged loop fails it
-/// instead of hanging it.
+/// The listener answers exactly the `toggle\n` and `show\n` requests: each
+/// runs the callback with its parsed [`Request`] and is answered `ok`, a
+/// failing callback `error`, and every malformed line — any other command
+/// (`hide\n` among them), an argument, an empty line, a line one byte over
+/// the bound — is answered `error` without the callback running. A
+/// connection that sends nothing is dropped after the bounded wait without
+/// stopping the next request, and the listener stops on the shutdown flag.
+/// The retries bound the test, so a wedged loop fails it instead of hanging
+/// it.
 #[test]
-fn the_listener_answers_the_toggle_protocol_and_stops_on_shutdown() {
+fn the_listener_answers_the_protocol_and_stops_on_shutdown() {
     let dir = temp_dir("listener");
     let path = dir.join("wayland-0-default.sock");
     let listener = bind_instance_socket(&path).expect("bind");
     let shutdown = AtomicBool::new(false);
     let fail = AtomicBool::new(false);
-    let seen = AtomicUsize::new(0);
-    let stub = || {
-        seen.fetch_add(1, Ordering::Relaxed);
+    let toggles = AtomicUsize::new(0);
+    let shows = AtomicUsize::new(0);
+    let stub = |request: Request| {
+        match request {
+            Request::Toggle => toggles.fetch_add(1, Ordering::Relaxed),
+            Request::Show => shows.fetch_add(1, Ordering::Relaxed),
+        };
         if fail.load(Ordering::Relaxed) {
             Err(())
         } else {
@@ -307,7 +313,7 @@ fn the_listener_answers_the_toggle_protocol_and_stops_on_shutdown() {
         let stub_ref = &stub;
         let shutdown_ref = &shutdown;
         scope.spawn(move || {
-            serve_toggle_requests(listener_ref, stub_ref, shutdown_ref);
+            serve_requests(listener_ref, stub_ref, shutdown_ref);
             thread_stopped.store(true, Ordering::Relaxed);
         });
 
@@ -323,16 +329,20 @@ fn the_listener_answers_the_toggle_protocol_and_stops_on_shutdown() {
             reply
         };
 
-        // The one valid request reaches the callback and is `ok`.
+        // The two valid requests reach the callback with their parsed
+        // [`Request`] and are `ok`.
         let mut stream = net::UnixStream::connect(&path).expect("connect");
-        assert_eq!(ask(REQUEST_LINE, &mut stream), REPLY_OK.to_vec());
-        assert_eq!(seen.load(Ordering::Relaxed), 1, "the callback ran");
+        assert_eq!(ask(TOGGLE_LINE, &mut stream), REPLY_OK.to_vec());
+        assert_eq!(toggles.load(Ordering::Relaxed), 1, "the toggle ran");
+        let mut stream = net::UnixStream::connect(&path).expect("connect");
+        assert_eq!(ask(SHOW_LINE, &mut stream), REPLY_OK.to_vec());
+        assert_eq!(shows.load(Ordering::Relaxed), 1, "the show ran");
 
         // A failing callback — the panel thread's error case — is `error`.
         fail.store(true, Ordering::Relaxed);
         let mut stream = net::UnixStream::connect(&path).expect("connect");
-        assert_eq!(ask(REQUEST_LINE, &mut stream), REPLY_ERROR.to_vec());
-        assert_eq!(seen.load(Ordering::Relaxed), 2);
+        assert_eq!(ask(SHOW_LINE, &mut stream), REPLY_ERROR.to_vec());
+        assert_eq!(shows.load(Ordering::Relaxed), 2);
 
         // Malformed lines never reach the callback: the old focus request,
         // an unknown command, a request with an argument, a bare word
@@ -344,6 +354,7 @@ fn the_listener_answers_the_toggle_protocol_and_stops_on_shutdown() {
             b"focus\n",
             b"toggle niri-spawn:1\n",
             b"toggle \n",
+            b"hide\n",
             b"hello\n",
             b"toggle",
             b"\n",
@@ -352,7 +363,16 @@ fn the_listener_answers_the_toggle_protocol_and_stops_on_shutdown() {
             let mut stream = net::UnixStream::connect(&path).expect("connect");
             assert_eq!(ask(bad, &mut stream), REPLY_ERROR.to_vec(), "bad = {bad:?}");
         }
-        assert_eq!(seen.load(Ordering::Relaxed), 2, "no malformed line ran");
+        assert_eq!(
+            toggles.load(Ordering::Relaxed),
+            1,
+            "no malformed line ran the toggle"
+        );
+        assert_eq!(
+            shows.load(Ordering::Relaxed),
+            2,
+            "no malformed line ran the show"
+        );
 
         // A connection that sends nothing is dropped after the bounded
         // wait and answered with the error reply — the listener does not
@@ -362,8 +382,8 @@ fn the_listener_answers_the_toggle_protocol_and_stops_on_shutdown() {
 
         // ...and the next request is still served normally.
         let mut stream = net::UnixStream::connect(&path).expect("connect");
-        assert_eq!(ask(REQUEST_LINE, &mut stream), REPLY_OK.to_vec());
-        assert_eq!(seen.load(Ordering::Relaxed), 3);
+        assert_eq!(ask(TOGGLE_LINE, &mut stream), REPLY_OK.to_vec());
+        assert_eq!(toggles.load(Ordering::Relaxed), 2, "the toggle ran");
 
         // The shutdown flag ends the listener within a few accept polls.
         shutdown.store(true, Ordering::Relaxed);
@@ -383,7 +403,7 @@ fn the_listener_answers_the_toggle_protocol_and_stops_on_shutdown() {
 
 /// A client that closes before the callback would run does not run it: a
 /// toggle is a non-idempotent flip, so a client whose 500 ms wait ran out
-/// while the listener was busy in an earlier toggle — the queued request
+/// while the listener was busy in an earlier request — the queued request
 /// the loop reaches later — must be dropped, not flipped.
 #[test]
 fn a_peer_that_left_before_the_callback_does_not_run_it() {
@@ -392,19 +412,19 @@ fn a_peer_that_left_before_the_callback_does_not_run_it() {
     let listener = bind_instance_socket(&path).expect("bind");
     let shutdown = AtomicBool::new(false);
     let seen = AtomicUsize::new(0);
-    let stub = || {
+    let stub = |_request: Request| {
         seen.fetch_add(1, Ordering::Relaxed);
         Ok::<(), ()>(())
     };
 
     std::thread::scope(|scope| {
-        scope.spawn(|| serve_toggle_requests(&listener, &stub, &shutdown));
+        scope.spawn(|| serve_requests(&listener, &stub, &shutdown));
 
         // The client sends the request line and hangs up without waiting
         // for the reply, the shape of a client whose bounded wait ran out
         // while the listener was busy.
         let mut gone = net::UnixStream::connect(&path).expect("connect");
-        write_bounded(&mut gone, REQUEST_LINE);
+        write_bounded(&mut gone, TOGGLE_LINE);
         drop(gone);
 
         // The accept queue is FIFO, so a second client's completed exchange
@@ -422,7 +442,7 @@ fn a_peer_that_left_before_the_callback_does_not_run_it() {
 
         // ...and a peer that stays connected still reaches the callback.
         let mut live = net::UnixStream::connect(&path).expect("connect");
-        write_bounded(&mut live, REQUEST_LINE);
+        write_bounded(&mut live, TOGGLE_LINE);
         let reply = (0..20).find_map(|_| read_bounded(&mut live).filter(|reply| !reply.is_empty()));
         assert_eq!(reply, Some(REPLY_OK.to_vec()), "the live exchange");
         assert_eq!(
@@ -437,9 +457,9 @@ fn a_peer_that_left_before_the_callback_does_not_run_it() {
 }
 
 /// A peer that half-closes — sends the request, shuts down its write side
-/// and keeps reading — still gets the toggle: an end-of-file on the read
-/// side is only a write-side shutdown, not the peer leaving, so the
-/// piped-in client shape (a `socat` whose stdin closed) keeps working.
+/// and keeps reading — still gets its request answered: an end-of-file on
+/// the read side is only a write-side shutdown, not the peer leaving, so
+/// the piped-in client shape (a `socat` whose stdin closed) keeps working.
 /// The `peer_gone` check must tell a full close (the test above, no
 /// callback) from this half-close (the callback runs, the reply goes
 /// out).
@@ -450,18 +470,18 @@ fn a_half_closed_peer_still_gets_the_toggle() {
     let listener = bind_instance_socket(&path).expect("bind");
     let shutdown = AtomicBool::new(false);
     let seen = AtomicUsize::new(0);
-    let stub = || {
+    let stub = |_request: Request| {
         seen.fetch_add(1, Ordering::Relaxed);
         Ok::<(), ()>(())
     };
 
     std::thread::scope(|scope| {
-        scope.spawn(|| serve_toggle_requests(&listener, &stub, &shutdown));
+        scope.spawn(|| serve_requests(&listener, &stub, &shutdown));
 
         // The client sends the request line, half-closes its write side
         // and stays connected to read the reply.
         let mut half = net::UnixStream::connect(&path).expect("connect");
-        write_bounded(&mut half, REQUEST_LINE);
+        write_bounded(&mut half, TOGGLE_LINE);
         half.shutdown(std::net::Shutdown::Write)
             .expect("half close");
 
@@ -480,25 +500,27 @@ fn a_half_closed_peer_still_gets_the_toggle() {
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 
-/// The client's exchange against a scripted host: the request line goes
-/// out as `toggle\n`; `ok` succeeds, `error` and a garbage reply are
-/// reported as the request not being answered, a host that never replies
-/// is dropped after the bounded wait, and a stale path (connect
-/// refused) too.
+/// The client call against a scripted host (`serve-instance-socket` task
+/// 2.2): the request line goes out as the request's word plus a newline
+/// (`toggle` and `show` both exercised); `ok` succeeds, `error` is the
+/// typed refusal, a garbage reply and a host that never replies are no
+/// valid answer in time, and a connect that fails with `ENOENT` (no socket
+/// file) or `ECONNREFUSED` (a stale file left by an instance that no
+/// longer runs) is not-listening. The message texts are pinned, since the
+/// binary prints them after its `pinwin: ` prefix.
 #[test]
-fn the_toggle_client_sends_the_request_and_reports_the_reply() {
+fn send_to_reports_the_reply_and_the_connect_failures() {
     let dir = temp_dir("client");
     let path = dir.join("wayland-0-default.sock");
-    let expected_line = REQUEST_LINE.to_vec();
 
     // Bind a one-shot host that asserts the request line and sends
     // `reply`. Dropping a listener leaves its socket file behind (a
     // stale file), so each case unlinks it before it binds.
-    let scripted = |reply: &[u8]| {
+    let scripted = |request: Request, reply: &[u8]| {
         let _ = fs::remove_file(&path);
         let host = net::UnixListener::bind(&path).expect("host bind");
         let reply = reply.to_vec();
-        let expected = expected_line.clone();
+        let expected = request.line().to_vec();
         std::thread::spawn(move || {
             let (mut stream, _) = host.accept().expect("accept");
             let mut buffer = [0u8; MAX_REQUEST];
@@ -514,55 +536,90 @@ fn the_toggle_client_sends_the_request_and_reports_the_reply() {
         })
     };
 
-    // `ok` succeeds.
-    let host = scripted(REPLY_OK);
-    assert_eq!(toggle_client(&path), Ok(()));
-    host.join().expect("host thread");
+    // `ok` succeeds, for both requests.
+    for request in [Request::Toggle, Request::Show] {
+        let host = scripted(request, REPLY_OK);
+        assert!(
+            send_to(&path, request).is_ok(),
+            "the request is answered ok"
+        );
+        host.join().expect("host thread");
+    }
 
-    // `error` reports the request as refused.
-    let host = scripted(REPLY_ERROR);
+    // `error` is the typed refusal carrying the request; the message text
+    // says what did not happen.
+    for (request, did_not) in [
+        (Request::Toggle, "did not toggle"),
+        (Request::Show, "did not show"),
+    ] {
+        let host = scripted(request, REPLY_ERROR);
+        let error = send_to(&path, request).expect_err("the host refused");
+        host.join().expect("host thread");
+        assert!(
+            matches!(error, SendError::Refused { request: refused } if refused == request),
+            "an error reply is a refusal of the request"
+        );
+        assert!(
+            error.to_string().contains(did_not),
+            "the refusal names the request: {error}"
+        );
+    }
+
+    // A garbage reply is no valid answer in time, and the message names
+    // the path.
+    let host = scripted(Request::Show, b"nope\n");
+    let error = send_to(&path, Request::Show).expect_err("a garbage reply");
+    host.join().expect("host thread");
     assert!(
-        matches!(
-            toggle_client(&path),
-            Err(ToggleError::NotAnswered(message)) if message.contains("did not toggle")
-        ),
-        "an error reply is not answered"
+        matches!(error, SendError::NoAnswer { .. }),
+        "the error class"
     );
-    host.join().expect("host thread");
+    assert_eq!(
+        error.to_string(),
+        format!("no valid answer came from {} in time", path.display())
+    );
 
-    // A garbage reply is no valid answer.
-    let host = scripted(b"nope\n");
-    assert!(matches!(
-        toggle_client(&path),
-        Err(ToggleError::NotAnswered(message)) if message.contains("no valid answer")
-    ));
-    host.join().expect("host thread");
-
-    // A host that accepts but never replies is dropped after the
-    // bounded wait.
+    // A host that accepts but never replies is dropped after the bounded
+    // wait.
     let _ = fs::remove_file(&path);
     let host = net::UnixListener::bind(&path).expect("silent host bind");
     let silent = std::thread::spawn(move || {
         let _ = host.accept().expect("accept");
         std::thread::sleep(HANDSHAKE_TIMEOUT + std::time::Duration::from_millis(200));
     });
-    assert!(
-        matches!(
-            toggle_client(&path),
-            Err(ToggleError::NotAnswered(message)) if message.contains("no valid answer")
-        ),
-        "a silent host is not answered in time"
-    );
+    let error = send_to(&path, Request::Toggle).expect_err("a silent host");
     silent.join().expect("silent host thread");
-
-    // No host at all: the file the last listener left behind is stale
-    // (nothing answers the connect).
     assert!(
-        matches!(
-            toggle_client(&path),
-            Err(ToggleError::NotAnswered(message)) if message.contains("no pinwin")
-        ),
-        "a stale path is not answered"
+        matches!(error, SendError::NoAnswer { .. }),
+        "the error class"
+    );
+    assert_eq!(
+        error.to_string(),
+        format!("no valid answer came from {} in time", path.display())
+    );
+
+    // No socket file at all: the connect fails with `ENOENT`, the
+    // not-listening class.
+    let _ = fs::remove_file(&path);
+    let error = send_to(&path, Request::Toggle).expect_err("no socket file");
+    assert!(
+        matches!(error, SendError::NotListening { .. }),
+        "a missing socket file is not listening"
+    );
+    assert!(
+        error.to_string().contains("no pinwin is listening on")
+            && error.to_string().contains(&*path.display().to_string()),
+        "the message names the path: {error}"
+    );
+
+    // A stale file — the socket of an instance that no longer runs —
+    // refuses the connect (`ECONNREFUSED`) and is the same class, not
+    // no-answer.
+    drop(net::UnixListener::bind(&path).expect("stale bind"));
+    let error = send_to(&path, Request::Show).expect_err("a stale file");
+    assert!(
+        matches!(error, SendError::NotListening { .. }),
+        "a stale socket file is not listening"
     );
 
     fs::remove_dir_all(&dir).expect("cleanup");

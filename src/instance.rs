@@ -1,8 +1,9 @@
 //! The instance socket: the validated instance name, the socket path under
 //! `$XDG_RUNTIME_DIR/pinwin`, the duplicate check, stale-file removal and
 //! bind that all happen before any surface opens, the listener that parses
-//! `toggle\n` and answers `ok\n` or `error\n` until the host's child ends,
-//! and the client that asks a running host to toggle its panel
+//! `toggle\n` and `show\n` and answers `ok\n` or `error\n` until the host's
+//! child ends, and the client that sends a running host's panel a toggle or
+//! a show request
 //! (`keyboard-focus-request`'s socket plumbing, the toggle protocol of
 //! `replace-gtk-with-wayland` D4; the module moved into the library with
 //! `serve-instance-socket` D7, so a library host can serve the same socket).
@@ -255,9 +256,55 @@ fn bind_fresh(path: &Path) -> Result<net::UnixListener, io::Error> {
     Ok(listener)
 }
 
-/// The request line: the whole protocol is the one word (`replace-gtk-with-wayland`
-/// D4); there is no argument, so the line is `toggle\n` exactly.
-const REQUEST: &[u8] = b"toggle\n";
+/// What a request asks the panel to do (`serve-instance-socket` D3): a
+/// toggle flips it, a show shows a hidden panel and leaves a shown one
+/// unchanged. The protocol is line-based; each request is its one word plus
+/// a newline, with no argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Request {
+    /// Show or hide the panel: a toggle.
+    Toggle,
+    /// Show the panel if it is hidden; a shown panel stays as it is.
+    Show,
+}
+
+impl Request {
+    /// The request's line on the wire: the one word plus a newline
+    /// (`replace-gtk-with-wayland` D4; `show\n` is new with
+    /// `serve-instance-socket` D3).
+    #[must_use]
+    pub fn line(self) -> &'static [u8] {
+        match self {
+            Self::Toggle => b"toggle\n",
+            Self::Show => b"show\n",
+        }
+    }
+
+    /// The request a line encodes: exactly the request's line; any other
+    /// line — another command, an argument, no newline — is no request of
+    /// this protocol.
+    fn parse(line: &[u8]) -> Option<Request> {
+        if line == Self::Toggle.line() {
+            Some(Self::Toggle)
+        } else if line == Self::Show.line() {
+            Some(Self::Show)
+        } else {
+            None
+        }
+    }
+}
+
+/// How a [`Request`] names itself: the word its line and the failure
+/// messages use.
+impl fmt::Display for Request {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Toggle => "toggle",
+            Self::Show => "show",
+        })
+    }
+}
+
 /// The listener's reply for an accepted request.
 const REPLY_OK: &[u8] = b"ok\n";
 /// The listener's reply for a failed or unknown request.
@@ -273,20 +320,20 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(500);
 /// How often the accept loop wakes to notice the shutdown flag.
 const ACCEPT_POLL: Duration = Duration::from_millis(100);
 
-/// Answer toggle requests on `listener` until `shutdown` is set: each
-/// connection sends one request line; exactly `toggle\n` runs `toggle` and
-/// is answered `ok\n`, or `error\n` when it fails. Every other line — any
-/// other command, an argument, or a line over [`MAX_REQUEST`] — is answered
-/// `error\n` without calling `toggle`. Every connection's read and write are
-/// bounded in size and time, so one client cannot hang the listener; the
-/// loop ends within one accept poll of `shutdown` — the host sets it after
-/// its child exits.
+/// Answer requests on `listener` until `shutdown` is set: each connection
+/// sends one request line; exactly `toggle\n` or `show\n` runs `serve` with
+/// the parsed [`Request`] and is answered `ok\n`, or `error\n` when it
+/// fails. Every other line — any other command, an argument, or a line over
+/// [`MAX_REQUEST`] — is answered `error\n` without calling `serve`. Every
+/// connection's read and write are bounded in size and time, so one client
+/// cannot hang the listener; the loop ends within one accept poll of
+/// `shutdown` — the host sets it after its child exits.
 ///
 /// The body runs through the D5 guard with its own latch: a panic in the
 /// listener ends the loop quietly instead of unwinding out of the thread.
-pub fn serve_toggle_requests<E>(
+pub fn serve_requests<E>(
     listener: &net::UnixListener,
-    toggle: &(impl Fn() -> Result<(), E> + Sync),
+    serve: &(impl Fn(Request) -> Result<(), E> + Sync),
     shutdown: &AtomicBool,
 ) {
     let poisoned = Poisoned::new();
@@ -301,16 +348,21 @@ pub fn serve_toggle_requests<E>(
                 continue;
             };
             let reply = match read_bounded(&mut stream).as_deref() {
-                // The peer must still be there before the toggle runs: a
+                // The peer must still be there before the request runs: a
                 // toggle is a non-idempotent flip, so a request from a
                 // client that already gave up — its 500 ms wait ran out
-                // while this loop was busy in an earlier toggle — must not
-                // flip the panel later, when the loop reaches the queued
-                // request. A fully closed peer shows up as a hang-up; a
-                // half-closed one that still reads the reply is kept.
-                Some(line) if line == REQUEST && !peer_gone(&stream) => match toggle() {
-                    Ok(()) => REPLY_OK,
-                    Err(_) => REPLY_ERROR,
+                // while this loop was busy in an earlier request — must not
+                // reach the panel later, when the loop reaches the queued
+                // request. A show would be harmless there, but one rule is
+                // simpler than two (`serve-instance-socket` D3). A fully
+                // closed peer shows up as a hang-up; a half-closed one that
+                // still reads the reply is kept.
+                Some(line) if !peer_gone(&stream) => match Request::parse(line) {
+                    Some(request) => match serve(request) {
+                        Ok(()) => REPLY_OK,
+                        Err(_) => REPLY_ERROR,
+                    },
+                    None => REPLY_ERROR,
                 },
                 _ => REPLY_ERROR,
             };
@@ -490,38 +542,101 @@ pub fn socket_path_from_env(name: &InstanceName) -> Result<PathBuf, PathError> {
     socket_path(runtime_dir.as_deref(), display.as_deref(), name)
 }
 
-/// What asking a host to toggle ended in.
-#[derive(Debug, PartialEq, Eq)]
-pub enum ToggleError {
-    /// The environment did not provide a usable socket path (exit 2, the
+/// Why sending a [`Request`] to an instance failed (`serve-instance-socket`
+/// D4). `#[non_exhaustive]`: cases can be added without a breaking change.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum SendError {
+    /// The environment gave no usable socket path (the binary exits 2, the
     /// same class as a bad name).
     Environment(PathError),
-    /// No host answered `ok`: no host at all, a refusing host, a failing
-    /// host, or no valid reply in time (exit 1).
-    NotAnswered(String),
+    /// No instance is listening: the connect failed with `ENOENT` or
+    /// `ECONNREFUSED` — no socket file, or a stale one left by an instance
+    /// that no longer runs.
+    NotListening {
+        /// The socket path that nothing answers on.
+        path: PathBuf,
+        /// The connect's own error.
+        error: io::Error,
+    },
+    /// The instance answered `error\n`: the request failed on the host.
+    Refused {
+        /// The refused request, for the message.
+        request: Request,
+    },
+    /// No valid answer came in time: any other connect error, a timeout,
+    /// or an invalid reply.
+    NoAnswer {
+        /// The socket path the answer did not come from.
+        path: PathBuf,
+    },
 }
 
-/// The exchange itself against the socket at `path`: connect, send
-/// `toggle\n`, and wait a bounded time for the reply. `ok\n` is [`Ok`];
-/// everything else — a refused connect, `error\n`, a timeout, an invalid
-/// reply — is [`ToggleError::NotAnswered`] with the message to print.
-pub fn toggle_client(path: &Path) -> Result<(), ToggleError> {
-    let mut stream = net::UnixStream::connect(path).map_err(|error| {
-        ToggleError::NotAnswered(format!(
-            "pinwin: no pinwin is listening on {} ({error})",
-            path.display()
-        ))
-    })?;
-    write_bounded(&mut stream, REQUEST);
+impl fmt::Display for SendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Environment(error) => fmt::Display::fmt(error, f),
+            Self::NotListening { path, error } => {
+                write!(f, "no pinwin is listening on {} ({error})", path.display())
+            }
+            Self::Refused { request } => {
+                write!(
+                    f,
+                    "the panel did not {request} (the request failed on the host)"
+                )
+            }
+            Self::NoAnswer { path } => {
+                write!(f, "no valid answer came from {} in time", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for SendError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Environment(error) => Some(error),
+            Self::NotListening { error, .. } => Some(error),
+            Self::Refused { .. } | Self::NoAnswer { .. } => None,
+        }
+    }
+}
+
+/// Send `request` to the instance named `name` on this display
+/// (`serve-instance-socket` D4): the socket path comes from the environment
+/// ([`socket_path_from_env`]), where a missing runtime directory or an
+/// unusable display name is [`SendError::Environment`]. The call never
+/// blocks indefinitely; every wait is bounded.
+pub fn send(name: &InstanceName, request: Request) -> Result<(), SendError> {
+    let path = socket_path_from_env(name).map_err(SendError::Environment)?;
+    send_to(&path, request)
+}
+
+/// [`send`] against an explicit path, so tests aim the client at a scratch
+/// directory without touching the process environment
+/// (`serve-instance-socket` D7).
+pub(crate) fn send_to(path: &Path, request: Request) -> Result<(), SendError> {
+    let mut stream = match net::UnixStream::connect(path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            return Err(match error.raw_os_error() {
+                Some(libc::ENOENT | libc::ECONNREFUSED) => SendError::NotListening {
+                    path: path.to_owned(),
+                    error,
+                },
+                _ => SendError::NoAnswer {
+                    path: path.to_owned(),
+                },
+            });
+        }
+    };
+    write_bounded(&mut stream, request.line());
     match read_bounded(&mut stream) {
         Some(reply) if reply == REPLY_OK => Ok(()),
-        Some(reply) if reply == REPLY_ERROR => Err(ToggleError::NotAnswered(
-            "pinwin: the panel did not toggle (the request failed on the host)".to_owned(),
-        )),
-        _ => Err(ToggleError::NotAnswered(format!(
-            "pinwin: no valid answer came from {} in time",
-            path.display()
-        ))),
+        Some(reply) if reply == REPLY_ERROR => Err(SendError::Refused { request }),
+        _ => Err(SendError::NoAnswer {
+            path: path.to_owned(),
+        }),
     }
 }
 

@@ -35,8 +35,8 @@ mod settings;
 
 use cli::{Mode, default_command, parse_args};
 use pinwin::instance::{
-    InstanceError, InstanceName, SocketFile, ToggleError, bind_instance_socket,
-    serve_toggle_requests, socket_path_from_env, toggle_client,
+    InstanceError, InstanceName, Request, SendError, SocketFile, bind_instance_socket, send,
+    serve_requests, socket_path_from_env,
 };
 use settings::{Settings, Zone, read_settings};
 
@@ -160,14 +160,14 @@ fn child_exec(child: &ChildCommand) -> ! {
     unsafe { libc::_exit(127) }
 }
 
-/// The exit status for a toggle-client outcome: `ok` exits 0, an
-/// environment error — no usable socket path — exits 2 like the other
-/// environment errors, and every not-answered request exits 1.
-fn toggle_client_exit(result: &Result<(), ToggleError>) -> i32 {
+/// The exit status for a client outcome: `ok` exits 0, an environment
+/// error — no usable socket path — exits 2 like the other environment
+/// errors, and every other failure exits 1.
+fn send_exit(result: &Result<(), SendError>) -> i32 {
     match result {
         Ok(()) => 0,
-        Err(ToggleError::Environment(_)) => 2,
-        Err(ToggleError::NotAnswered(_)) => 1,
+        Err(SendError::Environment(_)) => 2,
+        Err(_) => 1,
     }
 }
 
@@ -179,20 +179,11 @@ fn toggle_client_exit(result: &Result<(), ToggleError>) -> i32 {
 /// environment errors.
 fn run_toggle_client(name: Option<InstanceName>) -> i32 {
     let name = name.unwrap_or_else(InstanceName::default_instance);
-    let result = socket_path_from_env(&name)
-        .map_err(ToggleError::Environment)
-        .and_then(|path| toggle_client(&path));
-    match result {
-        Ok(()) => 0,
-        Err(ToggleError::Environment(error)) => {
-            eprintln!("pinwin: {error}");
-            toggle_client_exit(&Err(ToggleError::Environment(error)))
-        }
-        Err(ToggleError::NotAnswered(message)) => {
-            eprintln!("{message}");
-            toggle_client_exit(&Err(ToggleError::NotAnswered(message)))
-        }
+    let result = send(&name, Request::Toggle);
+    if let Err(error) = &result {
+        eprintln!("pinwin: {error}");
     }
+    send_exit(&result)
 }
 
 /// The whole program; returns the exit status.
@@ -346,7 +337,17 @@ fn serve_toggle_until_exit(
     let shutdown = AtomicBool::new(false);
     std::thread::scope(|scope| {
         scope.spawn(|| {
-            serve_toggle_requests(listener, &|| panel.toggle(), &shutdown);
+            serve_requests(
+                listener,
+                &|request| match request {
+                    Request::Toggle => panel.toggle(),
+                    // The panel's show command is task 3.1; until then a show
+                    // request is refused like an unknown line, so the binary's
+                    // behavior stays what it is today.
+                    Request::Show => Err(PinwinError::Internal),
+                },
+                &shutdown,
+            );
         });
         let status = wait_for_child(pid);
         shutdown.store(true, Ordering::Relaxed);
@@ -388,6 +389,7 @@ mod tests {
     use super::*;
     use pinwin::instance::PathError;
     use std::ffi::OsStr;
+    use std::path::PathBuf;
 
     /// The exit-status mapping: the child's status when it exited, 1 when it
     /// did not (killed by a signal). The raw statuses are built the way the
@@ -404,20 +406,35 @@ mod tests {
     }
 
     /// The `--toggle` client maps the outcomes: `ok` exits 0, an
-    /// environment error — no usable socket path — exits 2, and a
-    /// not-answered request exits 1. The invalid-name class is covered by
+    /// environment error — no usable socket path — exits 2, and every
+    /// other send failure exits 1. The invalid-name class is covered by
     /// `InstanceName::parse`'s contract in `instance.rs` and, end to end,
     /// by `tests/command_line_ipc.rs`; here the exit-code mapping holds
     /// without touching the process environment.
     #[test]
-    fn the_toggle_client_maps_the_exit_statuses() {
-        assert_eq!(toggle_client_exit(&Ok(())), 0);
+    fn the_client_maps_the_send_errors_to_exit_statuses() {
+        assert_eq!(send_exit(&Ok(())), 0);
         assert_eq!(
-            toggle_client_exit(&Err(ToggleError::Environment(PathError::NoRuntimeDir))),
+            send_exit(&Err(SendError::Environment(PathError::NoRuntimeDir))),
             2
         );
         assert_eq!(
-            toggle_client_exit(&Err(ToggleError::NotAnswered("no answer".to_owned()))),
+            send_exit(&Err(SendError::NotListening {
+                path: PathBuf::new(),
+                error: io::Error::from_raw_os_error(libc::ENOENT),
+            })),
+            1
+        );
+        assert_eq!(
+            send_exit(&Err(SendError::Refused {
+                request: Request::Toggle
+            })),
+            1
+        );
+        assert_eq!(
+            send_exit(&Err(SendError::NoAnswer {
+                path: PathBuf::new()
+            })),
             1
         );
     }
