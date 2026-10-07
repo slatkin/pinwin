@@ -79,6 +79,113 @@ library.
 - **THEN** no GTK, GDK, GLib, GObject, GIO, Pango, Cairo, gdk-pixbuf or HarfBuzz library
   appears in the list
 
+### Requirement: Show and hide on request
+The `Panel` handle SHALL offer a toggle. The host can call it from any thread, and it returns
+`Result<(), PinwinError>`. A toggle hides a shown panel and shows a hidden one. The panel is
+shown at start.
+
+Hiding SHALL unmap the panel surface and release the held reservation. A width animation in
+progress SHALL end at its target layout first. The terminal and the pty keep running while
+the panel is hidden, and the host's child keeps receiving input from the pty.
+
+Showing SHALL map the panel surface again, draw the current grid and restore the held
+reservation. In `on-demand` mode, the panel SHALL map with `on-demand` keyboard
+interactivity, so a compositor that focuses a newly mapped `on-demand` surface gives it the
+keyboard without a click. In `exclusive` mode, the panel maps as `exclusive`. In `none` mode,
+the panel only appears. After a show, the panel keeps and gives up focus by the rules of its
+keyboard mode.
+
+Neither hiding nor showing SHALL change the terminal grid or the pty window size, and neither
+SHALL raise a `SIGWINCH`. No frame SHALL show the panel at another size. While the panel is
+hidden, a layout apply SHALL validate and store the layout as it does when shown, with no
+animation and nothing on screen. The next show uses that layout.
+
+If the panel is no longer live, the toggle SHALL return `Err(PinwinError::NotRunning)` without
+blocking. If the panel thread does not answer within a bounded time, the toggle SHALL return
+`Err(PinwinError::Internal)`, so the host thread never blocks indefinitely. The library SHALL
+own no transport for the request.
+
+#### Scenario: Show takes focus
+- **WHEN** the panel runs in `on-demand` mode on niri, is hidden, a tiled window has the
+  keyboard, and the host toggles
+- **THEN** the call returns `Ok`, the panel appears, and the next typed key goes to the pty
+  master. If the accent is enabled, it appears.
+
+#### Scenario: Hide
+- **WHEN** the panel is shown and the host toggles
+- **THEN** the call returns `Ok`, the panel leaves the screen, and keys go to a compositor
+  window
+
+#### Scenario: Grid and pty untouched
+- **WHEN** the host's child draws a layout that depends on the terminal size and the host
+  toggles twice
+- **THEN** the child observes no window size change and receives no `SIGWINCH`, and no frame
+  shows the panel drawn at another size
+
+#### Scenario: Show in none mode
+- **WHEN** the panel runs in `none` mode, is hidden, and the host toggles
+- **THEN** the panel appears and keyboard input stays with the window that had it
+
+#### Scenario: Hide releases the reservation
+- **WHEN** the panel pushes tiled windows and the host toggles twice
+- **THEN** the tiled windows take the panel's strip after the first toggle and move back
+  beside the panel after the second
+
+#### Scenario: Apply while hidden
+- **WHEN** the panel is hidden and the host applies a layout with more columns, animated with
+  a duration of 200 ms
+- **THEN** the call returns `Ok`, nothing appears, and the next toggle shows the panel at the
+  new width with no animation
+
+#### Scenario: Toggle on a dead panel
+- **WHEN** the panel's thread ended on its own and the host toggles
+- **THEN** the call returns `Err(PinwinError::NotRunning)` without blocking
+
+### Requirement: Toggle from the command line
+The `pinwin` program SHALL accept toggle requests for its panel from other processes on the
+same Wayland display. The program SHALL read `PINWIN_NAME`, with the default `default`. A
+name has 1..=64 characters from `[A-Za-z0-9_-]`. Another process SHALL request a toggle with
+`pinwin --toggle [name]`, and the name defaults to `default`. The host SHALL pass the request
+to its panel's toggle.
+
+If the named instance accepts the request, the client SHALL exit 0. If no instance with that
+name answers on the display, the client SHALL print a message on stderr and exit 1. A name in
+`PINWIN_NAME` or after `--toggle` can be invalid. Then `pinwin` SHALL print a message on
+stderr and exit 2, and the host SHALL open nothing.
+
+A live instance on the same display can already use the name. Then a second host SHALL print
+a message and exit 2 before any surface opens. A name from an instance that no longer runs
+SHALL NOT block a new host. Different names and different displays SHALL NOT interfere.
+
+#### Scenario: Toggle the default instance
+- **WHEN** `pinwin htop` runs in `on-demand` mode on niri and a compositor key binding runs
+  `pinwin --toggle` twice
+- **THEN** the first run hides the panel, the second shows it with keyboard focus, and the
+  client exits 0 each time
+
+#### Scenario: Toggle a named instance
+- **WHEN** `PINWIN_NAME=notes pinwin nvim` and `pinwin htop` both run, and a compositor key
+  binding runs `pinwin --toggle notes`
+- **THEN** the `notes` panel hides, the other panel does not change, and the client exits 0
+
+#### Scenario: No instance
+- **WHEN** no `pinwin` with the name `notes` runs and a key binding runs `pinwin --toggle notes`
+- **THEN** the client prints a message and exits 1
+
+#### Scenario: Invalid name
+- **WHEN** `PINWIN_NAME=a/b` is set, or the user runs `pinwin --toggle a/b`
+- **THEN** `pinwin` prints a message, exits 2 and opens nothing
+
+#### Scenario: Duplicate name
+- **WHEN** `pinwin htop` runs and the user starts a second `pinwin` with no `PINWIN_NAME`
+- **THEN** the second `pinwin` prints a message, exits 2 and opens nothing, and the first
+  panel is unchanged
+
+#### Scenario: Instance that crashed
+- **WHEN** a `pinwin` named `notes` was killed with SIGKILL and the user starts a new one
+  with the same name
+- **THEN** the new `pinwin` starts normally and answers `pinwin --toggle notes`
+
 ## MODIFIED Requirements
 
 ### Requirement: Validate before applying
@@ -303,123 +410,140 @@ within one device pixel of its logical thickness times the output scale.
 - **THEN** the cell size, the panel width and the reply to `CSI 16 t` equal their values at
   an output scale of 1
 
-### Requirement: Focus on request
-The `Panel` handle SHALL offer a focus request. The host can call it from any thread. The
-request carries an activation token and returns `Result<(), PinwinError>`. An activation
-token is the one-use permission that a compositor gives a program it launches, so that the
-program can take focus. A token is 1..=255 bytes of visible ASCII (`!` to `~`). When the host
-builds a token, the token type SHALL reject any other value. So no such token reaches the
-panel.
+### Requirement: Keyboard focus by clicking
+If the startup layout requests `on-demand` mode, the panel SHALL use layer-shell `on-demand`
+keyboard interactivity. In this mode, the panel receives keyboard input only after one of two
+events. The user clicks inside the panel, or a toggle shows the panel. The panel gives up
+keyboard input after the user clicks a compositor window. At open, the panel SHALL NOT take
+keyboard focus. The keyboard mode is fixed at start time, and no runtime override exists.
 
-In `on-demand` mode, the panel SHALL pass the token to the compositor as an xdg-activation
-request for the panel surface. If the compositor honours xdg-activation for layer surfaces,
-the panel gets keyboard focus without a click. After that, the panel SHALL keep and give up
-focus by the normal `on-demand` rules. If the compositor ignores the request, keyboard focus
-stays where it was. The panel cannot see the compositor's choice, so the request returns
-`Ok(())` in both cases. In `none` or `exclusive` mode, the request SHALL return `Ok(())` and
-change nothing.
+While the panel holds keyboard focus, it SHALL mark itself with a focus accent. The accent is
+a stroke around the whole window, in the colour and pixel width that the startup supplies. The
+compositor draws no focus ring on layer surfaces, so the panel draws its own. If the accent
+is disabled, the panel SHALL draw nothing extra, focused or not.
 
-A focus request SHALL NOT unmap or remap the panel. The panel SHALL stay on screen with its
-content in every frame. A focus request SHALL NOT change the terminal grid or the pty window
-size, and it SHALL raise no `SIGWINCH`. It SHALL NOT change the reserved gap, so tiled windows
-do not move or resize.
+The keyboard mode is one of exactly `none`, `on-demand` or `exclusive`. An accent is absent,
+or it is a colour with a width of 1..=65535 pixels. The library's argument types SHALL make
+any other keyboard mode or accent unrepresentable. So no runtime rejection exists for them.
 
-If the panel is no longer live, the request SHALL return `Err(PinwinError::NotRunning)`
-without blocking. If the panel thread does not answer within a bounded time, the request
-SHALL return `Err(PinwinError::Internal)`, so the host thread never blocks indefinitely. The
-library SHALL own no transport for the request. The host decides how a request and its token
-reach it.
+#### Scenario: Click to type
+- **WHEN** the user clicks inside the panel and types `j`
+- **THEN** the pty master receives the `j` key
 
-#### Scenario: Focus from a hotkey
-- **WHEN** the compositor honours xdg-activation for layer surfaces, a tiled window has the
-  keyboard, the panel runs in `on-demand` mode, and the host requests focus with a key
-  binding's token
-- **THEN** the call returns `Ok` and the next typed key goes to the pty master. If the accent
-  is enabled, it appears.
-
-#### Scenario: Compositor ignores the request
-- **WHEN** the compositor ignores xdg-activation for layer surfaces and the host requests focus
-- **THEN** the call returns `Ok`, keyboard input stays with the window that had it, and the
-  panel does not change on screen
-
-#### Scenario: Grid and pty untouched
-- **WHEN** the host's child draws a layout that depends on the terminal size and the host
-  requests focus
-- **THEN** the child observes no window size change and receives no `SIGWINCH`, and no frame
-  shows the panel missing or drawn at another size
-
-#### Scenario: Release by click
-- **WHEN** the panel gained focus from a request and the user clicks a tiled window
+#### Scenario: Click away
+- **WHEN** the panel has keyboard focus and the user clicks a tiled window
 - **THEN** keys go to the tiled window, not the panel
 
-#### Scenario: Gap unchanged
-- **WHEN** the panel pushes tiled windows and the host requests focus
-- **THEN** the tiled windows keep their position and size
+#### Scenario: No focus steal on launch
+- **WHEN** the host starts the panel with `on-demand` mode
+- **THEN** keyboard input stays with the window that had it
 
-#### Scenario: Mode without on-demand focus
-- **WHEN** the panel runs in `none` mode and the host requests focus
-- **THEN** the call returns `Ok` and keyboard input stays with the window that had it
+#### Scenario: Opt-in keyboard focus
+- **WHEN** the host starts the panel with `exclusive` keyboard mode
+- **THEN** at open, the panel has the keyboard without a click
 
-#### Scenario: Invalid token
-- **WHEN** the host tries to build a token that is empty, longer than 255 bytes or holds a
-  space, a newline or a non-ASCII byte
-- **THEN** the token constructor returns an error, and no focus request is made
+#### Scenario: Invalid keyboard mode
+- **WHEN** a host tries to start the panel with a keyboard mode other than the three defined
+  ones
+- **THEN** the program does not compile, so no such start reaches the panel
 
-#### Scenario: Request on a dead panel
-- **WHEN** the panel's thread ended on its own and the host requests focus
-- **THEN** the call returns `Err(PinwinError::NotRunning)` without blocking
+#### Scenario: Invalid accent
+- **WHEN** a host tries to start the panel with an accent width of 0 or above 65535
+- **THEN** the program does not compile, so no such start reaches the panel
 
-### Requirement: Focus request from the command line
-The `pinwin` program SHALL accept focus requests for its panel from other processes on the
-same Wayland display. The program SHALL read `PINWIN_NAME`, with the default `default`. A
-name has 1..=64 characters from `[A-Za-z0-9_-]`. Another process SHALL request focus with
-`pinwin --focus [name]`, and the name defaults to `default`. The client SHALL read the
-activation token from `XDG_ACTIVATION_TOKEN` and send it with the request. A compositor that
-launches the client from a key binding sets that variable. The host SHALL pass the token to
-its panel's focus request.
+#### Scenario: Accent appears while focused
+- **WHEN** the panel gains keyboard focus with the accent enabled
+- **THEN** the whole window gains an outline of the configured colour and width. After focus
+  moves back to a compositor window, the outline disappears.
 
-If the named instance accepts the request, the client SHALL exit 0. If no instance with that
-name answers on the display, the client SHALL print a message on stderr and exit 1. A name in
-`PINWIN_NAME` or after `--focus` can be invalid. Then `pinwin` SHALL print a message on
-stderr and exit 2, and the host SHALL open nothing. If `XDG_ACTIVATION_TOKEN` is unset or invalid,
-the client SHALL print a message on stderr and exit 2. In that case, it SHALL NOT contact
-any instance.
+#### Scenario: Accent disabled
+- **WHEN** the host starts the panel with no accent
+- **THEN** the panel draws no accent, focused or not
 
-A live instance on the same display can already use the name. Then a second host SHALL print
-a message and exit 2 before any surface opens. A name from an instance that no longer runs
-SHALL NOT block a new host. Different names and different displays SHALL NOT interfere.
+### Requirement: Reserve space so tiles start beside the panel
+The library SHALL hold one reservation: a strip on one side of the panel's monitor. A pushing
+layout sets that strip to its docking edge with width `Left + panel width + Right`, so the
+compositor places tiled windows beside that strip. A covering layout leaves that strip
+exactly as the last pushing layout set it, so tiled windows do not move while the visible
+panel draws over them. When no pushing layout has ever applied (a covering start), the held
+reservation SHALL be an empty strip: nothing is reserved until the first pushing layout
+applies. While the panel is hidden, the reservation SHALL be released, and showing the panel
+SHALL restore the held strip. The reservation SHALL apply only to the panel's monitor. The gap
+between the panel and the first tile is the far gutter plus whatever strut the compositor
+itself adds.
 
-#### Scenario: Focus the default instance
-- **WHEN** `pinwin htop` runs on a compositor that honours xdg-activation for layer surfaces
-  and a compositor key binding runs `pinwin --focus`
-- **THEN** the panel gets keyboard focus and the client exits 0
+#### Scenario: Tiles move right
+- **WHEN** the panel opens docked left with panel width 320, Left 0 and Right 12
+- **THEN** tiled windows' left edge moves to at least 332 px from the monitor's left edge
 
-#### Scenario: Focus a named instance
-- **WHEN** `PINWIN_NAME=notes pinwin nvim` and `pinwin htop` both run on a compositor that
-  honours xdg-activation for layer surfaces, and a compositor key binding runs
-  `pinwin --focus notes`
-- **THEN** the `notes` panel gets keyboard focus, the other panel does not, and the client
-  exits 0
+#### Scenario: Other monitors unaffected
+- **WHEN** the panel is open on DP-2
+- **THEN** tiled windows on DP-1 keep their original position
 
-#### Scenario: No token
-- **WHEN** `pinwin htop` runs and the user runs `pinwin --focus` with `XDG_ACTIVATION_TOKEN`
-  unset
-- **THEN** the client prints a message, exits 2 and sends nothing to the instance
+#### Scenario: Covering start reserves nothing
+- **WHEN** the panel starts with a covering layout
+- **THEN** tiled windows stay where they are until the first pushing layout applies
 
-#### Scenario: No instance
-- **WHEN** no `pinwin` with the name `notes` runs and a key binding runs `pinwin --focus notes`
-- **THEN** the client prints a message and exits 1
+#### Scenario: Covering expand holds the strip
+- **WHEN** the held strip is 332 px on the left and the host applies a covering 120-column
+  layout on the same side
+- **THEN** tiled windows keep their position and the visible panel extends past the strip
 
-#### Scenario: Invalid name
-- **WHEN** `PINWIN_NAME=a/b` is set, or the user runs `pinwin --focus a/b`
+#### Scenario: Hidden panel reserves nothing
+- **WHEN** the held strip is 332 px on the left and the panel is hidden
+- **THEN** tiled windows take the strip, and they move back beside it when the panel is shown
+
+### Requirement: The pinwin binary
+The crate SHALL build a standalone `pinwin` program that runs a command (default `$SHELL`,
+else `/bin/sh`) in the panel docked left, until the command exits. The program owns the pty,
+sets `TERM=xterm-256color` and `COLORTERM=truecolor` for the child, forwards SIGINT and SIGTERM
+to the child as SIGHUP, and exits with the child's exit status (1 when the child did not exit
+normally). It reads `COLS` (1..=65535, default 40), `GUTTER` (0..=65535, the right gutter,
+default 0), `PINWIN_KEYBOARD` (`on-demand` default, `exclusive`, `none`), `PINWIN_ZONE`
+(`reserve` default, `overlay`), `PINWIN_ACCENT` (`on` default, `off`), `PINWIN_ACCENT_COLOR`
+(`#RRGGBB` or `RRGGBB`, default `#dabc7f`) and `PINWIN_ACCENT_WIDTH` (1..=65535, default 1,
+read only when the accent is on). With `PINWIN_ZONE=reserve`, the program starts with a
+pushing layout, so tiled windows sit beside the panel and a toggle moves them. With
+`PINWIN_ZONE=overlay`, it starts with a covering layout, so it reserves nothing, the panel
+draws over tiled windows and a toggle moves no window. An invalid value, or an unknown `--`
+option, SHALL exit 2 with a message on stderr before any surface opens; `--` ends option
+parsing. If the panel cannot start, the program SHALL hang up the child, wait for it, print a
+message and exit 1.
+
+#### Scenario: Run a command
+- **WHEN** the user runs `pinwin htop` in a niri session
+- **THEN** a panel docks at the left edge running htop, and when htop exits the panel closes
+  and `pinwin` exits with htop's status
+
+#### Scenario: Default command
+- **WHEN** the user runs `pinwin` with no arguments and `$SHELL` is set
+- **THEN** the panel runs `$SHELL`
+
+#### Scenario: Invalid environment
+- **WHEN** `COLS=0`, `PINWIN_KEYBOARD=sometimes` or `PINWIN_ZONE=both` is set
 - **THEN** `pinwin` prints a message, exits 2 and opens nothing
 
-#### Scenario: Duplicate name
-- **WHEN** `pinwin htop` runs and the user starts a second `pinwin` with no `PINWIN_NAME`
-- **THEN** the second `pinwin` prints a message, exits 2 and opens nothing, and the first
-  panel is unchanged
+#### Scenario: Overlay zone
+- **WHEN** the user runs `PINWIN_ZONE=overlay pinwin htop` and toggles it twice
+- **THEN** tiled windows never move, and the panel draws over them while shown
 
-#### Scenario: Instance that crashed
-- **WHEN** a `pinwin` named `notes` was killed with SIGKILL and the user starts a new one
-  with the same name
-- **THEN** the new `pinwin` starts normally and answers `pinwin --focus notes`
+#### Scenario: Unknown option
+- **WHEN** the user runs `pinwin --frobnicate`
+- **THEN** `pinwin` prints a message and exits 2
+
+#### Scenario: Panel cannot start
+- **WHEN** `pinwin` runs without a Wayland compositor that has layer-shell
+- **THEN** the child is hung up and reaped, a message is printed and `pinwin` exits 1
+
+## REMOVED Requirements
+
+### Requirement: Focus on request
+**Reason**: Focus now comes from showing the panel. Stock niri focuses a newly mapped layer
+surface and ignores xdg-activation for one, and the remap this requirement replaced flashed
+an interim size.
+**Migration**: Call `Panel::toggle`; see "Show and hide on request".
+
+### Requirement: Focus request from the command line
+**Reason**: `pinwin --toggle` replaces `pinwin --focus`.
+**Migration**: Bind the compositor key to `pinwin --toggle [name]` instead of
+`pinwin --focus [name]`; see "Toggle from the command line".

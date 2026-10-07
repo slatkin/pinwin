@@ -22,16 +22,20 @@ call, `gtk4::glib::user_config_dir`, becomes a `$XDG_CONFIG_HOME` lookup with th
 default. GDK keyvals and X keysyms share one numbering, so the key tables keep working
 with xkbcommon keysyms.
 
-Three niri facts shape the approach. All three come from niri's source.
+Three niri facts shape the approach. All three come from stock niri's source.
 
 - `layer_shell_handle_commit` (`handlers/layer_shell.rs`) gives keyboard focus to a layer
   surface that maps with `on-demand` interactivity. A later change of interactivity on a
   mapped surface does not grant focus.
+- `update_keyboard_focus` (`niri.rs`) focuses a mapped `exclusive` layer surface on the top
+  or overlay layer with no other condition.
 - `request_activation` (`handlers/mod.rs`) looks only for layout windows and unmapped
-  windows. A token aimed at a layer surface does nothing.
-- `spawn` (`utils/spawning.rs`) puts an activation token in the child's
-  `XDG_ACTIVATION_TOKEN` and `DESKTOP_STARTUP_ID`. A key binding that spawns
-  `pinwin --focus` therefore hands the client a token that niri issued.
+  windows. xdg-activation cannot focus a layer surface.
+
+kitty's panel kitten and quick-access terminal rely on the first two facts. A hotkey runs
+the kitten again, which toggles the running panel's visibility over a single-instance
+socket. Hide attaches a null buffer, show maps again, and niri focuses the new map. kitty
+uses no xdg-activation and no runtime interactivity change for this.
 
 ## Goals / Non-Goals
 
@@ -40,15 +44,15 @@ Three niri facts shape the approach. All three come from niri's source.
 - pinwin owns every commit of its surfaces, so no toolkit step can unmap, resize or redraw
   them behind its back.
 - The pure cores and their tests stay as they are. The rewrite replaces the GTK edges only.
-- The public `Panel` API keeps its shape. Only `request_focus` changes.
+- The public `Panel` API keeps its shape. Only `request_focus` changes: `toggle` replaces it.
 
 **Non-Goals:**
 
 - A GPU renderer. Decision 6 names the measurement that opens one as a separate change.
 - An input method, a clipboard or primary selection. pinwin uses none of them today.
 - More than one panel per process.
-- A fallback remap for compositors that ignore xdg-activation for layer surfaces. The user
-  chose activation only.
+- Hiding on focus loss. Only a toggle hides the panel.
+- Focusing a panel that is already shown without a click. A toggle hides it instead.
 
 ## Decisions
 
@@ -56,8 +60,8 @@ Three niri facts shape the approach. All three come from niri's source.
 
 The panel thread opens its own Wayland connection with smithay-client-toolkit and runs a
 calloop event loop. The toolkit covers the registry, `wl_compositor`, `wl_shm` buffer pools,
-wlr-layer-shell, outputs with xdg-output, the seat with xkbcommon and key repeat,
-xdg-activation and presentation time. The fractional-scale, viewporter and cursor-shape
+wlr-layer-shell, outputs with xdg-output, the seat with xkbcommon and key repeat, and
+presentation time. The fractional-scale, viewporter and cursor-shape
 protocols come from wayland-protocols and bind through the same registry.
 
 `wl_compositor`, `wl_shm` and `zwlr_layer_shell_v1` are required. If any is missing, or the
@@ -66,8 +70,9 @@ For each optional global, decisions 3, 5, 7 and 8 say what changes in its absenc
 
 Alternatives:
 
-- Keep GTK and fix the remap. The remap is one symptom. The size floor, the pixel grid, the
-  frame timing and the library footprint stay.
+- Keep GTK. gtk4-layer-shell can hide and show a layer surface and change its keyboard mode on
+  a mapped surface, so decision 4 alone does not need the rewrite. The size floor, the pixel
+  grid, the frame timing and the library footprint stay, and those carry this decision.
 - winit. It has no layer-shell support.
 - Raw wayland-client without the toolkit. That repeats the registry, seat, keymap and repeat
   code that the toolkit already provides and tests.
@@ -75,7 +80,7 @@ Alternatives:
 ### 2. One panel thread per start, and a channel instead of a main context
 
 Each `Panel::start` spawns a thread that owns the connection, the surfaces, the terminal and
-the pty source. The host posts apply, focus and teardown commands through a calloop channel,
+the pty source. The host posts apply, toggle and teardown commands through a calloop channel,
 and the bounded replies in `src/panel/handshake.rs` stay as they are. Drop posts the teardown,
 waits for its bounded reply and returns. The thread then ends on its own. The single-instance
 guard and its `AlreadyRunning` error stay.
@@ -104,45 +109,50 @@ today.
 The pty size has one source: the layout's column count and the height in the latest
 configure. Rows are that height divided by the cell height. The grid and the pty change only
 on a layout apply or a configure with a new height. No interim allocation exists, so nothing
-else can reach the pty. A focus request touches neither input.
+else can reach the pty. A toggle touches neither input. A hidden panel gets no configure, so
+its height holds until the next show.
 
-In `on-demand` mode, the panel maps with no keyboard interactivity and switches to
-`on-demand` in the commit after its first buffer. niri grants focus only on the map itself,
-so the launch takes no focus. `exclusive` mode maps as `exclusive`.
+In `on-demand` mode, the panel's first map at launch has no keyboard interactivity and
+switches to `on-demand` in the commit after its first buffer. niri grants focus only on the
+map itself, so the launch takes no focus. A later map from a toggle keeps `on-demand`, so niri
+focuses it. `exclusive` mode maps as `exclusive`.
 
-### 4. Focus through xdg-activation
+### 4. Focus by show and hide
 
-`ActivationToken` is a newtype with a fallible constructor. It accepts 1..=255 bytes of
-visible ASCII. `Panel::request_focus(&self, token: ActivationToken)` keeps the
-`NotRunning`, `Internal` and keyboard-mode guards of today. In `on-demand` mode, the panel
-thread calls `xdg_activation_v1.activate` with the token and the panel's `wl_surface`. If the
-compositor lacks xdg-activation, the request does nothing. The call returns `Ok(())` once the
-activation is sent, because the compositor's choice is invisible to the client.
+`Panel::toggle(&self)` hides a shown panel and shows a hidden one. It keeps the `NotRunning`
+and `Internal` guards and the bounded reply of the other commands. It returns `Ok(())` once
+the panel thread has committed the change.
 
-`remap_for_focus`, the run-once map guard and the second-map handling go away. The panel
-never unmaps.
+Hide attaches a null buffer to the panel surface and commits, which unmaps it. A running
+width tween ends first at its target layout. The terminal, the pty source and the child keep
+running, and the grid stays as it is. Hide also unmaps the reserve, so the held strip is
+released. Show commits the panel surface without a buffer, waits for the configure, and
+attaches a freshly drawn buffer at the same grid. It maps the reserve again with the held
+strip. In `on-demand` and `exclusive` mode, niri focuses the new map. In `none` mode, the
+panel only appears.
 
-The focus socket request becomes `focus <token>\n`. `pinwin --focus` reads
-`XDG_ACTIVATION_TOKEN` and builds the token before it connects. A missing or invalid token
-exits 2 without contacting the host. The listener parses the token from the request line and
-answers `error\n` for a request without one. The request size bound grows to fit the longest
-token.
+While the panel is hidden, a layout apply validates and stores the layout and resizes the
+grid as usual, with no animation and nothing on screen. The next show uses it.
 
-The niri patch adds one branch to `request_activation`. When no layout window matches, it
-looks for a mapped layer surface with that `wl_surface` and `on-demand` interactivity. For a
-token without the urgency-only marker, it sets `layer_shell_on_demand_focus` to that surface
-and queues a redraw. That is the same state a click sets in `focus_layer_surface_if_on_demand`.
-A token with the urgency-only marker does nothing for a layer surface, because a layer
-surface has no urgency state.
+The focus socket request becomes `toggle\n`. `pinwin --toggle [name]` sends it and needs no
+environment. `pinwin` reads `PINWIN_ZONE`: `reserve` (the default) starts with a pushing
+layout, so tiles sit beside the panel and a toggle moves them. `overlay` starts with a
+covering layout, so nothing is ever reserved and a toggle moves no window. That is kitty's
+`--exclusive-zone=0`. The library needs no new code for `overlay`, because a covering start
+already reserves nothing.
+
+`ActivationToken`, `src/activation.rs`, the xdg-activation binding and the token parsing in
+the socket and the client go away.
 
 Alternatives:
 
-- A Wayland-level remap, alone or as a fallback. It still unmaps, so a frame without the
-  panel stays possible. The user chose activation only.
+- xdg-activation for a mapped surface. Stock niri ignores it for layer surfaces. It needs a
+  niri patch, and the user rejected patching niri.
+- Switching a mapped surface to `exclusive` at runtime. Stock niri would focus it with no
+  unmap, but nothing ends the exclusive grab except another switch, and a click on a window
+  no longer takes focus. Not tested on niri.
 - A simulated click through the virtual pointer protocol. It moves the cursor and sends a
   click to the hosted program.
-- Two panel surfaces that swap. It costs a second surface and shared drawing state to hide a
-  remap.
 
 ### 5. CPU rendering into shared memory at device size
 
@@ -275,9 +285,8 @@ Every file stays at or under 800 lines.
 
 ## Risks / Trade-offs
 
-- [niri does not merge the activation patch] → Hotkey focus stays absent on stock niri, and
-  click focus keeps working. The user chose this over a remap. A patched niri build gives
-  hotkey focus meanwhile.
+- [A compositor does not focus a newly mapped `on-demand` layer surface] → A toggle shows the
+  panel without focus there. Click focus keeps working.
 - [swash glyphs differ from Ghostty's FreeType glyphs] → The user accepted this trade. Task
   10.2 compares both at scales 1 and 1.5 and records the difference for the user.
 - [An emoji font that ships only COLRv1 outlines] → swash renders colour bitmaps and older
@@ -290,9 +299,6 @@ Every file stays at or under 800 lines.
 - [The width follows one compositor round trip behind] → GTK had the same round trip. Each
   frame commits size, crop and buffer together and does not wait for the configure, and task
   1.3 tests this on niri.
-- [A shell keeps a stale `XDG_ACTIVATION_TOKEN` in its environment] → niri rejects an
-  expired token, so `pinwin --focus` run by hand exits 0 and nothing happens. The README
-  says to run the client from a compositor key binding.
 - [The rewrite regresses behaviour that GTK gave for free] → The proposal lists each GTK duty,
   and each one has a task and a check. The spec scenarios drive the niri verification in
   group 10.
@@ -304,9 +310,10 @@ switches to them. The same change deletes the GTK modules and crates. No feature
 flag keeps both paths alive. A revert of the merge restores the GTK version. Until task 8.1
 switches `Panel`, no program runs the new path. So every niri verification waits for group 10.
 
-`request_focus` changes its signature, so the crate version moves from 0.1.0 to 0.2.0, and
-the README shows the new call. A host that calls `request_focus()` stops compiling, which is
-the intended signal.
+`toggle` replaces `request_focus`, so the crate version moves from 0.1.0 to 0.2.0, and the
+README shows the new call. A host that calls `request_focus()` stops compiling, which is the
+intended signal. `pinwin --focus` becomes `pinwin --toggle`, so a niri key binding changes
+its argument.
 
 ## Open Questions
 

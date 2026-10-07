@@ -24,14 +24,16 @@ no clipboard.
 - Draw text with swash and find fonts with fontconfig. One painter draws every frame, so
   the fallback painter goes away. Text origins sit on whole device pixels, which folds in
   the requirement of `snap-text-origins`.
-- **BREAKING**: `Panel::request_focus` takes an activation token. An activation token is a
-  one-use permission that the compositor gives a program to take focus. The panel asks for
-  focus with xdg-activation and never unmaps. `pinwin --focus` forwards its
-  `XDG_ACTIVATION_TOKEN` over the focus socket. Without a token, the client exits 2.
-- A focus request never changes the terminal grid or the pty window size and raises no
-  `SIGWINCH`. This closes #19.
-- Stock niri ignores xdg-activation for layer surfaces, so on stock niri a focus request
-  gives no focus. Click focus works on every compositor.
+- **BREAKING**: `Panel::toggle` replaces `Panel::request_focus`. A toggle hides a shown
+  panel and shows a hidden one. Focus is the effect of showing: niri focuses a newly mapped
+  `on-demand` or `exclusive` layer surface, so a hotkey works on stock niri. kitty's
+  quick-access terminal works the same way. `pinwin --toggle [name]` replaces
+  `pinwin --focus` over the same socket.
+- Hiding and showing never change the terminal grid or the pty window size and raise no
+  `SIGWINCH`. The child keeps running while the panel is hidden. This closes #19.
+- Hiding releases the reserved gap and showing restores it. `PINWIN_ZONE` lets the user
+  choose: `reserve` (the default) keeps tiles beside the panel, so a toggle moves them;
+  `overlay` reserves nothing, so the panel draws over windows and a toggle moves nothing.
 - In `on-demand` mode, the panel maps with no keyboard interactivity and switches to
   `on-demand` after its first frame. niri focuses a newly mapped `on-demand` surface, so
   this keeps the existing "no focus steal on launch" rule true on niri.
@@ -53,8 +55,8 @@ None.
 
 ### Modified Capabilities
 
-- `pinwin-panel`: the focus request takes a token and never touches the grid. The command-line
-  focus client forwards the token. The animation drops the GTK setting. The pixel-grid
+- `pinwin-panel`: the focus request becomes a show/hide toggle that never touches the grid,
+  and the command-line client sends the toggle. The `pinwin` binary gains `PINWIN_ZONE`. The animation drops the GTK setting. The pixel-grid
   requirement drops the fallback painter and gains text origins on device pixels. Key repeat,
   the pointer cursor and the toolkit-free link become requirements. Requirements that name
   GTK in their text change their wording only.
@@ -66,8 +68,7 @@ None.
   source is a GLib source today), `src/ipc.rs`, `src/main.rs` and `examples/demo.rs`.
   `src/layout.rs`, `src/term/`, `src/surfaces/gap.rs`, `src/render/snap.rs` and
   `src/fontconfig.rs` stay mostly as they are.
-- Public API: `Panel::request_focus` gains a token argument, and a new token type joins the
-  public API.
+- Public API: `Panel::toggle` replaces `Panel::request_focus`.
 - Dependencies: the GTK crates go. smithay-client-toolkit, calloop, wayland-protocols,
   tiny-skia, swash, a fontconfig binding and png come in. The system packages drop to
   libwayland, libxkbcommon and fontconfig.
