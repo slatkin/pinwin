@@ -755,9 +755,9 @@ xkb_keymap {
     /// A startup for the state-level tests; the placeholder fd is fine
     /// because the headless state touches no pty.
     fn test_startup() -> crate::panel::wayland_side::Startup {
-        crate::panel::wayland_side::Startup {
-            fd: -1,
-            layout: Layout::new(
+        crate::panel::wayland_side::Startup::new(
+            -1,
+            Layout::new(
                 Side::Left,
                 NonZeroU16::new(40).expect("test columns"),
                 0,
@@ -765,8 +765,8 @@ xkb_keymap {
                 0,
                 0,
             ),
-            keyboard: Keyboard::OnDemand,
-            accent: None,
-        }
+            Keyboard::OnDemand,
+            None,
+        )
     }
 }

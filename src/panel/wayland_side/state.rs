@@ -259,9 +259,9 @@ impl PanelState {
             stale_grid_px: Rc::new(Cell::new(0)),
             draw_offset: Rc::new(Cell::new(0.0)),
             seat_links: None,
-            sizing: Sizing::new(startup.layout.cols(), cell),
-            held: start_held_gap(startup.layout, cell.width().get()),
-            applied: startup.layout,
+            sizing: Sizing::new(startup.layout().cols(), cell),
+            held: start_held_gap(startup.layout(), cell.width().get()),
+            applied: startup.layout(),
             tween: TweenDriver::default(),
             visibility: Visibility::Shown,
             tween_draw: None,
@@ -639,9 +639,9 @@ mod tests {
     /// A startup for the tests; the thread does not touch the pty fd until
     /// the surfaces push a grid, so a placeholder fd is fine here.
     fn startup() -> Startup {
-        Startup {
-            fd: -1,
-            layout: crate::layout::Layout::new(
+        Startup::new(
+            -1,
+            crate::layout::Layout::new(
                 Side::Left,
                 NonZeroU16::new(40).expect("test columns"),
                 0,
@@ -649,9 +649,9 @@ mod tests {
                 0,
                 0,
             ),
-            keyboard: Keyboard::OnDemand,
-            accent: None,
-        }
+            Keyboard::OnDemand,
+            None,
+        )
     }
 
     /// The startup cell metrics the tests carry, the way a start command
@@ -758,9 +758,9 @@ mod tests {
     fn the_surface_geometry_helpers_stay_aligned() {
         // The bind sets these through `PanelSurfaces::new`; the values must
         // stay the docking-side ones.
-        assert_eq!(panel_margins(startup().layout), (0, 0, 0, 0));
+        assert_eq!(panel_margins(startup().layout()), (0, 0, 0, 0));
         assert_eq!(
-            panel_anchor(startup().layout.side()),
+            panel_anchor(startup().layout().side()),
             panel_anchor(Side::Left)
         );
     }

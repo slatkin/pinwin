@@ -88,9 +88,9 @@ mod tests {
     /// A startup for the tests; the thread does not touch the pty fd until
     /// the surfaces push a grid, so a placeholder fd is fine here.
     fn startup() -> Startup {
-        Startup {
-            fd: -1,
-            layout: Layout::new(
+        Startup::new(
+            -1,
+            Layout::new(
                 Side::Left,
                 NonZeroU16::new(40).expect("test columns"),
                 0,
@@ -98,9 +98,9 @@ mod tests {
                 0,
                 0,
             ),
-            keyboard: Keyboard::OnDemand,
-            accent: None,
-        }
+            Keyboard::OnDemand,
+            None,
+        )
     }
 
     /// The startup cell metrics the tests carry, the way a start command
@@ -133,7 +133,7 @@ mod tests {
         handle_command(
             &mut state,
             PanelCommand::Apply {
-                layout: startup().layout,
+                layout: startup().layout(),
                 duration_ms: 0,
                 reply: reply_tx,
             },
@@ -219,7 +219,7 @@ mod tests {
         on_command_event(
             &mut state,
             Event::Msg(PanelCommand::Apply {
-                layout: startup().layout,
+                layout: startup().layout(),
                 duration_ms: 0,
                 reply: reply_tx,
             }),

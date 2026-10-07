@@ -273,12 +273,7 @@ fn main() {
     if overlay {
         startup_layout = startup_layout.covering();
     }
-    let startup = Startup {
-        fd: master,
-        layout: startup_layout,
-        keyboard,
-        accent,
-    };
+    let startup = Startup::new(master, startup_layout, keyboard, accent);
     match Panel::start(startup) {
         Ok(panel) => {
             println!("pinwin_start = Ok(())");

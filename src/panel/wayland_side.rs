@@ -342,12 +342,12 @@ fn run_thread(
         handshake.report(StartOutcome::Internal);
         return;
     };
-    let Ok(renderer) = glue::thread_renderer(startup.accent, setup) else {
+    let Ok(renderer) = glue::thread_renderer(startup.accent(), setup) else {
         // Unreachable: the same positive pitch always yields metrics.
         handshake.report(StartOutcome::Internal);
         return;
     };
-    let (terminal, repaint, stale_px, pty) = glue::byte_path(poisoned.clone(), startup.fd);
+    let (terminal, repaint, stale_px, pty) = glue::byte_path(poisoned.clone(), startup.fd());
     let focused = Rc::new(Cell::new(false));
     let draw_offset = Rc::new(Cell::new(0.0));
 
@@ -580,9 +580,9 @@ mod tests {
     /// the terminal and the pty source move onto it, so a placeholder fd is
     /// fine here.
     fn startup() -> Startup {
-        Startup {
-            fd: -1,
-            layout: Layout::new(
+        Startup::new(
+            -1,
+            Layout::new(
                 Side::Left,
                 NonZeroU16::new(40).expect("test columns"),
                 0,
@@ -590,9 +590,9 @@ mod tests {
                 0,
                 0,
             ),
-            keyboard: Keyboard::OnDemand,
-            accent: None,
-        }
+            Keyboard::OnDemand,
+            None,
+        )
     }
 
     /// A live handle state like a started panel's, for the thread-side
@@ -732,7 +732,7 @@ mod tests {
             }
         });
 
-        assert_eq!(thread.apply(startup().layout, 0), Ok(()));
+        assert_eq!(thread.apply(startup().layout(), 0), Ok(()));
         assert_eq!(thread.toggle(), Ok(()), "the toggle posts and answers");
         thread.teardown();
         server.join().expect("the fake server thread");

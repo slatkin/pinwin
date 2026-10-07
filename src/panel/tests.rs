@@ -26,12 +26,7 @@ fn layout() -> Layout {
 }
 
 fn startup(fd: RawFd) -> Startup {
-    Startup {
-        fd,
-        layout: layout(),
-        keyboard: Keyboard::OnDemand,
-        accent: None,
-    }
+    Startup::new(fd, layout(), Keyboard::OnDemand, None)
 }
 
 /// A fd that is not an open descriptor is `InvalidFd` before any thread

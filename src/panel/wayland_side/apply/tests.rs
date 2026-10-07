@@ -12,12 +12,12 @@ use std::sync::mpsc;
 /// A startup for the tests; the thread does not touch the pty fd until
 /// the surfaces push a grid, so a placeholder fd is fine here.
 fn startup() -> Startup {
-    Startup {
-        fd: -1,
-        layout: layout(Side::Left, 40, 0, 0, 0, 0),
-        keyboard: Keyboard::OnDemand,
-        accent: None,
-    }
+    Startup::new(
+        -1,
+        layout(Side::Left, 40, 0, 0, 0, 0),
+        Keyboard::OnDemand,
+        None,
+    )
 }
 
 fn layout(side: Side, cols: u16, top: i32, bottom: i32, left: i32, right: i32) -> Layout {
@@ -77,7 +77,7 @@ fn an_invalid_layout_is_rejected_and_stages_nothing() {
     assert!(pushed.is_empty(), "a rejected apply pushes no grid");
     assert_eq!(
         state.held,
-        start_held_gap(startup().layout, cell().width().get()),
+        start_held_gap(startup().layout(), cell().width().get()),
         "the held gap is untouched"
     );
 }
@@ -231,7 +231,7 @@ fn an_apply_before_the_first_configure_records_the_columns() {
 fn an_apply_without_a_session_is_not_live() {
     let mut state = headless_state();
     assert_eq!(
-        state.apply(startup().layout, 0),
+        state.apply(startup().layout(), 0),
         PublishOutcome::NotLive,
         "no session, no publish"
     );

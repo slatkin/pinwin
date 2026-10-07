@@ -117,7 +117,7 @@ impl Panel {
     fn start_inner(startup: Startup) -> Result<Panel, PinwinError> {
         // Pure argument checks, no thread work (pinwin_api.c's startup_valid
         // minus the classes the argument types make unrepresentable, D6/D7).
-        if !fd_is_open(startup.fd) {
+        if !fd_is_open(startup.fd()) {
             return Err(PinwinError::InvalidFd);
         }
 

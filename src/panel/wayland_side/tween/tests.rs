@@ -14,9 +14,9 @@ use super::*;
 /// A startup for the tests; the thread does not touch the pty fd until
 /// the surfaces push a grid, so a placeholder fd is fine here.
 fn startup() -> Startup {
-    Startup {
-        fd: -1,
-        layout: Layout::new(
+    Startup::new(
+        -1,
+        Layout::new(
             Side::Left,
             NonZeroU16::new(40).expect("test columns"),
             0,
@@ -24,9 +24,9 @@ fn startup() -> Startup {
             0,
             0,
         ),
-        keyboard: Keyboard::OnDemand,
-        accent: None,
-    }
+        Keyboard::OnDemand,
+        None,
+    )
 }
 
 /// A live handle state like a started panel's, for the thread-side

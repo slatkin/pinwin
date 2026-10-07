@@ -10,12 +10,52 @@ use std::os::fd::RawFd;
 /// accent. `Copy`, so a start command can carry it across threads.
 #[derive(Clone, Copy, Debug)]
 pub struct Startup {
-    /// The host-owned pty master fd (D7). The library never closes it.
-    pub fd: RawFd,
+    fd: RawFd,
+    layout: crate::layout::Layout,
+    keyboard: crate::layout::Keyboard,
+    accent: Option<crate::layout::Accent>,
+}
+
+impl Startup {
+    /// Bundle the start arguments: the host-owned pty master fd (D7, never
+    /// closed by the library), the full layout, the keyboard interactivity
+    /// mode (fixed at start time) and the focus accent (`None` disables it).
+    #[must_use]
+    pub fn new(
+        fd: RawFd,
+        layout: crate::layout::Layout,
+        keyboard: crate::layout::Keyboard,
+        accent: Option<crate::layout::Accent>,
+    ) -> Self {
+        Startup {
+            fd,
+            layout,
+            keyboard,
+            accent,
+        }
+    }
+
+    /// The host-owned pty master fd.
+    #[must_use]
+    pub fn fd(&self) -> RawFd {
+        self.fd
+    }
+
     /// The full startup layout.
-    pub layout: crate::layout::Layout,
-    /// The keyboard interactivity mode, fixed at start time.
-    pub keyboard: crate::layout::Keyboard,
-    /// The focus accent; `None` disables it.
-    pub accent: Option<crate::layout::Accent>,
+    #[must_use]
+    pub fn layout(&self) -> crate::layout::Layout {
+        self.layout
+    }
+
+    /// The keyboard interactivity mode.
+    #[must_use]
+    pub fn keyboard(&self) -> crate::layout::Keyboard {
+        self.keyboard
+    }
+
+    /// The focus accent, if any.
+    #[must_use]
+    pub fn accent(&self) -> Option<crate::layout::Accent> {
+        self.accent
+    }
 }

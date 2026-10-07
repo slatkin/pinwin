@@ -294,12 +294,12 @@ fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
 
     // Start the panel on the pty master. On failure the child is hung up and
     // reaped and the host exits 1.
-    let panel = match Panel::start(Startup {
-        fd: master.as_raw_fd(),
+    let panel = match Panel::start(Startup::new(
+        master.as_raw_fd(),
         layout,
-        keyboard: settings.keyboard,
-        accent: settings.accent,
-    }) {
+        settings.keyboard,
+        settings.accent,
+    )) {
         Ok(panel) => panel,
         Err(error) => {
             let reason = match error {

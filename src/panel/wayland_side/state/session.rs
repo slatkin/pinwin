@@ -60,8 +60,8 @@ impl PanelState {
         let surfaces = PanelSurfaces::new(
             panel,
             &shm,
-            self.startup.layout,
-            self.startup.keyboard,
+            self.startup.layout(),
+            self.startup.keyboard(),
             self.cell,
         )
         .map_err(|_pool| BindFailure::Internal)?;

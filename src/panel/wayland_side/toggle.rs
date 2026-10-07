@@ -255,12 +255,12 @@ mod tests {
     /// A startup for the tests; the thread does not touch the pty fd until
     /// the surfaces push a grid, so a placeholder fd is fine here.
     fn startup() -> Startup {
-        Startup {
-            fd: -1,
-            layout: layout(Side::Left, 40, 0, 0, 0, 0),
-            keyboard: Keyboard::OnDemand,
-            accent: None,
-        }
+        Startup::new(
+            -1,
+            layout(Side::Left, 40, 0, 0, 0, 0),
+            Keyboard::OnDemand,
+            None,
+        )
     }
 
     fn layout(side: Side, cols: u16, top: i32, bottom: i32, left: i32, right: i32) -> Layout {

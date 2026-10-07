@@ -154,7 +154,7 @@ impl PanelState {
         let terminal = self.terminal.clone();
         let repaint = Rc::clone(&self.repaint);
         let stale = Rc::clone(&self.stale_grid_px);
-        let fd = self.startup.fd;
+        let fd = self.startup.fd();
         move |grid| push_grid(terminal.as_ref(), &repaint, stale.as_ref(), fd, grid)
     }
 }
@@ -231,9 +231,9 @@ mod tests {
     /// A startup for the tests; the thread does not touch the pty fd in
     /// these tests, so a placeholder fd is fine here.
     fn startup() -> Startup {
-        Startup {
-            fd: -1,
-            layout: Layout::new(
+        Startup::new(
+            -1,
+            Layout::new(
                 Side::Left,
                 NonZeroU16::new(40).expect("test columns"),
                 0,
@@ -241,9 +241,9 @@ mod tests {
                 0,
                 0,
             ),
-            keyboard: Keyboard::OnDemand,
-            accent: None,
-        }
+            Keyboard::OnDemand,
+            None,
+        )
     }
 
     /// A live handle state like a started panel's, for the thread-side
@@ -547,13 +547,13 @@ mod tests {
 
     fn state_over_pty(master: &std::fs::File) -> StateOverPty {
         let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
-        let startup = Startup {
-            fd: master.as_raw_fd(),
-            layout: layout(Side::Left, 40, 0, 0, 0, 0),
-            keyboard: Keyboard::OnDemand,
-            accent: None,
-        };
-        let (terminal, repaint, stale_px, pty) = byte_path(Poisoned::new(), startup.fd);
+        let startup = Startup::new(
+            master.as_raw_fd(),
+            layout(Side::Left, 40, 0, 0, 0, 0),
+            Keyboard::OnDemand,
+            None,
+        );
+        let (terminal, repaint, stale_px, pty) = byte_path(Poisoned::new(), startup.fd());
         let mut state = PanelState::headless(
             Handshake::new(mpsc::channel().0),
             Poisoned::new(),
