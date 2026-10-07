@@ -8,8 +8,8 @@
 
 ## 2. Requests and the client call
 
-- [ ] 2.1 Add `pub enum Request { Toggle, Show }` and make the accept loop parse `toggle\n` and `show\n` into a callback that takes the `Request`. Other lines get `error\n`, as before. Verify: the protocol test covers both lines, `hide\n` and an oversized line.
-- [ ] 2.2 Add `instance::send(&InstanceName, Request) -> Result<(), SendError>` with `#[non_exhaustive]` `SendError { Environment, NotListening, Refused, NoAnswer }`, built on the existing bounded client, as a thin wrapper over a crate-private `send_to(&Path, Request)`. Verify: `temp_dir` tests through `send_to` for no socket file (`NotListening`), a refused connect on a stale file (`NotListening`), an `error\n` reply (`Refused`) and a silent listener (`NoAnswer`).
+- [x] 2.1 Add `pub enum Request { Toggle, Show }` and make the accept loop parse `toggle\n` and `show\n` into a callback that takes the `Request`. Other lines get `error\n`, as before. Verify: the protocol test covers both lines, `hide\n` and an oversized line.
+- [x] 2.2 Add `instance::send(&InstanceName, Request) -> Result<(), SendError>` with `#[non_exhaustive]` `SendError { Environment, NotListening, Refused, NoAnswer }`, built on the existing bounded client, as a thin wrapper over a crate-private `send_to(&Path, Request)`. Verify: `temp_dir` tests through `send_to` for no socket file (`NotListening`), a refused connect on a stale file (`NotListening`), an `error\n` reply (`Refused`) and a silent listener (`NoAnswer`).
 
 ## 3. Panel show and the listener thread
 
