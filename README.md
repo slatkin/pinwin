@@ -1,9 +1,9 @@
 # pinwin
 
-A GTK4 layer-shell terminal panel for Wayland compositors: it docks a terminal
+A layer-shell terminal panel for Wayland compositors: it docks a terminal
 running any command to a screen edge as a layer surface, reserves space from
 tiled windows via a transparent reservation surface, and animates its width
-between layouts. Built for niri.
+between layouts. Built for niri, on a direct Wayland client with no toolkit.
 
 pinwin is a single Rust crate: `src/main.rs` is the `pinwin` binary and
 `src/lib.rs` is a library you can depend on. The pre-port C and Zig sources
@@ -13,10 +13,12 @@ are removed with the port.
 
 Building needs Zig 0.16 on PATH: `build.rs` fetches the pinned libghostty-vt
 commit and builds ghostty's own static VT library with `zig build` (a cold
-cache also needs `git` and network access). The system GTK4,
-gtk4-layer-shell-0 and pangocairo are required. GTK 4.12 is the API floor;
-fractional output scale with the default renderer needs GTK 4.14 (before
-4.13.6 the default GL renderer reports an integer scale on Wayland). Set
+cache also needs `git` and network access). The system needs the Wayland
+client stack (libwayland), libxkbcommon and fontconfig. Fractional output
+scale comes from the fractional-scale protocol; without it the panel uses the
+integer buffer scale. A width tween crops its cached buffer through
+viewporter, and copies the crop into a fresh buffer when the compositor lacks
+it. Set
 `PINWIN_GHOSTTY_SRC=<dir>`
 to build against an existing ghostty checkout at the pinned commit instead of
 fetching; a checkout at any other commit is rejected.
@@ -102,10 +104,10 @@ fn run(fd: RawFd) -> Result<(), PinwinError> {
   negative or too-wide pushing reservation, a covering panel wider than the
   output, no complete row). The applied layout is unchanged.
 - `InvalidFd` — the pty fd is not an open descriptor; nothing opened.
-- `NoDisplay` — no GTK display, or the compositor lacks wlr-layer-shell.
+- `NoDisplay` — no Wayland display, or the compositor lacks wlr-layer-shell.
 - `AlreadyRunning` — at most one panel exists per process.
 - `NotRunning` — the handle's panel is no longer live.
-- `Internal` — a caught panic, a wedged GTK side, or a terminal grid that
+- `Internal` — a caught panic, a wedged panel thread, or a terminal grid that
   could not be allocated.
 
 The layout types keep their invariants in their fields, so an unknown side, a
@@ -221,28 +223,34 @@ Mod+P { spawn "pinwin" "--focus"; }
 
 ## Architecture
 
-`src/lib.rs` re-exports the public `Panel` API. `src/panel/` owns the
-`pinwin-gtk` thread (spawned once, parked between panels) and the start
-handshake and apply replies; `src/layout.rs` is the GTK-free geometry core;
-`src/term/` wraps the pinned libghostty-vt terminal and its cells, keys and
-input encoders; `src/render/` paints frames through the GSK render-node
-snapshot path with a cairo fallback, plus the focus accent and kitty image
-surfaces; `src/surfaces/` builds the layer-shell panel
-and reservation surfaces; `src/input/` wires the GDK controllers;
-`src/anim.rs` eases the width; `src/pty.rs` drives the host-supplied fd;
-`src/fontconfig.rs` reads the Ghostty font and theme; `src/nerd_font.rs` is a
-generated glyph table; `src/guard.rs` is the panic guard; `src/ghostty_sys/`
-is the hand-written FFI to the pinned libghostty-vt. The `pinwin` host
-program `src/main.rs` owns the pty, the child's process and the focus
-socket; its pure parts are `src/cli.rs` (arguments, `--focus`), `src/ipc.rs`
-(the focus socket's identity, bind, listener and client) and
-`src/settings.rs` (the environment contract). `build.rs` fetches and
-builds that pinned commit.
+`src/lib.rs` re-exports the public `Panel` API. `src/panel.rs` and
+`src/panel/` own the public handle, the start handshake and the apply
+replies, and `src/panel/wayland_side/` runs the panel thread: one
+smithay-client-toolkit connection with a calloop event loop per start, the
+two layer-shell surfaces, the shared-memory buffers, the seat, the width
+tween and the frame present step. `src/layout.rs` is the display-free
+geometry core; `src/term.rs` and `src/term/` wrap the pinned libghostty-vt
+terminal and its cells, keys and input encoders; `src/render/` is the
+toolkit-free CPU painter — tiny-skia fills the canvas, swash shapes and
+rasterizes the text, fontconfig resolves the fonts, and the kitty image pass
+decodes PNGs; `src/surfaces.rs` and `src/surfaces/` hold the pure
+layout-validation and held-gap rules that the panel thread applies against
+its own Wayland surfaces; `src/activation.rs` is the xdg-activation token;
+`src/anim.rs` eases the width; `src/pty.rs` and `src/pty/` drive the
+host-supplied fd as a calloop source; `src/fontconfig.rs` reads the Ghostty
+font and theme; `src/nerd_font.rs` is a generated glyph table; `src/guard.rs`
+is the panic guard; `src/ghostty_sys.rs` and `src/ghostty_sys/` are the
+hand-written FFI to the pinned libghostty-vt. The `pinwin` host program
+`src/main.rs` owns the pty, the child's process and the focus socket; its
+pure parts are `src/cli.rs` (arguments, `--focus`), `src/ipc.rs` (the focus
+socket's identity, bind, listener and client) and `src/settings.rs` (the
+environment contract). `build.rs` fetches and builds that pinned commit.
 
 The behaviour spec lives in `openspec/specs/pinwin-panel/spec.md`; the
 archived design decisions code comments cite as D-numbers are under
-`openspec/changes/archive/`, and the port's own are in
-`openspec/changes/port-to-rust/design.md`.
+`openspec/changes/archive/`, the port's own are in
+`openspec/changes/port-to-rust/design.md`, and the Wayland rewrite's are in
+`openspec/changes/replace-gtk-with-wayland/design.md`.
 
 ## Known caveats
 
@@ -251,9 +259,8 @@ archived design decisions code comments cite as D-numbers are under
   ordinary window.
 - One panel per process. A second start while a handle is alive fails with
   `AlreadyRunning`.
-- The library's GTK thread is process-lifetime and is never joined, so it
-  stays parked for a later start. GTK can only be initialised once per
-  process; the parked thread owns that initialisation.
+- Each start runs its own panel thread, and the thread ends when the handle
+  drops. There is no process-lifetime parked thread.
 - The library never closes the pty master fd; the host owns its lifetime.
 - `panic = "unwind"` is fixed in every Cargo profile. Setting `panic = "abort"`
   would let a panic abort the host instead of being caught at the API
