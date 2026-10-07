@@ -81,8 +81,8 @@ pub(crate) mod watchdog;
 use state::{BindFailure, PanelState};
 
 /// A command the host posts to a running panel thread (D2), the wayland twin
-/// of the GTK side's dispatched glue: an apply, a toggle or a teardown, each
-/// carrying its own bounded reply channel from
+/// of the GTK side's dispatched glue: an apply, a toggle, a show or a
+/// teardown, each carrying its own bounded reply channel from
 /// [`super::handshake`].
 #[derive(Debug)]
 pub(crate) enum PanelCommand {
@@ -101,6 +101,14 @@ pub(crate) enum PanelCommand {
     /// the hide's null-buffer commit or the show's commit without a buffer;
     /// the rest of a show follows the configure.
     Toggle {
+        /// The bounded reply the host waits on.
+        reply: mpsc::SyncSender<()>,
+    },
+    /// Show the panel (serve-instance-socket D6): show a hidden panel; a
+    /// shown panel is left unchanged — the command answers at once with no
+    /// commit. The reply is the show's commit without a buffer when the
+    /// panel was hidden; the rest of a show follows the configure.
+    Show {
         /// The bounded reply the host waits on.
         reply: mpsc::SyncSender<()>,
     },
@@ -198,20 +206,45 @@ impl PanelThread {
     /// `NotRunning` on a dead panel, `Internal` on a caught panic or a
     /// wedged or ended thread.
     pub fn toggle(&self) -> Result<(), PinwinError> {
-        match guard(&self.inner.poisoned, || self.post_toggle()) {
+        self.post_unit(|reply| PanelCommand::Toggle { reply })
+    }
+
+    /// Post the show (serve-instance-socket D6) and wait for its bounded
+    /// reply through the same shared path as the toggle — one helper, so
+    /// the two cannot drift: the poisoned check first (D5: a panic reports
+    /// `Internal`, never `NotRunning`), then the ended check, then the
+    /// bounded reply. A hidden panel is shown; a shown one answers at once
+    /// with no commit. The reply is the show's commit without a buffer; the
+    /// rest of a show follows the configure, after the reply.
+    ///
+    /// # Errors
+    /// `NotRunning` on a dead panel, `Internal` on a caught panic or a
+    /// wedged or ended thread.
+    pub fn show(&self) -> Result<(), PinwinError> {
+        self.post_unit(|reply| PanelCommand::Show { reply })
+    }
+
+    /// The shared post of the `()`-reply commands — the toggle and the show
+    /// (serve-instance-socket D6): the poisoned check first (D5), then the
+    /// ended check, then the bounded reply wait. `command` builds the
+    /// variant around the reply channel the thread answers on.
+    fn post_unit(
+        &self,
+        command: impl FnOnce(mpsc::SyncSender<()>) -> PanelCommand,
+    ) -> Result<(), PinwinError> {
+        match guard(&self.inner.poisoned, || {
+            // Not running → `NotRunning` without blocking (the dead-panel
+            // order of `pinwin_api.c`).
+            if !self.inner.live.load(Ordering::Relaxed) {
+                return Err(PinwinError::NotRunning);
+            }
+            let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+            let _ = self.commands.send(command(reply_tx));
+            wait_for_unit(&reply_rx, APPLY_WAIT)
+        }) {
             Ok(result) => result,
             Err(_) => Err(PinwinError::Internal),
         }
-    }
-
-    /// The unguarded body of [`PanelThread::toggle`].
-    fn post_toggle(&self) -> Result<(), PinwinError> {
-        if !self.inner.live.load(Ordering::Relaxed) {
-            return Err(PinwinError::NotRunning);
-        }
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        let _ = self.commands.send(PanelCommand::Toggle { reply: reply_tx });
-        wait_for_unit(&reply_rx, APPLY_WAIT)
     }
 
     /// Post the teardown and wait for its bounded reply. The thread then
@@ -678,6 +711,27 @@ mod tests {
         assert!(socket_path("").is_none());
     }
 
+    /// A show on a dead thread handle reports `NotRunning` without posting
+    /// (the spec's dead-panel scenario, serve-instance-socket row 3.1): the
+    /// shared post skips the reply path, so the call does not wait.
+    #[test]
+    fn a_show_on_a_dead_thread_handle_is_not_running() {
+        let (commands, _receiver) = channel::channel::<PanelCommand>();
+        let thread = PanelThread {
+            commands,
+            inner: Arc::new(Inner {
+                poisoned: GuardPoisoned::new(),
+                live: AtomicBool::new(false),
+            }),
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(thread.show(), Err(PinwinError::NotRunning));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "the dead-panel show does not wait"
+        );
+    }
+
     /// A panel thread handle over a fake command server (a plain calloop
     /// loop answering each command through its bounded reply): an apply and
     /// a toggle post through the real command channel and map their replies,
@@ -711,7 +765,8 @@ mod tests {
                         PanelCommand::Apply { reply, .. } => {
                             let _ = reply.send(PublishOutcome::Applied);
                         }
-                        PanelCommand::Toggle { reply } => {
+                        // The toggle and the show both answer `()` here.
+                        PanelCommand::Toggle { reply } | PanelCommand::Show { reply } => {
                             let _ = reply.send(());
                         }
                         PanelCommand::Teardown { reply } => {
@@ -734,6 +789,7 @@ mod tests {
 
         assert_eq!(thread.apply(startup().layout(), 0), Ok(()));
         assert_eq!(thread.toggle(), Ok(()), "the toggle posts and answers");
+        assert_eq!(thread.show(), Ok(()), "the show posts and answers");
         thread.teardown();
         server.join().expect("the fake server thread");
     }

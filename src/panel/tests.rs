@@ -95,7 +95,13 @@ fn poisoned_beats_not_running() {
     // The toggle follows the same precedence: a latched handle reports
     // `Internal`, never `NotRunning`.
     assert_eq!(
-        toggle_via_inner(&inner, || Err(PinwinError::Internal)),
+        show_or_toggle_via_inner(&inner, || Err(PinwinError::Internal)),
+        Err(PinwinError::Internal)
+    );
+    // The show shares that posted path (serve-instance-socket D6), so it
+    // keeps the precedence too.
+    assert_eq!(
+        show_or_toggle_via_inner(&inner, || Err(PinwinError::Internal)),
         Err(PinwinError::Internal)
     );
 }
@@ -132,12 +138,33 @@ fn a_toggle_on_a_dead_panel_is_not_running_without_blocking() {
     };
     let started = std::time::Instant::now();
     assert_eq!(
-        toggle_via_inner(&inner, || Err(PinwinError::Internal)),
+        show_or_toggle_via_inner(&inner, || Err(PinwinError::Internal)),
         Err(PinwinError::NotRunning)
     );
     assert!(
         started.elapsed() < Duration::from_secs(1),
         "the dead-panel toggle does not wait"
+    );
+}
+
+/// A show on a handle whose panel is no longer live reports
+/// `NotRunning` without blocking (the spec's dead-panel scenario,
+/// serve-instance-socket row 3.1): the post is skipped through the same
+/// shared path as the toggle's, so the reply path is not entered.
+#[test]
+fn a_show_on_a_dead_panel_is_not_running_without_blocking() {
+    let inner = Inner {
+        poisoned: Poisoned::new(),
+        live: AtomicBool::new(false),
+    };
+    let started = std::time::Instant::now();
+    assert_eq!(
+        show_or_toggle_via_inner(&inner, || Err(PinwinError::Internal)),
+        Err(PinwinError::NotRunning)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the dead-panel show does not wait"
     );
 }
 
@@ -151,12 +178,29 @@ fn a_live_toggle_posts_to_the_panel_thread() {
         live: AtomicBool::new(true),
     };
     let posted = Cell::new(0);
-    let result = toggle_via_inner(&inner, || {
+    let result = show_or_toggle_via_inner(&inner, || {
         posted.set(posted.get() + 1);
         Ok(())
     });
     assert_eq!(result, Ok(()));
     assert_eq!(posted.get(), 1, "the toggle posted once");
+}
+
+/// A live handle's show posts to the panel thread through the same shared
+/// posted path as the toggle (serve-instance-socket D6).
+#[test]
+fn a_live_show_posts_to_the_panel_thread() {
+    let inner = Inner {
+        poisoned: Poisoned::new(),
+        live: AtomicBool::new(true),
+    };
+    let posted = Cell::new(0);
+    let result = show_or_toggle_via_inner(&inner, || {
+        posted.set(posted.get() + 1);
+        Ok(())
+    });
+    assert_eq!(result, Ok(()));
+    assert_eq!(posted.get(), 1, "the show posted once");
 }
 
 /// A panic in a guarded closure at the panel boundary yields

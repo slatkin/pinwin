@@ -1,5 +1,5 @@
 //! The panel thread's command-channel handling (replace-gtk-with-wayland D2):
-//! the apply, toggle and teardown commands the host posts and the closed
+//! the apply, toggle, show and teardown commands the host posts and the closed
 //! command channel, split from the surface-event handlers in
 //! `super::state` so both stay small. The teardown and the closed channel
 //! are stop relays (D5): they end the loop and drop the surfaces even on a
@@ -58,6 +58,13 @@ fn handle_command(state: &mut PanelState, command: super::PanelCommand) {
             // null-buffer commit or the show's commit without a buffer went
             // out (row 9.1, D4); the rest of a show follows the configure.
             state.toggle();
+            let _ = reply.send(());
+        }
+        super::PanelCommand::Show { reply } => {
+            // The show answers at once (serve-instance-socket D6): a hidden
+            // panel is shown, a shown one is left alone — no commit; the
+            // rest of a show follows the configure.
+            state.show();
             let _ = reply.send(());
         }
         super::PanelCommand::Teardown { reply } => {
@@ -169,6 +176,54 @@ mod tests {
             Ok(())
         );
         assert_eq!(state.visibility, super::super::toggle::Visibility::Shown);
+    }
+
+    /// A show command shows a hidden panel and replies `Ok` through the
+    /// same bounded reply (serve-instance-socket D6): the toggle hid, the
+    /// show mapped the panel again.
+    #[test]
+    fn a_show_command_shows_a_hidden_panel_and_replies() {
+        let (tx, _rx) = mpsc::channel();
+        let mut state = headless_state(Handshake::new(tx));
+        let (reply_tx, _reply_rx) = mpsc::sync_channel(1);
+        handle_command(&mut state, PanelCommand::Toggle { reply: reply_tx });
+        assert_eq!(state.visibility, super::super::toggle::Visibility::Hidden);
+
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        handle_command(&mut state, PanelCommand::Show { reply: reply_tx });
+        assert_eq!(
+            reply_rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(())
+        );
+        assert_eq!(state.visibility, super::super::toggle::Visibility::Shown);
+        assert!(!state.done, "a show does not end the thread");
+    }
+
+    /// A show command on a shown panel answers `Ok` and leaves the panel
+    /// shown (serve-instance-socket D6, the spec's "Show a shown panel"
+    /// scenario): the command short-circuits on the visibility, so the show
+    /// half never runs and nothing is committed. The headless state has no
+    /// surfaces to commit with, so the visibility — unchanged where the
+    /// hidden path flips it — is the observable here; the gate test in
+    /// `toggle.rs` pins the no-commit side on a rendered state.
+    #[test]
+    fn a_show_command_on_a_shown_panel_answers_and_leaves_it_shown() {
+        let (tx, _rx) = mpsc::channel();
+        let mut state = headless_state(Handshake::new(tx));
+        assert_eq!(state.visibility, super::super::toggle::Visibility::Shown);
+
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        handle_command(&mut state, PanelCommand::Show { reply: reply_tx });
+        assert_eq!(
+            reply_rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(())
+        );
+        assert_eq!(
+            state.visibility,
+            super::super::toggle::Visibility::Shown,
+            "the shown panel is left shown"
+        );
+        assert!(!state.done, "a show does not end the thread");
     }
 
     /// A teardown command tears the panel down — the surfaces drop and the
