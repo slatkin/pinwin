@@ -433,7 +433,8 @@ mod tests {
         );
         assert_eq!(
             send_exit(&Err(SendError::NoAnswer {
-                path: PathBuf::new()
+                path: PathBuf::new(),
+                error: None,
             })),
             1
         );

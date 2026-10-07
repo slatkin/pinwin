@@ -624,3 +624,36 @@ fn send_to_reports_the_reply_and_the_connect_failures() {
 
     fs::remove_dir_all(&dir).expect("cleanup");
 }
+
+/// A connect failure that is neither `ENOENT` nor `ECONNREFUSED` keeps the
+/// no-answer class (`serve-instance-socket` D4) without losing the cause:
+/// the message names the failed connect and the errno, and `source()`
+/// carries the connect error. A path through a regular file fails with
+/// `ENOTDIR`.
+#[test]
+fn send_to_names_a_connect_error_that_is_not_missing_or_stale() {
+    let dir = temp_dir("noanswer-cause");
+    let file = dir.join("a-regular-file");
+    fs::write(&file, b"not a directory").expect("regular file");
+    let path = file.join("wayland-0-default.sock");
+
+    let error = send_to(&path, Request::Toggle).expect_err("ENOTDIR");
+    assert!(
+        matches!(error, SendError::NoAnswer { error: Some(_), .. }),
+        "the no-answer class keeps the connect error"
+    );
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "could not connect to {} ({})",
+            path.display(),
+            io::Error::from_raw_os_error(libc::ENOTDIR)
+        )
+    );
+    let source = std::error::Error::source(&error)
+        .and_then(|error| error.downcast_ref::<io::Error>())
+        .expect("the connect error as the source");
+    assert_eq!(source.raw_os_error(), Some(libc::ENOTDIR));
+
+    fs::remove_dir_all(&dir).expect("cleanup");
+}

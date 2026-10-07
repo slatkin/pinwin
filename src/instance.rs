@@ -564,11 +564,16 @@ pub enum SendError {
         /// The refused request, for the message.
         request: Request,
     },
-    /// No valid answer came in time: any other connect error, a timeout,
-    /// or an invalid reply.
+    /// No valid answer came in time: a timeout, an invalid reply, or an
+    /// otherwise-failing connect. A connect failure other than `ENOENT` or
+    /// `ECONNREFUSED` keeps its error in `error` (`Some`), so the refusal
+    /// and its errno stay visible as they were in the pre-library binary;
+    /// a timeout or an invalid reply has none.
     NoAnswer {
         /// The socket path the answer did not come from.
         path: PathBuf,
+        /// The connect's own error, when the connect itself failed.
+        error: Option<io::Error>,
     },
 }
 
@@ -585,7 +590,13 @@ impl fmt::Display for SendError {
                     "the panel did not {request} (the request failed on the host)"
                 )
             }
-            Self::NoAnswer { path } => {
+            Self::NoAnswer {
+                path,
+                error: Some(error),
+            } => {
+                write!(f, "could not connect to {} ({error})", path.display())
+            }
+            Self::NoAnswer { path, error: None } => {
                 write!(f, "no valid answer came from {} in time", path.display())
             }
         }
@@ -596,8 +607,11 @@ impl std::error::Error for SendError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Environment(error) => Some(error),
-            Self::NotListening { error, .. } => Some(error),
-            Self::Refused { .. } | Self::NoAnswer { .. } => None,
+            Self::NotListening { error, .. }
+            | Self::NoAnswer {
+                error: Some(error), ..
+            } => Some(error),
+            Self::Refused { .. } | Self::NoAnswer { error: None, .. } => None,
         }
     }
 }
@@ -626,6 +640,7 @@ pub(crate) fn send_to(path: &Path, request: Request) -> Result<(), SendError> {
                 },
                 _ => SendError::NoAnswer {
                     path: path.to_owned(),
+                    error: Some(error),
                 },
             });
         }
@@ -636,6 +651,7 @@ pub(crate) fn send_to(path: &Path, request: Request) -> Result<(), SendError> {
         Some(reply) if reply == REPLY_ERROR => Err(SendError::Refused { request }),
         _ => Err(SendError::NoAnswer {
             path: path.to_owned(),
+            error: None,
         }),
     }
 }
