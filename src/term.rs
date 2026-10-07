@@ -7,14 +7,15 @@
 //! that `cells.zig` and `input.zig` read. Here a single [`Terminal`] owns
 //! them, so the next `term` sub-units (`cells`, `keys`, `input`) take the
 //! handles through accessors instead of reaching for globals. The type is
-//! `!Send`/`!Sync` (D2 item 8, D4): it lives on the GTK thread only.
+//! `!Send`/`!Sync` (D2 item 8, D4): it lives on the panel thread only.
 //!
 //! Panics must never cross back into C (D5). Every trampoline below runs its
 //! body through the shared [`crate::guard`] helper, and a panic latches a
 //! shared poisoned flag; later calls become no-ops.
 //!
 //! The pty write sink and the PNG decoder are injected behind the [`PtySink`]
-//! and [`PngDecoder`] traits, so nothing here depends on GTK/GDK (D3).
+//! and [`PngDecoder`] traits, so nothing here depends on the windowing
+//! layer (D3).
 
 use std::os::raw::c_void;
 use std::ptr;
@@ -46,9 +47,6 @@ use crate::ghostty_sys::terminal::{
 use crate::ghostty_sys::{GHOSTTY_REJECTED, GHOSTTY_SUCCESS, GhosttyResult};
 
 mod callbacks;
-// The explicit path keeps rust-analyzer linking this directory module; the
-// plain `pub mod cells;` form resolves for rustc but is reported unlinked.
-#[path = "cells/mod.rs"]
 pub mod cells;
 pub mod input;
 pub mod keys;
@@ -66,7 +64,7 @@ const EARLY_PTY_CAP: usize = 1 << 20;
 const DEFAULT_COLS: u16 = 40;
 const DEFAULT_ROWS: u16 = 24;
 
-/// Where terminal-initiated pty writes go. The GTK glue owns the real fd; the
+/// Where terminal-initiated pty writes go. The host owns the real fd; the
 /// library only needs to hand it bytes.
 pub trait PtySink: 'static {
     /// Write response bytes back to the pty.
@@ -81,8 +79,8 @@ pub struct DecodedPng {
     pub rgba: Vec<u8>,
 }
 
-/// Decodes kitty graphics PNG data. The GTK layer supplies a gdk-pixbuf
-/// implementation; tests can supply a stub.
+/// Decodes kitty graphics PNG data. The panel thread's `png` module supplies
+/// the implementation; tests can supply a stub.
 pub trait PngDecoder: 'static {
     /// Decode `data` into RGBA pixels, or `None` to reject the image.
     fn decode_png(&mut self, data: &[u8]) -> Option<DecodedPng>;
@@ -488,7 +486,7 @@ impl Terminal {
     }
 
     /// Feed pty bytes to the terminal. Before the terminal exists the bytes
-    /// are buffered up to [`EARLY_PTY_CAP`] and replayed once it does; after a
+    /// are buffered up to `EARLY_PTY_CAP` and replayed once it does; after a
     /// sticky init failure they are dropped (`src/main.zig`).
     ///
     /// # Panics
