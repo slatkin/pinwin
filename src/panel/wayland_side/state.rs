@@ -216,13 +216,23 @@ pub(crate) struct PanelState {
 /// recording seam): a test build records each panel-surface
 /// `wl_surface.frame` request and each tween commit, so a display-free
 /// test can assert the request precedes the commit it belongs to — the
-/// Wayland rule the tween's animation loop lives by. Compiled out of
+/// Wayland rule the tween's animation loop lives by. Row 9.9 extends the
+/// same seam with the layer-shell writes a show re-sends after an unmap:
+/// the show records the layer it puts the panel surface and the reserve
+/// surface back on, before either write reads the session. Compiled out of
 /// production builds, so production behaviour is untouched.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FrameOp {
     RequestFrame,
     CommitFrame,
+    /// The show's `set_layer` on the panel surface (row 9.9).
+    SetPanelLayer(Layer),
+    /// The show's `set_layer` on the reserve surface (row 9.9), recorded
+    /// whenever a show runs; the write itself happens only while the reserve
+    /// surface is still alive — a recreated reserve gets its layer at
+    /// creation.
+    SetReserveLayer(Layer),
 }
 
 /// Why a start's bind failed: a required global is missing (the spec's

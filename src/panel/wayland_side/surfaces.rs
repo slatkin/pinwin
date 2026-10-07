@@ -28,7 +28,9 @@ use std::num::NonZeroU16;
 
 use smithay_client_toolkit::compositor::{FrameCallbackData, Region};
 use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, LayerSurface};
+use smithay_client_toolkit::shell::wlr_layer::{
+    Anchor, KeyboardInteractivity, Layer, LayerSurface,
+};
 use smithay_client_toolkit::shm::slot::Buffer;
 use smithay_client_toolkit::shm::{CreatePoolError, Shm};
 use wayland_client::QueueHandle;
@@ -246,14 +248,21 @@ impl PanelSurfaces {
 
     /// Show (row 9.1, replace-gtk-with-wayland D4): an unmap resets a layer
     /// surface to its state after `get_layer_surface`, so re-send the panel's
-    /// layer state — anchor, margins, exclusive zone -1, the applied width
-    /// and the keyboard interactivity, `on-demand` directly in `on-demand`
-    /// mode (the launch keeps its no-interactivity first map) — and commit
-    /// without a buffer. The configure that follows draws the current grid
-    /// and maps the panel. The reserve gets its anchor, held exclusive zone,
-    /// one-pixel size and empty input region again, and maps with the held
-    /// strip at its configure.
+    /// layer state — the `overlay` layer, anchor, margins, exclusive zone -1,
+    /// the applied width and the keyboard interactivity, `on-demand` directly
+    /// in `on-demand` mode (the launch keeps its no-interactivity first map)
+    /// — and commit without a buffer. The layer is part of the reset set
+    /// (row 9.9): the compositor's shell implementation drops the whole
+    /// double-buffered state to its defaults on the unmap commit, and the
+    /// default layer is `background`, so a show that re-sent only the rest
+    /// remapped the panel below the normal windows. The configure that
+    /// follows draws the current grid and maps the panel. The reserve gets
+    /// its `bottom` layer, anchor, held exclusive zone, one-pixel size and
+    /// empty input region again, and maps with the held strip at its
+    /// configure; a reserve the compositor closed is recreated instead, with
+    /// its layer set at creation.
     pub(crate) fn show(&mut self, geometry: &SurfaceGeometry) {
+        self.panel.set_layer(Layer::Overlay);
         self.panel.set_anchor(panel_anchor(geometry.panel_side));
         let (top, right, bottom, left) = geometry.panel_margins;
         self.panel.set_margin(top, right, bottom, left);
@@ -272,6 +281,7 @@ impl PanelSurfaces {
             .set_keyboard_interactivity(post_buffer_interactivity(self.keyboard));
         self.panel.commit();
         if let Some(reserve) = &self.reserve {
+            reserve.surface.set_layer(Layer::Bottom);
             reserve
                 .surface
                 .set_anchor(panel_anchor(geometry.reserve_side));
