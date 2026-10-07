@@ -1,12 +1,12 @@
 [package]
 name = "pinwin"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Pin a Ghostty window (e.g. mbv) to the edge of niri as a fixed sidebar."
 license = "MIT"
 repository = "https://github.com/slatkin/pinwin"
-keywords = ["terminal", "niri", "layer-shell", "gtk4"]
+keywords = ["terminal", "niri", "layer-shell", "wayland"]
 categories = ["command-line-utilities"]
 # The pinned libghostty-vt archive is built by build.rs from the commit in
 # build.rs (port-to-rust D2); it is deliberately not a Cargo dependency.
