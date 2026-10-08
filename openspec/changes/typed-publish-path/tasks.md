@@ -25,7 +25,7 @@
 - [x] 5.1 Record the baseline: run `cargo test` and `cargo clippy --all-targets -- -D warnings` and note the pass counts
 - [x] 5.2 Replace `PanelState::headless` with `PanelState::new` taking the wiring bundle (terminal, repaint, `stale_grid_px`, `draw_offset`, `SeatLinks`, `TweenRender`); make `render` and `seat_links` non-`Option`, drop the `PanelState.terminal` field in favour of `render.terminal`, and rewrite `run_thread` to build the state in one call; verify `cargo build --all-targets` passes
 - [x] 5.3 Delete the "no terminal (unreachable)" branches in `run_loop` and the `ok_or(BindFailure::Internal)` on `seat_links` in `state/session.rs`; verify `rg "unreachable on a production thread|seat_links.clone\(\).ok_or" src` returns nothing
-- [ ] 5.4 Move every `headless`/`headless_state` test helper to `PanelState::new` with a display-free `Terminal`; keep `push_grid`'s winsize-only degrade covered by a direct `None` test; where a test cannot move without changing its meaning, keep a `#[cfg(test)]` shim for it alone and list it in the commit message; verify `cargo test` matches the 5.1 count
+- [x] 5.4 Move every `headless`/`headless_state` test helper to `PanelState::new` with a display-free `Terminal`; keep `push_grid`'s winsize-only degrade covered by a direct `None` test; where a test cannot move without changing its meaning, keep a `#[cfg(test)]` shim for it alone and list it in the commit message; verify `cargo test` matches the 5.1 count
 - [ ] 5.5 Final gate: `cargo test`, `cargo clippy --all-targets -- -D warnings` and `cargo doc --no-deps --document-private-items` pass with no new `allow` attributes, and `openspec validate typed-publish-path` passes
 
 ## Workflow follow-up
