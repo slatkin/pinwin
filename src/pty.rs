@@ -19,7 +19,7 @@
 //! area's allocation to the grid before resizing — has no counterpart
 //! here: the panel thread's grid sizing (`panel::wayland_side::sizing`)
 //! decides the grid and applies the winsize through the caller-supplied
-//! callback that drives [`Pty::resize`].
+//! callback that drives `Pty::resize`.
 //!
 //! The read source for the panel thread lives beside it in the `calloop`
 //! submodule (`replace-gtk-with-wayland` D2); the thread attaches it in

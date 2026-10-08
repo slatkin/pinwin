@@ -78,21 +78,19 @@ pub(crate) fn thread_renderer(
         .ok_or(StartOutcome::Internal)
 }
 
-/// The thread's byte path (row 8.1): the shared terminal, the repaint flag
-/// its callbacks latch, the stale pre-resize grid width its output clears,
-/// and the pty the writer and the fd slot come from. The terminal is
-/// shared as an `Rc<RefCell<_>>` because the seat links and the tween's
-/// render bundle hold clones, and the pty read source feeds it from the
-/// same thread.
+/// The thread's byte path — the route the child's output takes through the
+/// panel thread: the shared terminal, the repaint flag its callbacks
+/// latch, the stale pre-resize grid width its output clears, and the pty
+/// the writer and the fd slot come from. [`byte_path`] builds it from the
+/// host-supplied fd; the terminal is an `Rc<RefCell<_>>` because the seat
+/// links and the tween's render bundle hold clones, and the pty read
+/// source feeds it from the same thread (replace-gtk-with-wayland D2).
 ///
-/// The `queue_draw` closure runs inside the terminal's callbacks: it clears
-/// the stale grid record — the terminal produced output, so the drawn grid
-/// is the live one again (the GTK path's `note_terminal_output`) — and sets
-/// the repaint flag, which the loop reads and clears after each dispatch —
-/// the draw step turns the flag into a frame.
-/// The byte path's return: the shared terminal, the repaint flag its
-/// callbacks latch, the stale pre-resize record its output clears, and the
-/// pty the writer and the fd slot come from.
+/// The `queue_draw` closure [`byte_path`] hands the terminal runs inside
+/// the terminal's callbacks: it clears the stale grid record — the
+/// terminal produced output, so the drawn grid is the live one again —
+/// and sets the repaint flag, which the loop reads and clears after each
+/// dispatch; the draw step turns the flag into a frame.
 pub(crate) struct BytePath {
     terminal: Rc<RefCell<Terminal>>,
     repaint: Rc<Cell<bool>>,

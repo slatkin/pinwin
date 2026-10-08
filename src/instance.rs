@@ -324,7 +324,7 @@ const ACCEPT_POLL: Duration = Duration::from_millis(100);
 /// sends one request line; exactly `toggle\n` or `show\n` runs `serve` with
 /// the parsed [`Request`] and is answered `ok\n`, or `error\n` when it
 /// fails. Every other line — any other command, an argument, or a line over
-/// [`MAX_REQUEST`] — is answered `error\n` without calling `serve`. Every
+/// `MAX_REQUEST` — is answered `error\n` without calling `serve`. Every
 /// connection's read and write are bounded in size and time, so one client
 /// cannot hang the listener; the loop ends within one accept poll of
 /// `shutdown` — the host sets it after its child exits.

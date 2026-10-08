@@ -35,7 +35,7 @@
 //! `wp_viewport.set_source` carries its arguments as `wl_fixed` (1/256
 //! units); wayland-client takes them as `f64` and encodes them as
 //! `(value * 256.0) as i32`. A whole device pixel count encodes exactly;
-//! [`CropRect::wl_fixed`] produces that number with a checked multiply, and
+//! `CropRect::wl_fixed` produces that number with a checked multiply, and
 //! the tests assert it.
 //!
 //! The per-frame margins and the reserve's side and zone follow the

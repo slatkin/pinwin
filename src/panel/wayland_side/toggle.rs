@@ -21,7 +21,7 @@
 //! panel's output.
 //!
 //! The shown/hidden state is the [`Visibility`] enum on
-//! [`PanelState`](super::state::PanelState), not a flag pair: the toggle,
+//! [`PanelState`], not a flag pair: the toggle,
 //! the hidden apply and the repaint service branch on it. The decision half
 //! is display-free (`port-to-rust` D10) — the visibility flip, the tween
 //! relay and the hidden apply's staging run against the headless core, and
