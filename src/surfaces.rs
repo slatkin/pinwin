@@ -1,4 +1,4 @@
-//! The surfaces' pure core: the publish verdict re-export and the held-gap
+//! The surfaces' pure core: the held-gap
 //! decisions in the `gap` submodule — the validation the panel thread
 //! applies against its own Wayland layer surfaces before it touches them
 //! (`replace-gtk-with-wayland` D3).
@@ -9,6 +9,3 @@
 //! (port-to-rust D6), as `glue.c` `PINWIN_GEOM_ERR_METRICS` did.
 
 pub(crate) mod gap;
-mod publish;
-
-pub use publish::PublishOutcome;

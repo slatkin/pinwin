@@ -163,11 +163,10 @@ mod tests {
     use crate::fontconfig::{FontConfig, ThemeColours};
     use crate::guard::Poisoned;
     use crate::layout::{CellSize, Keyboard, Layout, OutputSize, Side};
-    use crate::panel::handshake::Handshake;
+    use crate::panel::handshake::{Handshake, PublishOutcome};
     use crate::render::font::FontBook;
     use crate::render::frame_gate::{Damage, FrameOutcome};
     use crate::render::geom::{FrameInput, device_px};
-    use crate::surfaces::PublishOutcome;
     use crate::term::{PngDecoder, PtySink, Terminal};
     use std::cell::RefCell;
     use std::num::NonZeroU16;

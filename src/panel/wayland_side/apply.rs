@@ -19,7 +19,7 @@
 use std::time::Instant;
 
 use crate::layout::{CellSize, Layout, OutputSize, Side};
-use crate::surfaces::PublishOutcome;
+use crate::panel::handshake::PublishOutcome;
 use crate::surfaces::gap::{HeldGap, gap_tween_decision, reserve_gap, staged_publish};
 
 use super::crop::TweenCrop;

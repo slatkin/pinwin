@@ -12,9 +12,20 @@
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use crate::surfaces::PublishOutcome;
-
 use super::error::PinwinError;
+
+/// The outcome of publishing a layout. The panel's callers map these onto
+/// `PinwinError`: `NotLive` is `NotRunning` and `InvalidLayout` is
+/// `InvalidLayout`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PublishOutcome {
+    /// The layout is applied and the grid follows.
+    Applied,
+    /// The panel has no live metrics yet, or is already torn down.
+    NotLive,
+    /// The layout the live monitor refuses.
+    InvalidLayout,
+}
 
 /// How long an apply — and a drop's teardown — waits for the panel side's
 /// reply

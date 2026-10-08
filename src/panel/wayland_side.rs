@@ -54,12 +54,13 @@ use wayland_client::Connection;
 use crate::guard::{Poisoned, guard, guard_always};
 use crate::layout::Layout;
 use crate::pty::{Pty, attach_calloop};
-use crate::surfaces::PublishOutcome;
 
 use super::Inner;
 use super::PinwinError;
 use super::Startup;
-use super::handshake::{APPLY_WAIT, Handshake, StartOutcome, wait_for_apply, wait_for_unit};
+use super::handshake::{
+    APPLY_WAIT, Handshake, PublishOutcome, StartOutcome, wait_for_apply, wait_for_unit,
+};
 
 pub(crate) mod apply;
 pub(crate) mod buffers;
