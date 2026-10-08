@@ -199,7 +199,7 @@ mod tests {
     /// The poll's bound: a 200 ms repeating tick; the hard deadline's
     /// bound reuses the apply reply's wedge bound.
     #[test]
-    fn the_poll_keeps_the_gtk_side_bound() {
+    fn the_poll_keeps_the_side_bound() {
         assert_eq!(START_WATCHDOG, Duration::from_millis(200));
         // The hard deadline reuses the apply reply's wedge bound.
         assert_eq!(DEADLINE, Duration::from_secs(5));

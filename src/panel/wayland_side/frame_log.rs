@@ -384,7 +384,7 @@ mod tests {
     /// The line format is stable — the prefix and field names — and names
     /// the clock in the source suffix a script can parse.
     #[test]
-    fn the_summary_line_keeps_the_gtk_format_and_names_the_source() {
+    fn the_summary_line_keeps_the_format_and_names_the_source() {
         let mut log = FrameLog::begin(true, false).expect("an enabled callback log");
         for t in [0, 4_000, 12_000] {
             log.record_callback(u32::try_from(t / 1000).expect("test range"));
