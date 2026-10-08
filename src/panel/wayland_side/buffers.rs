@@ -16,12 +16,12 @@
 //! and the buffers to their own size, and is never a start failure.
 //!
 //! The pool itself is queue-bound, so like the surfaces it is exercised
-//! only in a live session; the row 4.3 pixel tests draw into the canvases
+//! only in a live session; the renderer's pixel tests draw into the canvases
 //! that this pool sizes. The hand-out's slot decisions are pure functions
 //! here, tested without a display (`port-to-rust` D10).
 //!
-//! The panel's frames present at the device size (row 8.1, dispatch D4c):
-//! the configure draw and the repaint service request buffers at
+//! The panel's frames present at the device size (D5): the configure draw
+//! and the repaint service request buffers at
 //! [`device_size`] and the viewport destination carries the logical size,
 //! so the compositor maps device pixels 1:1. The reserve's placeholder
 //! stays at the logical size; it draws nothing.
@@ -84,7 +84,7 @@ impl FractionalScale {
     }
 
     /// The scale factor itself, in device pixels per logical pixel. The
-    /// grid painter (row 4.3) reads the snap rules' scale from here, as
+    /// grid painter reads the snap rules' scale from here, as
     /// `OutputScale::new(scale.as_f64())` — the existing renderer scale, so
     /// no second scale type exists beside it.
     #[must_use]
@@ -209,7 +209,7 @@ impl Scale {
     }
 
     /// Set the viewport source of one surface's viewport, in buffer (device)
-    /// pixels (row 6.2): the compositor maps this rectangle onto the
+    /// pixels (D7): the compositor maps this rectangle onto the
     /// destination, and whole device pixels encode exactly as `wl_fixed`
     /// (`CropRect::wl_fixed` pins it). Without a viewport, a no-op.
     pub(crate) fn set_source(&mut self, id: SurfaceId, x: i32, y: i32, w: i32, h: i32) {
@@ -220,7 +220,7 @@ impl Scale {
 
     /// Whether the panel surface has a viewport (D1): the tween's frames
     /// present the cached wide buffer through it, or copy each frame's crop
-    /// into a fresh buffer without one (row 6.2).
+    /// into a fresh buffer without one (D7).
     #[must_use]
     pub fn panel_viewporter(&self) -> bool {
         self.viewporter.is_some() && self.panel.viewport.is_some()
@@ -249,7 +249,7 @@ impl Scale {
     }
 
     /// The resolved scale (D5): fractional preferred, integer fallback, 1.
-    /// The grid painter (row 4.3) reads it per frame through the session.
+    /// The grid painter reads it per frame through the session.
     #[must_use]
     pub fn resolved(&self) -> FractionalScale {
         resolve_scale(

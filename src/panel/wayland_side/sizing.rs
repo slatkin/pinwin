@@ -83,16 +83,16 @@ pub struct Sizing {
     /// actually lands, so a deferred apply's recorded columns do not move
     /// it. The tween's wide draw reads it.
     live: NonZeroU16,
-    /// The defer mode (row 6.2): while a width tween runs, the pushes wait
-    /// for the tween's finish. Default off, so the row 3.3 and 3.5
-    /// decisions are unchanged.
+    /// The defer mode (D7): while a width tween runs, the pushes wait
+    /// for the tween's finish. Default off, so the plain decisions are
+    /// unchanged.
     deferred: bool,
 }
 
 impl Sizing {
     /// The state before the first configure: the startup layout's columns
-    /// and the startup cell metrics the start command carries (row 4.6
-    /// computes them before the thread binds its surfaces). The metrics are
+    /// and the startup cell metrics the start command carries (measured
+    /// before the thread binds its surfaces). The metrics are
     /// required: without them no configure could ever derive a grid, which
     /// would leave the panel silently unmapped and the pty unsized.
     #[must_use]
@@ -107,12 +107,11 @@ impl Sizing {
         }
     }
 
-    /// The defer mode (row 6.2): while a width tween runs, the grid and pty
+    /// The defer mode (D7): while a width tween runs, the grid and pty
     /// push waits for the tween's finish — an animated apply and a mid-tween
     /// configure record their inputs (the columns and the height) without
     /// deriving or pushing, and the finish pushes once from the latest of
-    /// both. The same gate the GTK path's `apply_size` applies with
-    /// `!anim.active()`, moved onto the sizing the push runs through.
+    /// both.
     pub fn defer_pushes(&mut self, deferred: bool) {
         self.deferred = deferred;
     }
@@ -184,7 +183,7 @@ impl Sizing {
         self.stage = Stage::Running { height };
         if self.deferred {
             // The tween's finish derives and pushes once from the latest
-            // height (row 6.2); this configure only records the input.
+            // height (D7); this configure only records the input.
             return;
         }
         let grid = Grid::new(self.cols.get(), rows, self.cell);
@@ -205,7 +204,7 @@ impl Sizing {
         self.cols = cols;
         if self.deferred {
             // The same defer as `configure`'s: the finish derives and
-            // pushes once from the recorded columns and height (row 6.2).
+            // pushes once from the recorded columns and height.
             return;
         }
         let Stage::Running { height } = self.stage else {
@@ -224,8 +223,8 @@ impl Sizing {
 }
 
 /// The rows for a configure height: the height divided by the cell height,
-/// at least one complete row — the same floor the GTK path's
-/// `apply_size_to` applies. `None` when the cell height is not a positive
+/// at least one complete row — a height below one row still maps a
+/// one-row panel. `None` when the cell height is not a positive
 /// pixel count.
 #[must_use]
 pub fn rows_for_height(height: u32, cell: CellSize) -> Option<u32> {
@@ -259,8 +258,8 @@ mod tests {
         }
     }
 
-    /// The row 3.3 scenario: three configures with one height, then one with
-    /// a new height. The pty receives exactly one resize, for the new
+    /// Three configures with one height, then one with a new height: the
+    /// pty receives exactly one resize, for the new
     /// height — the repeated configures at the startup height push nothing.
     #[test]
     fn three_configures_with_one_height_then_a_new_height_resize_once() {
@@ -344,8 +343,8 @@ mod tests {
         assert_eq!(pushed.grids[0].cols(), 60, "with the applied columns");
     }
 
-    /// The rows floor at one complete row, like the GTK path's
-    /// `apply_size_to`; a non-positive cell height derives nothing.
+    /// The rows floor at one complete row; a non-positive cell height
+    /// derives nothing.
     #[test]
     fn rows_floor_at_one_and_reject_a_degenerate_cell() {
         assert_eq!(rows_for_height(5, cell(9, 16)), Some(1));
@@ -372,7 +371,7 @@ mod tests {
         assert_eq!(pushed.grids.len(), 1);
     }
 
-    /// The defer mode (row 6.2): while it is on, an animated apply and a
+    /// The defer mode (D7): while it is on, an animated apply and a
     /// mid-tween configure record their inputs without deriving or pushing,
     /// and the finish's plain `apply_columns` pushes once from the latest
     /// of both — the new columns, the rows of the latest configure height.

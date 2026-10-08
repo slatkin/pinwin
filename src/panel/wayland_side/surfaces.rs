@@ -5,21 +5,19 @@
 //!
 //! The panel is created with no output, so the compositor places it on the
 //! focused output; the first `wl_surface.enter` names that output and the
-//! reserve is then created on it (row 3.2). The panel anchors to the top, the
+//! reserve is then created on it. The panel anchors to the top, the
 //! bottom and the docked side with exclusive zone -1, `set_size` for the
 //! width and margins for the gutters; the reserve carries the exclusive
 //! zone, takes no input and shows a transparent buffer one pixel wide.
 //!
-//! The keyboard interactivity follows the map rule of decision 3: an
-//! `on-demand` panel maps with no interactivity and switches to `on-demand`
-//! in the commit after its first buffer, because niri grants a layer surface
+//! The keyboard interactivity follows the map rule of D3: an `on-demand`
+//! panel maps with no interactivity and switches to `on-demand` in the
+//! commit after its first buffer, because niri grants a layer surface
 //! keyboard focus only on the map itself; `exclusive` and `none` map
 //! directly.
 //!
-//! The renderer arrived in group 4, so the panel's frames draw live from
-//! dispatch D4c on: the configure path and the repaint service present the
-//! renderer's frames through the pool at the device size, and only the
-//! reserve still attaches a transparent placeholder buffer. The pure
+//! The panel's frames draw live into pool buffers at the device size, and
+//! only the reserve still attaches a transparent placeholder buffer. The pure
 //! geometry mapping (anchors, margins, zones, interactivity) is unit tested
 //! here without a compositor (`port-to-rust` D10); the queue-dependent
 //! surface creation lives in the state module beside the sctk handlers.
@@ -62,8 +60,7 @@ pub fn panel_anchor(side: Side) -> Anchor {
 
 /// The panel surface's margins, in the `set_margin` order (top, right,
 /// bottom, left): the vertical gutters on their edges and the docking edge's
-/// gutter on its edge only — the opposite horizontal edge stays flush, the
-/// way the GTK surfaces' `apply_layout_surfaces` sets them.
+/// gutter on its edge only — the opposite horizontal edge stays flush.
 #[must_use]
 pub fn panel_margins(layout: Layout) -> (i32, i32, i32, i32) {
     let (right, left) = match layout.side() {
@@ -119,8 +116,8 @@ struct Reserve {
 pub(crate) struct PanelSurfaces {
     panel: LayerSurface,
     reserve: Option<Reserve>,
-    /// The two-buffer pool the transparent placeholder buffers and, from
-    /// row 4.3 on, the drawn frames come from (D5).
+    /// The two-buffer pool the transparent placeholder buffers and the
+    /// drawn frames come from (D5).
     pool: BufferPool,
     keyboard: Keyboard,
     /// Whether the `on-demand` switch (D3) has run: it follows the first
@@ -132,7 +129,7 @@ pub(crate) struct PanelSurfaces {
 
 impl PanelSurfaces {
     /// Take the panel surface the state module created and apply the startup
-    /// geometry (row 3.1): the top/bottom/docked-side anchors, exclusive
+    /// geometry: the top/bottom/docked-side anchors, exclusive
     /// zone -1 (other zones do not push the panel), the gutters as margins,
     /// the layout's pixel width through `set_size` and the mode's mapping
     /// interactivity. The initial commit with no buffer asks the compositor
@@ -172,7 +169,7 @@ impl PanelSurfaces {
     }
 
     /// Take the reserve surface and its empty input region the state module
-    /// created on the panel's resolved output (rows 3.1 and 3.2) and apply
+    /// created on the panel's resolved output and apply
     /// the reservation: the layer-shell `Bottom` layer's surface, anchored
     /// to the held gap's side, carrying its exclusive zone, one pixel wide
     /// and taking no input. The initial commit asks for the configure whose
@@ -194,9 +191,9 @@ impl PanelSurfaces {
     }
 
     /// One configure of the panel surface, after the state drew the frame
-    /// the configure maps the panel with (dispatch D4c): the buffer commit
+    /// the configure maps the panel with: the buffer commit
     /// is the draw's, and this runs the `on-demand` switch once after the
-    /// first buffer commit (D3, spike row 1.2). The caller invokes it only
+    /// first buffer commit (D3). The caller invokes it only
     /// when a buffer was actually committed — a configure the pool could
     /// not serve leaves the panel unmapped and the switch unrun, and the
     /// next configure retries.
@@ -222,14 +219,14 @@ impl PanelSurfaces {
         self.reserve_buffer_size = Some((width, height));
     }
 
-    /// Whether the reserve surface exists (row 9.1): a show recreates it
+    /// Whether the reserve surface exists: a show recreates it
     /// when the compositor closed it while the panel was hidden.
     #[must_use]
     pub(crate) fn has_reserve(&self) -> bool {
         self.reserve.is_some()
     }
 
-    /// Hide (row 9.1, replace-gtk-with-wayland D4): attach a null buffer to
+    /// Hide (replace-gtk-with-wayland D4): attach a null buffer to
     /// the panel surface and commit, which unmaps it, and unmap the reserve
     /// the same way, which releases the held strip. The surfaces and their
     /// globals stay alive; a show re-sends the layer state an unmap reset.
@@ -246,13 +243,13 @@ impl PanelSurfaces {
         self.reserve_buffer_size = None;
     }
 
-    /// Show (row 9.1, replace-gtk-with-wayland D4): an unmap resets a layer
+    /// Show (D4): an unmap resets a layer
     /// surface to its state after `get_layer_surface`, so re-send the panel's
     /// layer state — the `overlay` layer, anchor, margins, exclusive zone -1,
     /// the applied width and the keyboard interactivity, `on-demand` directly
     /// in `on-demand` mode (the launch keeps its no-interactivity first map)
-    /// — and commit without a buffer. The layer is part of the reset set
-    /// (row 9.9): the compositor's shell implementation drops the whole
+    /// — and commit without a buffer. The layer is part of the reset set:
+    /// the compositor's shell implementation drops the whole
     /// double-buffered state to its defaults on the unmap commit, and the
     /// default layer is `background`, so a show that re-sent only the rest
     /// remapped the panel below the normal windows. The configure that
@@ -321,12 +318,12 @@ impl PanelSurfaces {
             .is_some_and(|reserve| reserve.surface == *layer)
     }
 
-    /// Apply one staged layout's geometry to both surfaces (row 3.5): the
+    /// Apply one staged layout's geometry to both surfaces: the
     /// panel re-anchors to the layout's docking side with its margins and
     /// pixel width, the reserve re-anchors to the held gap's side with its
     /// zone. Each commit asks the compositor for the configure that follows;
-    /// the grid and the pty size were already pushed through the sizing path
-    /// (row 3.3), and a configure at the same height pushes nothing more.
+    /// the grid and the pty size were already pushed through the sizing path,
+    /// and a configure at the same height pushes nothing more.
     pub fn apply_geometry(&mut self, geometry: &SurfaceGeometry) {
         self.panel.set_anchor(panel_anchor(geometry.panel_side));
         let (top, right, bottom, left) = geometry.panel_margins;
@@ -348,7 +345,7 @@ impl PanelSurfaces {
         }
     }
 
-    /// The tween frame's panel writes (row 6.2): `set_size` at the eased
+    /// The tween frame's panel writes (D7): `set_size` at the eased
     /// width — the height stays the compositor's, between the anchors.
     /// The anchors are not written: a tween never changes side.
     pub(crate) fn tween_panel_size(&mut self, width: i32) {
@@ -357,7 +354,7 @@ impl PanelSurfaces {
         }
     }
 
-    /// The tween frame's margin write (row 6.2): the tweening layout's
+    /// The tween frame's margin write: the tweening layout's
     /// margins, whose top and bottom may change while the horizontal ones
     /// cannot (the animate rule pins side and gutters).
     pub(crate) fn tween_panel_margins(&mut self, margins: (i32, i32, i32, i32)) {
@@ -365,7 +362,7 @@ impl PanelSurfaces {
         self.panel.set_margin(top, right, bottom, left);
     }
 
-    /// The tween frame's reserve writes (row 6.2): the held-gap rule's side
+    /// The tween frame's reserve writes (D7): the held-gap rule's side
     /// and exclusive zone, committed at once, so the zone moves with the
     /// panel in the same frames (D7). The anchor is written with the zone
     /// because the rule's side and the committed one must not drift, even
@@ -379,7 +376,7 @@ impl PanelSurfaces {
         reserve.surface.commit();
     }
 
-    /// Attach `buffer` to the panel surface (row 6.2): the cached wide
+    /// Attach `buffer` to the panel surface: the cached wide
     /// buffer, re-attached every tween frame. A refused activate leaves the
     /// previous attach in place; the commit below still presents it.
     pub(crate) fn tween_attach(&mut self, buffer: &Buffer) {
@@ -387,7 +384,7 @@ impl PanelSurfaces {
     }
 
     /// A fresh pool buffer at the crop size for the no-viewporter fallback
-    /// (row 6.2): the caller copies the frame's crop into the returned
+    /// (D7): the caller copies the frame's crop into the returned
     /// bytes and attaches the buffer. The pool is queue-bound, so this runs
     /// only in the live session.
     ///
@@ -403,12 +400,12 @@ impl PanelSurfaces {
     }
 
     /// The pool, for the wide cache's one upload at the tween's start
-    /// (row 6.2): the cache keeps the buffer it is uploaded into.
+    /// (D7): the cache keeps the buffer it is uploaded into.
     pub(crate) fn pool_mut(&mut self) -> &mut BufferPool {
         &mut self.pool
     }
 
-    /// Damage the panel's buffer rectangle and commit the frame (row 6.2):
+    /// Damage the panel's buffer rectangle and commit the frame (D7):
     /// the whole presented buffer is damaged, because every frame moves the
     /// crop. A size past `i32` damages nothing — the commit still presents.
     pub(crate) fn tween_present(&mut self, width: u32, height: u32) {
@@ -418,8 +415,8 @@ impl PanelSurfaces {
         self.panel.commit();
     }
 
-    /// Request the panel surface's next `wl_surface.frame` callback (row
-    /// 6.2): the compositor completes it when the next frame is due, and
+    /// Request the panel surface's next `wl_surface.frame` callback (D7):
+    /// the compositor completes it when the next frame is due, and
     /// the callback drives the tween's next eased width.
     pub(crate) fn request_frame(&self, qh: &QueueHandle<super::state::PanelState>) {
         let surface = self.panel.wl_surface();
@@ -427,12 +424,12 @@ impl PanelSurfaces {
     }
 
     /// The panel's `wl_surface`, for the committed tween frame's
-    /// presentation feedback request (row 6.3).
+    /// presentation feedback request (D7).
     pub(crate) fn panel_wl_surface(&self) -> &wl_surface::WlSurface {
         self.panel.wl_surface()
     }
 
-    /// One panel configure while a tween runs (row 6.2): the tween frames
+    /// One panel configure while a tween runs (D7): the tween frames
     /// own the panel surface's size, viewport and buffer commits until the
     /// tween finishes, so this configure runs the `on-demand` switch only —
     /// the buffer it would otherwise have followed may have been a tween
@@ -461,8 +458,8 @@ impl PanelSurfaces {
 
 /// Attach a fully transparent `ARGB8888` buffer of `width` by `height` to
 /// `surface` and commit, so a layer surface maps without drawing anything
-/// (the reserve still maps this way; the panel draws live from dispatch
-/// D4c on). Fails on a zero-sized or oversized configure, a pool the size
+/// (the reserve still maps this way; the panel draws live into pool
+/// buffers). Fails on a zero-sized or oversized configure, a pool the size
 /// does not fit, or an attach the compositor refused; the caller keeps its
 /// previous state in every failure case.
 fn attach_transparent(
@@ -573,7 +570,7 @@ mod tests {
     /// The startup reservation: a pushing start reserves its own strip, a
     /// covering start reserves nothing (overlay-expand D5). The decision is
     /// [`crate::surfaces::gap::start_held_gap`]'s, shared with the panel
-    /// state's held gap (row 3.5).
+    /// state's held gap.
     #[test]
     fn the_startup_reserve_zone_follows_the_coverage_choice() {
         let pushing = layout(Side::Left, 40, 0, 0, 0, 12);

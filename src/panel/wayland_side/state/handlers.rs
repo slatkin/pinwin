@@ -1,7 +1,6 @@
-//! The sctk handler trait impls (split from the state module in row 8.1's
-//! dispatch D1): the impls the connection's event queue dispatches into,
-//! each body under the shared guard (D5), plus the registry and dispatch
-//! delegates the queue needs.
+//! The sctk handler trait impls: the impls the connection's event queue
+//! dispatches into, each body under the shared guard (D5), plus the registry
+//! and dispatch delegates the queue needs.
 
 use smithay_client_toolkit::compositor::CompositorHandler;
 use smithay_client_toolkit::delegate_dispatch2;
@@ -43,7 +42,7 @@ impl CompositorHandler for PanelState {
         _surface: &wl_surface::WlSurface,
         _new_transform: wl_output::Transform,
     ) {
-        // The renderer consumes the transform with the scale (row 4.x).
+        // The renderer consumes the transform with the scale.
     }
 
     fn frame(
@@ -53,7 +52,7 @@ impl CompositorHandler for PanelState {
         surface: &wl_surface::WlSurface,
         time: u32,
     ) {
-        // The tween's frame callbacks arrive here (row 6.2): the panel
+        // The tween's frame callbacks arrive here (D7): the panel
         // surface's step the driver and commit the eased frame, the
         // reserve's change nothing. Guarded like every handler (D5).
         let poisoned = self.poisoned.clone();

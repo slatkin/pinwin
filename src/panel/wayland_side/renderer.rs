@@ -1,4 +1,4 @@
-//! The panel thread's renderer (row 8.1, `replace-gtk-with-wayland` D5):
+//! The panel thread's renderer (`replace-gtk-with-wayland` D5):
 //! the one owner of everything a frame draws with — one
 //! [`crate::render::text_pass::TextPass`], one
 //! [`crate::render::image_pass::ImagePass`], one
@@ -14,10 +14,8 @@
 //! The renderer holds no Wayland object and no display: it is testable
 //! like the painter (`replace-gtk-with-wayland` D10), with the terminal
 //! and the frame as parameters. The pool buffers, the present step and
-//! the frame callback wiring are the later row 8.1 dispatches; this
-//! module is `pub` so that dispatch can switch the panel to it (a
-//! `pub(crate)` entry with no caller is dead code under `-D warnings`,
-//! and no lint suppression is permitted).
+//! the frame callback wiring live beside it in the panel thread's other
+//! modules.
 //!
 //! Panics never cross back into calloop or the compositor (D5): the
 //! renderer's bodies are plain field operations and painter calls whose
@@ -54,7 +52,7 @@ pub struct Renderer {
     text: TextPass,
     /// The one kitty image pass of the thread, beside the text pass.
     images: ImagePass,
-    /// The frame gate (row 4.8): what the next frame must redraw.
+    /// The frame gate: what the next frame must redraw.
     gate: FrameGate,
     /// The canvas at the current frame's device size, persistent across
     /// frames so a partial repaint keeps its pixels; `None` before the
@@ -70,8 +68,8 @@ pub struct Renderer {
     theme: ThemeColours,
     /// The startup accent, fixed at start.
     accent: Option<Accent>,
-    /// Whether the panel holds keyboard focus; the seat wiring of row 8.1
-    /// updates it on keyboard enter and leave.
+    /// Whether the panel holds keyboard focus; the callers sync it from
+    /// the seat links' shared cell before each draw.
     focused: bool,
 }
 
@@ -170,7 +168,7 @@ impl Renderer {
         )
     }
 
-    /// Draw the tween's wide cache (row 6.2, D7) with this renderer's
+    /// Draw the tween's wide cache (D7) with this renderer's
     /// passes and state: the grid drawn once into a wide canvas through
     /// the existing painter. The one place the renderer's fields are
     /// split across a call — the metrics are shared with the text and
@@ -189,7 +187,7 @@ impl Renderer {
     }
 
     /// The canvas of the current frame, for the caller's copy into a pool
-    /// slot (row 4.1). `None` before the first frame and after a resize
+    /// slot. `None` before the first frame and after a resize
     /// the allocator refused — nothing to present then.
     #[must_use]
     pub fn canvas(&self) -> Option<&Canvas> {

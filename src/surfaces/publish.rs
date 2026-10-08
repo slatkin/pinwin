@@ -1,21 +1,19 @@
-//! The publish verdict: the pure half of the former GTK
-//! [`super`] publish (`glue_publish_layout`'s return codes). Split out so
+//! The publish verdict: the pure half of the layout publish, validated
+//! before anything touches a surface. Split out so
 //! `src/panel/handshake.rs` and the panel thread (`src/panel/wayland_side/`)
-//! can use it without depending on any surface module (row 8.1). The animate
+//! can use it without depending on any surface module. The animate
 //! decision lives with the panel thread's tween driver
-//! (`wayland_side::tween::should_animate`), the only caller since the switch.
+//! (`wayland_side::tween::should_animate`), its only caller.
 
-/// The outcome of publishing a layout (`glue_publish_layout`'s return codes).
-/// The `panel` row (4.1) maps these onto `PinwinError`: `NotLive` is
-/// `NotRunning` and `InvalidLayout` is `InvalidLayout`
-/// (`pinwin_api.c`'s `apply_on_gtk_thread`).
+/// The outcome of publishing a layout. The panel's callers map these onto
+/// `PinwinError`: `NotLive` is `NotRunning` and `InvalidLayout` is
+/// `InvalidLayout`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PublishOutcome {
-    /// The layout is applied and the grid follows (`PINWIN_GEOM_OK`).
+    /// The layout is applied and the grid follows.
     Applied,
-    /// The panel has no live metrics yet, or is already torn down
-    /// (`GLUE_NOT_LIVE`).
+    /// The panel has no live metrics yet, or is already torn down.
     NotLive,
-    /// The layout the live monitor refuses (`PINWIN_GEOM_ERR_METRICS`).
+    /// The layout the live monitor refuses.
     InvalidLayout,
 }

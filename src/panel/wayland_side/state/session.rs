@@ -1,6 +1,5 @@
-//! The bound session's two edges (split from the state module in row
-//! 8.1's dispatch D1): the bind that creates the globals, the surfaces
-//! and the session, and the teardown that drops them.
+//! The bound session's two edges: the bind that creates the globals, the
+//! surfaces and the session, and the teardown that drops them.
 
 use calloop::LoopHandle;
 use smithay_client_toolkit::compositor::CompositorState;
@@ -37,16 +36,16 @@ impl PanelState {
         let shell = LayerShell::bind(&globals, qh).map_err(|_bind| BindFailure::NoDisplay)?;
         let mut scale = Scale::bind(&globals, qh);
         let presentation = Presentation::bind(&globals, qh);
-        // The seat state (row 8.1's seat wiring): the wl_seat globals bind
+        // The seat state: the wl_seat globals bind
         // here and their capability events queue until the loop dispatches
         // them, so the keyboard and the pointer come from the loop's first
         // dispatch, with the loop handle the bind stores for the repeat
-        // source (row 5.2). A bind_all failure inside `SeatState::new`
+        // source (D8). A bind_all failure inside `SeatState::new`
         // panics, which the bind's own guard catches (D5) and the start
         // reports as `Internal`.
         let seat = SeatState::new(&globals, qh);
-        // The seat side over the thread's links (row 8.1's seat wiring):
-        // the hooks the seat handlers route into. The links stay on the
+        // The seat side over the thread's links: the hooks the seat
+        // handlers route into. The links stay on the
         // state for the draw path; the side clones them. A state without
         // links — the tests, which never bind — cannot get here.
         let seat_side = SeatSide::new(self.seat_links.clone().ok_or(BindFailure::Internal)?);
@@ -95,8 +94,8 @@ impl PanelState {
     /// Nothing here can panic, so the stop relays call it outside the guard
     /// and the loop still ends on a latched flag.
     pub(crate) fn tear_down(&mut self) {
-        // The seat's objects go before the connection ends (row 8.1's seat
-        // wiring), in the order [`PanelState::release_seat_objects`]
+        // The seat's objects go before the connection ends, in the order
+        // [`PanelState::release_seat_objects`]
         // defines — the keyboard's repeat source first, the pointer and its
         // cursor-shape device after.
         self.release_seat_objects();

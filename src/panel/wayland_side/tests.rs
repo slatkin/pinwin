@@ -112,7 +112,7 @@ fn socket_path_follows_the_wayland_rules() {
 }
 
 /// A show on a dead thread handle reports `NotRunning` without posting
-/// (the spec's dead-panel scenario, serve-instance-socket row 3.1): the
+/// (the spec's dead-panel scenario): the
 /// shared post skips the reply path, so the call does not wait.
 #[test]
 fn a_show_on_a_dead_thread_handle_is_not_running() {

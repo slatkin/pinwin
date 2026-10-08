@@ -35,7 +35,7 @@ fn device_cell(logical: u32, scale: FractionalScale) -> u32 {
 /// and row counts and the device cell's pixel size, `SIGWINCH` raised inside
 /// [`apply_winsize`] on success. The single grid push sink in
 /// [`super::super::glue`] runs this after the terminal's own `push_size`,
-/// so the terminal and the pty change together (row 8.1); the child's
+/// so the terminal and the pty change together; the child's
 /// `TIOCGWINSZ` reads the result.
 pub(crate) fn apply_pty_size(fd: RawFd, grid: Grid, scale: FractionalScale) {
     let Ok(rows) = i32::try_from(grid.rows()) else {

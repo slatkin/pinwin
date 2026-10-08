@@ -1,5 +1,5 @@
 //! The present step of the panel thread's frames (replace-gtk-with-wayland
-//! row 8.1, dispatch D4c): the pure decisions that turn the renderer's
+//! D5, D7): the pure decisions that turn the renderer's
 //! [`FrameOutcome`] into the Wayland requests a frame commits, the frame
 //! input the live frames build from the panel's state, and the executor the
 //! configure path and the loop's repaint hook run.
@@ -14,8 +14,9 @@
 //!   canvas'. The rectangles stay the compositor's damage hint: compositors
 //!   accumulate damage per buffer, and the buffer content is always
 //!   current, so the hint only has to cover the changes since that buffer's
-//!   last commit. Row 10.3 measures the copy against the frame budget on
-//!   the stutter laptop.
+//!   last commit. The copy must stay inside the frame budget; a p95 redraw
+//!   above half the refresh interval, or a framelog gap, is the
+//!   measurement that opens a separate GPU change (D5).
 //! - A present the pool refused leaves the repaint request latched
 //!   ([`latch_after_service`]): the buffer releases arrive as Wayland
 //!   events the source dispatches, and the next loop pass retries the
@@ -26,7 +27,7 @@
 //! and the finish's end-state actions are pure and unit tested here
 //! without a display (`port-to-rust` D10). The executor touches the
 //! queue-bound pool and the surfaces, so a live session is what exercises
-//! it (row 10.1); the executor runs on the panel thread, reached through
+//! it; the executor runs on the panel thread, reached through
 //! the dispatch state's frame and repaint hooks.
 
 use crate::fontconfig::ThemeColours;
@@ -40,8 +41,8 @@ use super::crop::upload_wide;
 use super::state::PanelState;
 use super::toggle::Visibility;
 
-/// What a frame's present step does with the renderer's outcome (dispatch
-/// D4c): nothing at all when the frame drew nothing or a tween owns the
+/// What a frame's present step does with the renderer's outcome (D5):
+/// nothing at all when the frame drew nothing or a tween owns the
 /// commits, or the buffer rectangles to damage under the attach-and-commit.
 /// Constructed only by [`present_plan`] (`port-to-rust` D6).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,11 +54,11 @@ pub enum PresentPlan {
     Frame(Vec<DeviceRect>),
 }
 
-/// The present plan for one renderer outcome (D4c): a `Clean` frame commits
+/// The present plan for one renderer outcome (D5): a `Clean` frame commits
 /// nothing at all — the gate drew nothing, so the committed state is already
 /// current — and a `Damage` frame attaches its buffer with one
 /// `damage_buffer` per rectangle. A tween owns the panel surface's size,
-/// viewport and buffer commits until it finishes (row 6.2), so while one
+/// viewport and buffer commits until it finishes (D7), so while one
 /// runs the live frames present nothing.
 #[must_use]
 pub fn present_plan(
@@ -100,7 +101,7 @@ fn clamp_to_buffer(rect: DeviceRect, buffer: (u32, u32)) -> Option<DeviceRect> {
     )
 }
 
-/// What the loop's service step does with a repaint request (dispatch D4c):
+/// What the loop's service step does with a repaint request:
 /// while a tween owns the commits the request marks the tween's wide cache
 /// stale — the next tween frame redraws it from the live terminal — and
 /// outside a tween the request draws a live frame. Constructed only by
@@ -113,9 +114,9 @@ pub enum OutputDisposition {
     DrawLiveFrame,
 }
 
-/// The disposition of one repaint request (D4c): the tween's wide cache is
-/// the snapshot the old path redrew on terminal output (`note_terminal_output`
-/// then the cache drop), so a request while a tween runs marks the holder
+/// The disposition of one repaint request: the tween's wide cache is
+/// the snapshot the tween frames draw while it runs (D7), so a request
+/// while a tween runs marks the holder
 /// stale instead of drawing a live frame over the tween's commits; outside a
 /// tween the request is a live frame.
 #[must_use]
@@ -127,7 +128,7 @@ pub fn output_disposition(tween_owns_commits: bool) -> OutputDisposition {
     }
 }
 
-/// Whether the repaint request survives the service step (D4c): only a
+/// Whether the repaint request survives the service step: only a
 /// present the pool refused latches it again — the buffer releases the
 /// source dispatches wake the loop, and the next pass retries. A drawn,
 /// clean or idle step consumed the request.
@@ -136,8 +137,8 @@ pub fn latch_after_service(requested: bool, busy: bool) -> bool {
     requested && busy
 }
 
-/// One viewport action of the tween finish's end state (row 6.2, dispatch
-/// D4c): the finish's last eased frame left a source crop and a destination
+/// One viewport action of the tween finish's end state (D7): the finish's
+/// last eased frame left a source crop and a destination
 /// on the panel's viewport; the live frames that follow need the crop unset
 /// and the destination at the final logical size. Constructed only by
 /// [`finish_end_state`] (`port-to-rust` D6).
@@ -150,7 +151,7 @@ pub enum FinishViewport {
     Destination(i32, i32),
 }
 
-/// What one draw step did (dispatch D4c): nothing to draw on a thread or
+/// What one draw step did: nothing to draw on a thread or
 /// size that cannot produce a frame, a gate that drew nothing, a frame
 /// attached and committed, or a present the pool refused — the caller
 /// latches the repaint request again for the latter ([`latch_after_service`])
@@ -169,8 +170,8 @@ pub enum ServiceOutcome {
     Busy,
 }
 
-/// The viewport end state the tween's finish leaves the panel surface in
-/// (D4c): without a viewporter nothing is pending — the frames presented
+/// The viewport end state the tween's finish leaves the panel surface in:
+/// without a viewporter nothing is pending — the frames presented
 /// fresh buffers at their own size — and with one the source crop the last
 /// eased frame set is unset and the destination moves to the final logical
 /// size, so the live buffer the finish's repaint draws is shown 1:1. A
@@ -195,8 +196,8 @@ pub fn finish_end_state(
     actions
 }
 
-/// The drawing shift that keeps the grid against the docked edge (the GTK
-/// path's `Surfaces::draw_offset_at`, dispatch D4c): a right-docked panel
+/// The drawing shift that keeps the grid against the docked edge: a
+/// right-docked panel
 /// shifts by the surface width minus the width of the grid it draws, so a
 /// widened grid whose stale content the vt has not repainted yet stays
 /// glued to the docked edge instead of parking at the edge opposite it.
@@ -226,7 +227,7 @@ pub fn docked_edge_offset(
     OutputScale::new(scale).snap_edge(f64::from(raw))
 }
 
-/// The frame input one live frame builds from the panel's state (D4c): the
+/// The frame input one live frame builds from the panel's state: the
 /// logical configure size, the device size the resolved scale rounds it to,
 /// and the docked-edge draw offset. `None` when the size has no buffer — a
 /// dimension that does not survive the scaling or the protocol's `i32` —
@@ -252,7 +253,7 @@ pub fn frame_input(
 
 impl PanelState {
     /// Draw one live frame of the terminal at the logical size and present
-    /// it (dispatch D4c, the executor): the frame input from the state's
+    /// it (the executor): the frame input from the state's
     /// sizing, the renderer's gated draw, then the plan's requests — the
     /// pool slot at the device size, the full canvas copied into its bytes,
     /// the buffer attached, one `damage_buffer` per planned rectangle and
@@ -270,7 +271,7 @@ impl PanelState {
             super::surfaces::grid_width_px(self.sizing.live_cols(), self.cell).unwrap_or(0);
         let stale_grid_px = self.stale_grid_px.get();
         let side = self.applied.side();
-        // The seat's focus flag is the accent's source (D8, dispatch D4c):
+        // The seat's focus flag is the accent's source (D8):
         // the draw syncs the renderer's flag from the shared cell the seat
         // links hold, so a focus enter the seat latched reaches the next
         // frame — and the wide draw's cache rebuilds read the same flag.
@@ -345,7 +346,7 @@ impl PanelState {
         ServiceOutcome::Drawn
     }
 
-    /// The loop's service of a repaint request (dispatch D4c, the
+    /// The loop's service of a repaint request (the
     /// executor): read and clear the flag the terminal's callbacks and the
     /// seat's `queue_draw` latch, then either mark the tween's wide cache
     /// stale — a request while a tween owns the commits is terminal output
@@ -360,8 +361,8 @@ impl PanelState {
         if !requested {
             return;
         }
-        // A hidden panel consumes the request without a commit (row 9.1,
-        // replace-gtk-with-wayland D4): the terminal and the pty keep
+        // A hidden panel consumes the request without a commit
+        // (replace-gtk-with-wayland D4): the terminal and the pty keep
         // running while the panel is hidden, and the show's configure draws
         // the current grid — a live frame committed here would remap the
         // panel behind the host's back.

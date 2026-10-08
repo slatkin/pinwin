@@ -1,4 +1,4 @@
-//! The panel thread's glue (replace-gtk-with-wayland row 8.1): the pieces
+//! The panel thread's glue (replace-gtk-with-wayland D2): the pieces
 //! the thread builds for itself before the surfaces bind — the font setup
 //! it measures its cell with, the renderer the frames and the tween's wide
 //! draw read, the shared terminal and the repaint flag its callbacks latch,
@@ -28,7 +28,7 @@ use super::seat::SeatLinks;
 use super::sizing::Grid;
 use super::state::{PanelState, apply_pty_size};
 
-/// The font the thread starts with (row 8.1): [`FontSetup::load`] — the one
+/// The font the thread starts with: [`FontSetup::load`] — the one
 /// font load the panel performs, on the thread that owns the text pass —
 /// mapped onto the start handshake.
 ///
@@ -56,7 +56,7 @@ pub(crate) fn font_outcome(
     }
 }
 
-/// The thread's renderer (row 8.1): [`Renderer::new`] over the font setup
+/// The thread's renderer: [`Renderer::new`] over the font setup
 /// the thread measured, with the Ghostty theme and the startup accent, at
 /// scale 1 — the resolved scale until the compositor reports a preferred
 /// one, which [`super::state::PanelState::sync_renderer_scale`] fixes after
@@ -167,12 +167,12 @@ pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd) -> BytePath {
     }
 }
 
-/// The seat links the thread's pieces build (row 8.1, dispatch D4c): the
+/// The seat links the thread's pieces build: the
 /// encoders' terminal, the draw offset the frames publish, the focus flag
 /// the renderer draws the accent from, the repaint request the seat's
-/// `queue_draw` latches, and the shared latch. No Wayland event reaches
-/// them yet — dispatch D5 does the handler wiring — but the focus flag and
-/// the offset cell are already the draw's sources.
+/// `queue_draw` latches, and the shared latch. The seat handlers route the
+/// toolkit's events into them, and the focus flag and the offset cell are
+/// already the draw's sources.
 pub(crate) fn seat_links(
     terminal: &Rc<RefCell<Terminal>>,
     repaint: &Rc<Cell<bool>>,
@@ -196,13 +196,13 @@ pub(crate) fn seat_links(
 }
 
 impl PanelState {
-    /// The one grid push sink (row 8.1): every push the sizing decides — a
+    /// The one grid push sink: every push the sizing decides — a
     /// plain apply's, a mid-tween configure's and the deferred tween-end's —
     /// runs through it, each exactly once (the sizing's pushed-grid memory
     /// never repeats one). The closure owns clones of the shared terminal
     /// and the repaint flag, so the callers hold `&mut self` while it runs.
     /// `None` on a headless state — the tests — where the sink degrades to
-    /// the winsize-only push the pre-8.1 thread had. The winsize goes out
+    /// the winsize-only push. The winsize goes out
     /// at the session's resolved scale (device-pixel-cell-reports D4).
     pub(crate) fn grid_sink(&self) -> impl FnMut(Grid) + 'static {
         self.grid_sink_at(self.resolved_scale())
@@ -231,8 +231,8 @@ impl PanelState {
     }
 }
 
-/// Push one derived grid to the terminal and the pty (row 8.1), the GTK
-/// path's `apply_size` order: the terminal first — a terminal that cannot
+/// Push one derived grid to the terminal and the pty, in this order: the
+/// terminal first — a terminal that cannot
 /// be allocated leaves the previous grid and the pty winsize in place —
 /// then the winsize with `SIGWINCH`, then the repaint request the
 /// post-resize repaint needs. The terminal keeps the grid's logical cell
@@ -270,8 +270,7 @@ fn push_grid(
             && let Some(previous_px) = i32::from(previous_cols).checked_mul(grid.cell_width())
         {
             // The narrowest stale width wins: a widening after a widening
-            // without any output in between keeps the narrower of the two
-            // (the GTK path's `note_grid_widened`).
+            // without any output in between keeps the narrower of the two.
             let current = stale.get();
             stale.set(if current > 0 {
                 current.min(previous_px)

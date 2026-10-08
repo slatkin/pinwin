@@ -153,8 +153,8 @@ fn the_byte_path_shares_one_flag_between_the_terminal_and_the_state() {
     );
 }
 
-/// The stale pre-resize record follows the widen rule (dispatch D4c,
-/// the GTK path's `note_grid_widened`): a widening push records the
+/// The stale pre-resize record follows the widen rule: a widening push
+/// records the
 /// previous grid's pixel width, a widening after a widening without
 /// output in between keeps the narrower of the two, and the terminal's
 /// output clears it and latches the repaint flag.
@@ -209,7 +209,7 @@ fn the_byte_path_records_and_clears_the_widened_grid() {
     assert!(repaint.get(), "the output latched the repaint flag");
 }
 
-/// The seat links the thread's pieces build (dispatch D4c): a focus
+/// The seat links the thread's pieces build: a focus
 /// enter through the seat side flips the flag the renderer draws the
 /// accent from and latches the repaint request the loop serves, and a
 /// leave clears it and latches one too.

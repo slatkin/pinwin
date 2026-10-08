@@ -1,12 +1,11 @@
-//! The panel renderer's font setup (row 8.1, `replace-gtk-with-wayland`
+//! The panel renderer's font setup (`replace-gtk-with-wayland`
 //! D3): the one font load the panel thread performs, on the thread that
 //! owns the text pass. It resolves the Ghostty `font-family` and
-//! `font-size` through the font module — falling back to `monospace 11`
-//! exactly as row 4.4's [`FontBook`] does, which is normal operation and
-//! not an error — and measures the cell the panel thread's sizing needs
-//! ([`CellSize`], the measurement the thread performs before it binds its
-//! surfaces — row 8.1 — so the surfaces' width and the grid derivation
-//! have it from the first configure).
+//! `font-size` through the font module — falling back to `monospace 11`,
+//! which is normal operation and not an error — and measures the cell the
+//! panel thread's sizing needs ([`CellSize`], the measurement the thread
+//! performs before it binds its surfaces, so the surfaces' width and the
+//! grid derivation have it from the first configure).
 //!
 //! A font that cannot be resolved at all — fontconfig unusable, the
 //! resolved file unreadable or unparsable, or metrics no cell comes out
@@ -65,7 +64,7 @@ pub struct FontSetup {
 impl FontSetup {
     /// Resolve the font from the Ghostty config (the `font-family` and
     /// `font-size` [`load_font_config`] reads) and measure the cell. The
-    /// entry the panel thread calls at its start (row 8.1).
+    /// entry the panel thread calls at its start.
     ///
     /// # Errors
     /// [`FontSetupError::Font`] when fontconfig cannot resolve a face at
@@ -98,7 +97,7 @@ impl FontSetup {
         book: FontBook,
         config: &FontConfig,
     ) -> Result<Self, FontSetupError> {
-        // The family resolution is row 4.4's: a family fontconfig really
+        // The family resolution: a family fontconfig really
         // matches stays as asked, everything else — including a config
         // that names no family — falls back to `monospace` as normal
         // operation. Only a lookup that fails outright is an error.

@@ -113,9 +113,9 @@ fn theme_bytes() -> [u8; 4] {
     bytes(THEME.background)
 }
 
-/// The cell the test family measures is the row 4.6 gate's cell — the
-/// same 9 by 20 the old Pango metrics give, which sets the panel width.
-/// The Pango comparison itself is not duplicated here; the gate test in
+/// The cell the test family measures is the cell-metrics gate's cell —
+/// the same 9 by 20 the metrics tests pin, which sets the panel width.
+/// The comparison itself is not duplicated here; the gate test in
 /// `src/render/cell_metrics` pins it.
 #[test]
 fn the_test_family_measures_the_expected_cell() {
@@ -125,7 +125,7 @@ fn the_test_family_measures_the_expected_cell() {
     assert_eq!(
         setup.cell(),
         CellSize::new(9, 20),
-        "the cell matches the row 4.6 gate"
+        "the cell matches the metrics gate"
     );
 }
 

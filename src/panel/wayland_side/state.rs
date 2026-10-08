@@ -76,29 +76,29 @@ pub(crate) struct Session {
     /// loop ends without a teardown — destroys the per-surface scale
     /// objects before the surfaces they belong to, the protocol's order.
     pub(crate) scale: Scale,
-    /// The optional presentation-time global (row 6.3): the frame log's
+    /// The optional presentation-time global (D7): the frame log's
     /// on-screen timestamps when the compositor offers the protocol, the
     /// frame callbacks' times otherwise. Its absence degrades the frame
     /// log, never the start (D1).
     pub(crate) presentation: Presentation,
-    /// The globals the session bound (row 8.1's seat wiring): the list the
+    /// The globals the session bound: the list the
     /// pointer's cursor-shape device binds from when the pointer capability
-    /// arrives (row 5.5).
+    /// arrives.
     pub(crate) globals: wayland_client::globals::GlobalList,
-    /// The seat state (row 8.1's seat wiring): the `wl_seat` handler the
+    /// The seat state: the `wl_seat` handler the
     /// capability events dispatch through, and the source the keyboard and
     /// the pointer are created from.
     pub(crate) seat: SeatState,
-    /// The seat side the seat handlers route into (row 8.1's seat wiring):
-    /// the keyboard, pointer and focus hooks rows 5.1 to 5.5 built, over
+    /// The seat side the seat handlers route into:
+    /// the keyboard, pointer and focus hooks, over
     /// the thread's links.
     pub(crate) seat_side: SeatSide,
-    /// The seat's capability objects (row 8.1's seat wiring): the keyboard
+    /// The seat's capability objects: the keyboard
     /// and the pointer the capability events created, dropped on removal,
     /// on a removed seat and at teardown.
     pub(crate) seat_objects: seat_handlers::SeatObjects,
     /// The loop handle the keyboard's repeat source installs itself
-    /// through (row 5.2): `new_capability` runs from the loop's dispatch,
+    /// through: `new_capability` runs from the loop's dispatch,
     /// so the handle the bind stores must reach it. `EventLoop::try_new`
     /// leaves the lifetime to the caller, and the 'static one is what the
     /// toolkit's repeat source holds.
@@ -113,13 +113,13 @@ pub(crate) struct Session {
     /// xdg-output logical size is still awaited.
     pending_output: Option<wl_output::WlOutput>,
     /// The output the panel's first `wl_surface.enter` named, kept after the
-    /// resolution (row 9.1): a show recreates the reserve on it when the
+    /// resolution: a show recreates the reserve on it when the
     /// compositor closed the reserve while the panel was hidden.
     pub(crate) panel_output: Option<wl_output::WlOutput>,
     /// The resolved output and its xdg-output logical size (D3). `None` until
     /// both the enter and the logical size have arrived.
     pub(crate) resolved: Option<OutputSize>,
-    /// The queue handle the session dispatches through (row 6.2): the tween
+    /// The queue handle the session dispatches through (D7): the tween
     /// frames' `wl_surface.frame` requests go through it, from the apply's
     /// begin frame as well as from the frame handler.
     pub(crate) qh: QueueHandle<PanelState>,
@@ -137,74 +137,74 @@ pub(crate) struct PanelState {
     pub(crate) done: bool,
     pub(crate) inner: Arc<super::Inner>,
     pub(crate) startup: Startup,
-    /// The cell the thread measured from its own font (row 8.1, D3): the
+    /// The cell the thread measured from its own font (D3): the
     /// surfaces' width and the grid derivation both need it from the first
     /// configure. The thread loads the font before it builds the state, so
     /// the value is the measurement, not a startup input; the tests pass a
     /// synthetic one through the same parameter.
     pub(crate) cell: CellSize,
-    /// The shared terminal the thread owns (row 8.1): the pty read source
+    /// The shared terminal the thread owns: the pty read source
     /// feeds it, the seat links and the tween's render bundle hold clones.
     /// `None` on a headless state — the tests — and set by the production
     /// thread before the bind, so every push and feed after sees it.
     pub(crate) terminal: Option<Rc<RefCell<Terminal>>>,
-    /// The repaint request the terminal's callbacks latch (row 8.1): the
+    /// The repaint request the terminal's callbacks latch: the
     /// terminal's `queue_draw` closure sets it, and the loop reads and
     /// clears it after each dispatch, where the draw step turns it into a
-    /// frame (dispatch D4c).
+    /// frame.
     pub(crate) repaint: Rc<Cell<bool>>,
-    /// The panel surface's latest logical size (dispatch D4c): the last
+    /// The panel surface's latest logical size: the last
     /// configure's, or the tween finish's final size — the frame input the
     /// live draws build from. `None` before the first configure, which is
     /// when no live frame exists yet.
     pub(crate) panel_size: Option<(u32, u32)>,
     /// The pixel width of the stale pre-resize grid still on screen after
-    /// a widening push (dispatch D4c, the GTK path's `note_grid_widened`):
+    /// a widening push:
     /// the drawn grid the docked-edge offset keys against until the
     /// terminal produces output for the new width, which clears it. Shared
     /// with the byte path's output closure, which clears it.
     pub(crate) stale_grid_px: Rc<Cell<i32>>,
     /// The docked-edge draw offset the latest drawn frame used, snapped to
-    /// a whole device pixel (dispatch D4c): the value the pointer mapping
+    /// a whole device pixel: the value the pointer mapping
     /// adjusts pointer x by, published per frame through the seat links'
     /// shared cell.
     pub(crate) draw_offset: Rc<Cell<f64>>,
-    /// The seat links the thread built from its pieces (row 8.1, dispatch
-    /// D4c): the draw reads the focus flag the accent draws from through
-    /// them, and dispatch D5 wires the Wayland handlers to the same value.
+    /// The seat links the thread built from its pieces: the draw reads
+    /// the focus flag the accent draws from through them, and the seat
+    /// handlers update the same shared cell when the Wayland events arrive.
     /// `None` on a headless state — the tests.
     pub(crate) seat_links: Option<SeatLinks>,
     pub(crate) sizing: Sizing,
     /// The held gap the reserve surface draws (overlay-expand D2, D5):
     /// seeded from the startup layout's own choice — a pushing start holds
     /// its own strip, a covering start holds zero — and moved only by a
-    /// validated apply (row 3.5, `crate::surfaces::gap`).
+    /// validated apply (`crate::surfaces::gap`).
     pub(crate) held: HeldGap,
-    /// The applied layout (row 3.5): the last staged apply's layout, whose
+    /// The applied layout: the last staged apply's layout, whose
     /// side and gutters the tween's finish geometry reads. A tween only runs
     /// between layouts that match in side and left/right gutters, so the
     /// finish restores the applied margins exactly.
     pub(crate) applied: Layout,
-    /// The width tween's driver (row 6.1, [`super::tween`]): the frame
-    /// callbacks and the watchdog timer drive it from row 6.2's animated
-    /// apply on.
+    /// The width tween's driver ([`super::tween`]): the frame
+    /// callbacks and the watchdog timer drive it from an animated
+    /// apply on (D7).
     pub(crate) tween: TweenDriver,
     /// Whether the panel's surfaces are mapped ([`Visibility::Shown`]) or
-    /// unmapped ([`Visibility::Hidden`], row 9.1): the toggle, the hidden
+    /// unmapped ([`Visibility::Hidden`]): the toggle, the hidden
     /// apply and the repaint service branch on it. The panel is shown at
     /// start (the spec's show-and-hide requirement).
     pub(crate) visibility: Visibility,
-    /// The running tween's wide cache (row 6.2, [`super::tween_draw`]):
+    /// The running tween's wide cache (D7, [`super::tween_draw`]):
     /// `Some` exactly while a tween runs and its wide buffer is presentable,
     /// dropped when the tween stops.
     pub(crate) tween_draw: Option<TweenDraw>,
-    /// The render state the tween's wide draw reads (row 6.2,
+    /// The render state the tween's wide draw reads (D7,
     /// [`super::tween_draw`]): the terminal and the handle to the thread's
-    /// one renderer. The thread fills it at start (row 8.1), so an animated
+    /// one renderer. The thread fills it at start, so an animated
     /// apply draws its wide cache instead of snapping.
     pub(crate) render: Option<TweenRender>,
     pub(crate) session: Option<Session>,
-    /// The frame ops the tween glue issued, in issue order (row 9.8's
+    /// The frame ops the tween glue issued, in issue order (the
     /// recording seam, see [`FrameOp`]): appended by
     /// `request_tween_frame` and `commit_tween_frame` in test builds only,
     /// before either reads the session, so a display-free test observes
@@ -213,7 +213,7 @@ pub(crate) struct PanelState {
     pub(crate) frame_ops: RefCell<Vec<FrameOp>>,
 }
 
-/// One frame operation the tween glue issued, in issue order (row 9.8's
+/// One frame operation the tween glue issued, in issue order (the
 /// recording seam): a test build records each panel-surface
 /// `wl_surface.frame` request and each tween commit, so a display-free
 /// test can assert the request precedes the commit it belongs to — the
@@ -237,8 +237,8 @@ pub(crate) enum BindFailure {
 impl PanelState {
     /// The display-free core, before the session is bound (D10): the command
     /// tests and the pre-bind window of [`super::run_thread`] both start
-    /// here. `cell` is the cell the thread measured from its font (D3,
-    /// row 8.1); without a cell no configure could derive a grid and the
+    /// here. `cell` is the cell the thread measured from its font (D3);
+    /// without a cell no configure could derive a grid and the
     /// panel would silently never map, so it is a required input.
     pub(crate) fn headless(
         handshake: Handshake,
@@ -278,8 +278,7 @@ impl PanelState {
 
     /// A closed compositor connection maps the panel onto the dead state
     /// (D2): the handle stops posting (`NotRunning` without blocking), and a
-    /// still-pending start handshake fails — the panel never went live, the
-    /// same mapping the GTK side's loop-returned path reports.
+    /// still-pending start handshake fails — the panel never went live.
     pub(crate) fn connection_closed(&mut self) {
         self.inner.live.store(false, Ordering::Relaxed);
         self.handshake.report(StartOutcome::NoDisplay);
@@ -334,8 +333,7 @@ impl PanelState {
         let Some(size) = OutputSize::new(width, height) else {
             return;
         };
-        // The panel's output, kept for a show-time reserve recreation
-        // (row 9.1).
+        // The panel's output, kept for a show-time reserve recreation.
         if let Some(session) = self.session.as_mut() {
             session.panel_output = Some(output.clone());
         }
@@ -345,14 +343,13 @@ impl PanelState {
             session.pending_output = None;
             session.resolved = Some(size);
         }
-        // The start handshake completes here (D3), like the GTK side's
-        // first-draw monitor resolution: the panel's output and its logical
-        // size are live.
+        // The start handshake completes here (D3): the panel's output and
+        // its logical size are live.
         self.handshake.report(StartOutcome::Started);
     }
 
     /// Create the reserve surface on `output` and map it with the held gap
-    /// (D3, row 9.1): called at the output's resolution and again from a
+    /// (D3): called at the output's resolution and again from a
     /// show whose reserve the compositor closed while the panel was hidden.
     /// A region the compositor refused degrades to no reservation: the panel
     /// still runs, the tiles just are not held back (port-to-rust D3 — the
@@ -384,11 +381,11 @@ impl PanelState {
         }
     }
 
-    /// One layer-surface configure (rows 3.3 and 3.4): the panel's configure
+    /// One layer-surface configure: the panel's configure
     /// maps the surface and drives the grid sizing; the reserve's maps the
     /// reservation.
     fn on_configure(&mut self, layer: &LayerSurface, configure: &LayerSurfaceConfigure) {
-        // The push sink the configures drive (row 8.1): it owns clones of
+        // The push sink the configures drive: it owns clones of
         // the shared terminal and the repaint flag, so the session borrow
         // below does not alias it.
         let mut push = self.grid_sink();
@@ -414,7 +411,7 @@ impl PanelState {
                 .as_ref()
                 .is_some_and(|surfaces| surfaces.is_reserve(layer));
         if is_panel {
-            // A configure that arrives while hidden (row 9.1, D4): a stale
+            // A configure that arrives while hidden (D4): a stale
             // one queued before the hide's null-buffer commit must not remap
             // the panel — the hidden repaint service would swallow every
             // later frame and the panel would freeze, wrongly mapped. The
@@ -428,13 +425,12 @@ impl PanelState {
             }
             if self.tween_draw.is_some() {
                 // A tween owns the panel surface's size, viewport and buffer
-                // commits until it finishes (row 6.2): this configure only
+                // commits until it finishes (D7): this configure only
                 // runs the `on-demand` switch and records the height for the
                 // deferred grid push — the sizing's defer mode holds the
                 // push until the finish — while the tween frames keep
-                // committing the cached height, the same staleness the GTK
-                // path had; the tween's finish and the next configure catch
-                // up.
+                // committing the cached height; the tween's finish and the
+                // next configure catch up.
                 self.panel_size = Some((width, height));
                 if let Some(surfaces) = self
                     .session
@@ -459,8 +455,8 @@ impl PanelState {
                     .scale
                     .set_destination(SurfaceId::Panel, width_i, height_i);
             }
-            // The configure draws the frame it maps the panel with
-            // (dispatch D4c): the renderer's canvas resizes to the device
+            // The configure draws the frame it maps the panel with:
+            // the renderer's canvas resizes to the device
             // size — which invalidates the gate — and the full frame goes
             // into a pool buffer at that device size, committed against
             // the destination above. The `on-demand` switch follows the
@@ -477,7 +473,7 @@ impl PanelState {
             }
             self.configure_grid(height, &mut push);
         } else if is_reserve && let Some(session) = self.session.as_mut() {
-            // A stale configure of the reserve while hidden (row 9.1) maps
+            // A stale configure of the reserve while hidden maps
             // nothing: attaching the transparent buffer here would remap the
             // reservation behind the hide's back, and the show's own
             // configure attaches it again.
@@ -495,7 +491,7 @@ impl PanelState {
         }
     }
 
-    /// One configure of the panel surface while hidden (row 9.1, D4):
+    /// One configure of the panel surface while hidden (D4):
     /// record the size and drive the grid sizing — a new height resizes
     /// the grid and the pty as any configure does, and the design's
     /// "a hidden panel gets no configure" keeps its height until the next
@@ -512,19 +508,19 @@ impl PanelState {
         self.configure_grid(height, push);
     }
 
-    /// The grid size decision for one configure height (D3, row 3.3): the
+    /// The grid size decision for one configure height (D3): the
     /// rows derive from the height, the columns from the applied layout, and
-    /// the push goes to the supplied sink — the thread's grid push (row
-    /// 8.1) — only when the derived grid changed. The sink is a parameter so
+    /// the push goes to the supplied sink — the thread's grid push — only
+    /// when the derived grid changed. The sink is a parameter so
     /// the display-free tests can observe the pushes the state drives
     /// (`port-to-rust` D10).
     pub(crate) fn configure_grid(&mut self, height: u32, push: &mut dyn FnMut(Grid)) {
         self.sizing.configure(height, push);
     }
 
-    /// Take the repaint request the terminal's callbacks latched (row 8.1):
+    /// Take the repaint request the terminal's callbacks latched:
     /// the loop reads and clears it after each dispatch, where the draw
-    /// step (dispatch D4c) turns it into a frame.
+    /// step turns it into a frame.
     pub(crate) fn take_repaint_request(&self) -> bool {
         self.repaint.replace(false)
     }
@@ -569,11 +565,11 @@ impl PanelState {
         self.change_scale(|scale| scale.note_preferred_scale(units_120));
     }
 
-    /// The frame log a new tween begins with (row 6.3,
+    /// The frame log a new tween begins with (D7,
     /// [`super::frame_log`]): `Some` only under `PINWIN_FRAMELOG=1`,
     /// sourced from the presentation-time protocol when that global is
     /// bound and from the frame callbacks otherwise. The environment is
-    /// read once per tween, as the GTK path read it once per begin.
+    /// read once per tween.
     #[must_use]
     pub(crate) fn new_frame_log(&self) -> Option<FrameLog> {
         let presentation = self
@@ -704,7 +700,7 @@ mod tests {
     }
 
     /// The panel's configure drives the grid sizing through the real push
-    /// seam (row 3.3): the startup metrics the start command carries reach
+    /// seam: the startup metrics the start command carries reach
     /// the state's sizing, so a configure derives and pushes the startup grid
     /// through the state's [`PanelState::configure_grid`]. The pushes the
     /// sizing decides are observed through the same sink the pty winsize
@@ -739,7 +735,7 @@ mod tests {
     }
 
     /// The bind applies the startup geometry to the panel surface it
-    /// creates (row 3.1). The mapping itself is tested in the surfaces
+    /// creates. The mapping itself is tested in the surfaces
     /// module; this pins the handlers' surface matching helpers against the
     /// anchor they are derived from.
     #[test]
