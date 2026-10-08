@@ -17,7 +17,7 @@
 
 ## 4. Seat plumbing
 
-- [ ] 4.1 Re-read `smithay-client-toolkit` in `Cargo.lock` and its `SeatData` dispatch (`src/seat/mod.rs`, `Capabilities` event) to confirm `new_capability`/`remove_capability` fire only on change; then delete `capability_step`/`CapabilityStep` and its test, matching `on_capability` on `arriving`; verify `cargo test panel::wayland_side::state::seat_handlers` passes
+- [x] 4.1 Re-read `smithay-client-toolkit` in `Cargo.lock` and its `SeatData` dispatch (`src/seat/mod.rs`, `Capabilities` event) to confirm `new_capability`/`remove_capability` fire only on change; then delete `capability_step`/`CapabilityStep` and its test, matching `on_capability` on `arriving`; verify `cargo test panel::wayland_side::state::seat_handlers` passes
 - [ ] 4.2 Change `SeatLinks.draw_offset` to `Rc<Cell<f64>>` and `queue_draw` to `Rc<Cell<bool>>`, build them in `glue::seat_links` from `PanelState`'s cells, and update `pointer.rs`, `focus.rs`, `seat.rs` and the test fixtures; verify `cargo test panel::wayland_side::seat` and `cargo test panel::wayland_side::glue` pass
 
 ## 5. Build `PanelState` whole
