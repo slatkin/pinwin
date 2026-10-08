@@ -364,7 +364,7 @@ fn an_idle_driver_arms_nothing() {
 /// duration between layouts that match in side and left and right gutters
 /// animates; a zero duration, a side switch and a gutter change snap.
 #[test]
-fn the_animate_decision_follows_the_gtk_rule() {
+fn the_animate_decision_follows_the_panel_rule() {
     fn layout(side: Side, cols: u16, left: i32, right: i32) -> Layout {
         Layout::new(
             side,
