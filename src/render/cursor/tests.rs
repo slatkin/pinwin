@@ -123,8 +123,8 @@ fn rect_is(canvas: &Canvas, rect: &DeviceRect, expected: [u8; 4], label: &str) {
 // from `cursor_shape`'s formulas — the logical rectangle snapped edge by
 // edge, `round(edge * scale)` per device edge, on the 8×16 test pitch.
 
-/// The bar, underline and block cursor rectangles equal the GTK snapped
-/// rectangles, computed by hand from the formulas, at every scale the
+/// The bar, underline and block cursor rectangles equal the hand-computed
+/// snapped rectangles, at every scale the
 /// painter tests, for a cursor away from the origin (cell (2, 1)).
 #[test]
 fn fill_shapes_match_the_hand_computed_rectangles() {
@@ -257,7 +257,7 @@ fn a_bar_cursor_is_three_device_pixels_wide_at_1_5() {
 }
 
 /// The block cursor redraws the glyph under it only for a block with
-/// text and no wide tail — the GTK path's condition.
+/// text and no wide tail.
 #[test]
 fn the_glyph_redraw_condition_follows_the_gtk_rule() {
     let mut block = cursor(0, 0, CursorStyle::Block);
@@ -272,8 +272,8 @@ fn the_glyph_redraw_condition_follows_the_gtk_rule() {
     assert!(!glyph_redraw(&block, b"X"), "hollow does not redraw");
 }
 
-/// A wide-tail block cursor keeps its full shape — the GTK path drew
-/// the shape over the tail cell too; only the glyph redraw is
+/// A wide-tail block cursor keeps its full shape over the tail cell;
+/// only the glyph redraw is
 /// suppressed (pinned by `the_glyph_redraw_condition_follows_the_gtk_rule`).
 #[test]
 fn a_wide_tail_cursor_keeps_its_shape() {

@@ -55,7 +55,7 @@ impl Glyph {
 }
 
 /// What a glyph rasterized into. The variants are `pub` because the painter
-/// (row 4.5's placement unit) matches on them to pick the draw call.
+/// matches on them to pick the draw call.
 #[derive(Debug)]
 pub enum GlyphImage {
     /// No image: the glyph has no coverage (a space, or a glyph id swash
@@ -218,8 +218,7 @@ pub(crate) fn rasterize(
 }
 
 /// The named instance's normalized coordinates, or none for the default
-/// instance. The obligation from row 4.4's review lands here:
-/// `Face::parse` always opens the default instance, so a variable-only
+/// instance. `Face::parse` always opens the default instance, so a variable-only
 /// family's matched Bold face must carry its named instance's coordinates
 /// into the scaler, and the instance is part of the cache key (the face
 /// identity carries it).

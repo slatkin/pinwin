@@ -190,7 +190,7 @@ fn a_wide_cell_draws_its_head_and_not_its_tail() {
     // The tail draws nothing as itself: the pure routing on the walked
     // tail cell declines it. Its area may still carry the head glyph's
     // ink — a CJK glyph's advance spans into the tail and text is not
-    // clipped to its cell, on the GTK path or here — so no pixel
+    // clipped to its cell — so no pixel
     // assertion can separate the two draws.
     let frame = rig.frame(1.0, rig.cell_h, 0.0);
     assert!(
@@ -413,8 +413,8 @@ fn a_wide_tail_does_not_redraw_the_glyph() {
     }
 }
 
-/// The redraw collects the cursor cell's text through the same rule the
-/// GTK walk used: the first cell with a glyph at the cursor's position —
+/// The redraw collects the cursor cell's text through the walk's rule:
+/// the first cell with a glyph at the cursor's position —
 /// the walk's return value carries it for the cursor layer to redraw.
 #[test]
 fn the_walk_collects_the_cursor_cells_text() {

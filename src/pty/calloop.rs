@@ -1,9 +1,8 @@
-//! The calloop twin of the glib pty read source (`replace-gtk-with-wayland`
+//! The panel thread's calloop pty read source (`replace-gtk-with-wayland`
 //! D2): the same [`drain`] — the same hangup handling and the same bounded
-//! tween budget — dispatched from the panel thread's calloop loop instead of
-//! the GTK main context. The entry point is `pub` for reachability (the
-//! same choice `panel::wayland_side` made); the glib source went with the
-//! GTK path, and this module is the only pty read source.
+//! tween budget — dispatched from the panel thread's calloop loop, the only
+//! pty read source. The entry point is `pub` for reachability (the same
+//! choice `panel::wayland_side` made).
 //!
 //! Panics never cross into calloop (D5): the readiness callback runs the
 //! drain under the shared [`crate::guard`] with the caller's poisoned latch,
@@ -25,9 +24,9 @@ use crate::guard::{Poisoned, guard};
 
 use super::{Drain, PTY_BUDGET_US, Pty, drain, set_non_blocking};
 
-/// The registration handle of one calloop pty read source (D2): the teardown
-/// twin of `Pty::detach` on the glib path. [`PtySource::remove`] takes the
-/// source out early and retires the fd slot; dropping the whole loop takes a
+/// The registration handle of one calloop pty read source (D2): the
+/// teardown's removal step. [`PtySource::remove`] takes the source out
+/// early and retires the fd slot; dropping the whole loop takes a
 /// still-installed source with it, and a hangup removes the source on its
 /// own.
 ///
@@ -65,13 +64,11 @@ impl<D> PtySource<'_, D> {
 }
 
 impl Pty {
-    /// The read-source inputs the panel thread's calloop attach needs
-    /// (row 8.1): the fd and the shared slot — the one the
-    /// [`super::PtyWriter`]
+    /// The read-source inputs the panel thread's calloop attach needs: the
+    /// fd and the shared slot — the one the [`super::PtyWriter`]
     /// reads, so a hangup or a teardown retires the writes with the reads —
     /// and the panel's shared D5 latch the drain runs under. The pty module
-    /// owns them; the panel thread only attaches. The tween flag is the
-    /// tween driver's own `Arc` (row 8.1), not this handle's glib-path one.
+    /// owns them; the panel thread only attaches.
     pub(crate) fn read_source(&self) -> (RawFd, Arc<AtomicI32>, Poisoned) {
         (
             self.fd.load(Ordering::Relaxed),
@@ -81,8 +78,8 @@ impl Pty {
     }
 }
 
-/// Install the pty read source on a calloop loop (D2), the calloop twin of
-/// `Pty::attach`'s read-source half: the fd goes into non-blocking mode —
+/// Install the pty read source on a calloop loop (D2): the fd goes into
+/// non-blocking mode —
 /// the drain reads until `EAGAIN` — and the source is registered for
 /// level-triggered read readiness. The initial winsize is the caller's job
 /// ([`apply_winsize`](super::apply_winsize)); this registers the read path only.
@@ -96,7 +93,7 @@ impl Pty {
 ///
 /// # Errors
 /// A fd that cannot be made non-blocking, a fd below zero, or a failed
-/// registration — the same sticky degradation the glib `attach` reports.
+/// registration.
 pub fn attach_calloop<D>(
     handle: LoopHandle<'_, D>,
     fd: RawFd,

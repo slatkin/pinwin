@@ -19,7 +19,7 @@ use crate::render::glyph::Synthesis;
 ///
 /// The values are swash's `f32` reports, unquantized: the cluster is cached
 /// under its text, so no quantization is needed for the cache key, and the
-/// placement unit (row 4.5's next unit) quantizes the device origins it
+/// placement unit quantizes the device origins it
 /// derives from them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShapedGlyph {

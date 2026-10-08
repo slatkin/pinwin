@@ -1,22 +1,22 @@
-//! The sprite layer of the grid painter (row 4.3): the frame's block
+//! The sprite layer of the grid painter: the frame's block
 //! elements (`sprite::block`), braille patterns (`sprite::braille`) and
 //! polygons (`sprite::poly` — the corner triangles and the powerline
 //! separators, solid and hollow) drawn on the canvas in the cell's
-//! foreground colour — or the theme foreground when the cell names none —
-//! exactly as the GTK path's `draw_sprite` drew them. The cursor shapes
+//! foreground colour — or the theme foreground when the cell names none.
+//! The cursor shapes
 //! are the cursor layer's own draw; their code points are not sprites and
 //! fall to the text pass.
 //!
-//! The per-cell skips are the GTK cell pass's: a wide glyph's spacer tail
+//! A wide glyph's spacer tail
 //! is never rendered, and a cell with no glyph or the INVISIBLE flag draws
 //! no sprite. [`cell_sprite`] is the pure per-cell decision — skips,
 //! routing and colour — so the dispatch stays testable without a frame
 //! walk; [`paint`] only walks and fills.
 //!
 //! The layer sits after the backgrounds and before the bands, with the
-//! text pass between it and the bands: GTK draws each cell's decorations
-//! after its glyph, so the bands layer must come after this one and after
-//! the text pass.
+//! text pass between it and the bands: each cell's decorations
+//! draw after its glyph, so the bands layer must come after this one and
+//! after the text pass.
 //!
 //! [`cell_sprite`] is the pure per-cell decision, so the text pass reuses
 //! it to stay disjoint from this one (`super::text_pass::text_owns`).
@@ -33,12 +33,12 @@ mod block;
 mod braille;
 mod poly;
 
-/// The drawing primitives one sprite cell carries (row 4.3): unantialiased
+/// The drawing primitives one sprite cell carries: unantialiased
 /// rectangles for the blocks and the braille dots, an antialiased filled
 /// polygon for the solid corner and powerline triangles, and an antialiased
 /// closed-outline stroke with miter joins for the hollow powerline outline —
-/// design decision 5's one line sprite, which the GTK path strokes as one
-/// closed triangle so cairo's joins fill the corners. All coordinates are
+/// design decision 5's one line sprite, stroked as one
+/// closed triangle so the joins fill the corners. All coordinates are
 /// device pixels; a `None` from [`cell_sprite`] still means the text pass
 /// owns the cell.
 #[derive(Debug)]

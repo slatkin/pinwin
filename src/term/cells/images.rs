@@ -634,9 +634,9 @@ mod tests {
         while terminal.cell_next().is_some() {}
     }
 
-    /// The cairo painter's order: the cell pass and the image pass share one
-    /// frame, so the placeholder origins the cell pass recorded are still
-    /// there when the virtual placement is resolved.
+    /// The passes share one frame: the cell pass and the image pass run
+    /// over the same frame, so the placeholder origins the cell pass
+    /// recorded are still there when the virtual placement is resolved.
     #[test]
     fn replayed_mbv_image_is_placed_when_the_passes_share_a_frame() {
         let mut terminal = replay_terminal();

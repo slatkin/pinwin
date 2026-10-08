@@ -1,9 +1,8 @@
-//! The text pass of the grid painter (row 4.5, `replace-gtk-with-wayland`
+//! The text pass of the grid painter (`replace-gtk-with-wayland`
 //! D5/D6/D11): each cell's grapheme cluster shaped with the [`TextShaper`],
 //! rasterized through the [`GlyphCache`] at the frame's device size, and
 //! drawn onto the [`crate::render::canvas::Canvas`] at the device pixel
-//! lattice — the same pixels
-//! the GTK path's `text::draw_text` produces for the same cells.
+//! lattice.
 //!
 //! Placement on the lattice (the spec requirement "Cell text on the device
 //! pixel lattice"): a glyph's origin is the cell's own snapped corner —
@@ -29,11 +28,11 @@
 //!
 //! The pass owns exactly the cells `sprite::cell_sprite` declines:
 //! the sprite pass and this pass own disjoint cells, and the frame walk runs
-//! this pass after the sprites and before the bands, because GTK draws each
-//! cell's decorations after its glyph.
+//! this pass after the sprites and before the bands, because each cell's
+//! decorations draw after its glyph.
 //!
 //! The walk also collects the text bytes of the cell at the cursor's
-//! position — the same collection the GTK path's grid walk did — and
+//! position and
 //! returns them as [`CursorText`] for the cursor layer's block-cursor glyph
 //! redraw (see the seam in [`super::cursor`]).
 //!
@@ -66,8 +65,7 @@ use super::sprite;
 /// 26.6 fixed point `measure`'s pixel arithmetic works in.
 const PX_PER_POINT: f64 = 96.0 / 72.0;
 
-/// The most text bytes the cursor redraw collects — the GTK path's
-/// `cursor_text` buffer minus its terminating zero.
+/// The most text bytes the cursor redraw collects.
 const CURSOR_TEXT_MAX: usize = CELL_TEXT_CAP - 1;
 
 /// The text bytes of the cell at the cursor's position, collected during
@@ -96,7 +94,7 @@ impl CursorText {
     }
 }
 
-/// The text pass's state (row 4.5): the shaper, the glyph cache, the cell
+/// The text pass's state: the shaper, the glyph cache, the cell
 /// metrics the nerd-font constraints are expressed against and the font
 /// size in points. Not `Sync`: the painter runs on one thread, the panel's
 /// render thread.
@@ -121,8 +119,8 @@ impl std::fmt::Debug for TextPass {
 impl TextPass {
     /// A text pass over the shaper and glyph cache the panel thread owns,
     /// with the cell metrics measured from the terminal face at `size_pt`
-    /// points (the Ghostty `font-size`) — the same measurement row 4.6
-    /// built the cell pitch from.
+    /// points (the Ghostty `font-size`) — the measurement the cell pitch
+    /// is built from.
     #[must_use]
     pub fn new(
         shaper: TextShaper,
@@ -172,9 +170,9 @@ impl TextPass {
                 continue;
             }
             // The cursor cell's text, collected once — the first cell with
-            // a glyph at the cursor's position, exactly the GTK path's
-            // grid-walk collection. A cell the sprite pass owns still
-            // collects: the old path redraws it through the text path too.
+            // a glyph at the cursor's position. A cell the sprite pass owns
+            // still collects: the cursor redraws it through the text path
+            // too.
             if !collected
                 && let Some(at) = cursor
                 && at.x == cell.x
@@ -200,8 +198,7 @@ impl TextPass {
 
     /// Draw one cell's text in `color` — the block cursor's glyph redraw
     /// enters here, with the terminal's default background and a cell built
-    /// from the collected [`CursorText`], exactly the synthetic cell the
-    /// GTK path's `draw_cursor` hands `draw_text`. Shaping is cached, so a
+    /// from the collected [`CursorText`]. Shaping is cached, so a
     /// redraw costs at most the rasterization the walk already paid.
     pub fn draw_cell(
         &mut self,
@@ -335,8 +332,8 @@ impl TextPass {
     }
 }
 
-/// The cell style bits as the font module's [`Style`] — the same four-way
-/// selection the GTK path's `FontsRef::for_flags` makes.
+/// The cell style bits as the font module's [`Style`] — the four-way
+/// style selection.
 fn style_of(cell: &Cell) -> Style {
     let bold = cell.flags.contains(StyleFlags::BOLD);
     let italic = cell.flags.contains(StyleFlags::ITALIC);
@@ -348,8 +345,8 @@ fn style_of(cell: &Cell) -> Style {
     }
 }
 
-/// Whether the text pass draws `cell`: the skips are the GTK cell pass's —
-/// a wide glyph's spacer tail, a cell with no glyph, the INVISIBLE flag —
+/// Whether the text pass draws `cell`: a wide glyph's spacer tail, a cell
+/// with no glyph and the INVISIBLE flag never draw,
 /// and the cell must not be one the sprite pass owns, so the two passes
 /// stay disjoint.
 pub(super) fn text_owns(metrics: &PainterMetrics, frame: &FrameInput, cell: &Cell) -> bool {

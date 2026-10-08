@@ -63,9 +63,8 @@ impl Handshake {
     }
 }
 
-/// Map an apply's `PublishOutcome` onto the `Panel` API's result
-/// (`pinwin_api.c`'s `apply_on_gtk_thread` mapping: a panel without live
-/// metrics is a lifecycle state, not a layout verdict).
+/// Map an apply's `PublishOutcome` onto the `Panel` API's result (a panel
+/// without live metrics is a lifecycle state, not a layout verdict).
 pub(crate) fn map_outcome(outcome: PublishOutcome) -> Result<(), PinwinError> {
     match outcome {
         PublishOutcome::Applied => Ok(()),
@@ -174,8 +173,7 @@ mod tests {
         );
     }
 
-    /// The apply mappings cover every publish outcome, mirroring
-    /// `pinwin_api.c`'s `apply_on_gtk_thread`.
+    /// The apply mappings cover every publish outcome.
     #[test]
     fn publish_outcomes_map_onto_the_api_errors() {
         assert_eq!(map_outcome(PublishOutcome::Applied), Ok(()));

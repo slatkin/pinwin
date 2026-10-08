@@ -1,7 +1,7 @@
 //! The loading half of the Ghostty-config reader: the thin wrappers that
 //! resolve the XDG config paths and read the files, split from the parsing
-//! half in the parent module (row 8.1). The parsing functions stay pure; a
-//! missing or unreadable file falls back to the defaults here.
+//! half in the parent module (port-to-rust D3). The parsing functions stay
+//! pure; a missing or unreadable file falls back to the defaults here.
 
 use std::ffi::OsString;
 use std::fs;

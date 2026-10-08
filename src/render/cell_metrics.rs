@@ -1,7 +1,6 @@
-//! The cell metrics from the font, computed with swash (row 4.6): the cell
+//! The cell metrics from the font, computed with swash: the cell
 //! pitch, the truncated ascent, the baseline and the Nerd Font numbers the
-//! constraints are expressed against. The port of the Pango-based
-//! `measure` the GTK path used.
+//! constraints are expressed against.
 //!
 //! Size conversion matches Pango: the font size in points places the font at
 //! `points * 96 / 72` pixels (the 96 dpi convention), and everything else is
@@ -20,10 +19,8 @@
 //! unchanged from the Pango `measure`.
 //!
 //! GTK-free like the font module (replace-gtk-with-wayland D10): the tests
-//! run without a display. The module is `pub` so row 8.1 can switch the
-//! panel to it; until then no caller exists (`pub(crate)` entries with no
-//! caller are dead code under `-D warnings`, and no lint suppression is
-//! permitted).
+//! run without a display. The panel thread's font setup and the painter
+//! modules consume the metrics.
 
 use super::font::Face;
 use super::geom::{PainterMetrics, device_px};
@@ -58,9 +55,9 @@ impl std::fmt::Display for MetricsError {
 
 impl std::error::Error for MetricsError {}
 
-/// The cell metrics computed from the font (row 4.6): the cell pitch and
+/// The cell metrics computed from the font: the cell pitch and
 /// ascent in whole logical pixels, the baseline, and the Nerd Font numbers
-/// row 4.5 applies the constraints against. The fields are private
+/// the constraints are expressed against. The fields are private
 /// (port-to-rust D6); the accessors carry the meaning.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CellMetrics {

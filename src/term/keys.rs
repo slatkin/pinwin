@@ -1,13 +1,14 @@
 //! Key mapping for the key encoder (port-to-rust D3), mirroring what Ghostty's
-//! own GTK apprt does (`src/apprt/gtk/key.zig` and `src/input/keycodes.zig` at
+//! own apprt does (the apprt keymap `key.zig` and the keycode tables
+//! `keycodes.zig` at
 //! the pinned ghostty commit): a physical key from the keycode, the same keyval
 //! remap Ghostty applies for writing-system keys, and the same modifier keyvals
 //! it refuses to encode.
 //!
 //! Generated from that commit: `KEYCODE_TABLE` from the `xkb` column of
-//! `raw_entries` (which is what GTK reports as a keycode), `KEYVAL_TABLE` from
-//! `src/apprt/gtk/key.zig`'s `keymap` with the GDK keyval numbers resolved
-//! through the GDK headers. Keys neither table names stay
+//! `raw_entries` (the keycode the seat reports), `KEYVAL_TABLE` from
+//! the apprt keymap's `keymap`, keyed on the keyval numbers resolved
+//! at generation time. Keys neither table names stay
 //! [`Key::UNIDENTIFIED`] and travel as text only.
 
 use crate::ghostty_sys::input::{
@@ -192,7 +193,7 @@ const KEYCODE_TABLE: &[(u16, GhosttyKey)] = &[
     (0xca, GHOSTTY_KEY_F24),
 ];
 
-/// GDK keyval -> logical key, for the writing-system remap and for synthetic
+/// keyval -> logical key, for the writing-system remap and for synthetic
 /// keymaps that report every key with one keycode, sorted by keyval.
 const KEYVAL_TABLE: &[(u32, GhosttyKey)] = &[
     (0x0020, GHOSTTY_KEY_SPACE),
@@ -416,7 +417,7 @@ pub fn key_from_keycode(keycode: u32) -> Key {
     }
 }
 
-/// GDK keyval -> logical key, for the writing-system remap and for synthetic
+/// keyval -> logical key, for the writing-system remap and for synthetic
 /// keymaps that report every key with one keycode.
 #[must_use]
 pub fn key_from_keyval(keyval: u32) -> Option<Key> {

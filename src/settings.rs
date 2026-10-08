@@ -1,7 +1,7 @@
 //! The host settings parsed from the environment (`host/main.c`'s
 //! environment contract, port-to-rust D8): the numbers, the keyboard mode,
 //! the accent, the starting zone, and — new with `keyboard-focus-request` —
-//! `PINWIN_NAME`, the instance name the focus socket is published under.
+//! `PINWIN_NAME`, the instance name the instance socket is published under.
 //!
 //! Every value lands in the library's argument types (`port-to-rust` D6: the
 //! invalid classes are unrepresentable, so the only rejections left are the
@@ -44,7 +44,7 @@ pub(crate) struct Settings {
     pub(crate) right: i32,
     pub(crate) keyboard: Keyboard,
     pub(crate) accent: Option<Accent>,
-    /// The instance name the focus socket is published under.
+    /// The instance name the instance socket is published under.
     pub(crate) name: InstanceName,
     /// The layout class the panel starts in.
     pub(crate) zone: Zone,
@@ -127,7 +127,7 @@ fn zone(raw: Option<&str>) -> Result<Zone, String> {
     }
 }
 
-/// `PINWIN_NAME`: the instance name the focus socket is published under.
+/// `PINWIN_NAME`: the instance name the instance socket is published under.
 /// Unset is the default name; a set value — the empty one included — must be
 /// a valid [`InstanceName`], or the host exits 2 before any surface opens.
 fn instance_name(raw: Option<&str>) -> Result<InstanceName, String> {

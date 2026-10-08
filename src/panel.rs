@@ -271,7 +271,7 @@ impl Panel {
         })
     }
 
-    /// Toggle the panel (row 9.1, replace-gtk-with-wayland D4): hide a
+    /// Toggle the panel (`replace-gtk-with-wayland` D4): hide a
     /// shown panel, show a hidden one. The panel is shown at start. Hiding
     /// unmaps the panel surface and releases the held reservation, and a
     /// width animation in progress ends at its target layout first; the
@@ -294,7 +294,7 @@ impl Panel {
         show_or_toggle_via_inner(&self.inner, || self.thread.toggle())
     }
 
-    /// Show the panel (serve-instance-socket row 3.1, D6): show a hidden
+    /// Show the panel (`serve-instance-socket` D6): show a hidden
     /// panel; a shown panel is left unchanged — the call returns `Ok`, no
     /// surface is unmapped or remapped and the reservation does not change
     /// (the spec's "Show a shown panel" scenario). A hidden panel maps like

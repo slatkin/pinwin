@@ -1,9 +1,8 @@
-//! The focus accent layer of the grid painter (row 4.3): the stroke around
+//! The focus accent layer of the grid painter: the stroke around
 //! the whole window in the configured accent colour and width, drawn only
 //! while the panel holds keyboard focus. Layer surfaces get no compositor
 //! focus ring (niri draws one only around layout windows), so the focused
-//! panel marks itself — the same duty the GTK path's focus-accent draw
-//! performed.
+//! panel marks itself.
 //!
 //! The geometry is that stroke's, in raw surface (device) coordinates: a
 //! rectangle inset by half the stroke width, so the stroke stays inside
@@ -11,8 +10,8 @@
 //! its line covers — outer edges on the window's edges, inner edges one
 //! stroke in — filled here as four rectangles, which tiles the same
 //! region. Unlike the grid layers, the accent is not snapped and not
-//! translated by the tween's draw offset (the GTK path drew it after the
-//! grid, untranslated): a stroke the window edges pin cannot shift.
+//! translated by the tween's draw offset: a stroke the window edges pin
+//! cannot shift.
 //!
 //! GTK-free (`replace-gtk-with-wayland` D10); private to the painter, whose
 //! frame pass calls it last, on top of every grid layer.
@@ -58,7 +57,7 @@ fn bands(
     ])
 }
 
-/// Draw the part of the focus accent that falls inside `rows` (row 4.8):
+/// Draw the part of the focus accent that falls inside `rows`:
 /// the partial repaint cleared those device rectangles to the theme
 /// background, which erased the accent where it crosses them, so the bands
 /// are redrawn — clipped to each row rectangle, exactly the pixels a full

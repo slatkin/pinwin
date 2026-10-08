@@ -1,4 +1,4 @@
-//! The image pass's tests (row 4.7, `replace-gtk-with-wayland` D10): the
+//! The image pass's tests (`replace-gtk-with-wayland` D10): the
 //! "Images are not clipped" pixel tests through the terminal's real kitty
 //! path, the crop, alpha and channel-order rules, the cache contract and
 //! the layer order, all display-free.

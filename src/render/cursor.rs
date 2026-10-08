@@ -1,11 +1,10 @@
-//! The cursor layer of the grid painter (row 4.3): the frame's cursor
-//! drawn after the cell layers and before the focus accent, exactly as the
-//! GTK path's cursor layer drew it — the shape in the
-//! terminal's default foreground, the hollow block as four
+//! The cursor layer of the grid painter: the frame's cursor
+//! drawn after the cell layers and before the focus accent — the shape in
+//! the terminal's default foreground, the hollow block as four
 //! one-logical-pixel bands each snapped on its own so they tile the ring
 //! with no gap and no overlap.
 //!
-//! The draw conditions are the GTK path's, all folded into
+//! The draw conditions live in
 //! [`Terminal::cursor`]: the frame protocol reports the cursor only while
 //! the frame is open and the cursor is visible with a viewport position —
 //! a hidden cursor, one blinking off, or one outside the viewport draws
@@ -14,15 +13,14 @@
 //!
 //! The colour rule differs from the cell layers': a cell falls back to
 //! the theme foreground when it names none, but the cursor is always the
-//! terminal's default foreground (`Terminal::colors().foreground`), the
-//! same unconditional colour `draw_cursor` sets.
+//! terminal's default foreground (`Terminal::colors().foreground`),
+//! unconditionally.
 //!
 //! The block cursor's glyph redraw: after the block fill, `paint` redraws
 //! the glyph under the cursor in the terminal's default background through
-//! the text pass's [`TextPass::draw_cell`] — the same redraw the GTK
-//! path's `draw_cursor` makes with `draw_text`, so a cell the sprite pass
+//! the text pass's [`TextPass::draw_cell`], so a cell the sprite pass
 //! owns (a block character under the cursor) is redrawn with its font
-//! glyph there too, exactly as the old path does. The redraw inputs come
+//! glyph there too. The redraw inputs come
 //! from the text pass's walk: the collected [`CursorText`] (the cell bytes
 //! at the cursor's position) and the pass itself, skipped exactly when
 //! [`glyph_redraw`] is false — not a Block cursor, no text, or a wide tail.
@@ -48,8 +46,7 @@ pub enum CursorShape {
 }
 
 /// The geometry `paint` fills for `cursor`, snapped to the device pixel
-/// grid — the device form of the logical rectangles the GTK painters
-/// drew, by the formulas both paths share. A cursor
+/// grid. A cursor
 /// covers its own cell only: a wide glyph's head cell carries the cursor,
 /// the tail keeps the cell layers' pixels.
 #[must_use]
@@ -73,8 +70,8 @@ pub fn cursor_shape(cursor: &Cursor, metrics: &PainterMetrics) -> CursorShape {
 }
 
 /// Whether the block cursor redraws the glyph under it in the terminal's
-/// default background — the GTK path's condition (`draw_cursor` and the
-/// node emitter's, identical). The text unit calls this with the cell
+/// default background: a Block cursor with collected text and no wide
+/// tail. The text unit calls this with the cell
 /// text it collected at the cursor's position.
 #[must_use]
 pub fn glyph_redraw(cursor: &Cursor, text: &[u8]) -> bool {
@@ -82,7 +79,7 @@ pub fn glyph_redraw(cursor: &Cursor, text: &[u8]) -> bool {
 }
 
 /// The hollow block cursor's outline as the four one-logical-pixel bands
-/// the GTK path fills (top, bottom, left, right), each snapped on its own
+/// (top, bottom, left, right), each snapped on its own
 /// through the geom helpers. Bands that share an edge pass the same
 /// logical edge to the snap — the vertical bands' ends are the horizontal
 /// bands' sides — so they tile the ring without a gap or an overlap.
@@ -123,11 +120,11 @@ pub(super) fn paint(
             }
         }
     }
-    // The block cursor's glyph redraw, above the block fill: the same
-    // synthetic cell and colour the GTK path's `draw_cursor` builds for
-    // `draw_text`. The old path redraws through the text path unconditionally
-    // on the condition, so a sprite-owned cell's block character is redrawn
-    // with its font glyph here too.
+    // The block cursor's glyph redraw, above the block fill: the synthetic
+    // cell carries the cursor's bytes and the terminal's default background,
+    // drawn through the text path whenever [`glyph_redraw`] holds, so a
+    // sprite-owned cell's block character is redrawn with its font glyph
+    // here too.
     let bytes = cursor_text.as_bytes();
     if glyph_redraw(&cursor, bytes) {
         let mut cell_text = [0; CELL_TEXT_CAP];

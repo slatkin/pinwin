@@ -21,24 +21,21 @@
 //! swapped order, which is exactly the `ARGB8888` memory order. The pixel
 //! tests below pin the exact bytes.
 //!
-//! The primitive set is the full set the grid painter needs (rows 4.3 to
-//! 4.7): an exact and a fractional rectangle fill, a polygon fill for the
+//! The primitive set is the full set the grid painter needs: an exact and
+//! a fractional rectangle fill, a polygon fill for the
 //! powerline triangles, a closed-outline stroke with miter joins for the
 //! one-line sprite (the hollow powerline separators), an image blit and a
 //! coverage-mask blit for the glyphs, and a pixel read for the tests. The
 //! cached kitty images scale through `scale::resample`, the one
-//! resampling primitive row 4.7 adds (area averaging in premultiplied
-//! space, edges unclipped). The module was frozen for those rows; the row
-//! 4.3 review replaced the
-//! straight-line stroke with the closed-outline stroke, because cairo
-//! strokes the hollow separators as one closed triangle whose joins fill
-//! the corners and three butt-capped lines do not.
+//! resampling primitive (area averaging in premultiplied
+//! space, edges unclipped). The hollow separators stroke as one closed
+//! triangle — the miter joins fill
+//! the corners — and three butt-capped lines do not cover them.
 //!
 //! GTK-free like the snap rules (`replace-gtk-with-wayland` D10): the tests
-//! below run without a display. The module is `pub` because its only
-//! consumer, the grid painter, arrives in rows 4.3 to 4.7 (`pub(crate)`
-//! entries with no caller are dead code under `-D warnings`, and no lint
-//! suppression is permitted).
+//! below run without a display. The module is `pub`; its only consumer is
+//! the grid painter (`pub(crate)` entries with no caller are dead code
+//! under `-D warnings`, and no lint suppression is permitted).
 
 use tiny_skia::{
     FillRule, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Shader, Stroke, Transform,
@@ -196,8 +193,8 @@ impl Canvas {
 
     /// Stroke a closed polygon's outline with a width in device pixels,
     /// anti-aliased, with a MITER join at cairo's default miter limit of
-    /// 10 and butt caps (the hollow powerline separators: the GTK path
-    /// strokes one closed triangle, so cairo's joins fill the corners out
+    /// 10 and butt caps (the hollow powerline separators: one closed
+    /// triangle, so the miter joins fill the corners out
     /// to the miter — the apex tip and the spikes at the sharp base
     /// corners — which separate butt-capped lines leave uncovered). Fewer
     /// than three points, a non-positive or non-finite width or a

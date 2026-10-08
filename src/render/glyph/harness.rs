@@ -3,13 +3,13 @@
 //!
 //! The font-dependent tests skip with a printed message only when the
 //! family is not installed; a broken `FontBook` or a failed lookup is an
-//! `expect`, so a row 4.4 or 4.5 regression cannot hide behind "not
+//! `expect`, so a glyph-rasterizer regression cannot hide behind "not
 //! installed".
 //!
-//! `CanvasMask` exposes its size but not its bytes, and the canvas module
-//! was frozen for its own rows, so the coverage tests read the mask back
-//! through the public draw path: blitted over a cleared canvas with an
-//! opaque colour, a pixel's alpha is exactly the coverage byte (the
+//! `CanvasMask` exposes its size but not its bytes, so the coverage tests
+//! read the mask back through the public draw path: blitted over a cleared
+//! canvas with an opaque colour, a pixel's alpha is exactly the coverage
+//! byte (the
 //! `draw_mask` blend writes `alpha = coverage * 255 / 255`).
 
 use std::sync::Arc;

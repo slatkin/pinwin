@@ -30,7 +30,7 @@ const DEFAULT_ENTRY_CAP: usize = 8192;
 /// through their own `Arc`.
 const DEFAULT_BYTE_BUDGET: usize = 16 * 1024 * 1024;
 
-/// The glyph cache (row 4.5): keyed on the [`GlyphRequest`] — face
+/// The glyph cache: keyed on the [`GlyphRequest`] — face
 /// identity, glyph id, quantized ppem, synthesized style, quantized
 /// placement transform — holding each result as an `Arc`, so the glyphs a
 /// frame hands out survive a cache clear. It also owns the swash

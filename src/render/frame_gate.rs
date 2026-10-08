@@ -1,4 +1,4 @@
-//! The frame gate (row 4.8, `replace-gtk-with-wayland` D5): what a frame
+//! The frame gate (`replace-gtk-with-wayland` D5): what a frame
 //! must redraw. The pinned libghostty-vt's render state tracks dirtiness
 //! on two independent layers — a global state
 //! (`GHOSTTY_RENDER_STATE_DATA_DIRTY`: `DIRTY_FALSE`, `PARTIAL`, `FULL`)

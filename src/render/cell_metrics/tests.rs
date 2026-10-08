@@ -24,7 +24,7 @@ const LEKTON_SIZE: f64 = 14.0;
 /// The regular face of `family` at `size`, or `None` (printed) when the
 /// machine lacks it — the font tests only run where CI installs the font.
 /// A broken `FontBook` or a failed face lookup is not a skip: it fails the
-/// test, so a row 4.4 or 4.5 regression cannot hide behind "not installed".
+/// test, so a font-metrics regression cannot hide behind "not installed".
 fn regular_face(family: &str, size: f64) -> Option<crate::render::font::Face> {
     let book = FontBook::new().expect("the font book opens");
     if !book.has_family(family) {
@@ -38,7 +38,7 @@ fn regular_face(family: &str, size: f64) -> Option<crate::render::font::Face> {
     Some(faces.regular().clone())
 }
 
-/// Gate (row 4.6): the swash metrics give `JetBrainsMono Nerd Font` 11 the
+/// Gate: the swash metrics give `JetBrainsMono Nerd Font` 11 the
 /// same cell the old Pango metrics give — 9 by 20, ascent 15, baseline 5.
 /// If a faithful variant produced a different cell size, this change would
 /// stop and ask the user: the cell size sets the panel width.
@@ -251,7 +251,7 @@ fn the_lekton_hinted_vertical_metrics_match_pango() {
     }
 }
 
-/// Gate (row 4.6): Lekton Nerd Font 14 — the font whose ascent sits on
+/// Gate: Lekton Nerd Font 14 — the font whose ascent sits on
 /// the pixel boundary and exposed the raw `ceil` — gives the same cell
 /// the old Pango path measures: 9 by 19, ascent 14, baseline 5. Skipped
 /// only where the font is not installed; a face-lookup error fails.

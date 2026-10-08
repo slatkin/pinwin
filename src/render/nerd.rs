@@ -1,10 +1,10 @@
-//! The Nerd Font glyph constraints over swash geometry (row 4.5): the port
+//! The Nerd Font glyph constraints over swash geometry: the port
 //! of `NerdGlyph`, `nerd_scale_factors` and `nerd_constrain` in
 //! `super::text` (which ported ghostty's `Glyph.RenderOptions.Constraint`,
 //! `nerd_constrain` in `src/render.c`, design D5 there). The arithmetic and
 //! the test expectations carry over unchanged; what changes is the frame
-//! the numbers live in and the output: the old path scaled an already
-//! rasterized layout through cairo, this module produces a
+//! the numbers live in and the output: instead of scaling an already
+//! rasterized layout, this module produces a
 //! [`PlacementTransform`](crate::render::glyph::PlacementTransform) swash
 //! applies to the outline before rasterizing (see
 //! [`crate::render::nerd::placement`]).

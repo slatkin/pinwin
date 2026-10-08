@@ -55,13 +55,13 @@ impl FontBook {
     }
 
     /// Resolve the four style faces for `config`'s family. The config's size
-    /// travels with the [`FontConfig`] to rows 4.5/4.6, which rasterize and
-    /// measure at it.
+    /// travels with the [`FontConfig`] to the shaper and the cell metrics,
+    /// which rasterize and measure at it.
     ///
     /// The regular face is fontconfig's best match for the family — the
     /// family's default face, whatever weight it actually ships. The other
     /// three styles must really match the requested weight and slant and are
-    /// reported missing otherwise, so row 4.5 knows when to synthesize.
+    /// reported missing otherwise, so a missing style can be synthesized.
     pub fn family_faces(&self, config: &FontConfig) -> Result<FamilyFaces, FontError> {
         let family = self.accept_family(config.effective_family())?;
 
@@ -172,7 +172,7 @@ impl FontBook {
     }
 
     /// Resolve one of the three optional styles, or `None` when the family's
-    /// best match is not really that style (row 4.5 synthesizes it).
+    /// best match is not really that style (a missing style is synthesized).
     fn optional_style(&self, family: &str, style: Style) -> Result<Option<Face>, FontError> {
         let matched = self.best_match(family, style)?;
         if !style_matches(style, &matched) {

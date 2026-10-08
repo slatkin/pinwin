@@ -3,9 +3,9 @@
 //! add-animated-width design D2, D4-D6 it cites is archived under
 //! `openspec/changes/archive/`). The panel thread's driver — frame
 //! callbacks, a calloop watchdog, the running-tween state and the frame log
-//! — lives in `src/panel/wayland_side/tween.rs` (row 6.1): the library reads
-//! no desktop animation setting — the host's duration is the only control.
-//! The GTK tick callback and watchdog went with the GTK path.
+//! — lives in `src/panel/wayland_side/tween.rs`
+//! (`replace-gtk-with-wayland` D7): the library reads no desktop animation
+//! setting — the host's duration is the only control.
 
 /// Ease-out cubic: close to niri's critically damped window-resize spring
 /// (`glue_anim.c`).

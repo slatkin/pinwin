@@ -116,7 +116,7 @@ impl MouseButton {
     }
 }
 
-/// The unit a scroll delta is reported in (`GdkScrollUnit`): a wheel reports
+/// The unit a scroll delta is reported in: a wheel reports
 /// whole notches, a touchpad or high-resolution wheel reports surface units.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ScrollUnit {
@@ -135,8 +135,8 @@ impl Modifiers {
     pub const ALT: Modifiers = Modifiers(crate::ghostty_sys::input::GHOSTTY_MODS_ALT);
     pub const SUPER: Modifiers = Modifiers(crate::ghostty_sys::input::GHOSTTY_MODS_SUPER);
     pub const CAPS_LOCK: Modifiers = Modifiers(crate::ghostty_sys::input::GHOSTTY_MODS_CAPS_LOCK);
-    /// The seat path (replace-gtk-with-wayland row 5.1) reports num lock;
-    /// the GDK path has no num-lock mask and never sets this bit.
+    /// Only the seat's modifier report sets this bit
+    /// (`replace-gtk-with-wayland` D8).
     pub const NUM_LOCK: Modifiers = Modifiers(crate::ghostty_sys::input::GHOSTTY_MODS_NUM_LOCK);
 
     /// The raw modifier bits for the FFI call.
@@ -155,8 +155,8 @@ impl std::ops::BitOr for Modifiers {
 }
 
 /// One key event as the seat layer observed it. `unshifted_codepoint` and
-/// `keyval_unicode` are the two GDK lookups the encoder needs; both are 0 when
-/// the layout has no answer.
+/// `keyval_unicode` are the two layout lookups the encoder needs; both are 0
+/// when the layout has no answer.
 #[derive(Clone, Copy, Debug)]
 pub struct KeyInput {
     pub action: KeyAction,
@@ -442,7 +442,7 @@ impl Terminal {
     }
 }
 
-/// The physical key for a key event, following Ghostty's GTK apprt: the
+/// The physical key for a key event, following Ghostty's apprt keymap: the
 /// keycode names the key, writing-system keys are remapped from the keyval (a
 /// layout or a synthetic keymap can put any character on one keycode), and
 /// modifier keyvals never encode.

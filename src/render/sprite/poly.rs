@@ -1,26 +1,22 @@
-//! The polygon sprites of the canvas painter (row 4.3): the four corner
+//! The polygon sprites of the canvas painter: the four corner
 //! triangles (U+25E2–U+25E5) and the four powerline separators
-//! (U+E0B0–U+E0B3), with the triangle geometry the GTK painters used
-//! (`sprite_shape`) — Ghostty's full-cell corner
+//! (U+E0B0–U+E0B3), with Ghostty's full-cell corner
 //! triangles and the half-height powerline triangle, a wide glyph's head
 //! spanning both of its columns.
 //!
-//! Every vertex lands where the GTK path puts it: `sprite_shape` snaps
-//! each logical vertex coordinate with `OutputScale::snap_edge`, and
-//! cairo's device scale places the snapped vertex at `round(v · scale)`
+//! Every vertex lands on the device lattice: each
+//! logical vertex coordinate snaps with `OutputScale::snap_edge`, and the
+//! snapped vertex sits at `round(v · scale)`
 //! device pixels — the value [`crate::render::geom::device_px`] produces
-//! here, so both
-//! painters draw the same triangle on the device lattice.
+//! here.
 //!
 //! The two hollow separators (U+E0B1 and U+E0B3) are design decision 5's
-//! "one line sprite" (`replace-gtk-with-wayland` D5): the only sprite the
-//! GTK path strokes instead of filling — `draw_sprite`'s
-//! `StrokeTriangle`, stroked as ONE closed triangle at line width 2.0 in
-//! cairo's logical user space, so cairo's MITER joins fill the corners:
+//! "one line sprite" (`replace-gtk-with-wayland` D5): the only sprite
+//! stroked instead of filled, stroked as ONE closed triangle at line
+//! width 2.0 in logical user space, so the MITER joins fill the corners:
 //! the apex tip pokes one miter length into the neighbouring cell and the
-//! sharp 45-degree base corners keep their miter spikes. There is no other
-//! line shape on the GTK path to port. A cairo stroke width is a
-//! user-space length, so the device width is 2 logical pixels times the
+//! sharp 45-degree base corners keep their miter spikes. A stroke width is
+//! a user-space length, so the device width is 2 logical pixels times the
 //! output scale, and this pass carries that device width.
 //!
 //! GTK-free like the rest of the painter (`replace-gtk-with-wayland` D10).
@@ -36,8 +32,8 @@ pub(super) fn primitive(cp: u32, metrics: &PainterMetrics, cell: &Cell) -> Optio
     let points = points(cp, metrics, cell)?;
     Some(match cp {
         // The hollow separators stroke their closed outline: one closed
-        // triangle at the GTK path's 2 logical pixels of line width, whose
-        // miter joins fill the corners the way cairo's do.
+        // triangle at 2 logical pixels of line width, whose
+        // miter joins fill the corners.
         0xE0B1 | 0xE0B3 => Primitive::StrokePolygon(points, 2.0 * metrics.scale()),
         _ => Primitive::FillPolygon(points),
     })
@@ -48,8 +44,8 @@ pub(super) fn primitive(cp: u32, metrics: &PainterMetrics, cell: &Cell) -> Optio
 /// eight polygon code points. Pure geometry, no drawing.
 fn points(cp: u32, metrics: &PainterMetrics, cell: &Cell) -> Option<Vec<(f64, f64)>> {
     let scale = metrics.scale();
-    // The GTK path snaps the logical vertex with `snap_edge` and cairo's
-    // device scale places it: `round(v · scale)` device pixels, up to
+    // Each logical vertex snaps with `snap_edge` and sits at
+    // `round(v · scale)` device pixels, up to
     // floating-point dust that `device_px` rounds off (D5's cast seam).
     let device = |v: f64| f64::from(device_px(v * scale));
     let cw = metrics.cell_w();
@@ -107,7 +103,7 @@ mod tests {
     }
 
     /// The logical vertices `sprite_shape` builds for `cp` in an 8×16 cell
-    /// at `(cx, cy)` — the GTK point tables, copied here so the canvas
+    /// at `(cx, cy)` — the reference point tables, copied here so the canvas
     /// geometry is checked against them rather than against itself.
     fn gtk_logical_points(cp: u32, cx: i32, cy: i32, wide: bool) -> [(f64, f64); 3] {
         let x = f64::from(cx) * 8.0;
@@ -123,16 +119,15 @@ mod tests {
         }
     }
 
-    /// A logical vertex's device coordinate: the GTK path snaps it with
-    /// `snap_edge` and cairo's device scale places it, which is
-    /// `round(v · scale)` device pixels.
+    /// A logical vertex's device coordinate: snapped with
+    /// `snap_edge` and placed at `round(v · scale)` device pixels.
     fn device(v: f64, scale: f64) -> f64 {
         f64::from(device_px(v * scale))
     }
 
     /// At every scale the painter tests, the eight code points' vertices
-    /// equal the GTK snapped vertices, at several cell positions and for
-    /// wide heads too.
+    /// equal the hand-computed snapped vertices, at several cell positions
+    /// and for wide heads too.
     #[test]
     fn the_vertices_equal_the_gtk_snapped_vertices() {
         for scale in [1.0, 1.25, 1.5, 1.8] {

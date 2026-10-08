@@ -1,19 +1,18 @@
-//! The decoration layer of the grid painter (row 4.3): the underline and
+//! The decoration layer of the grid painter: the underline and
 //! strikethrough bands a cell's style flags ask for, drawn in the cell's
 //! foreground colour — or the theme foreground when the cell has none —
-//! with the same rule the GTK painters' band rectangles used:
-//! a one-logical-pixel band across the cell's width, the underline hanging
-//! from the font ascent plus one pixel, the strikethrough centred on the
-//! cell's mid-line.
+//! as a one-logical-pixel band across the cell's width, the underline
+//! hanging from the font ascent plus one pixel, the strikethrough centred
+//! on the cell's mid-line.
 //!
-//! The cells skipped are the ones the GTK cell pass skips: a wide glyph's
+//! A wide glyph's
 //! spacer tail is never drawn, and a cell with no glyph or the INVISIBLE
 //! flag carries no decorations either. A wide glyph's band therefore spans
-//! its head cell's width only, as on the GTK path.
+//! its head cell's width only.
 //!
 //! The frame's underline flag is a boolean — libghostty's underline style
 //! enum (single, double, curly, dotted, dashed) is collapsed to it in the
-//! frame protocol — so the band is the single style the GTK path drew. A
+//! frame protocol — so the band is the single style. A
 //! style switch plugs in where [`paint`] picks the band geometry, once the
 //! frame protocol carries the style.
 //!
@@ -21,8 +20,8 @@
 //! every grid layer.
 //!
 //! GTK-free (`replace-gtk-with-wayland` D10); private to the painter, whose
-//! frame pass calls the bands after the backgrounds and before the text and
-//! sprite passes later rows add.
+//! frame pass calls the bands after the backgrounds and before the text
+//! and sprite passes.
 
 use super::canvas::{Canvas, CanvasColor};
 use super::geom::{FrameInput, PainterMetrics};

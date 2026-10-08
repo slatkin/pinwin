@@ -1,10 +1,9 @@
-//! The shaper (row 4.5, design D6): one cell's grapheme cluster, shaped
+//! The shaper (design D6): one cell's grapheme cluster, shaped
 //! with swash into glyph ids and pen positions, with the face chosen from
 //! the family's four style faces and the per-code-point fallback, and the
 //! whole result cached.
 //!
-//! One cluster is drawn with one face. The old Pango path itemized each
-//! cell's text into runs and could split a cell across faces; a cell holds
+//! One cluster is drawn with one face: a cell holds
 //! one grapheme cluster, whose code points form one glyph sequence — a base
 //! and its marks, an emoji sequence, a ligature — and a cluster that mixed
 //! faces would position its parts against each other's metrics for no
@@ -13,7 +12,7 @@
 //! the fallback face for the first uncovered code point — taken only when
 //! it covers the whole cluster, so a fallback for an uncovered mark never
 //! trades a drawn base for a notdef box — else the primary face whose
-//! notdef box draws, the same box Pango's missing-glyph path drew. A mark
+//! notdef box draws, matching Pango's missing-glyph box. A mark
 //! needs a glyph of its own like any other code point: the base it attaches
 //! to only positions it, so an uncovered combining or enclosing mark (the
 //! keycap U+20E3, an accent in a face without it) drives the fallback the

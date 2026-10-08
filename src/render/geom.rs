@@ -12,12 +12,12 @@
 //! keeps the cast lints quiet without a lint suppression. An `f32` reaches
 //! the canvas' fractional primitives through `f32::from` of a
 //! [`crate::render::geom::device_px`] result, or through this module when a
-//! later painter row
+//! painter
 //! needs fractional device coordinates.
 //!
 //! GTK-free like the snap rules (`replace-gtk-with-wayland` D10): the
-//! tests run without a display. The module is `pub` because its only
-//! consumer, the grid painter, arrives in rows 4.3 to 4.7 (`pub(crate)`
+//! tests run without a display. The module is `pub`; its only consumer is
+//! the grid painter (`pub(crate)`
 //! entries with no caller are dead code under `-D warnings`, and no lint
 //! suppression is permitted).
 
@@ -63,7 +63,7 @@ pub fn device_f32(value: f64) -> f32 {
 }
 
 /// Convert one logical value to the integer form the sprite geometry
-/// computes on — the logical half of the cast seam (D5). The GTK path's
+/// computes on — the logical half of the cast seam (D5). The
 /// cell pitch is already an integer (`CellMetrics::cell_w` is `i32`); the
 /// painter carries it as `f64`, and the braille dot grid needs that integer
 /// back. Rounds like [`crate::render::geom::device_px`] does, for the same

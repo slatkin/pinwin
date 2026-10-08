@@ -1,7 +1,7 @@
 //! The startup arguments one panel runs with (port-to-rust D6, D7): the
-//! plain data a start carries across threads, split from the former GTK
-//! side's lifecycle glue so the host-facing type does not depend on the
-//! internals that consume it.
+//! plain data a start carries across threads, split from the panel-thread
+//! glue that consumes it so the host-facing type does not depend on those
+//! internals.
 
 use std::os::fd::RawFd;
 

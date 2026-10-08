@@ -11,9 +11,9 @@
 //! [`Poisoned`] flag, so a single panic stops that panel's glue code instead
 //! of killing the host.
 //!
-//! The helper is deliberately `PinwinError`-agnostic: row 4.1's `Panel` maps
-//! the `Err` case onto its own `Internal` error; nothing here needs to know
-//! about it.
+//! The helper is deliberately `PinwinError`-agnostic: the library's
+//! `Panel` maps the `Err` case onto its own `Internal` error (port-to-rust
+//! D5); nothing here needs to know about it.
 
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};

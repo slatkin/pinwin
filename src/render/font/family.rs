@@ -40,8 +40,8 @@ impl Style {
 }
 
 /// The four style faces of the terminal's family. A style the family does not
-/// ship is `None`; row 4.5 synthesizes those glyphs (embolden / skew), as
-/// Pango does today.
+/// ship is `None`; those glyphs are synthesized (embolden / skew), as
+/// Pango does.
 #[derive(Clone, Debug)]
 pub struct FamilyFaces {
     /// The family the faces were resolved from, after the fallback rules:
@@ -150,8 +150,8 @@ pub(crate) fn family_name_matches(requested: &str, matched: &str) -> bool {
 
 /// Whether fontconfig's match really realises the requested style. The match
 /// always succeeds, so a family without the style comes back with the closest
-/// face instead (weight or slant off) — that is the "missing" row 4.5
-/// synthesizes. Bold accepts the weights from demibold (180) through black
+/// face instead (weight or slant off) — that is the "missing" a
+/// synthesis step fills. Bold accepts the weights from demibold (180) through black
 /// (210), so a family whose boldest face is extrabold or black still gets a
 /// real bold face; italic accepts oblique, the slant fontconfig reports for
 /// slanted roman faces, so an oblique-only family is not synthesized on top

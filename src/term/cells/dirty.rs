@@ -1,4 +1,4 @@
-//! The render state's dirty data (row 4.8, `replace-gtk-with-wayland` D5):
+//! The render state's dirty data (`replace-gtk-with-wayland` D5):
 //! what [`crate::render::frame_gate`] reads to decide what a frame must
 //! redraw. The pinned libghostty-vt tracks dirtiness on two independent
 //! layers — a global state (`GHOSTTY_RENDER_STATE_DIRTY_FALSE`, `PARTIAL`,
@@ -71,7 +71,7 @@ impl FrameDirty {
 
 impl Terminal {
     /// The global dirty state the render state reported when this frame
-    /// began (row 4.8): `Clean` frames draw and commit nothing, `Partial`
+    /// began: `Clean` frames draw and commit nothing, `Partial`
     /// frames redraw the dirty rows, `Full` frames redraw everything.
     /// `Clean` also when no frame is open — the painter only asks after a
     /// successful [`frame_begin`](Terminal::frame_begin).
@@ -85,7 +85,7 @@ impl Terminal {
     }
 
     /// The viewport rows whose dirty flag the render state reported when
-    /// this frame began, in walk order (row 4.8). The flag is conservative:
+    /// this frame began, in walk order. The flag is conservative:
     /// a row may be listed without its content changing, so redrawing a
     /// listed row is always correct. Empty unless the frame is open.
     #[must_use]
@@ -118,7 +118,7 @@ impl Terminal {
 }
 
 /// Whether the frame walk visits the viewport row `y` under the partial
-/// repaint's row filter (row 4.8). No filter visits everything.
+/// repaint's row filter. No filter visits everything.
 pub(super) fn row_visible(frame: &FrameState, y: i32) -> bool {
     frame
         .row_filter
@@ -126,7 +126,7 @@ pub(super) fn row_visible(frame: &FrameState, y: i32) -> bool {
         .is_none_or(|rows| rows.contains(&y))
 }
 
-/// Capture the render state's dirty data for this frame (row 4.8): the
+/// Capture the render state's dirty data for this frame: the
 /// global state and the per-row dirty flags, walked off the row iterator.
 /// `update` only updates the dirty state — it never unsets it — so what is
 /// captured here is everything that changed since the last
@@ -204,8 +204,7 @@ pub(super) fn capture_dirty(
     };
 }
 
-/// Capture whether the render state carries any kitty placement at all
-/// (row 4.8). The walk stops at the first placement with an image id; the
+/// Capture whether the render state carries any kitty placement at all. The walk stops at the first placement with an image id; the
 /// image pass re-fetches the placement iterator through `begin_image_pass`,
 /// which resets it, so leaving it advanced here is harmless. The peek runs
 /// before the cell pass, so a virtual placement's placeholder origins are

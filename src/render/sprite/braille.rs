@@ -1,13 +1,11 @@
-//! The braille sprites of the canvas painter (row 4.3): U+2800–U+28FF drawn
-//! as a 2×4 grid of unantialiased square dots, with the dot geometry the
-//! GTK painters' `braille_geometry` used —
-//! leftover pixels go to spacing and margins before the dots grow, so the
+//! The braille sprites of the canvas painter: U+2800–U+28FF drawn
+//! as a 2×4 grid of unantialiased square dots — leftover pixels go to
+//! spacing and margins before the dots grow, so the
 //! pattern fills the cell like Ghostty's.
 //!
-//! The geometry runs on the cell's integer logical pitch (the GTK path's
-//! `CellMetrics` pitch is already an integer) and each dot snaps to the
-//! device pixel grid, so a lit dot lands on the same device pixels on both
-//! paths.
+//! The geometry runs on the cell's integer logical pitch and each dot
+//! snaps to the device pixel grid, so a lit dot lands on the same device
+//! pixels every draw.
 //!
 //! GTK-free like the rest of the painter (`replace-gtk-with-wayland` D10).
 
@@ -23,9 +21,7 @@ const DOT_ROW: [usize; 8] = [0, 1, 2, 0, 1, 2, 3, 3];
 /// The braille dot geometry for one cell: the dot size and the left/top
 /// offset of each of the 2 dot columns and 4 dot rows, in logical pixels.
 /// Leftover pixels go to spacing and margins before the dots grow, so the
-/// pattern fills the cell like Ghostty's. Ported from the GTK painters'
-/// `sprites` module, which kept its own copy; tests pin both to the same
-/// numbers.
+/// pattern fills the cell like Ghostty's.
 fn geometry(cell_w: i32, cell_h: i32) -> (i32, [i32; 2], [i32; 4]) {
     let mut dot = (cell_w / 4).min(cell_h / 8);
     let mut x_spacing = cell_w / 4;
@@ -82,7 +78,7 @@ fn geometry(cell_w: i32, cell_h: i32) -> (i32, [i32; 2], [i32; 4]) {
 /// per lit dot, or `None` when `cp` is outside the braille range. Pure
 /// geometry, no drawing; an all-blank pattern (U+2800) lights no dots and
 /// still is a sprite — it draws nothing and keeps the text pass off the
-/// cell, exactly as the GTK sprite does.
+/// cell.
 pub(super) fn rects(cp: u32, metrics: &PainterMetrics, cell: &Cell) -> Option<Vec<DeviceRect>> {
     if !(0x2800..=0x28FF).contains(&cp) {
         return None;
@@ -122,9 +118,8 @@ mod tests {
         }
     }
 
-    /// The dot geometry pins the GTK path's numbers for the 8×16 pitch:
-    /// 2 px dots on the margins-and-spacing grid, so both painters light
-    /// the same pixels.
+    /// The dot geometry pins the 8×16 pitch numbers:
+    /// 2 px dots on the margins-and-spacing grid.
     #[test]
     fn the_dot_geometry_matches_the_gtk_path() {
         assert_eq!(geometry(8, 16), (2, [1, 5], [1, 5, 9, 13]));

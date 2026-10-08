@@ -15,11 +15,10 @@
 //! lives in the `calloop` submodule, whose readiness callback runs the same
 //! `drain` under the shared [`crate::guard`] helper (D5).
 //!
-//! The GTK-widget-dependent piece of `src/pty.c` — applying the drawing
-//! area's allocation to the grid before resizing — has no counterpart
-//! here: the panel thread's grid sizing (`panel::wayland_side::sizing`)
-//! decides the grid and applies the winsize through the caller-supplied
-//! callback that drives `Pty::resize`.
+//! The panel thread owns the grid sizing: the layout's column count and
+//! the latest configure's height decide the grid and the pty winsize
+//! (`replace-gtk-with-wayland` D3), applied through the caller-supplied
+//! callback that drives `Pty::resize` (`panel::wayland_side::sizing`).
 //!
 //! The read source for the panel thread lives beside it in the `calloop`
 //! submodule (`replace-gtk-with-wayland` D2); the thread attaches it in

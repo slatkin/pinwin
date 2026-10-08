@@ -20,8 +20,8 @@
 //! fallback lookup (the `fontconfig` wrapper exposes no charset accessor);
 //! it only reads fontconfig's own data.
 //!
-//! The fallback lookup must not run per frame: row 4.5 (the glyph unit)
-//! resolves a cell's code points through
+//! The fallback lookup must not run per frame: the text pass resolves a
+//! cell's code points through
 //! [`crate::render::font::FontBook::fallback_face`], which
 //! caches the answer — found or not found — per code point, so a repeated
 //! code point costs a map hit and a new one at most one fontconfig sort

@@ -1,8 +1,7 @@
-//! The `png`-crate PNG decoder for the kitty images (row 4.7): the
+//! The `png`-crate PNG decoder for the kitty images: the
 //! [`crate::term::PngDecoder`] implementation the panel thread hands to the
 //! terminal. Straight (non-premultiplied) RGBA8 out, exactly what
-//! [`crate::render::canvas::image_pixmap`] takes, as the gdk-pixbuf
-//! decoder it replaced did.
+//! [`crate::render::canvas::image_pixmap`] takes.
 //!
 //! The crate's transformations do the pixel-format work
 //! (`EXPAND` palettes and low bit depths to bytes, `STRIP_16` 16-bit

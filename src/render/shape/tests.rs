@@ -1,7 +1,7 @@
 //! Display-free tests for the shaper (replace-gtk-with-wayland D10): real
 //! system fonts, real shaping, no display. The font-dependent tests skip
 //! with a printed message only when the family is not installed; a broken
-//! `FontBook` or a failed lookup is an `expect`, so a row 4.4 or 4.5
+//! `FontBook` or a failed lookup is an `expect`, so a shaping
 //! regression cannot hide behind "not installed".
 
 use std::sync::Arc;

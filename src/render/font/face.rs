@@ -12,7 +12,7 @@ use swash::FontRef;
 use super::error::FontError;
 
 /// One loaded face: the shared file bytes plus the face index within the
-/// file. Cloning is cheap (`Arc`), so the glyph caches of row 4.5 can hold a
+/// file. Cloning is cheap (`Arc`), so the glyph cache can hold a
 /// face per cache entry without re-reading the file.
 #[derive(Clone, Debug)]
 pub struct Face {

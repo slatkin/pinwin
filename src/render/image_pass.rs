@@ -1,14 +1,13 @@
-//! The kitty image pass of the grid painter (row 4.7, `replace-gtk-with-
+//! The kitty image pass of the grid painter (`replace-gtk-with-
 //! wayland` D5): the open frame's kitty placements decoded, scaled and
 //! blitted into the canvas, in [`crate::render::painter::paint_frame`]'s
-//! layer order after the cursor and before the focus accent — where the
-//! GTK path drew the images, so images draw above the cursor there too.
+//! layer order after the cursor and before the focus accent — so images
+//! draw above the cursor.
 //!
 //! The placements arrive through [`crate::term::Terminal::image_next`] in the
-//! iterator's order, and `z` is ignored exactly as the old path ignores
-//! it: `ImageCache::draw` drew whatever order the iterator handed over,
-//! and so does this pass (a comment, not an oversight — ghostty emits
-//! placements in its own order and the GTK panel has always honoured it).
+//! iterator's order, and `z` is ignored: the pass draws whatever order the
+//! iterator hands over (a comment, not an oversight — ghostty emits
+//! placements in its own order and the panel honours it).
 //!
 //! Each placement's destination rectangle is the terminal's logical
 //! rectangle snapped to the device grid through
@@ -35,8 +34,8 @@
 //! [`crate::render::canvas::image_pixmap`] (the one-time red/blue swap and
 //! premultiplication),
 //! scaled, and dropped; the cache never holds it. Entries no placement
-//! touched this frame are evicted, like the old `ImageCache::evict`, and
-//! an image id that returns with a new generation drops its stale
+//! touched this frame are evicted, and an image id that returns with a new
+//! generation drops its stale
 //! entries. The cache is bounded by an entry cap and a byte budget with
 //! clear-on-overflow, like [`crate::render::glyph::GlyphCache`]; handed
 //!-out pixmaps are `Arc`s and survive a clear.

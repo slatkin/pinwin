@@ -114,7 +114,7 @@ fn the_constrained_glyph_sits_alike_in_every_column_at_1_5() {
 
 /// Text sizes stay logical: the cell size from `cell_metrics` and the
 /// `PainterMetrics` logical cell at 1.8 equal their values at 1. The reply
-/// to `CSI 16 t` is pinned by the row 4.6 cell-metrics test; this pins the
+/// to `CSI 16 t` is pinned by the cell-metrics test; this pins the
 /// painter's inputs.
 #[test]
 fn text_sizes_stay_logical() {

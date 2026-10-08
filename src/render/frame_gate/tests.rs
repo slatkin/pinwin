@@ -1,4 +1,4 @@
-//! The frame gate's tests (row 4.8): the escalation cases, the skip, and
+//! The frame gate's tests: the escalation cases, the skip, and
 //! the pixel parity between the always-full and the gated path. GTK-free
 //! (`replace-gtk-with-wayland` D10): everything runs without a display.
 

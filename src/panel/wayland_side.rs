@@ -16,22 +16,22 @@
 //! command can only reach the thread that started for it, and the
 //! single-instance guard keeps a second panel out.
 //!
-//! The bound session — the sctk handlers, the two layer surfaces of row 3.1
-//! and the grid sizing of row 3.3 — lives in the submodules beside this
+//! The bound session — the sctk handlers, the two layer surfaces and the
+//! grid sizing (D3) — lives in the submodules beside this
 //! lifecycle plumbing: the `state` submodule holds the dispatch state,
 //! the `surfaces` submodule the
 //! surface geometry, [`sizing`] the pure size decisions, the `apply`
 //! submodule the layout
-//! apply (row 3.5), [`commands`] the command-channel handling,
+//! apply (D3), [`commands`] the command-channel handling,
 //! the `watchdog` submodule the startup watchdog, [`tween`] the width tween's driver
-//! (row 6.1), [`crop`] the tween's crop plan and wide buffer (row 6.2),
-//! the `tween_draw` submodule the tween's holder and frame glue (row 6.2) and
+//! (D7), [`crop`] the tween's crop plan and wide buffer (D7),
+//! the `tween_draw` submodule the tween's holder and frame glue (D7) and
 //! [`renderer`] the thread's font setup and renderer — the one owner of
 //! the draw passes, metrics, theme and focus state that wires the frames
 //! and the tween's wide draw. The private `frame_log` submodule is the
 //! tween's frame log and
-//! its presentation-time source (row 6.3), and [`present`] the frames'
-//! present step (dispatch D4c) — the pure planner, the frame input and the
+//! its presentation-time source (D7), and [`present`] the frames'
+//! present step (D5, D7) — the pure planner, the frame input and the
 //! executor the configure path and the loop's repaint hook run.
 //!
 //! Panics never cross back into calloop or the compositor (D5): the whole
@@ -80,8 +80,8 @@ pub(crate) mod watchdog;
 
 use state::{BindFailure, PanelState};
 
-/// A command the host posts to a running panel thread (D2), the wayland twin
-/// of the GTK side's dispatched glue: an apply, a toggle, a show or a
+/// A command the host posts to a running panel thread (D2): an apply, a
+/// toggle, a show or a
 /// teardown, each carrying its own bounded reply channel from
 /// [`super::handshake`].
 #[derive(Debug)]
@@ -96,7 +96,7 @@ pub(crate) enum PanelCommand {
         /// The bounded reply the host waits on.
         reply: mpsc::SyncSender<PublishOutcome>,
     },
-    /// Toggle the panel (row 9.1, replace-gtk-with-wayland D4): hide a
+    /// Toggle the panel (`replace-gtk-with-wayland` D4): hide a
     /// shown panel, show a hidden one, answered with `()` — the reply is
     /// the hide's null-buffer commit or the show's commit without a buffer;
     /// the rest of a show follows the configure.
@@ -132,9 +132,9 @@ pub struct StartCommand {
     /// The handle state the dead mapping writes to.
     pub(crate) inner: Arc<Inner>,
     /// The startup payload: the host-owned pty fd, the startup layout the
-    /// surfaces apply (row 3.1) and the keyboard mode they map with (row
-    /// 3.4). The thread attaches the fd to its pty and its read source
-    /// (row 8.1); the host keeps the child's process lifetime.
+    /// surfaces apply and the keyboard mode they map with (D3). The thread
+    /// attaches the fd to its pty and its calloop read source (D2); the
+    /// host keeps the child's process lifetime.
     pub(crate) startup: Startup,
 }
 
@@ -169,7 +169,7 @@ impl PanelThread {
     /// `NotRunning` on a dead panel, `InvalidLayout` on a rejected layout,
     /// `Internal` on a caught panic, a wedged thread or a thread that ended
     /// between the live check and the post (the closed reply reads the same
-    /// way the wedged GTK side does).
+    /// way the wedged thread does).
     pub fn apply(&self, layout: Layout, duration_ms: u32) -> Result<(), PinwinError> {
         match guard(&self.inner.poisoned, || {
             self.post_apply(layout, duration_ms)
@@ -195,7 +195,7 @@ impl PanelThread {
         wait_for_apply(&reply_rx, APPLY_WAIT)
     }
 
-    /// Post the toggle (row 9.1, replace-gtk-with-wayland D4) and wait for
+    /// Post the toggle (`replace-gtk-with-wayland` D4) and wait for
     /// its bounded reply: the same order as the apply — the poisoned check
     /// first (D5: a panic reports `Internal`, never `NotRunning`), then the
     /// ended check, then the bounded reply. The reply is the hide's
@@ -325,8 +325,8 @@ fn thread_main(display_name: Option<String>, start: StartCommand, commands: Chan
         );
     });
     // The panel is gone either way (D2): the handle stops posting, and a
-    // start handshake that never completed fails like the GTK side's
-    // loop-returned path — the panel never went live. Both are idempotent
+    // start handshake that never completed follows the loop-returned
+    // path — the panel never went live. Both are idempotent
     // on the paths that already did the same.
     inner.live.store(false, Ordering::Relaxed);
     report_thread_end(&poisoned, &handshake, &ended);
@@ -374,7 +374,7 @@ fn run_thread(
         handshake.report(StartOutcome::NoDisplay);
         return;
     };
-    // The thread measures its own cell (row 8.1): the font loads before the
+    // The thread measures its own cell: the font loads before the
     // surfaces are created, and its cell is what the sizing and the surfaces
     // use from the first configure (D3).
     let Ok(setup) = glue::font_start() else {
@@ -414,10 +414,10 @@ fn run_thread(
         renderer,
     });
 
-    // The calloop loop exists before the bind (row 8.1's seat wiring): the
+    // The calloop loop exists before the bind: the
     // keyboard's repeat source installs itself from `new_capability`, which
     // the loop's dispatch runs, and the toolkit's repeat needs the loop
-    // handle at creation time (row 5.2), so the bind will store it with the
+    // handle at creation time, so the bind will store it with the
     // session. A loop that cannot be created is the thread's environment
     // failing, not a missing display, so the internal path reports it (D5).
     // The panel is dead either way: the handle stops posting and a pending
@@ -428,15 +428,15 @@ fn run_thread(
         return;
     };
 
-    // The 'static handle is what the toolkit's repeat source stores (row
-    // 5.2); the loop itself is not tied to any shorter borrow.
+    // The 'static handle is what the toolkit's repeat source stores; the
+    // loop itself is not tied to any shorter borrow.
     let loop_handle: calloop::LoopHandle<'static, PanelState> = event_loop.handle();
 
     // The bind runs under the panel's shared latch: a panic in it latches
     // and reports `Internal` (D5), a missing required global reports
     // `NoDisplay` (D1). The bind owns the globals from here on — the
     // session keeps them for the cursor-shape bind the pointer capability
-    // makes (row 5.5).
+    // makes.
     match guard(poisoned, || {
         state.bind(globals, &queue.handle(), loop_handle)
     }) {
@@ -498,8 +498,7 @@ fn run_loop(
         commands::on_command_event(state, event);
     })?;
 
-    // The startup watchdog ([`watchdog`]), two timers where the GTK side's
-    // one repeating `timeout_add_local` folds both duties together: the
+    // The startup watchdog ([`watchdog`]), two timers: the
     // repeating 200 ms poll reports `Internal` only on a latched shared
     // flag (a panic in the startup path) and never fails a slow start,
     // because start resolution depends on compositor events after the bind
@@ -507,8 +506,7 @@ fn run_loop(
     // the one-shot hard deadline at the apply reply's wedge bound fails a
     // start that never completes — a compositor that never sends the panel
     // output's xdg-output logical size — with `NoDisplay`. Both fires tear
-    // the panel down the way the GTK side's watchdog closes the glue and
-    // quits the loop.
+    // the panel down and end the loop.
     handle.insert_source(
         Timer::from_duration(watchdog::START_WATCHDOG),
         |_, &mut (), state| watchdog::on_poll_tick(state),
@@ -518,20 +516,20 @@ fn run_loop(
         |_, &mut (), state| watchdog::on_deadline_tick(state),
     )?;
 
-    // The pty read source (row 8.1): the fd the thread's `Pty` holds, its
+    // The pty read source: the fd the thread's `Pty` holds, its
     // bytes fed into the shared terminal. The drain's tween budget reads
     // the tween driver's own flag, and a hangup or a teardown retires the
     // shared fd slot, so later writes are no-ops while the descriptor stays
     // open for the host (D7). A failed attach degrades to no read source —
     // the library never exits over an environment failure (port-to-rust
-    // D3), the same degradation the GTK path's `let _ = attach` has; the
+    // D3); the
     // writes and the winsize pushes keep working, only the reads are gone.
     let tween_flag = state.tween.tween_flag();
     let mut pty_source = state.render.as_ref().and_then(|render| {
         let terminal = Rc::clone(&render.terminal);
         let (fd, fd_slot, pty_poisoned) = pty.read_source();
         // `.ok()`: a failed attach degrades to no read source (port-to-rust
-        // D3), the GTK path's `let _ = attach` — the writes and the winsize
+        // D3) — the writes and the winsize
         // pushes keep working, only the reads are gone.
         attach_calloop(
             handle.clone(),
@@ -549,8 +547,8 @@ fn run_loop(
     loop {
         if state.done {
             // The teardown removed the surfaces; the pty read source goes
-            // with them (row 8.1, the GTK teardown's order: surfaces first,
-            // then the `Pty::detach` twin), retiring the fd slot. A source
+            // with them — the teardown removes the surfaces before it
+            // detaches the pty — retiring the fd slot. A source
             // that already removed itself on hangup leaves a stale request
             // here, which dropping is harmless.
             if let Some(source) = pty_source.take() {
@@ -568,13 +566,13 @@ fn run_loop(
             }
             return Err(error);
         }
-        // The repaint request the terminal's callbacks latched (row 8.1):
+        // The repaint request the terminal's callbacks latched:
         // the draw step reads and clears it here and draws a live frame —
         // or marks the running tween's wide cache stale — and a present
         // the pool refused latches the request again until the buffer
-        // releases arrive (dispatch D4c).
+        // releases arrive (D5, D7).
         state.service_repaint_request();
-        // The tween's watchdog (row 6.1, [`tween`]): the timer lives only
+        // The tween's watchdog ([`tween`]): the timer lives only
         // while a tween runs — armed here after each dispatch at the
         // driver's pending deadline, replaced when a retarget moves the
         // deadline, and dropped by its own fire once the tween is gone or

@@ -108,7 +108,7 @@ fn pushing_strip_at(layout: Layout, panel_px: i32) -> Option<i32> {
 
 /// [`reserve_gap`] over the held gap's plain parts, for a caller that holds
 /// the side and zone as separate values: the wayland tween's per-frame crop
-/// plan (replace-gtk-with-wayland row 6.2) reads them from the panel state,
+/// plan (`replace-gtk-with-wayland` D7) reads them from the panel state,
 /// and the decision itself stays here, stated once.
 pub fn reserve_gap_parts(
     held_side: Side,
@@ -159,7 +159,7 @@ pub(crate) fn staged_publish(
 /// target strip equals the held one — holds the gap still, while a pure
 /// pushing expand, whose strip is new, reflows the tiles alongside.
 /// `pub(crate)`: the wayland apply's staging half reads the same decision
-/// (replace-gtk-with-wayland row 6.2), so it stays stated once here.
+/// (`replace-gtk-with-wayland` D7), so it stays stated once here.
 pub(crate) fn gap_tween_decision(
     gap_rests_at: i32,
     animate: bool,

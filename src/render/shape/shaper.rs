@@ -39,7 +39,7 @@ struct ShapeKey {
     style: (bool, bool),
 }
 
-/// The shaper (row 4.5): shapes one cell's cluster into
+/// The shaper: shapes one cell's cluster into
 /// [`ShapedCluster`]s. Owns the [`FamilyFaces`] the cells draw with, the
 /// [`FontBook`] the per-code-point fallback resolves through, the swash
 /// [`ShapeContext`] (whose font caches make repeated shaping cheap, the
@@ -267,7 +267,7 @@ impl TextShaper {
         ppem: Ppem,
     ) -> Result<ShapedCluster, ShapeError> {
         let font = FontRef::from_index(bytes, face.index()).ok_or(ShapeError::UnparsableFace)?;
-        // The named-instance obligation from the row 4.4 review, honoured
+        // The named-instance rule, honoured
         // the same way the rasterizer honours it: the instance's normalized
         // coordinates go into the shaper, so shaping and rasterizing see
         // the same variable-font instance.

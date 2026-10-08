@@ -151,7 +151,8 @@ fn apply_on_a_dead_panel_is_not_running_without_blocking() {
 
 /// A toggle on a handle whose panel is no longer live reports
 /// `NotRunning` without blocking: the post is skipped, the reply path is
-/// not entered (the spec's dead-panel toggle scenario, row 9.1).
+/// not entered (the spec's dead-panel toggle scenario,
+/// `replace-gtk-with-wayland` D4).
 #[test]
 fn a_toggle_on_a_dead_panel_is_not_running_without_blocking() {
     let inner = Inner {
@@ -170,8 +171,8 @@ fn a_toggle_on_a_dead_panel_is_not_running_without_blocking() {
 }
 
 /// A show on a handle whose panel is no longer live reports
-/// `NotRunning` without blocking (the spec's dead-panel scenario,
-/// serve-instance-socket row 3.1): the post is skipped through the same
+/// `NotRunning` without blocking (the spec's dead-panel scenario): the
+/// post is skipped through the same
 /// shared path as the toggle's, so the reply path is not entered.
 #[test]
 fn a_show_on_a_dead_panel_is_not_running_without_blocking() {
@@ -190,9 +191,9 @@ fn a_show_on_a_dead_panel_is_not_running_without_blocking() {
     );
 }
 
-/// A live handle's toggle posts to the panel thread (row 9.1, D4): show
-/// and hide are not focus requests, so every keyboard mode posts — the
-/// mode short-circuit the focus request had went with it.
+/// A live handle's toggle posts to the panel thread
+/// (`replace-gtk-with-wayland` D4): show and hide are not focus requests,
+/// so every keyboard mode posts.
 #[test]
 fn a_live_toggle_posts_to_the_panel_thread() {
     let inner = Inner {
@@ -415,7 +416,7 @@ fn a_full_lifecycle_opens_applies_and_closes() {
 }
 
 /// A start that fails `InvalidFd` with a bound instance socket leaves no
-/// socket file (serve-instance-socket row 3.2; the spec's failed-start
+/// socket file (the spec's failed-start
 /// scenario): the owned socket drops with the failed start, and its drop
 /// removes the path, so the name is free again at once. Display-free: the
 /// fd check runs before any thread work (D7).
@@ -429,7 +430,7 @@ fn a_failed_start_with_a_bound_socket_leaves_no_socket_file() {
 }
 
 /// A full lifecycle with a bound instance socket in a real compositor
-/// session (serve-instance-socket row 3.3, D2): the started panel serves
+/// session (`serve-instance-socket` D2): the started panel serves
 /// `toggle` and `show` requests on the socket through the client call,
 /// the drop removes the socket file, and the drop returns within the
 /// teardown bound — the detached listener is never joined. Ignored
@@ -458,8 +459,8 @@ fn a_serving_panel_answers_requests_and_drops_without_waiting() {
     assert!(!path.exists(), "the socket file is gone");
 }
 
-/// The half-request variant of the drop contract (serve-instance-socket
-/// row 3.3, D2): a client connection with half a request line keeps the
+/// The half-request variant of the drop contract (`serve-instance-socket`
+/// D2): a client connection with half a request line keeps the
 /// detached listener blocked in its bounded read, and the drop still
 /// returns long before that read bound — a joining drop would wait out
 /// the listener's 500 ms read, so 250 ms discriminates. Ignored because

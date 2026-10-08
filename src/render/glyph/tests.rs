@@ -273,7 +273,7 @@ fn a_colour_emoji_rasterizes_in_colour() {
     assert_eq!(cache.hits(), 1);
 }
 
-/// The named-instance obligation from the row 4.4 review: a named-instance
+/// A named-instance
 /// Bold of a variable-only font draws heavier than the default instance of
 /// the same file, and the two are distinct cache keys. Skipped when
 /// fontconfig matches no variable face for the family.

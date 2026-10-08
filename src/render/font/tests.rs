@@ -113,7 +113,7 @@ fn the_four_style_faces_resolve_for_the_test_family() {
 fn style_matches_rejects_off_weight_and_slant_matches() {
     // The pure seam: fontconfig's best match for a style the family does
     // not ship comes back with the closest weight or slant, and that is
-    // "missing" (row 4.5 synthesizes).
+    // "missing" (synthesis fills it).
     let regular_only = MatchedFace {
         family: "Only Regular".to_owned(),
         file: "/fonts/only-regular.ttf".to_owned(),

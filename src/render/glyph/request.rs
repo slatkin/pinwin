@@ -64,8 +64,8 @@ impl Ppem {
 }
 
 /// Which styles to synthesize when the face does not really carry them
-/// (`FamilyFaces` reports a missing style as `None`, and row 4.5
-/// synthesizes those glyphs, as Pango does today). Both flags default to
+/// (`FamilyFaces` reports a missing style as `None`; the synthesis matches
+/// what Pango does). Both flags default to
 /// off, and a face that really has the style never asks for synthesis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Synthesis {

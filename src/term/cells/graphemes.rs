@@ -9,7 +9,8 @@
 //! one glyph, so pinwin joins them back together here (design D5 of
 //! `port-to-rust`).
 //!
-//! These are pure functions over [`Cell`]; no FFI or GTK types appear here.
+//! These are pure functions over [`Cell`]; no FFI or toolkit type appears
+//! here.
 
 use super::Cell;
 

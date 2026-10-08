@@ -1,4 +1,4 @@
-//! The dirty capture's tests (row 4.8): what the pinned render state
+//! The dirty capture's tests: what the pinned render state
 //! reports after real pty traffic, and the row filter's effect on the
 //! walk. GTK-free (`replace-gtk-with-wayland` D10).
 
@@ -48,7 +48,7 @@ fn walked(terminal: &mut Terminal) -> Vec<crate::term::cells::Cell> {
 
 /// The first frame after creation is a full redraw with every row dirty,
 /// and a frame drawn over an unchanged terminal is clean: nothing to
-/// redraw, nothing to commit (row 4.8's verify).
+/// redraw, nothing to commit.
 #[test]
 fn the_first_frame_is_full_and_an_unchanged_frame_is_clean() {
     let mut terminal = terminal();

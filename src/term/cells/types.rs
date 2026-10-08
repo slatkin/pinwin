@@ -1,6 +1,6 @@
 //! Plain data types for the frame protocol (port-to-rust D3), ported from
 //! `PinwinCell`, `PinwinCursor`, `PinwinImage` and the `PINWIN_*`/`WIDE_*`
-//! constants in `src/pinwin.h`. No GTK, GDK or cairo type appears here.
+//! constants in `src/pinwin.h`. No toolkit or cairo type appears here.
 
 use std::ptr;
 

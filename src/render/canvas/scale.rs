@@ -1,4 +1,4 @@
-//! The canvas' resampling primitive (row 4.7): one source rectangle of a
+//! The canvas' resampling primitive: one source rectangle of a
 //! premultiplied [`Pixmap`] scaled into a new [`Pixmap`] of an exact
 //! destination size, by area averaging ("pixel mixing") in premultiplied
 //! space.

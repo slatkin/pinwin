@@ -1,6 +1,6 @@
-//! The glyph module (replace-gtk-with-wayland row 4.5, design D6/D11):
+//! The glyph module (replace-gtk-with-wayland D6/D11):
 //! rasterizing one glyph id of one face at one device size with swash, and
-//! the cache over the results. The row's other units live beside it:
+//! the cache over the results. Beside it,
 //! `shape` shapes a cell's cluster
 //! into glyph ids and ports the nerd-font constraints to placement
 //! transforms, and `text_pass` places each origin on the device pixel
@@ -18,8 +18,7 @@
 //! the face lacks a bold or italic style the request says so, and the
 //! rasterizer emboldens or skews the outline with FreeType's own strengths
 //! (see `raster`), as Pango synthesized those styles through FreeType
-//! before the port. The named-instance obligation from the row 4.4 review
-//! is honoured here: a face whose file is variable-only carries its named
+//! before the port. A face whose file is variable-only carries its named
 //! instance in the identity, the instance's normalized coordinates go into
 //! the scaler, and the instance is part of the cache key — otherwise a
 //! family such as Cantarell would render its matched Bold as Regular.
