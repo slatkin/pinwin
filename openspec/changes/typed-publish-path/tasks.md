@@ -9,7 +9,7 @@
 
 - [x] 2.1 Make `reserve_gap` `pub(crate)` returning `HeldGap`, delete `reserve_gap_parts`, and update its `gap.rs` tests; verify `cargo test surfaces::gap` passes
 - [x] 2.2 Store a `HeldGap` in `StagedTween` and `TweenDraw` (including `retarget`) and pass it to `crop::frame_geometry`; update `apply.rs`, `crop.rs`, `tween_draw.rs` and their tests; verify `cargo test panel::wayland_side::{apply,crop,tween_draw,tween}` pass
-- [ ] 2.3 Remove the `gap_side`/`gap_zone` doc references and the `reserve_gap_parts` mentions in comments; verify `rg "reserve_gap_parts|gap_side|gap_zone" src` returns nothing
+- [x] 2.3 Remove the `gap_side`/`gap_zone` doc references and the `reserve_gap_parts` mentions in comments; verify `rg "reserve_gap_parts|gap_side|gap_zone" src` returns nothing
 
 ## 3. Move `PublishOutcome`
 
