@@ -81,19 +81,22 @@ fn pushing_strip(layout: Layout, cell_w: i32) -> Option<i32> {
 /// growing panel. The caller combines the flag with the tween being live, so
 /// a stopped tween falls back to the held strip, which a pushing publish has
 /// already staged at the target strip.
-pub(super) fn reserve_gap(
+pub(crate) fn reserve_gap(
     held: HeldGap,
     gap_tweening: bool,
     layout: Layout,
     panel_px: i32,
-) -> (Side, i32) {
+) -> HeldGap {
     if gap_tweening
         && layout.coverage() == Coverage::Push
         && let Some(current) = pushing_strip_at(layout, panel_px)
     {
-        return (layout.side(), current);
+        return HeldGap {
+            side: layout.side(),
+            zone: current,
+        };
     }
-    (held.side, held.zone)
+    held
 }
 
 /// The strip a layout reserves at an explicit panel width, `None` on the
@@ -116,7 +119,7 @@ pub fn reserve_gap_parts(
     layout: Layout,
     panel_px: i32,
 ) -> (Side, i32) {
-    reserve_gap(
+    let held = reserve_gap(
         HeldGap {
             side: held_side,
             zone: held_zone,
@@ -124,7 +127,8 @@ pub fn reserve_gap_parts(
         gap_tweening,
         layout,
         panel_px,
-    )
+    );
+    (held.side(), held.zone())
 }
 
 /// The decision half of a publish (overlay-expand D4), split out
@@ -193,12 +197,24 @@ mod tests {
         };
         // Covering, tween idle: the held strip, on the held side.
         let covering = layout(Side::Left, 120, 0, 0, 0, 12).covering();
-        assert_eq!(reserve_gap(held, false, covering, 1080), (Side::Left, 372));
+        assert_eq!(
+            reserve_gap(held, false, covering, 1080),
+            HeldGap {
+                side: Side::Left,
+                zone: 372
+            }
+        );
         // A pushing applied layout with no tween running also draws from the
         // held gap: the publish has already reset it to the layout's own strip,
         // so the two agree.
         let pushing = layout(Side::Left, 120, 0, 0, 0, 12);
-        assert_eq!(reserve_gap(held, false, pushing, 1080), (Side::Left, 372));
+        assert_eq!(
+            reserve_gap(held, false, pushing, 1080),
+            HeldGap {
+                side: Side::Left,
+                zone: 372
+            }
+        );
     }
 
     /// The one place the strip moves with the panel: a publish that flagged the
@@ -214,10 +230,22 @@ mod tests {
         // Pushing 40 -> 120 columns at a 9px cell, mid-tween at 700px of panel:
         // the gap shows the strip at the eased width, left 0 + 700 + right 12.
         let tweening = layout(Side::Left, 120, 0, 0, 0, 12);
-        assert_eq!(reserve_gap(held, true, tweening, 700), (Side::Left, 712));
+        assert_eq!(
+            reserve_gap(held, true, tweening, 700),
+            HeldGap {
+                side: Side::Left,
+                zone: 712
+            }
+        );
         // The gap follows the tweening layout's side.
         let tweening = layout(Side::Right, 120, 0, 0, 0, 12);
-        assert_eq!(reserve_gap(held, true, tweening, 700), (Side::Right, 712));
+        assert_eq!(
+            reserve_gap(held, true, tweening, 700),
+            HeldGap {
+                side: Side::Right,
+                zone: 712
+            }
+        );
     }
 
     /// A covering target never moves the gap, tween flag or not: the panel eases
@@ -231,7 +259,13 @@ mod tests {
             zone: 372,
         };
         let tweening = layout(Side::Left, 120, 0, 0, 0, 12).covering();
-        assert_eq!(reserve_gap(held, true, tweening, 700), (Side::Left, 372));
+        assert_eq!(
+            reserve_gap(held, true, tweening, 700),
+            HeldGap {
+                side: Side::Left,
+                zone: 372
+            }
+        );
     }
 
     /// The gap-tween decision (overlay-expand D3): an animated pushing target
