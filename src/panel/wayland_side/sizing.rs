@@ -345,16 +345,20 @@ mod tests {
 
     /// The rows floor at one complete row; a non-positive cell height
     /// derives nothing.
+    ///
+    /// A negative cell height is now rejected by `CellSize::new` itself
+    /// (typed publish path, port-to-rust D1), so the degenerate case is
+    /// asserted at the constructor: with it unconstructible, `rows_for_height`
+    /// can never see it.
     #[test]
     fn rows_floor_at_one_and_reject_a_degenerate_cell() {
         assert_eq!(rows_for_height(5, cell(9, 16)), Some(1));
         assert_eq!(rows_for_height(16, cell(9, 16)), Some(1));
         assert_eq!(rows_for_height(17, cell(9, 16)), Some(1));
         assert_eq!(rows_for_height(0, cell(9, 16)), Some(1));
-        assert_eq!(
-            rows_for_height(1080, cell(9, -16)),
-            None,
-            "a negative cell height derives nothing"
+        assert!(
+            CellSize::new(9, -16).is_none(),
+            "a negative cell height is rejected at construction"
         );
     }
 
