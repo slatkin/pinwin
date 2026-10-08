@@ -18,7 +18,7 @@
 
 ## 4. Comment rewrites: frame log, watchdog, commands, toggle
 
-- [ ] 4.1 Rewrite the module header and tick/stop-relay comments in `frame_log.rs` (log-format stability, not GTK history) and the GTK refs in `watchdog.rs`, `commands.rs`, and `toggle.rs`, and verify `cargo test panel::wayland_side` passes
+- [x] 4.1 Rewrite the module header and tick/stop-relay comments in `frame_log.rs` (log-format stability, not GTK history) and the GTK refs in `watchdog.rs`, `commands.rs`, and `toggle.rs`, and verify `cargo test panel::wayland_side` passes
 
 ## 5. Comment rewrites: seat and surfaces
 
