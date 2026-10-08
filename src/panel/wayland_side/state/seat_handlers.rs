@@ -34,35 +34,6 @@ use super::super::seat::SeatSide;
 use super::super::seat::cursor::CursorShape;
 use super::PanelState;
 
-/// What one capability event asks of the objects the session holds (row
-/// 8.1): create the object on an arriving capability nothing is held for,
-/// drop the held objects on a leaving one, and change nothing otherwise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CapabilityStep {
-    /// Create the capability's object.
-    Create,
-    /// Drop the held object(s) of the capability.
-    Drop,
-    /// Nothing: the object is already in the wanted state.
-    Hold,
-}
-
-/// The step for one capability event, from whether the session holds the
-/// capability's object and whether the capability is arriving or leaving.
-/// The toolkit reports a capability only when it actually changed, so the
-/// hold cells are the belt for the handler's own bookkeeping: a repeated
-/// arrival never re-creates the keyboard or the pointer. The pointer's
-/// step covers its cursor-shape device too: a pointer drop
-/// takes the device, a pointer create re-binds it.
-#[must_use]
-pub(crate) fn capability_step(held: bool, arriving: bool) -> CapabilityStep {
-    match (held, arriving) {
-        (false, true) => CapabilityStep::Create,
-        (true, false) => CapabilityStep::Drop,
-        (true, true) | (false, false) => CapabilityStep::Hold,
-    }
-}
-
 /// The seat's capability objects: the keyboard and the pointer
 /// the capability events created, held so a removed capability drops its
 /// object and a teardown drops both before the connection ends. The
@@ -158,9 +129,15 @@ impl PanelState {
     }
 
     /// One capability event: create the capability's object on
-    /// arrival, drop the held one on removal, and re-create nothing. The
-    /// capability events dispatch from the loop, after the bind stored the
-    /// session.
+    /// arrival, drop the held one on removal. The toolkit dispatches
+    /// `new_capability`/`remove_capability` only when a capability
+    /// actually changed (sctk 0.21.1, the `Capabilities` event's
+    /// `has_keyboard`/`has_pointer` guards in its seat module), so no
+    /// step table is needed: an arriving event creates, a leaving one
+    /// drops, and a refused `get_*` leaves the cell `None` for a later
+    /// removal's release to drop through. The pointer's drop covers its
+    /// cursor-shape device too. The capability events dispatch from the
+    /// loop, after the bind stored the session.
     fn on_capability(
         &mut self,
         qh: &QueueHandle<Self>,
@@ -168,25 +145,17 @@ impl PanelState {
         capability: Capability,
         arriving: bool,
     ) {
-        let held = match capability {
-            Capability::Keyboard => self
-                .session
-                .as_ref()
-                .is_some_and(|session| session.seat_objects.keyboard.is_some()),
-            Capability::Pointer => self
-                .session
-                .as_ref()
-                .is_some_and(|session| session.seat_objects.pointer.is_some()),
+        if !matches!(capability, Capability::Keyboard | Capability::Pointer) {
             // The panel takes no touch input; the capability changes
             // nothing here. Future capabilities change nothing either —
             // the enum is non-exhaustive and the panel grows no new input
             // half without a change that says so.
-            _ => return,
-        };
-        match capability_step(held, arriving) {
-            CapabilityStep::Create => self.create_capability(qh, seat, capability),
-            CapabilityStep::Drop => self.drop_capability(capability),
-            CapabilityStep::Hold => {}
+            return;
+        }
+        if arriving {
+            self.create_capability(qh, seat, capability);
+        } else {
+            self.drop_capability(capability);
         }
     }
 
@@ -607,22 +576,6 @@ xkb_keymap {
             button: BTN_LEFT,
             serial: 0,
         }
-    }
-
-    /// The capability step table: create on an arrival nothing is held
-    /// for, drop on a removal of a held capability, and change nothing
-    /// otherwise — a repeated arrival re-creates nothing, and a removal
-    /// with nothing held drops nothing.
-    #[test]
-    fn the_capability_step_table_covers_the_four_cells() {
-        assert_eq!(capability_step(false, true), CapabilityStep::Create);
-        assert_eq!(capability_step(true, false), CapabilityStep::Drop);
-        assert_eq!(
-            capability_step(true, true),
-            CapabilityStep::Hold,
-            "a repeated arrival re-creates nothing"
-        );
-        assert_eq!(capability_step(false, false), CapabilityStep::Hold);
     }
 
     /// A pointer event whose surface decision says panel routes into the
