@@ -673,12 +673,14 @@ xkb_keymap {
     #[test]
     fn the_key_hooks_run_nothing_on_a_headless_or_latched_state() {
         let (tx, _rx) = mpsc::channel();
-        let mut state = PanelState::headless(
+        let poisoned = Poisoned::new();
+        let mut state = PanelState::new(
             Handshake::new(tx),
-            Poisoned::new(),
+            poisoned.clone(),
             test_inner(),
             test_startup(),
             crate::layout::CellSize::new(9, 16).expect("test cell size is non-zero"),
+            crate::panel::wayland_side::glue::test_wiring(&poisoned),
         );
         let ran = Cell::new(false);
         let result = seat_hook(&mut state, |_side| {

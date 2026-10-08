@@ -110,12 +110,15 @@ mod tests {
     use crate::panel::wayland_side::sizing::Sizing;
     use crate::panel::wayland_side::tween_draw::TweenRender;
     use crate::panel::wayland_side::{Inner, Startup, glue};
+    use std::cell::Cell;
     use std::num::NonZeroU16;
     use std::os::fd::AsRawFd;
     use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
+
+    use super::super::Wiring;
 
     /// The test cell, the thread's measured pitch the sizing derives from.
     fn cell() -> CellSize {
@@ -179,7 +182,7 @@ mod tests {
         })
     }
 
-    /// A headless state wired to the thread's byte path over a real pty
+    /// A state wired to the thread's byte path over a real pty
     /// master: the production sink pushes the terminal grid and the pty
     /// winsize through it (D10 — the compositor paths stay out).
     fn state_over_pty(master: &std::fs::File) -> PanelState {
@@ -190,23 +193,33 @@ mod tests {
             None,
         );
         let path = glue::byte_path(Poisoned::new(), startup.fd());
-        let mut state = PanelState::headless(
+        let poisoned = Poisoned::new();
+        let draw_offset = Rc::new(Cell::new(0.0));
+        let focused = Rc::new(Cell::new(false));
+        let links = glue::seat_links(
+            path.terminal(),
+            path.repaint(),
+            &draw_offset,
+            &focused,
+            poisoned.clone(),
+        );
+        let mut state = PanelState::new(
             Handshake::new(mpsc::channel().0),
-            Poisoned::new(),
+            poisoned.clone(),
             live_inner(),
             startup,
             cell(),
+            Wiring {
+                repaint: Rc::clone(path.repaint()),
+                stale_grid_px: Rc::clone(path.stale_grid_px()),
+                draw_offset,
+                seat_links: links,
+                render: TweenRender {
+                    terminal: Rc::clone(path.terminal()),
+                    renderer: glue::test_renderer(),
+                },
+            },
         );
-        // The fixture's byte path replaces the shim's: the render bundle's
-        // terminal is the one the re-push feeds, and the repaint and stale
-        // cells are the path's (the renderer handle stays the shim's).
-        let renderer = Rc::clone(&state.render.renderer);
-        state.render = TweenRender {
-            terminal: Rc::clone(path.terminal()),
-            renderer,
-        };
-        state.repaint = Rc::clone(path.repaint());
-        state.stale_grid_px = Rc::clone(path.stale_grid_px());
         // Record the configure height the re-push re-derives its grid
         // from; the sink records without touching the pty fd.
         state.sizing.configure(1080, &mut |_| {});

@@ -224,50 +224,58 @@ impl PanelState {
     }
 }
 
-/// The tests' constructor (typed-publish-path D4's pre-approved fallback):
-/// a valid state over a display-free byte path — the shared terminal, the
-/// repaint latch and the stale record its closure wires, the seat links
-/// over them and a renderer from [`test_renderer`], which these tests
-/// never draw with. [`run_thread`](super::run_thread) builds the same
-/// bundle in production; the helpers move onto [`PanelState::new`] in
-/// their own row.
+/// The tests' wiring bundle (typed-publish-path D4): the pieces
+/// [`PanelState::new`] takes, built over a display-free `Terminal` —
+/// `Terminal::new` with a sink that discards and a decoder that rejects,
+/// its `queue_draw` closure latching the same repaint flag and clearing
+/// the same stale record the bundle hands the state, the seat links
+/// sharing the terminal and the cells, and the render bundle over
+/// [`test_renderer`], which these tests never draw with. The test
+/// helpers build their state with it; one that already holds its own
+/// renderer wires it through [`test_wiring_with`].
 #[cfg(test)]
-impl PanelState {
-    pub(crate) fn headless(
-        handshake: super::super::handshake::Handshake,
-        poisoned: Poisoned,
-        inner: std::sync::Arc<super::Inner>,
-        startup: super::Startup,
-        cell: crate::layout::CellSize,
-    ) -> Self {
-        let path = byte_path(poisoned.clone(), startup.fd());
-        let focused = Rc::new(Cell::new(false));
-        let draw_offset = Rc::new(Cell::new(0.0));
-        let seat_links = seat_links(
-            path.terminal(),
-            path.repaint(),
-            &draw_offset,
-            &focused,
-            poisoned.clone(),
-        );
-        let render = super::tween_draw::TweenRender {
-            terminal: Rc::clone(path.terminal()),
-            renderer: test_renderer(),
-        };
-        Self::new(
-            handshake,
-            poisoned,
-            inner,
-            startup,
-            cell,
-            super::state::Wiring {
-                repaint: Rc::clone(path.repaint()),
-                stale_grid_px: Rc::clone(path.stale_grid_px()),
-                draw_offset,
-                seat_links,
-                render,
-            },
-        )
+pub(crate) fn test_wiring(poisoned: &Poisoned) -> super::state::Wiring {
+    test_wiring_with(poisoned, test_renderer())
+}
+
+/// [`test_wiring`] over a caller-supplied renderer handle: a test that
+/// already resolved its own font setup wires that renderer through
+/// instead of the production fallback.
+#[cfg(test)]
+pub(crate) fn test_wiring_with(
+    poisoned: &Poisoned,
+    renderer: Rc<RefCell<Renderer>>,
+) -> super::state::Wiring {
+    let repaint = Rc::new(Cell::new(false));
+    let stale_grid_px = Rc::new(Cell::new(0));
+    let draw_offset = Rc::new(Cell::new(0.0));
+    let focused = Rc::new(Cell::new(false));
+    let terminal = Rc::new(RefCell::new(Terminal::new(
+        poisoned.clone(),
+        NullSink,
+        NoDecoder,
+        {
+            let repaint = Rc::clone(&repaint);
+            let stale = Rc::clone(&stale_grid_px);
+            move || {
+                stale.set(0);
+                repaint.set(true);
+            }
+        },
+    )));
+    let seat_links = seat_links(
+        &terminal,
+        &repaint,
+        &draw_offset,
+        &focused,
+        poisoned.clone(),
+    );
+    super::state::Wiring {
+        repaint,
+        stale_grid_px,
+        draw_offset,
+        seat_links,
+        render: super::tween_draw::TweenRender { terminal, renderer },
     }
 }
 
@@ -276,7 +284,7 @@ impl PanelState {
 /// that build a state never draw with it; the field just needs a valid
 /// value.
 #[cfg(test)]
-fn test_renderer() -> Rc<RefCell<Renderer>> {
+pub(crate) fn test_renderer() -> Rc<RefCell<Renderer>> {
     let setup = FontSetup::resolve(&crate::fontconfig::FontConfig {
         family: None,
         size: 11.0,
@@ -290,6 +298,24 @@ fn test_renderer() -> Rc<RefCell<Renderer>> {
     )
     .expect("the test renderer builds");
     Rc::new(RefCell::new(renderer))
+}
+
+/// A sink with nowhere to write: the state tests never write to a pty.
+#[cfg(test)]
+struct NullSink;
+#[cfg(test)]
+impl crate::term::PtySink for NullSink {
+    fn write_pty(&mut self, _data: &[u8]) {}
+}
+
+/// Decodes nothing: the state tests place no kitty images.
+#[cfg(test)]
+struct NoDecoder;
+#[cfg(test)]
+impl crate::term::PngDecoder for NoDecoder {
+    fn decode_png(&mut self, _data: &[u8]) -> Option<crate::term::DecodedPng> {
+        None
+    }
 }
 
 /// Push one derived grid to the terminal and the pty, in this order: the

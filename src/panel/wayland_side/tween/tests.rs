@@ -5,7 +5,7 @@ use crate::guard::Poisoned;
 use crate::layout::{CellSize, Keyboard, Side};
 use crate::panel::handshake::Handshake;
 
-use super::super::{Inner, Startup};
+use super::super::{Inner, Startup, glue};
 
 use super::super::state::FrameOp;
 use super::super::tween_draw::on_tween_frame;
@@ -39,12 +39,14 @@ fn live_inner() -> Arc<Inner> {
 }
 
 fn headless_state(handshake: Handshake) -> PanelState {
-    PanelState::headless(
+    let poisoned = Poisoned::new();
+    PanelState::new(
         handshake,
-        Poisoned::new(),
+        poisoned.clone(),
         live_inner(),
         startup(),
         CellSize::new(9, 16).expect("test cell size is non-zero"),
+        glue::test_wiring(&poisoned),
     )
 }
 

@@ -7,8 +7,9 @@
 //! takes the wiring bundle the thread assembles from its byte path — the
 //! shared terminal (carried inside the render bundle and the seat links),
 //! the repaint latch, the stale pre-resize record, the draw-offset cell,
-//! the seat links and the render bundle — and the tests reach it through
-//! the `#[cfg(test)]` `headless` shim in [`super::glue`].
+//! the seat links and the render bundle — and the tests build the same
+//! bundle display-free through the `#[cfg(test)]` fixtures in
+//! [`super::glue`].
 //! [`PanelState::bind`] then binds the globals (D1: `wl_compositor`,
 //! `wl_shm` and `zwlr_layer_shell_v1` required, their absence is the spec's
 //! "no display" case), creates the panel surface and stores the session. From
@@ -641,6 +642,7 @@ impl PanelState {
 
 #[cfg(test)]
 mod tests {
+    use super::super::glue;
     use super::super::surfaces::{panel_anchor, panel_margins};
     use super::*;
     use crate::guard::Poisoned as GuardPoisoned;
@@ -684,7 +686,15 @@ mod tests {
     }
 
     fn headless_state(handshake: Handshake) -> PanelState {
-        PanelState::headless(handshake, Poisoned::new(), live_inner(), startup(), cell())
+        let poisoned = GuardPoisoned::new();
+        PanelState::new(
+            handshake,
+            poisoned.clone(),
+            live_inner(),
+            startup(),
+            cell(),
+            glue::test_wiring(&poisoned),
+        )
     }
 
     /// A closed compositor connection maps the panel onto the dead state

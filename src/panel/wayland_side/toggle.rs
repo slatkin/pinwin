@@ -302,12 +302,14 @@ mod tests {
 
     fn headless_state() -> PanelState {
         let (tx, _rx) = mpsc::channel();
-        PanelState::headless(
+        let poisoned = Poisoned::new();
+        PanelState::new(
             Handshake::new(tx),
-            Poisoned::new(),
+            poisoned.clone(),
             live_inner(),
             startup(),
             cell(),
+            super::super::glue::test_wiring(&poisoned),
         )
     }
 

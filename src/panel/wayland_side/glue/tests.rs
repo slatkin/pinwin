@@ -5,6 +5,7 @@ use crate::layout::{CellSize, Keyboard, Layout, OutputSize, Side};
 use crate::panel::PinwinError;
 use crate::panel::handshake::{Handshake, map_start};
 use crate::panel::wayland_side::sizing::Sizing;
+use crate::panel::wayland_side::state::Wiring;
 use crate::panel::wayland_side::tween_draw::TweenRender;
 use crate::pty::attach_calloop;
 use crate::render::font::FontBook;
@@ -73,12 +74,18 @@ fn the_thread_measures_the_cell_the_sizing_uses() {
         return;
     };
     let cell = setup.cell().expect("the measured cell");
-    let mut state = PanelState::headless(
+    let poisoned = Poisoned::new();
+    // The test family's own font setup wires through: the state's render
+    // bundle is the one `thread_renderer` builds from the measured font,
+    // the production path, not the other tests' fallback.
+    let renderer = thread_renderer(None, setup).expect("the renderer builds");
+    let mut state = PanelState::new(
         Handshake::new(mpsc::channel().0),
-        Poisoned::new(),
+        poisoned.clone(),
         live_inner(),
         startup(),
         cell,
+        test_wiring_with(&poisoned, renderer),
     );
     let mut pushed: Vec<Grid> = Vec::new();
     state.configure_grid(1080, &mut |grid| pushed.push(grid));
@@ -208,6 +215,44 @@ fn the_byte_path_records_and_clears_the_widened_grid() {
     terminal.borrow_mut().push_pty_data(b"hi");
     assert_eq!(stale.get(), 0, "the output cleared the record");
     assert!(repaint.get(), "the output latched the repaint flag");
+}
+
+/// The winsize-only degrade keeps its direct unit test (typed-publish-path
+/// D4): a push with no terminal — the arm [`PanelState::grid_sink_at`]
+/// never passes — still applies the winsize and latches the repaint flag,
+/// and records no stale width, because the stale record is the terminal
+/// push's side effect.
+#[test]
+fn a_push_without_a_terminal_still_applies_the_winsize() {
+    let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");
+    block_sigwinch();
+    let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
+    let mut sizing = Sizing::new(NonZeroU16::new(40).expect("test columns"), cell);
+    let repaint = Cell::new(false);
+    let stale = Cell::new(0);
+    sizing.configure(1080, &mut |grid| {
+        push_grid(
+            None,
+            &repaint,
+            &stale,
+            master.as_raw_fd(),
+            FractionalScale::from_120ths(120),
+            grid,
+        );
+    });
+    let ws = read_winsize(master.as_raw_fd());
+    assert_eq!(
+        (ws.ws_col, ws.ws_row),
+        (40, 1080 / 16),
+        "the winsize went out"
+    );
+    assert_eq!(
+        (ws.ws_xpixel, ws.ws_ypixel),
+        (40 * 9, (1080 / 16) * 16),
+        "the scale-1 device pixels"
+    );
+    assert!(repaint.get(), "the push latched the repaint flag");
+    assert_eq!(stale.get(), 0, "no terminal, no stale record");
 }
 
 /// The seat links the thread's pieces build: a focus
@@ -341,10 +386,10 @@ fn output(width: i32, height: i32) -> OutputSize {
     OutputSize::new(width, height).expect("test output size is non-zero")
 }
 
-/// A headless state wired to the thread's byte path over a real pty
+/// A state wired to the thread's byte path over a real pty
 /// master: the production sink pushes the terminal grid and the pty
 /// winsize through it (D10 — the compositor paths stay out).
-/// The state-over-pty fixture's return: the headless state wired to
+/// The state-over-pty fixture's return: the state wired to
 /// the thread's byte path pieces over a real pty master.
 type StateOverPty = (
     PanelState,
@@ -368,23 +413,33 @@ fn state_over_pty(master: &std::fs::File) -> StateOverPty {
         stale_grid_px: stale_px,
         pty,
     } = byte_path(Poisoned::new(), startup.fd());
-    let mut state = PanelState::headless(
+    let poisoned = Poisoned::new();
+    let draw_offset = Rc::new(Cell::new(0.0));
+    let focused = Rc::new(Cell::new(false));
+    let links = seat_links(
+        &terminal,
+        &repaint,
+        &draw_offset,
+        &focused,
+        poisoned.clone(),
+    );
+    let state = PanelState::new(
         Handshake::new(mpsc::channel().0),
-        Poisoned::new(),
+        poisoned.clone(),
         live_inner(),
         startup,
         cell,
+        Wiring {
+            repaint: Rc::clone(&repaint),
+            stale_grid_px: Rc::clone(&stale_px),
+            draw_offset,
+            seat_links: links,
+            render: TweenRender {
+                terminal: Rc::clone(&terminal),
+                renderer: test_renderer(),
+            },
+        },
     );
-    // The fixture's byte path replaces the shim's: the render bundle's
-    // terminal is the one the tests read back, and the repaint and stale
-    // cells are the path's (the renderer handle stays the shim's).
-    let renderer = Rc::clone(&state.render.renderer);
-    state.render = TweenRender {
-        terminal: Rc::clone(&terminal),
-        renderer,
-    };
-    state.repaint = Rc::clone(&repaint);
-    state.stale_grid_px = Rc::clone(&stale_px);
     (state, terminal, repaint, stale_px, pty)
 }
 

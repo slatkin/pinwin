@@ -1,4 +1,4 @@
-use super::super::{Inner, Startup};
+use super::super::{Inner, Startup, glue};
 use super::*;
 use crate::guard::Poisoned;
 use crate::layout::Keyboard;
@@ -52,12 +52,14 @@ fn live_inner() -> Arc<Inner> {
 
 fn headless_state() -> PanelState {
     let (tx, _rx) = mpsc::channel();
-    PanelState::headless(
+    let poisoned = Poisoned::new();
+    PanelState::new(
         Handshake::new(tx),
-        Poisoned::new(),
+        poisoned.clone(),
         live_inner(),
         startup(),
         cell(),
+        glue::test_wiring(&poisoned),
     )
 }
 

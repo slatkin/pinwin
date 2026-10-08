@@ -81,7 +81,7 @@ fn handle_command(state: &mut PanelState, command: super::PanelCommand) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{PanelCommand, Startup};
+    use super::super::{PanelCommand, Startup, glue};
     use super::*;
     use crate::guard::Poisoned as GuardPoisoned;
     use crate::layout::{CellSize, Keyboard, Layout, Side};
@@ -125,7 +125,15 @@ mod tests {
     }
 
     fn headless_state(handshake: Handshake) -> PanelState {
-        PanelState::headless(handshake, Poisoned::new(), live_inner(), startup(), cell())
+        let poisoned = GuardPoisoned::new();
+        PanelState::new(
+            handshake,
+            poisoned.clone(),
+            live_inner(),
+            startup(),
+            cell(),
+            glue::test_wiring(&poisoned),
+        )
     }
 
     /// An apply posted to a thread whose session is not bound — no resolved

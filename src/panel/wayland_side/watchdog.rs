@@ -135,6 +135,7 @@ mod tests {
     use crate::panel::{PinwinError, Startup};
 
     use super::super::Inner;
+    use super::super::glue;
 
     use super::*;
 
@@ -166,12 +167,14 @@ mod tests {
     }
 
     fn headless_state(handshake: Handshake) -> PanelState {
-        PanelState::headless(
+        let poisoned = Poisoned::new();
+        PanelState::new(
             handshake,
-            Poisoned::new(),
+            poisoned.clone(),
             live_inner(),
             startup(),
             CellSize::new(9, 16).expect("test cell size is non-zero"),
+            glue::test_wiring(&poisoned),
         )
     }
 
