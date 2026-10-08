@@ -9,7 +9,7 @@
 ## 2. `BytePath` named shape
 
 - [x] 2.1 Convert `BytePath` in `src/panel/wayland_side/glue.rs` from an anonymous 4-tuple alias to a struct with named private fields built by `byte_path()`, updating use sites, and verify `cargo test pty::` and `cargo test panel::` pass
-- [ ] 2.2 Replace the split orphaned paragraphs with a single coherent doc block on the new shape, and verify `cargo doc --no-deps --document-private-items` builds without warnings
+- [x] 2.2 Replace the split orphaned paragraphs with a single coherent doc block on the new shape, and verify `cargo doc --no-deps --document-private-items` builds without warnings
 
 ## 3. Comment rewrites: apply and tween
 
