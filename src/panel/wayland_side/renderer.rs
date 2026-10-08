@@ -31,7 +31,9 @@ mod tests;
 pub use font_setup::{FontSetup, FontSetupError};
 
 use crate::fontconfig::ThemeColours;
-use crate::layout::{Accent, CellSize};
+use crate::layout::Accent;
+#[cfg(test)]
+use crate::layout::CellSize;
 use crate::render::canvas::Canvas;
 use crate::render::cell_metrics::CellMetrics;
 use crate::render::frame_gate::{FrameGate, FrameOutcome, paint_frame_gated};
@@ -194,16 +196,12 @@ impl Renderer {
         self.canvas.as_ref()
     }
 
-    /// The painter metrics at the output scale, the read the frame
-    /// geometry and the tween's wide draw build on.
-    #[must_use]
-    pub fn painter_metrics(&self) -> &PainterMetrics {
-        &self.metrics
-    }
-
     /// The measured cell, the `CellSize` the panel thread's sizing needs
     /// (D3); `None` is as unreachable as a zero cell (see
-    /// [`FontSetup::cell`]).
+    /// [`FontSetup::cell`]). Test builds only: the glue test reads the
+    /// renderer's cell back; production reads it through the sizing and
+    /// the painter metrics.
+    #[cfg(test)]
     #[must_use]
     pub fn cell(&self) -> Option<CellSize> {
         CellSize::new(self.cell_metrics.cell_w(), self.cell_metrics.cell_h())
@@ -246,7 +244,9 @@ impl Renderer {
     }
 
     /// Whether the panel holds keyboard focus, the read a frame's input
-    /// is built from.
+    /// is built from. Test builds only: the renderer tests read the flag
+    /// back; production reads it through the frame input.
+    #[cfg(test)]
     #[must_use]
     pub fn focused(&self) -> bool {
         self.focused

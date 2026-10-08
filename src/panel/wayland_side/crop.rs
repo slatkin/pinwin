@@ -59,7 +59,7 @@ use super::surfaces::panel_margins;
 
 mod draw;
 
-pub use draw::{CropCopyError, copy_crop, draw_wide, upload_wide};
+pub use draw::{copy_crop, draw_wide, upload_wide};
 
 /// The tween's crop geometry, decided once at the tween's start: the docking
 /// side and the wide buffer's logical width — the larger of the start and
@@ -87,14 +87,11 @@ impl TweenCrop {
         })
     }
 
-    /// The docking side the crop aligns to.
-    #[must_use]
-    pub const fn side(&self) -> Side {
-        self.side
-    }
-
     /// The wide buffer's logical width: the larger of the start and end
-    /// widths.
+    /// widths. Test builds only: the crop and apply tests read the wide
+    /// width back; production reads it through [`Self::wide_device`],
+    /// [`Self::wide_draw`] and [`Self::frame`].
+    #[cfg(test)]
     #[must_use]
     pub const fn wide_px(&self) -> i32 {
         self.wide_px
@@ -315,7 +312,10 @@ impl CropRect {
     /// The `wl_fixed` value the protocol carries for a whole number of
     /// device pixels: the count times 256, exactly, since wayland-client
     /// encodes `set_source`'s `f64` arguments as `(value * 256.0) as i32`.
-    /// `None` past the fixed-point range.
+    /// `None` past the fixed-point range. Test builds only: the crop tests
+    /// pin the exact encoding; production hands `f64`s to wayland-client,
+    /// which encodes them itself.
+    #[cfg(test)]
     #[must_use]
     pub fn wl_fixed(pixels: i32) -> Option<i32> {
         pixels.checked_mul(256)

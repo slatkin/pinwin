@@ -154,7 +154,10 @@ impl Sizing {
     /// `height` — a running panel thread's steady state between configures.
     /// Replaying the real path with a sink for the push keeps this
     /// constructor honest: the recorded pushed grid is the one the real
-    /// decision produces.
+    /// decision produces. Test builds only: the sizing and device tests
+    /// replay the startup apply; production builds the running state
+    /// through [`Self::new`] and the first [`Self::configure`].
+    #[cfg(test)]
     #[must_use]
     pub fn started(cols: NonZeroU16, cell: CellSize, height: u32) -> Self {
         let mut sizing = Self::new(cols, cell);
