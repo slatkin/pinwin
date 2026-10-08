@@ -35,8 +35,7 @@ fn holder(side: Side, start: i32, end: i32, units: u32, gap_tweening: bool) -> T
         height: 720,
         scale: scale(units),
         layout: layout(side, u16::try_from(wide / 9).unwrap_or(1), left, right),
-        gap_side: side,
-        gap_zone: 372,
+        gap: HeldGap::for_test(side, 372),
         gap_tweening,
         grid_px: wide,
         stale: false,
@@ -195,7 +194,11 @@ fn an_equal_wide_cache_survives_a_retarget_and_a_different_one_rebuilds() {
 fn a_kept_retarget_moves_the_layout_and_gap_state() {
     let mut held = holder(Side::Left, 360, 1080, 180, false);
     let canvas = held.canvas().size();
-    held.retarget(layout(Side::Left, 160, 12, 0), Side::Left, 1092, true);
+    held.retarget(
+        layout(Side::Left, 160, 12, 0),
+        HeldGap::for_test(Side::Left, 1092),
+        true,
+    );
 
     let plan = held.commit_plan(900, true).expect("a presentable frame");
     assert_eq!(plan.actions()[1], TweenAction::PanelMargins((0, 0, 0, 12)));
@@ -265,8 +268,7 @@ fn a_fresh_holder_draws_from_the_render_state() {
         720,
         scale(180),
         layout(Side::Left, 120, 0, 12),
-        Side::Left,
-        372,
+        HeldGap::for_test(Side::Left, 372),
         true,
         360,
         &mut render,

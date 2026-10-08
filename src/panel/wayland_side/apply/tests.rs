@@ -262,7 +262,7 @@ fn an_animated_apply_defers_the_push_and_the_finish_pushes_once() {
     assert_eq!(staged.crop.wide_px(), 1080, "the wide width is the larger");
     assert_eq!(staged.grid_px, 360, "the live grid is the applied one");
     assert!(staged.gap_tweening, "a pushing expand tweens the gap");
-    assert_eq!(staged.gap_zone, 360, "the strip the gap rests at");
+    assert_eq!(staged.gap.zone(), 360, "the strip the gap rests at");
     assert_eq!(staged.duration_ms, 200);
 
     // The finish pushes once, through the sizing path.

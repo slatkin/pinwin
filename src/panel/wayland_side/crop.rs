@@ -52,7 +52,7 @@
 //! work.
 
 use crate::layout::{Layout, Side};
-use crate::surfaces::gap::reserve_gap_parts;
+use crate::surfaces::gap::{HeldGap, reserve_gap};
 
 use super::buffers::FractionalScale;
 use super::surfaces::panel_margins;
@@ -364,17 +364,15 @@ impl FrameGeometry {
 #[must_use]
 pub fn frame_geometry(
     layout: Layout,
-    held_side: Side,
-    held_zone: i32,
+    gap: HeldGap,
     gap_tweening: bool,
     panel_px: i32,
 ) -> FrameGeometry {
-    let (reserve_side, reserve_zone) =
-        reserve_gap_parts(held_side, held_zone, gap_tweening, layout, panel_px);
+    let reserved = reserve_gap(gap, gap_tweening, layout, panel_px);
     FrameGeometry {
         margins: panel_margins(layout),
-        reserve_side,
-        reserve_zone,
+        reserve_side: reserved.side(),
+        reserve_zone: reserved.zone(),
     }
 }
 
@@ -383,6 +381,8 @@ mod tests {
     use std::num::NonZeroU16;
 
     use crate::render::geom::device_px;
+
+    use crate::surfaces::gap::start_held_gap;
 
     use super::*;
 
@@ -556,12 +556,12 @@ mod tests {
             0,
             12,
         );
-        let geometry = frame_geometry(layout, Side::Left, 372, false, 700);
+        let geometry = frame_geometry(layout, start_held_gap(layout, 9), false, 700);
         assert_eq!(geometry.margins(), (0, 0, 0, 0), "the layout's own margins");
         assert_eq!(geometry.reserve_side(), Side::Left);
         assert_eq!(geometry.reserve_zone(), 372, "the held strip holds still");
 
-        let geometry = frame_geometry(layout, Side::Left, 372, true, 700);
+        let geometry = frame_geometry(layout, start_held_gap(layout, 9), true, 700);
         assert_eq!(
             geometry.reserve_zone(),
             712,
@@ -570,7 +570,7 @@ mod tests {
 
         // A covering target never moves the zone, flag or not.
         let covering = layout.covering();
-        let geometry = frame_geometry(covering, Side::Left, 372, true, 700);
+        let geometry = frame_geometry(covering, start_held_gap(layout, 9), true, 700);
         assert_eq!(geometry.reserve_zone(), 372);
 
         // The margins follow the docking side.
@@ -582,7 +582,7 @@ mod tests {
             0,
             12,
         );
-        let geometry = frame_geometry(right, Side::Right, 0, false, 700);
+        let geometry = frame_geometry(right, HeldGap::for_test(Side::Right, 0), false, 700);
         assert_eq!(geometry.margins(), (5, 12, 6, 0));
     }
 

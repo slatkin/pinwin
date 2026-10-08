@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use crate::layout::{CellSize, Layout, OutputSize, Side};
 use crate::surfaces::PublishOutcome;
-use crate::surfaces::gap::{HeldGap, gap_tween_decision, reserve_gap_parts, staged_publish};
+use crate::surfaces::gap::{HeldGap, gap_tween_decision, reserve_gap, staged_publish};
 
 use super::crop::TweenCrop;
 use super::sizing::Grid;
@@ -58,10 +58,9 @@ pub(crate) struct StagedTween {
     /// width. The wide draw keys the docked-edge offset against it.
     pub(crate) grid_px: i32,
     /// The gap state the frames commit the reserve with (overlay-expand
-    /// D3): the side and zone the strip rested at before this apply
-    /// mutated the held gap, and the gap-tween decision.
-    pub(crate) gap_side: Side,
-    pub(crate) gap_zone: i32,
+    /// D3): the held gap as it rested before this apply mutated it, and
+    /// the gap-tween decision.
+    pub(crate) gap: HeldGap,
     pub(crate) gap_tweening: bool,
     /// The tweening layout: the staged target, whose margins the frames
     /// commit and whose side and gutters the animate rule pinned.
@@ -310,12 +309,7 @@ impl PanelState {
         let scale = session.scale.resolved();
         let viewporter = session.scale.panel_viewporter();
         if let Some(mut kept) = previous.filter(|previous| previous.keeps(staged.crop, scale)) {
-            kept.retarget(
-                staged.layout,
-                staged.gap_side,
-                staged.gap_zone,
-                staged.gap_tweening,
-            );
+            kept.retarget(staged.layout, staged.gap, staged.gap_tweening);
             return Some(kept);
         }
         let render = self.render.as_mut()?;
@@ -333,8 +327,7 @@ impl PanelState {
             height?,
             scale,
             staged.layout,
-            staged.gap_side,
-            staged.gap_zone,
+            staged.gap,
             staged.gap_tweening,
             staged.grid_px,
             render,
@@ -397,14 +390,8 @@ impl PanelState {
             .as_ref()
             .is_some_and(TweenDraw::gap_tweening)
             && self.tween.is_active();
-        let (gap_side, gap_zone) = reserve_gap_parts(
-            self.held.side(),
-            self.held.zone(),
-            gap_active,
-            self.applied,
-            from_px,
-        );
-        let gap_tweening = gap_tween_decision(gap_zone, true, layout, target_px);
+        let gap = reserve_gap(self.held, gap_active, self.applied, from_px);
+        let gap_tweening = gap_tween_decision(gap.zone(), true, layout, target_px);
 
         // The grid push defers to the tween's finish (D7): the sizing
         // records the target columns, and the finish derives and pushes
@@ -419,8 +406,7 @@ impl PanelState {
             target_px,
             crop,
             grid_px,
-            gap_side,
-            gap_zone,
+            gap,
             gap_tweening,
             layout,
             duration_ms: duration_ms.min(1000),

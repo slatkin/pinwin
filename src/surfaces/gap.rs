@@ -33,6 +33,16 @@ impl HeldGap {
     pub(crate) const fn zone(self) -> i32 {
         self.zone
     }
+
+    /// Test-only construction with an exact side and zone: production code
+    /// reaches a `HeldGap` only through [`start_held_gap`],
+    /// [`held_gap_after_publish`] and [`reserve_gap`], but the tween
+    /// frames' tests need a held gap the starters cannot express — a strip
+    /// left over from a layout other than the frame's own.
+    #[cfg(test)]
+    pub(crate) fn for_test(side: Side, zone: i32) -> Self {
+        HeldGap { side, zone }
+    }
 }
 
 /// The held gap a panel starts with (overlay-expand D2, D5): a pushing start
@@ -106,29 +116,6 @@ fn pushing_strip_at(layout: Layout, panel_px: i32) -> Option<i32> {
         .side_geometry(i64::from(panel_px))
         .ok()
         .map(|g| g.reservation())
-}
-
-/// [`reserve_gap`] over the held gap's plain parts, for a caller that holds
-/// the side and zone as separate values: the wayland tween's per-frame crop
-/// plan (`replace-gtk-with-wayland` D7) reads them from the panel state,
-/// and the decision itself stays here, stated once.
-pub fn reserve_gap_parts(
-    held_side: Side,
-    held_zone: i32,
-    gap_tweening: bool,
-    layout: Layout,
-    panel_px: i32,
-) -> (Side, i32) {
-    let held = reserve_gap(
-        HeldGap {
-            side: held_side,
-            zone: held_zone,
-        },
-        gap_tweening,
-        layout,
-        panel_px,
-    );
-    (held.side(), held.zone())
 }
 
 /// The decision half of a publish (overlay-expand D4), split out

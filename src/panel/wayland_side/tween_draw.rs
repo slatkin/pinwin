@@ -40,6 +40,7 @@ use smithay_client_toolkit::shm::slot::Buffer;
 
 use crate::layout::{Layout, Side};
 use crate::render::canvas::Canvas;
+use crate::surfaces::gap::HeldGap;
 
 use super::buffers::{BufferPool, FractionalScale};
 use super::crop::{CropFrame, CropRect, TweenCrop, frame_geometry, upload_wide};
@@ -170,10 +171,9 @@ pub(crate) struct TweenDraw {
     /// match in side and gutters, so it is the applied layout's twin.
     layout: Layout,
     /// The gap state the frames commit the reserve with (overlay-expand
-    /// D3): the side and zone the strip rested at before the apply mutated
-    /// the held gap, and the apply's gap-tween flag.
-    gap_side: Side,
-    gap_zone: i32,
+    /// D3): the held gap as it rested before the apply mutated it, and
+    /// the apply's gap-tween flag.
+    gap: HeldGap,
     gap_tweening: bool,
     /// The live grid's pixel width the cache was drawn against: the redraw
     /// keys the docked-edge offset against the same grid.
@@ -199,8 +199,7 @@ impl TweenDraw {
         height: u32,
         scale: FractionalScale,
         layout: Layout,
-        gap_side: Side,
-        gap_zone: i32,
+        gap: HeldGap,
         gap_tweening: bool,
         grid_px: i32,
         render: &mut TweenRender,
@@ -218,8 +217,7 @@ impl TweenDraw {
             height,
             scale,
             layout,
-            gap_side,
-            gap_zone,
+            gap,
             gap_tweening,
             grid_px,
             stale: false,
@@ -259,16 +257,9 @@ impl TweenDraw {
     /// to the new target, and the gap state moves to the new apply's
     /// pre-mutation read. The canvas, its buffer, the crop, the height and
     /// the scale stay.
-    pub(crate) fn retarget(
-        &mut self,
-        layout: Layout,
-        gap_side: Side,
-        gap_zone: i32,
-        gap_tweening: bool,
-    ) {
+    pub(crate) fn retarget(&mut self, layout: Layout, gap: HeldGap, gap_tweening: bool) {
         self.layout = layout;
-        self.gap_side = gap_side;
-        self.gap_zone = gap_zone;
+        self.gap = gap;
         self.gap_tweening = gap_tweening;
     }
 
@@ -349,13 +340,7 @@ impl TweenDraw {
     #[must_use]
     pub(crate) fn commit_plan(&self, px: i32, viewporter: bool) -> Option<TweenFramePlan> {
         let frame = self.crop.frame(px, self.height, self.scale)?;
-        let geometry = frame_geometry(
-            self.layout,
-            self.gap_side,
-            self.gap_zone,
-            self.gap_tweening,
-            px,
-        );
+        let geometry = frame_geometry(self.layout, self.gap, self.gap_tweening, px);
         let mut actions = Vec::with_capacity(7);
         actions.push(TweenAction::PanelSize(frame.layer_width()));
         actions.push(TweenAction::PanelMargins(geometry.margins()));
