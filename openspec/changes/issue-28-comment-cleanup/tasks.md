@@ -28,7 +28,7 @@
 ## 6. Comment rewrites: long tail
 
 - [x] 6.1 Rewrite the `row`/`dispatch` refs and GTK/glib prose outside the panel thread (`handshake.rs`, `startup.rs`, `pty.rs`, `pty/calloop.rs` `glib twin`, `settings.rs` `focus socket`, `anim.rs`, `render/*`, `term/*`, `layout.rs`, `cli.rs`, `instance.rs`, `main.rs`), keeping sanctioned design citations, and verify `grep -rnE "rows? [0-9]+\\.[0-9]+|dispatch D[0-9]" src | wc -l` returns 0 and only sanctioned `replace-gtk-with-wayland`/`port-to-rust` citations remain for the prose pattern
-- [ ] 6.2 Reviewer diff-check: confirm no deleted comment carried timing/ordering knowledge that is not restated in the rewrite, and verify the full `cargo test` suite passes
+- [x] 6.2 Reviewer diff-check: confirm no deleted comment carried timing/ordering knowledge that is not restated in the rewrite, and verify the full `cargo test` suite passes
 
 ## 7. Final gates
 
