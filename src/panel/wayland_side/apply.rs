@@ -75,14 +75,7 @@ pub(crate) struct StagedTween {
 /// checks, so `None` is a rejected apply that leaves the applied state — the
 /// layout, the column count and the held gap — untouched.
 fn stage(output: OutputSize, cell: CellSize, held: HeldGap, layout: Layout) -> Option<StagedApply> {
-    let (layout, _cols, held_gap) = staged_publish(
-        output.width().get(),
-        output.height().get(),
-        cell.width().get(),
-        cell.height().get(),
-        held,
-        layout,
-    )?;
+    let (layout, held_gap) = staged_publish(output, cell, held, layout)?;
     Some(StagedApply { layout, held_gap })
 }
 

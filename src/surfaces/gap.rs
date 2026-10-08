@@ -9,8 +9,7 @@
 //! draws from it — while the surface state itself only stores and fetches
 //! what they compute.
 
-use super::metrics_valid;
-use crate::layout::{Coverage, Layout, Side};
+use crate::layout::{CellSize, Coverage, Layout, OutputSize, Side};
 
 /// The gap the reserve surface holds: its side and exclusive zone in pixels.
 /// A zone of zero reserves nothing, which is a covering start's held strip
@@ -131,24 +130,19 @@ pub fn reserve_gap_parts(
 /// The decision half of a publish (overlay-expand D4), split out
 /// so the reject-before-mutate ordering is unit testable without a display:
 /// validate the staged layout against the live output metrics first, and only
-/// a validated layout yields the staged mutation — the applied layout, column
-/// count and held gap. `None` is a rejected publish, which leaves the applied
+/// a validated layout yields the staged mutation — the applied layout and the
+/// held gap. `None` is a rejected publish, which leaves the applied
 /// layout and the held gap untouched.
 pub(crate) fn staged_publish(
-    output_w: i32,
-    output_h: i32,
-    cell_w: i32,
-    cell_h: i32,
+    output: OutputSize,
+    cell: CellSize,
     held_gap: HeldGap,
     layout: Layout,
-) -> Option<(Layout, u16, HeldGap)> {
-    if !metrics_valid(layout, cell_w, cell_h, output_w, output_h) {
-        return None;
-    }
+) -> Option<(Layout, HeldGap)> {
+    layout.validate(cell, output).ok()?;
     Some((
         layout,
-        layout.cols().get(),
-        held_gap_after_publish(held_gap, layout, cell_w),
+        held_gap_after_publish(held_gap, layout, cell.width().get()),
     ))
 }
 
@@ -346,11 +340,18 @@ mod tests {
     /// A rejected covering apply stages nothing (spec Requirement
     /// **Rejected-layout-safety**, task 1.2): the decision half validates
     /// first and stages second, so a covering layout the output cannot hold
-    /// yields `None` — no applied layout, no column count, no held gap move —
+    /// yields `None` — no applied layout, no held gap move —
     /// and the publish that drives it returns `InvalidLayout` before any
     /// field is set (overlay-expand D4).
     #[test]
     fn a_rejected_covering_publish_stages_nothing() {
+        fn output(width: i32, height: i32) -> OutputSize {
+            OutputSize::new(width, height).expect("test output is non-degenerate")
+        }
+        fn cell(width: i32, height: i32) -> CellSize {
+            CellSize::new(width, height).expect("test cell is non-degenerate")
+        }
+
         // A pushing 40-column start at a 9px cell holds its own 372 strip.
         let held = start_held_gap(layout(Side::Left, 40, 0, 0, 0, 12), 9);
         let held = held_gap_after_publish(held, layout(Side::Left, 40, 0, 0, 0, 12), 9);
@@ -358,14 +359,17 @@ mod tests {
         // A covering 120-column layout is 1080px wide at that cell, past the
         // 600px output: rejected, so nothing is staged.
         let too_wide = layout(Side::Left, 120, 0, 0, 0, 12).covering();
-        assert_eq!(staged_publish(600, 1080, 9, 16, held, too_wide), None);
+        assert_eq!(
+            staged_publish(output(600, 1080), cell(9, 16), held, too_wide),
+            None
+        );
 
         // For contrast, the same covering layout against a wide-enough
-        // output stages the full triple — and the held gap is not part of
+        // output stages the pair — and the held gap is not part of
         // it: a covering publish never moves the gap.
-        let staged = staged_publish(1920, 1080, 9, 16, held, too_wide).expect("layout fits");
+        let staged =
+            staged_publish(output(1920, 1080), cell(9, 16), held, too_wide).expect("layout fits");
         assert_eq!(staged.0, too_wide);
-        assert_eq!(staged.1, 120);
-        assert_eq!(staged.2, held);
+        assert_eq!(staged.1, held);
     }
 }
