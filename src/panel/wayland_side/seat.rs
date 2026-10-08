@@ -1,20 +1,19 @@
-//! The seat side of the wayland panel thread (replace-gtk-with-wayland D8,
-//! rows 5.1 to 5.5): the keyboard half — the key events the toolkit's
-//! `KeyboardHandler` delivers are translated into the same
-//! [`crate::term::input::KeyInput`] the terminal's key encoder takes and
-//! pushed into the terminal — plus the pointer half (row 5.3) and the
-//! keyboard focus half (row 5.4) behind the same links, and the
-//! cursor-shape hook (row 5.5). Row 8.1 wires the dispatch state to the
-//! hooks here.
+//! The seat side of the wayland panel thread (replace-gtk-with-wayland
+//! D8): the keyboard half — the key events the toolkit's `KeyboardHandler`
+//! delivers are translated into the same [`crate::term::input::KeyInput`]
+//! the terminal's key encoder takes and pushed into the terminal — plus the
+//! pointer half, the keyboard focus half and the cursor-shape hook behind
+//! the same links. The panel state's seat handlers dispatch the toolkit's
+//! seat events into the hooks here.
 //!
-//! The hooks take the pieces the row 8.1 dispatch hands them (the toolkit's
-//! `KeyEvent`, `RawModifiers`, keymap string) and hold no Wayland objects of
-//! their own, so every rule is testable without a display
-//! (`port-to-rust` D10); the live-compositor behaviour is 10.1's.
+//! The hooks take the pieces the toolkit hands them (the `KeyEvent`,
+//! `RawModifiers`, keymap string) and hold no Wayland objects of their own,
+//! so every rule is testable without a display (`port-to-rust` D10); the
+//! live-compositor behaviour is exercised on niri.
 //!
 //! Panics never cross back into calloop or the compositor (D5): every hook
 //! runs its body through the shared [`crate::guard`] with the panel's shared
-//! latch, the way the GDK path's controller closures do.
+//! latch.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -42,16 +41,16 @@ pub mod xkb;
 use focus::FocusSide;
 use pointer::PointerSide;
 
-/// The seat hooks' links: everything the hooks reach outside this module. The row 8.1 wiring
-/// assembles one value from the panel state; the pointer and focus hooks
+/// The seat hooks' links: everything the hooks reach outside this module. The panel state's
+/// setup assembles one value from its parts; the pointer and focus hooks
 /// take the whole set.
 #[derive(Clone)]
 pub struct SeatLinks {
     /// The terminal the encoders push into.
     pub terminal: Rc<RefCell<Terminal>>,
-    /// The anim row's draw offset: the drawing shift that keeps the grid
+    /// The width tween's draw offset: the drawing shift that keeps the grid
     /// against the docked edge while the surface animates; pointer x is
-    /// adjusted by it, like the GDK path's `on_mouse`.
+    /// adjusted by it so the mouse reports land on the drawn grid.
     pub draw_offset: Rc<dyn Fn() -> f64>,
     /// Whether the panel holds keyboard focus; the renderer reads it for
     /// the focus accent (`g_focused`).
@@ -71,14 +70,14 @@ impl std::fmt::Debug for SeatLinks {
     }
 }
 
-/// The seat side's hooks (rows 5.1 to 5.5): one type the row 8.1 dispatch
-/// delegates the toolkit's keyboard and pointer events to.
+/// The seat side's hooks: one type the panel state's seat handlers
+/// delegate the toolkit's keyboard and pointer events to.
 #[derive(Debug)]
 pub struct SeatSide {
     links: SeatLinks,
     keyboard: keyboard::KeyboardSide,
-    /// `pub(crate)` for the row 8.1 wiring: the pointer capability's
-    /// removal resets the cursor-shape device through
+    /// `pub(crate)` for the panel state's seat handlers: the pointer
+    /// capability's removal resets the cursor-shape device through
     /// [`PointerSide::set_cursor`], the only path that drops it.
     pub(crate) pointer: PointerSide,
     focus: FocusSide,
@@ -87,7 +86,7 @@ pub struct SeatSide {
 impl SeatSide {
     /// A seat side over the panel's links. The keyboard half starts with no
     /// keymap and no modifiers held, the pointer half with no cursor-shape
-    /// device (row 5.5's [`SeatSide::bind_cursor_shape`] installs one).
+    /// device (the [`SeatSide::bind_cursor_shape`] below installs one).
     #[must_use]
     pub fn new(links: SeatLinks) -> Self {
         SeatSide {
@@ -98,7 +97,7 @@ impl SeatSide {
         }
     }
 
-    /// One keymap update (row 5.1): the seat's own xkb keymap and state
+    /// One keymap update: the seat's own xkb keymap and state
     /// recompile from the compositor's keymap string.
     pub fn keymap_updated(&mut self, keymap: &str) {
         let poisoned = self.links.poisoned.clone();
@@ -107,7 +106,7 @@ impl SeatSide {
         });
     }
 
-    /// One modifiers event (row 5.1): the xkb state and the encoder's
+    /// One modifiers event: the xkb state and the encoder's
     /// modifier bits update together.
     pub fn modifiers_updated(&mut self, raw: RawModifiers, layout: u32, mods: SctkModifiers) {
         let poisoned = self.links.poisoned.clone();
@@ -116,7 +115,7 @@ impl SeatSide {
         });
     }
 
-    /// A key press (row 5.1): the translated
+    /// A key press: the translated
     /// [`crate::term::input::KeyInput`] reaches the terminal's key encoder.
     pub fn key_pressed(&mut self, event: &KeyEvent) {
         let poisoned = self.links.poisoned.clone();
@@ -127,7 +126,7 @@ impl SeatSide {
         });
     }
 
-    /// A key release (row 5.1): the release reaches the encoder, which sends
+    /// A key release: the release reaches the encoder, which sends
     /// it only when the child asked for release reports.
     pub fn key_released(&mut self, event: &KeyEvent) {
         let poisoned = self.links.poisoned.clone();
@@ -138,7 +137,7 @@ impl SeatSide {
         });
     }
 
-    /// A repeat from the toolkit's calloop repeat source (row 5.2): sent as
+    /// A repeat from the toolkit's calloop repeat source: sent as
     /// [`crate::term::input::KeyAction::Repeat`] while the repeat gate still
     /// has the key armed.
     pub fn key_repeated(&mut self, event: &KeyEvent) {
@@ -150,14 +149,15 @@ impl SeatSide {
         });
     }
 
-    /// The keyboard entered the surface (row 5.4): the focus accent's flag
+    /// The keyboard entered the surface: the focus accent's flag
     /// goes up, the redraw queues it into the next frame and the focus gain
-    /// is reported — the triggers the GDK path's focus controller had.
+    /// is reported — the enter and the leave are the accent's and the
+    /// reports' only triggers (D8).
     pub fn keyboard_entered(&mut self) {
         self.focus.entered();
     }
 
-    /// The keyboard left the surface (rows 5.2 and 5.4): the repeat stops
+    /// The keyboard left the surface: the repeat stops
     /// and the focus accent comes down with its focus-loss report — the two
     /// halves of the one `wl_keyboard.leave` event.
     pub fn keyboard_left(&mut self) {
@@ -168,7 +168,7 @@ impl SeatSide {
         self.focus.left();
     }
 
-    /// One toolkit pointer event (row 5.3): `kind` and `position` come from
+    /// One toolkit pointer event: `kind` and `position` come from
     /// the `PointerEvent` the toolkit's `PointerHandler` delivers, one call
     /// per event of a frame. The translation and its terminal pushes run
     /// under the shared guard (D5); the modifiers are the keyboard side's
@@ -178,11 +178,12 @@ impl SeatSide {
         self.pointer.frame(kind, position, &self.links, mods);
     }
 
-    /// Bind the cursor-shape global for the panel pointer (row 5.5): when
+    /// Bind the cursor-shape global for the panel pointer: when
     /// the compositor offers `wp_cursor_shape_manager_v1`, the pointer gets
     /// a shape device and [`SeatSide::pointer_frame`] sets the default shape
     /// on each enter; without the global the pointer cursor stays unset.
-    /// Call once, at the row 8.1 bind, after the pointer exists.
+    /// Call once, when the pointer capability arrives, after the pointer
+    /// exists.
     pub fn bind_cursor_shape<D>(
         &mut self,
         globals: &GlobalList,
@@ -197,7 +198,7 @@ impl SeatSide {
             .set_cursor(cursor::CursorShape::bind(globals, qh, pointer));
     }
 
-    /// One `repeat_info` update (row 5.2): the compositor's rate decides
+    /// One `repeat_info` update: the compositor's rate decides
     /// whether any key repeats.
     pub fn repeat_info_updated(&mut self, info: &RepeatInfo) {
         let poisoned = self.links.poisoned.clone();
@@ -303,7 +304,7 @@ xkb_keymap {
     }
 
     /// A key press flows through the seat side into the pty: the terminal
-    /// encodes the translated `KeyInput` like the GDK path's push would.
+    /// encodes the translated `KeyInput`.
     #[test]
     fn a_key_press_reaches_the_pty() {
         let (mut seat, _links, writes) = seat_side();
@@ -318,7 +319,7 @@ xkb_keymap {
         assert_eq!(take(&writes), Vec::new());
     }
 
-    /// A repeat flows through the seat side as a repeat event (row 5.2):
+    /// A repeat flows through the seat side as a repeat event:
     /// with the kitty report-all flags the child receives the repeat
     /// report, and a release or a keyboard leave stops the repeats.
     #[test]
@@ -349,8 +350,8 @@ xkb_keymap {
     }
 
     /// A repeat carries the current modifiers' character: Shift tapped
-    /// while a key is held shifts the repeats the way the GDK path's
-    /// re-translation does — the toolkit's cached repeat event still
+    /// while a key is held shifts the repeats, because the state re-derives
+    /// the keysym — the toolkit's cached repeat event still
     /// carries the press-time keysym and text.
     #[test]
     fn a_repeat_after_shift_went_down_encodes_the_shifted_character() {
@@ -389,7 +390,7 @@ xkb_keymap {
     }
 
     /// Until a `repeat_info` arrives, the seat side sends no repeats — the
-    /// compositor's rate is the only source (row 5.2).
+    /// compositor's rate is the only source.
     #[test]
     fn repeats_wait_for_the_repeat_info() {
         let (mut seat, _links, writes) = seat_side();
@@ -410,7 +411,7 @@ xkb_keymap {
     }
 
     /// Keyboard enter and leave drive the accent and the focus reports
-    /// through the seat side (row 5.4): the enter turns the focused flag on
+    /// through the seat side: the enter turns the focused flag on
     /// and reports the gain, the leave clears it, reports the loss and stops
     /// a running repeat.
     #[test]
@@ -446,10 +447,10 @@ xkb_keymap {
         );
     }
 
-    /// A pointer frame flows through the seat side into the pty (row 5.3):
+    /// A pointer frame flows through the seat side into the pty:
     /// the press reports in SGR cells, and the keyboard side's held
-    /// modifiers reach the report the way the GDK path's
-    /// `current_event_state` fed them.
+    /// modifiers reach the report, since Wayland pointer events carry
+    /// no modifiers of their own.
     #[test]
     fn a_pointer_frame_reaches_the_pty_with_the_held_modifiers() {
         let (mut seat, links, writes) = seat_side();

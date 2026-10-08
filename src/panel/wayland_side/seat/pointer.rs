@@ -1,24 +1,23 @@
-//! The pointer half of the seat side (replace-gtk-with-wayland D8, row
-//! 5.3): the pointer events the toolkit's `PointerHandler` delivers are
-//! translated into the same mouse and scroll pushes the GDK path's click,
-//! motion and scroll controllers make in `src/input.rs`.
+//! The pointer half of the seat side (replace-gtk-with-wayland D8): the
+//! pointer events the toolkit's `PointerHandler` delivers are
+//! translated into the mouse and scroll pushes the terminal's encoders
+//! take.
 //!
 //! The translation core is the pure [`PointerSide::handle`]: an event kind,
-//! the event's surface position and the anim row's draw offset go in, the
+//! the event's surface position and the width tween's draw offset go in, the
 //! terminal pushes come out. The toolkit's [`sctk kind`] carries no Wayland
 //! object, so the tests construct it directly and the rules run without a
-//! display (`port-to-rust` D10); the live-compositor behaviour is 10.1's.
+//! display (`port-to-rust` D10); the live-compositor behaviour is exercised
+//! on niri.
 //!
-//! The axis mapping follows the GDK path's observable behaviour, which the
-//! Wayland backend produces from the same protocol events: a frame with
+//! The axis mapping follows the Wayland pointer protocol: a frame with
 //! wheel motion — a `value120` sum, or a discrete step on a pre-v8 pointer —
-//! reports wheel units divided out of the 120ths (`value120/120`, exactly
-//! the delta `gdk_scroll_event_new_value120` stores), and a frame with only
-//! continuous motion reports the raw surface-space values as surface units,
-//! which the terminal counts a tenth of a notch each. Wheel motion wins the
-//! frame, like the GDK backend's flush picks one event per frame; the
-//! terminal's own notch accumulator absorbs the fractional wheel units of a
-//! high-resolution wheel, so no second accumulator lives here.
+//! reports wheel units divided out of the 120ths (`value120/120`), and a
+//! frame with only continuous motion reports the raw surface-space values as
+//! surface units, which the terminal counts a tenth of a notch each. Wheel
+//! motion wins the frame; the terminal's own notch accumulator absorbs the
+//! fractional wheel units of a high-resolution wheel, so no second
+//! accumulator lives here.
 //!
 //! [`sctk kind`]: smithay_client_toolkit::seat::pointer::PointerEventKind
 
@@ -62,7 +61,8 @@ pub enum PointerOutcome {
     },
 }
 
-/// The pointer side's dispatch: the cursor-shape device row 5.5 binds (an
+/// The pointer side's dispatch: the cursor-shape device the
+/// pointer capability's bind installs (an
 /// absent one until then) and the pure translation over it.
 #[derive(Debug, Default)]
 pub struct PointerSide {
@@ -70,7 +70,7 @@ pub struct PointerSide {
 }
 
 impl PointerSide {
-    /// Install the cursor-shape device the row 5.5 bind produced. A seat
+    /// Install the cursor-shape device the capability bind produced. A seat
     /// side starts with an absent device, which sets no shape.
     pub fn set_cursor(&mut self, cursor: CursorShape) {
         self.cursor = cursor;
@@ -79,13 +79,11 @@ impl PointerSide {
     /// Translate one pointer event into the terminal pushes it feeds. Pure:
     /// no state, so a repeated call answers the same.
     ///
-    /// Enter and leave translate to nothing — the GDK path has no mouse
-    /// counterpart for them — and only set the cursor shape (row 5.5,
+    /// Enter and leave translate to no push — they have no mouse
+    /// counterpart — and only set the cursor shape (the
     /// [`PointerSide::frame`]). The event's position already tracks the
-    /// pointer: the toolkit updates it on enter and motion, the same events
-    /// the GDK path's press and motion handlers record it from, so a
-    /// release and an axis report the last recorded position like the GDK
-    /// path's stored `g_last_x`/`g_last_y` do.
+    /// pointer: the toolkit updates it on enter and motion, so a
+    /// release and an axis report the last recorded position.
     #[must_use]
     pub fn handle(
         &mut self,
@@ -93,8 +91,8 @@ impl PointerSide {
         position: (f64, f64),
         draw_offset: f64,
     ) -> Vec<PointerOutcome> {
-        // Only the x axis shifts with the tween's draw offset, like the GDK
-        // path's on_mouse (`x - draw_offset`).
+        // Only the x axis shifts with the tween's draw offset (`x -
+        // draw_offset`): the reports must land on the drawn grid.
         let (x, y) = position;
         let x = x - draw_offset;
         match kind {
@@ -126,10 +124,10 @@ impl PointerSide {
     }
 
     /// One pointer event of a frame, dispatched: the cursor shape on enter
-    /// (row 5.5) and the translation's pushes into the terminal, all under
+    /// and the translation's pushes into the terminal, all under
     /// the shared guard (D5). `mods` are the keyboard side's last modifier
     /// report — Wayland pointer events carry none — and reach the mouse and
-    /// scroll encoders like the GDK path's `current_event_state` did.
+    /// scroll encoders with the event.
     pub fn frame(
         &mut self,
         kind: &PointerEventKind,
@@ -167,14 +165,12 @@ impl PointerSide {
     }
 }
 
-/// Translate an evdev button code onto the encoder's button, the composition
-/// the GDK path applies: the Wayland backend maps `BTN_LEFT`/`BTN_MIDDLE`/
-/// `BTN_RIGHT` to the primary/middle/secondary numbers and puts "all
-/// additional buttons after the old 4-7 scroll ones" (`button - BTN_LEFT +
-/// 5`, so the back button `BTN_SIDE` is 8 and the forward button `BTN_EXTRA`
-/// is 9), and `button_from_gdk` reads 8 and 9 as the eighth and ninth
-/// buttons. `BTN_FORWARD`, `BTN_BACK` and `BTN_TASK` land on 10..=12, which
-/// `button_from_gdk` refuses, so they stay unknown like on the GDK path.
+/// Translate an evdev button code onto the encoder's button:
+/// `BTN_LEFT`/`BTN_MIDDLE`/`BTN_RIGHT` map to the primary/middle/secondary
+/// numbers, the back button `BTN_SIDE` to the eighth and the forward button
+/// `BTN_EXTRA` to the ninth (the button numbers past the old 4-7 scroll
+/// ones). `BTN_FORWARD`, `BTN_BACK` and `BTN_TASK` have no encoder number
+/// and stay [`MouseButton::Unknown`].
 #[must_use]
 pub fn button_from_evdev(code: u32) -> MouseButton {
     match code {
@@ -189,9 +185,8 @@ pub fn button_from_evdev(code: u32) -> MouseButton {
 
 /// The wheel delta of one axis in whole notches: the frame's `value120` sum
 /// divided out of the 120ths, or — on a pre-v8 pointer whose compositor
-/// reports discrete steps instead — the step count itself, which is the
-/// value the GDK backend folds into its `value120` accumulator before the
-/// same division. Zero when the axis carries neither.
+/// reports discrete steps instead — the step count itself, one notch per
+/// step. Zero when the axis carries neither.
 #[must_use]
 fn wheel_delta(axis: &AxisScroll) -> f64 {
     if axis.value120 != 0 {
@@ -205,12 +200,11 @@ fn wheel_delta(axis: &AxisScroll) -> f64 {
 
 /// The scroll push for one axis frame. Wheel motion wins the frame — both
 /// axes go through the wheel units, and the continuous values a wheel frame
-/// also carries are dropped, like the GDK backend's flush picks one scroll
-/// event per frame. Without wheel motion, the continuous surface-space
-/// values are the surface units (a touchpad swipe, or a wheel behind a
-/// compositor that reports neither `value120` nor discrete steps, whose
-/// per-notch value the terminal's tenth-of-a-notch count still turns into
-/// one notch). A frame with neither — an axis stop, or an empty merge —
+/// also carries are dropped. Without wheel motion, the continuous
+/// surface-space values are the surface units (a touchpad swipe, or a wheel
+/// behind a compositor that reports neither `value120` nor discrete steps,
+/// whose per-notch value the terminal's tenth-of-a-notch count still turns
+/// into one notch). A frame with neither — an axis stop, or an empty merge —
 /// pushes nothing: the terminal would accumulate a zero delta.
 #[must_use]
 fn scroll_outcome(
@@ -292,8 +286,8 @@ mod tests {
         outcomes[0]
     }
 
-    /// The evdev buttons map the way the GDK path's composed translation
-    /// does: `BTN_LEFT`/`BTN_MIDDLE`/`BTN_RIGHT`, back (`BTN_SIDE`) as the
+    /// The evdev buttons map onto the encoder's numbers:
+    /// `BTN_LEFT`/`BTN_MIDDLE`/`BTN_RIGHT`, back (`BTN_SIDE`) as the
     /// eighth and forward (`BTN_EXTRA`) as the ninth button, everything else
     /// unknown.
     #[test]
@@ -303,8 +297,7 @@ mod tests {
         assert_eq!(button_from_evdev(BTN_RIGHT), MouseButton::Right);
         assert_eq!(button_from_evdev(BTN_SIDE), MouseButton::Eight);
         assert_eq!(button_from_evdev(BTN_EXTRA), MouseButton::Nine);
-        // The other codes the toolkit names land on GDK numbers 10..=12,
-        // which button_from_gdk refuses.
+        // The other codes the toolkit names have no encoder number.
         assert_eq!(button_from_evdev(BTN_FORWARD), MouseButton::Unknown);
         assert_eq!(button_from_evdev(BTN_BACK), MouseButton::Unknown);
         assert_eq!(button_from_evdev(BTN_TASK), MouseButton::Unknown);
@@ -313,7 +306,7 @@ mod tests {
 
     /// Motion and presses carry the draw offset on x only: the tween's
     /// drawing shift moves the grid against the docked edge, and the mouse
-    /// position follows the grid like the GDK path's `on_mouse`.
+    /// position follows the drawn grid.
     #[test]
     fn motion_and_presses_adjust_x_by_the_draw_offset() {
         let motion = PointerEventKind::Motion { time: 0 };
@@ -347,8 +340,7 @@ mod tests {
         );
     }
 
-    /// A release carries its button and position, like the GDK click
-    /// controller's released path.
+    /// A release carries its button and position.
     #[test]
     fn a_release_carries_its_button() {
         assert_eq!(
@@ -362,8 +354,7 @@ mod tests {
         );
     }
 
-    /// Enter and leave translate to nothing — the GDK path has no mouse
-    /// counterpart for them.
+    /// Enter and leave translate to no push.
     #[test]
     fn enter_and_leave_produce_no_pushes() {
         let mut side = PointerSide::default();
@@ -412,9 +403,8 @@ mod tests {
         );
     }
 
-    /// A pre-v8 pointer's discrete steps are wheel notches, the value the
-    /// GDK backend folds into its `value120` accumulator before the same
-    /// division.
+    /// A pre-v8 pointer's discrete steps are wheel notches, one notch per
+    /// step.
     #[test]
     fn discrete_steps_map_to_wheel_units() {
         let side = PointerSide::default();
@@ -450,8 +440,7 @@ mod tests {
     }
 
     /// Wheel motion wins the frame: the continuous values a wheel frame also
-    /// carries are dropped, like the GDK backend's flush picks one scroll
-    /// event per frame.
+    /// carries are dropped.
     #[test]
     fn a_wheel_frame_wins_over_continuous_values() {
         let side = PointerSide::default();

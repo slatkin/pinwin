@@ -1,16 +1,16 @@
-//! The seat's own xkbcommon keymap and state (replace-gtk-with-wayland D8,
-//! row 5.1): the toolkit hands the compositor's keymap over as a string and
+//! The seat's own xkbcommon keymap and state (replace-gtk-with-wayland D8):
+//! the toolkit hands the compositor's keymap over as a string and
 //! its [`sctk KeyEvent`] carries only the raw keycode, the keysym and the
-//! text. The GDK path's `on_key` needs three more values — the consumed
+//! text. The [`crate::term::input::KeyInput`] needs three more values — the consumed
 //! modifiers, the level-0 "unshifted" codepoint and the modifier flag — and
-//! design decision 8 has the keyboard handler build them from a keymap and
+//! D8 has the keyboard handler build them from a keymap and
 //! state of its own, fed by the same `update_keymap` string and the same
 //! `RawModifiers` and layout `update_modifiers` receives.
 //!
-//! The GDK numbers carry over unchanged: a Wayland keycode plus 8 is the
-//! keycode `key_from_keycode` and `gdk_display_map_keycode` both see, GDK
-//! keyvals and X keysyms share one numbering, and `xkbcommon`'s
-//! `keysym_to_utf32` is the same table lookup `gdk_keyval_to_unicode` does.
+//! The numberings line up: a Wayland keycode plus 8 is the XKB keycode the
+//! state lookups and the terminal's `key_from_keycode` both take, X keysyms
+//! are the keyvals the encoder sees, and `xkbcommon`'s
+//! `keysym_to_utf32` maps a keysym onto its Unicode codepoint.
 //!
 //! [`sctk KeyEvent`]: smithay_client_toolkit::seat::keyboard::KeyEvent
 
@@ -40,9 +40,9 @@ const XKB_MOD4: u32 = 1 << 6;
 #[derive(Clone, Copy, Debug)]
 pub struct KeyFacts {
     /// The XKB keycode: the Wayland keycode plus 8, the value
-    /// `key_from_keycode` and the GDK path both see.
+    /// `key_from_keycode` and the state lookups both take.
     pub keycode: u32,
-    /// The keysym of the event (the GDK path's keyval).
+    /// The keysym of the event, the [`crate::term::input::KeyInput`]'s keyval.
     pub keyval: u32,
     /// The modifiers consumed by producing the event's keysym, mapped onto
     /// the encoder's bits.
@@ -150,8 +150,8 @@ impl XkbKeyboard {
     }
 
     /// The facts of one key event (D8). `keysym` is the event's keysym, the
-    /// value the GDK path sees as the keyval; the rest is looked up in this
-    /// state.
+    /// value the [`crate::term::input::KeyInput`] carries as its keyval; the rest is looked up in
+    /// this state.
     #[must_use]
     pub fn facts(&self, raw_code: u32, keysym: u32) -> KeyFacts {
         KeyFacts {
@@ -169,8 +169,8 @@ impl XkbKeyboard {
     /// The xkb consumed mask covers the key type's own modifiers even when
     /// they are not held (a plain letter press reports Shift), so it is
     /// intersected with the effective modifier state — a modifier can only
-    /// be consumed while it is held, which is what the GDK path's
-    /// `consumed_modifiers` reports too.
+    /// be consumed while it is held, which is what the intersection
+    /// reports.
     #[must_use]
     fn consumed_mods(&self, raw_code: u32) -> Modifiers {
         let Some(keycode) = keycode(raw_code) else {
@@ -182,18 +182,16 @@ impl XkbKeyboard {
     }
 
     /// The level-0 codepoint for a hardware keycode (kitty's "unshifted"),
-    /// the way `select_unshifted_keyval` picks it on the GDK path: the
-    /// level-0 keysym of the modifiers event's layout when the key has one,
-    /// else the first layout that does. 0 when no layout has an answer.
+    /// the level-0 keysym of the modifiers event's layout when the key has
+    /// one, else the first layout that does. 0 when no layout has an answer.
     #[must_use]
     fn unshifted_codepoint(&self, raw_code: u32) -> u32 {
         let Some(keycode) = keycode(raw_code) else {
             return 0;
         };
         let layouts = self.keymap.num_layouts_for_key(keycode);
-        // The modifiers event's layout first — the GDK path prefers the
-        // entry matching the keyboard layout — then the first layout with a
-        // level-0 keysym, the fallback `select_unshifted_keyval` applies.
+        // The modifiers event's layout first, then the first layout with a
+        // level-0 keysym.
         if self.layout < layouts
             && let Some(sym) = self
                 .keymap
@@ -216,8 +214,8 @@ impl XkbKeyboard {
 }
 
 /// The XKB keycode of one Wayland key event: the raw keycode plus 8, the
-/// offset `gdk_display_map_keycode` and `key_from_keycode` both expect
-/// (`port-to-rust` row 5.1). `None` on the overflow an out-of-protocol
+/// offset the state lookups and the terminal's `key_from_keycode` both
+/// expect. `None` on the overflow an out-of-protocol
 /// keycode would need.
 #[must_use]
 fn keycode(raw_code: u32) -> Option<Keycode> {
@@ -344,7 +342,7 @@ xkb_keymap {
 
     /// Ctrl+letter: control is not consumed by producing the letter's keysym,
     /// so the encoder sees the whole Ctrl+key combination (the xkb rule the
-    /// GDK path's consumed-modifier value carries too).
+    /// consumed-modifier value carries).
     #[test]
     fn ctrl_is_not_consumed_by_a_letter() {
         let mut keyboard = keyboard();
@@ -369,7 +367,7 @@ xkb_keymap {
 
     /// A dead key: the keysym is a dead keysym with no Unicode answer, so
     /// the keyval codepoint is 0 (the encoder's own range check then drops
-    /// the synthetic text, like the GDK path's 0 does).
+    /// the synthetic text).
     #[test]
     fn a_dead_key_has_no_unicode_answer() {
         let keyboard = keyboard();
@@ -382,8 +380,7 @@ xkb_keymap {
 
     /// A non-US layout group: with the second group active, the same key
     /// produces the second group's letters and the unshifted codepoint
-    /// follows the active layout, the way the GDK path prefers the entry
-    /// matching the keyboard layout.
+    /// follows the active layout.
     #[test]
     fn a_second_group_moves_the_letter_and_the_unshifted_codepoint() {
         let mut keyboard = keyboard();
@@ -400,8 +397,7 @@ xkb_keymap {
     }
 
     /// A layout index the key does not have falls back to the first layout
-    /// with a level-0 keysym, the way `select_unshifted_keyval`'s fallback
-    /// picks the first level-0 entry.
+    /// with a level-0 keysym.
     #[test]
     fn an_out_of_range_layout_falls_back_to_the_first_group() {
         let mut keyboard = keyboard();

@@ -1,18 +1,18 @@
-//! The seat handlers (row 8.1's dispatch): the sctk `SeatHandler`,
-//! `KeyboardHandler` and `PointerHandler` impls the connection's event
-//! queue dispatches into, routing the seat's events into the [`SeatSide`]
-//! the session holds — the hooks rows 5.1 to 5.5 built — plus the
-//! capability bookkeeping that creates and drops the keyboard, the pointer
-//! and the pointer's cursor-shape device.
+//! The seat handlers on the panel thread (replace-gtk-with-wayland D8): the
+//! sctk `SeatHandler`, `KeyboardHandler` and `PointerHandler` impls the
+//! connection's event queue dispatches into, routing the seat's events into
+//! the [`SeatSide`] the session holds — the keyboard, pointer, focus and
+//! cursor-shape hooks — plus the capability bookkeeping that creates and
+//! drops the keyboard, the pointer and the pointer's cursor-shape device.
 //!
 //! The routing lives in the pure [`route_seat_event`], which the tests
 //! drive without a display (`port-to-rust` D10): a seat event belongs to
 //! the panel when its surface is the panel's — the reserve takes neither
-//! keyboard nor pointer (its empty input region, row 3.1) — and the hook
+//! keyboard nor pointer (its empty input region, replace-gtk-with-wayland D3) — and the hook
 //! call runs under the shared guard (D5). The live handler bodies stay a
 //! few lines each; everything touching a live seat — the capability
 //! objects, the toolkit's keymap and modifier events, the repeat timer —
-//! is exercised on niri in row 10.1.
+//! is exercised on niri.
 //!
 //! The toolkit's `wl_seat`, `wl_keyboard` and `wl_pointer` dispatch needs
 //! no macros of its own: the blanket `delegate_dispatch2!` in
@@ -52,7 +52,7 @@ pub(crate) enum CapabilityStep {
 /// The toolkit reports a capability only when it actually changed, so the
 /// hold cells are the belt for the handler's own bookkeeping: a repeated
 /// arrival never re-creates the keyboard or the pointer. The pointer's
-/// step covers its cursor-shape device too (row 5.5): a pointer drop
+/// step covers its cursor-shape device too: a pointer drop
 /// takes the device, a pointer create re-binds it.
 #[must_use]
 pub(crate) fn capability_step(held: bool, arriving: bool) -> CapabilityStep {
@@ -63,11 +63,11 @@ pub(crate) fn capability_step(held: bool, arriving: bool) -> CapabilityStep {
     }
 }
 
-/// The seat's capability objects (row 8.1): the keyboard and the pointer
+/// The seat's capability objects: the keyboard and the pointer
 /// the capability events created, held so a removed capability drops its
 /// object and a teardown drops both before the connection ends. The
 /// pointer's cursor-shape device is deliberately not held here — it lives
-/// in the seat side's pointer half (row 5.5), and a second handle would
+/// in the seat side's pointer half, and a second handle would
 /// keep the device alive after the seat side's reset drops it.
 #[derive(Debug, Default)]
 pub(crate) struct SeatObjects {
@@ -89,14 +89,14 @@ impl SeatObjects {
     }
 
     /// Drop the keyboard. The toolkit's repeat data dies with it, which
-    /// removes the repeat timer (row 5.2); the seat side's own repeat gate
+    /// removes the repeat timer; the seat side's own repeat gate
     /// is cleared by the caller's `keyboard_left`.
     fn release_keyboard(&mut self) {
         self.keyboard = None;
     }
 
     /// Drop the pointer. The caller resets the seat side's cursor shape,
-    /// which drops the pointer's cursor-shape device with it (row 5.5).
+    /// which drops the pointer's cursor-shape device with it.
     fn release_pointer(&mut self) {
         self.pointer = None;
     }
@@ -110,7 +110,7 @@ impl SeatObjects {
     }
 }
 
-/// Route one seat event into the seat side (row 8.1): the hook runs when
+/// Route one seat event into the seat side: the hook runs when
 /// the event belongs to the panel (`panel` — the reserve takes neither
 /// keyboard nor pointer, and a torn-down session has no surfaces) and the
 /// session is bound, always under the shared guard (D5). Returns the
@@ -148,7 +148,7 @@ impl PanelState {
     }
 
     /// Whether a seat event's surface is the panel's: the reserve takes
-    /// neither keyboard nor pointer (its empty input region, row 3.1) and
+    /// neither keyboard nor pointer (its empty input region, replace-gtk-with-wayland D3) and
     /// a torn-down session has no surfaces left to match.
     fn on_panel_surface(&self, surface: &wl_surface::WlSurface) -> bool {
         self.session
@@ -157,7 +157,7 @@ impl PanelState {
             .is_some_and(|surfaces| surfaces.is_panel_surface(surface))
     }
 
-    /// One capability event (row 8.1): create the capability's object on
+    /// One capability event: create the capability's object on
     /// arrival, drop the held one on removal, and re-create nothing. The
     /// capability events dispatch from the loop, after the bind stored the
     /// session.
@@ -197,7 +197,7 @@ impl PanelState {
                 let Some(session) = self.session.as_mut() else {
                     return;
                 };
-                // The repeat callback (row 5.2): the toolkit's repeat timer
+                // The repeat callback: the toolkit's repeat timer
                 // runs it with the dispatch state, and the repeat becomes a
                 // `key_repeated` hook call under the shared guard (D5) —
                 // the same hook the toolkit's own repeat delivery takes
@@ -227,12 +227,12 @@ impl PanelState {
                     return;
                 };
                 // The pointer without a theme: the cursor shape comes from
-                // the cursor-shape protocol (row 5.5), not from loaded
+                // the cursor-shape protocol, not from loaded
                 // surfaces, so `get_pointer` needs no shm or theme. The
                 // same degradation as the keyboard's covers a refusal.
                 if let Ok(pointer) = session.seat.get_pointer(qh, seat) {
                     // The cursor-shape device is created once per pointer,
-                    // at the capability's arrival (row 5.5); the enter
+                    // at the capability's arrival; the enter
                     // serial the shape request needs travels in the enter
                     // event the pointer handler routes.
                     session
@@ -254,13 +254,12 @@ impl PanelState {
             Capability::Keyboard => {
                 // The dropped keyboard takes the toolkit's repeat source
                 // with it; `keyboard_left` stops the seat side's own repeat
-                // gate and reports the focus loss the gone keyboard ends
-                // (rows 5.2 and 5.4).
+                // gate and reports the focus loss the gone keyboard ends.
                 session.seat_objects.release_keyboard();
                 session.seat_side.keyboard_left();
             }
             Capability::Pointer => {
-                // The cursor-shape device is the pointer's (row 5.5): the
+                // The cursor-shape device is the pointer's: the
                 // reset drops it with the pointer, so no stale device
                 // outlives the capability it was made for.
                 session.seat_objects.release_pointer();
@@ -270,11 +269,11 @@ impl PanelState {
         }
     }
 
-    /// Release the seat's objects at the teardown (row 8.1's seat
-    /// wiring), in a defined order: the keyboard first — its repeat source
-    /// dies with it, removing the repeat timer (row 5.2) — then the
+    /// Release the seat's objects at the teardown, in a defined order: the
+    /// keyboard first — its repeat source
+    /// dies with it, removing the repeat timer — then the
     /// pointer, whose cursor-shape device dies through the seat side's
-    /// reset (row 5.5). The connection outlives the loop's last dispatch,
+    /// reset. The connection outlives the loop's last dispatch,
     /// so the destroy requests still reach the compositor. The focus
     /// accent needs no leave report here: the teardown ends the panel and
     /// its child together, and the flag and the encoder die with the
@@ -361,8 +360,8 @@ impl KeyboardHandler for PanelState {
         _raw: &[u32],
         _keysyms: &[keyboard::Keysym],
     ) {
-        // Only the panel's enter drives the accent and the focus reports
-        // (row 5.4); the reserve never takes the keyboard.
+        // Only the panel's enter drives the accent and the focus reports;
+        // the reserve never takes the keyboard.
         if self.on_panel_surface(surface) {
             seat_hook(self, SeatSide::keyboard_entered);
         }
@@ -377,7 +376,7 @@ impl KeyboardHandler for PanelState {
         _serial: u32,
     ) {
         // The leave stops the repeat and drops the accent with its
-        // focus-loss report (rows 5.2 and 5.4).
+        // focus-loss report.
         if self.on_panel_surface(surface) {
             seat_hook(self, SeatSide::keyboard_left);
         }
@@ -414,7 +413,7 @@ impl KeyboardHandler for PanelState {
         event: KeyEvent,
     ) {
         // The compositor's own repeat delivery; the calloop repeat callback
-        // covers the compositors that do not send one (row 5.2).
+        // covers the compositors that do not send one.
         seat_hook(self, |side| side.key_repeated(&event));
     }
 
@@ -464,9 +463,9 @@ impl PointerHandler for PanelState {
     ) {
         for event in events {
             // The reserve takes no pointer (its empty input region): only
-            // the panel's events reach the seat side (row 5.3). An enter
+            // the panel's events reach the seat side. An enter
             // among them sets the default cursor shape through the seat
-            // side's own frame handling (row 5.5) — the serial the request
+            // side's own frame handling — the serial the request
             // needs travels in the event kind.
             let panel = self.on_panel_surface(&event.surface);
             let poisoned = self.poisoned.clone();
@@ -628,7 +627,7 @@ xkb_keymap {
 
     /// A pointer event whose surface decision says panel routes into the
     /// seat side and reaches the pty; the same event for the reserve —
-    /// which takes no pointer — changes nothing (row 5.3's surface filter).
+    /// which takes no pointer — changes nothing (the surface filter).
     #[test]
     fn a_pointer_event_routes_for_the_panel_and_not_for_the_reserve() {
         let mut fixture = seat_fixture();
@@ -683,7 +682,7 @@ xkb_keymap {
         );
     }
 
-    /// A routed repeat reaches the pty as a repeat report (row 5.2), and a
+    /// A routed repeat reaches the pty as a repeat report, and a
     /// latched panel runs no further hooks (D5).
     #[test]
     fn a_routed_repeat_reaches_the_pty_and_the_latch_stops_the_hooks() {

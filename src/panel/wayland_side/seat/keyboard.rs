@@ -1,12 +1,13 @@
-//! The keyboard half of the seat side (replace-gtk-with-wayland D8, row
-//! 5.1): the key events the toolkit's `KeyboardHandler` delivers are
-//! translated into the same [`KeyInput`] the GDK path builds, from a keymap
+//! The keyboard half of the seat side (replace-gtk-with-wayland D8): the
+//! key events the toolkit's `KeyboardHandler` delivers are translated into
+//! the [`KeyInput`] the terminal's key encoder takes, from a keymap
 //! and state of pinwin's own — the toolkit's `KeyEvent` carries neither the
-//! consumed modifiers nor the level-0 keysym `on_key` needs.
+//! consumed modifiers nor the level-0 keysym and modifier flag the
+//! [`KeyInput`] needs.
 //!
-//! The row 8.1 wiring calls [`KeyboardSide`] from the `KeyboardHandler` impl
-//! the dispatch state carries; the type itself holds no Wayland objects, so
-//! every rule here is testable without a display (`port-to-rust` D10).
+//! The panel state's `KeyboardHandler` impl calls [`KeyboardSide`]; the type
+//! itself holds no Wayland objects, so every rule here is testable without a
+//! display (`port-to-rust` D10).
 
 use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, Modifiers as SctkModifiers, RawModifiers, RepeatInfo,
@@ -18,20 +19,19 @@ use super::xkb::XkbKeyboard;
 
 /// The keyboard side's translation state: the xkb keymap and state once the
 /// compositor's keymap string has arrived, the modifier bits the last
-/// modifiers event reported, and the repeat gate (row 5.2).
+/// modifiers event reported, and the repeat gate.
 #[derive(Debug, Default)]
 pub struct KeyboardSide {
     /// `None` until the first `update_keymap`: the keymap precedes the key
-    /// events on the wire, so a key event before it is dropped like the GDK
-    /// path drops a key with no display to look the keycode up in.
+    /// events on the wire, so a key event before it is dropped: there is
+    /// no xkb state to translate it with.
     xkb: Option<XkbKeyboard>,
     /// The encoder's modifier bits of the last modifiers event.
     mods: Modifiers,
     /// The last raw modifiers set and layout, re-applied to a new keymap so
     /// a mid-session keymap update keeps the held modifiers active.
     last_modifiers: Option<(RawModifiers, u32)>,
-    /// The repeat gate between the toolkit's calloop repeat and the terminal
-    /// (row 5.2).
+    /// The repeat gate between the toolkit's calloop repeat and the terminal.
     repeat: RepeatTracker,
 }
 
@@ -91,7 +91,7 @@ impl KeyboardSide {
         self.mods = mods_from_sctk(mods);
     }
 
-    /// A key press: the [`KeyInput`] the GDK path builds, and the repeat
+    /// A key press: the [`KeyInput`] to encode, and the repeat
     /// gate arms when the key is no modifier and the keymap repeats it.
     #[must_use]
     pub fn pressed(&mut self, event: &KeyEvent) -> Option<KeyInput> {
@@ -114,7 +114,7 @@ impl KeyboardSide {
         self.key_input(KeyAction::Release, event.raw_code, event.keysym.raw())
     }
 
-    /// A repeat from the toolkit's calloop repeat source (row 5.2): the
+    /// A repeat from the toolkit's calloop repeat source: the
     /// [`KeyInput`] when the gate still has the key armed, `None` when the
     /// repeat must not reach the terminal — released, left, a modifier, or
     /// a compositor repeat rate of 0. The facts come from pinwin's own xkb
@@ -132,12 +132,12 @@ impl KeyboardSide {
         self.key_input(KeyAction::Repeat, event.raw_code, keysym)
     }
 
-    /// The keyboard left the surface (row 5.2): the repeat stops.
+    /// The keyboard left the surface: the repeat stops.
     pub fn left(&mut self) {
         self.repeat.on_leave();
     }
 
-    /// One `repeat_info` update (row 5.2): the compositor's rate decides
+    /// One `repeat_info` update: the compositor's rate decides
     /// whether any key repeats; a rate of 0 disables it.
     pub fn repeat_info_updated(&mut self, info: &RepeatInfo) {
         self.repeat
@@ -145,7 +145,7 @@ impl KeyboardSide {
     }
 
     /// Build the encoder's view of one key event (D8): the same
-    /// [`KeyInput`] the GDK path's `on_key` fills, from the xkb state's
+    /// [`KeyInput`] every key event fills, from the xkb state's
     /// lookups and the keysym passed in — the event's own keysym for a
     /// press or release, the state's re-derived one for a repeat. `None`
     /// while no keymap has arrived.
@@ -167,9 +167,7 @@ impl KeyboardSide {
 }
 
 /// Map the toolkit's interpreted modifier flags onto the encoder's bits.
-/// Every flag the toolkit reports has an encoder bit, num lock included —
-/// the GDK path's `mods_from_gdk` has no num-lock mask and drops it, so the
-/// seat path reports one modifier more.
+/// Every flag the toolkit reports has an encoder bit, num lock included.
 #[must_use]
 pub fn mods_from_sctk(mods: SctkModifiers) -> Modifiers {
     let mut out = Modifiers::NONE;
@@ -194,8 +192,8 @@ pub fn mods_from_sctk(mods: SctkModifiers) -> Modifiers {
     out
 }
 
-/// The repeat gate between the toolkit's calloop repeat and the terminal
-/// (row 5.2). The toolkit schedules the repeats and stops them on release
+/// The repeat gate between the toolkit's calloop repeat and the terminal.
+/// The toolkit schedules the repeats and stops them on release
 /// and on keyboard leave itself; this gate re-checks the same rules so a
 /// repeat only reaches the terminal while its key is armed, is no modifier,
 /// repeats under the keymap, and the compositor's repeat rate is non-zero.
@@ -214,8 +212,8 @@ impl RepeatTracker {
     /// key the keymap repeats takes the armed slot. A modifier or a
     /// non-repeating press leaves the armed key alone — the toolkit keeps
     /// the held key's repeat running across such presses (its calloop
-    /// handler re-arms only for keys the keymap marks repeating), and the
-    /// GDK path keeps repeating the held key when a modifier is tapped.
+    /// handler re-arms only for keys the keymap marks repeating), so a
+    /// modifier tapped while a key is held keeps the held key repeating.
     pub fn on_press(&mut self, raw_code: u32, is_modifier: bool, repeats: bool) {
         if !is_modifier && repeats {
             self.armed = Some(raw_code);
@@ -356,8 +354,8 @@ xkb_keymap {
         );
     }
 
-    /// A press after the keymap arrives builds the same `KeyInput` the GDK
-    /// path builds: the +8 keycode, the keysym, the held modifiers, no
+    /// A press after the keymap arrives builds the encoder's `KeyInput`:
+    /// the +8 keycode, the keysym, the held modifiers, no
     /// consumed modifiers for a plain letter, and both codepoints.
     #[test]
     fn a_press_after_the_keymap_builds_the_gdk_shape() {
@@ -470,7 +468,7 @@ xkb_keymap {
         }
     }
 
-    /// A repeating key arms the gate and its repeats pass (row 5.2).
+    /// A repeating key arms the gate and its repeats pass.
     #[test]
     fn a_repeating_key_arms_and_repeats() {
         let mut keyboard = KeyboardSide::new();
@@ -499,7 +497,7 @@ xkb_keymap {
         assert!(keyboard.repeated(&key_event(RAW_Q, 0x71)).is_none());
     }
 
-    /// A keyboard leave stops any repeat (row 5.2's stop-on-leave rule).
+    /// A keyboard leave stops any repeat (D8's stop-on-leave rule).
     #[test]
     fn a_keyboard_leave_stops_the_repeat() {
         let mut keyboard = KeyboardSide::new();
@@ -524,8 +522,8 @@ xkb_keymap {
     /// A modifier pressed and released while a key is held leaves the held
     /// key's repeat armed: the toolkit keeps the old repeat running across
     /// a modifier press (it re-arms only for keys the keymap marks
-    /// repeating), and the GDK path keeps deleting when Shift is tapped
-    /// while Backspace is held.
+    /// repeating), so a Shift tapped while Backspace is held keeps the
+    /// held key deleting.
     #[test]
     fn a_modifier_press_keeps_the_armed_repeat() {
         let mut keyboard = KeyboardSide::new();

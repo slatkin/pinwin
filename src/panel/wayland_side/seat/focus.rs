@@ -1,7 +1,7 @@
-//! The keyboard-focus half of the seat side (replace-gtk-with-wayland D8,
-//! row 5.4): the keyboard enter and leave the toolkit's `KeyboardHandler`
-//! delivers drive the focus accent and the focus reports, the way the GDK
-//! path's focus controller does in `src/input.rs`'s `attach_focus`.
+//! The keyboard-focus half of the seat side (replace-gtk-with-wayland D8):
+//! the keyboard enter and leave the toolkit's `KeyboardHandler`
+//! delivers drive the focus accent and the focus reports — the enter and
+//! the leave are their only triggers.
 //!
 //! The enter sets the links' focused flag the renderer reads for the accent,
 //! queues a redraw so the accent appears in the next frame, and reports the
@@ -12,15 +12,14 @@
 //!
 //! Panics never cross back into calloop or the compositor (D5): both hooks
 //! run their bodies through the shared [`crate::guard`] with the links'
-//! latch, the way the GDK path's controller closures do.
+//! latch.
 
 use crate::guard::guard;
 
 use super::SeatLinks;
 
-/// The keyboard-focus hooks (row 5.4): one small type over the same kind of
-/// links the GDK path's focus closures take — the terminal handle, the
-/// focused flag, the redraw and the latch.
+/// The keyboard-focus hooks: one small type over the
+/// links — the terminal handle, the focused flag, the redraw and the latch.
 #[derive(Debug)]
 pub struct FocusSide {
     links: SeatLinks,
