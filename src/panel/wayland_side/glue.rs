@@ -195,8 +195,7 @@ impl PanelState {
     /// runs through it, each exactly once (the sizing's pushed-grid memory
     /// never repeats one). The closure owns clones of the shared terminal
     /// and the repaint flag, so the callers hold `&mut self` while it runs.
-    /// `None` on a headless state — the tests — where the sink degrades to
-    /// the winsize-only push. The winsize goes out
+    /// The winsize goes out
     /// at the session's resolved scale (device-pixel-cell-reports D4).
     pub(crate) fn grid_sink(&self) -> impl FnMut(Grid) + 'static {
         self.grid_sink_at(self.resolved_scale())
@@ -208,13 +207,13 @@ impl PanelState {
     /// resolved them — and stays unit-testable without a session. Every
     /// other caller uses [`PanelState::grid_sink`].
     pub(crate) fn grid_sink_at(&self, output_scale: FractionalScale) -> impl FnMut(Grid) + 'static {
-        let terminal = self.terminal.clone();
+        let terminal = Rc::clone(&self.render.terminal);
         let repaint = Rc::clone(&self.repaint);
         let stale = Rc::clone(&self.stale_grid_px);
         let fd = self.startup.fd();
         move |grid| {
             push_grid(
-                terminal.as_ref(),
+                Some(&terminal),
                 &repaint,
                 stale.as_ref(),
                 fd,
@@ -223,6 +222,74 @@ impl PanelState {
             );
         }
     }
+}
+
+/// The tests' constructor (typed-publish-path D4's pre-approved fallback):
+/// a valid state over a display-free byte path — the shared terminal, the
+/// repaint latch and the stale record its closure wires, the seat links
+/// over them and a renderer from [`test_renderer`], which these tests
+/// never draw with. [`run_thread`](super::run_thread) builds the same
+/// bundle in production; the helpers move onto [`PanelState::new`] in
+/// their own row.
+#[cfg(test)]
+impl PanelState {
+    pub(crate) fn headless(
+        handshake: super::super::handshake::Handshake,
+        poisoned: Poisoned,
+        inner: std::sync::Arc<super::Inner>,
+        startup: super::Startup,
+        cell: crate::layout::CellSize,
+    ) -> Self {
+        let path = byte_path(poisoned.clone(), startup.fd());
+        let focused = Rc::new(Cell::new(false));
+        let draw_offset = Rc::new(Cell::new(0.0));
+        let seat_links = seat_links(
+            path.terminal(),
+            path.repaint(),
+            &draw_offset,
+            &focused,
+            poisoned.clone(),
+        );
+        let render = super::tween_draw::TweenRender {
+            terminal: Rc::clone(path.terminal()),
+            renderer: test_renderer(),
+        };
+        Self::new(
+            handshake,
+            poisoned,
+            inner,
+            startup,
+            cell,
+            super::state::Wiring {
+                repaint: Rc::clone(path.repaint()),
+                stale_grid_px: Rc::clone(path.stale_grid_px()),
+                draw_offset,
+                seat_links,
+                render,
+            },
+        )
+    }
+}
+
+/// The tests' renderer: a real one over the monospace fallback (normal
+/// operation, no family needed) at scale 1 with the test theme. The tests
+/// that build a state never draw with it; the field just needs a valid
+/// value.
+#[cfg(test)]
+fn test_renderer() -> Rc<RefCell<Renderer>> {
+    let setup = FontSetup::resolve(&crate::fontconfig::FontConfig {
+        family: None,
+        size: 11.0,
+    })
+    .expect("the test renderer's font resolves");
+    let renderer = Renderer::new(
+        setup,
+        1.0,
+        crate::render::text_pass::test_support::THEME,
+        None,
+    )
+    .expect("the test renderer builds");
+    Rc::new(RefCell::new(renderer))
 }
 
 /// Push one derived grid to the terminal and the pty, in this order: the

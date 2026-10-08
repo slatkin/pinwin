@@ -79,7 +79,7 @@ pub(crate) mod tween;
 pub(crate) mod tween_draw;
 pub(crate) mod watchdog;
 
-use state::{BindFailure, PanelState};
+use state::{BindFailure, PanelState, Wiring};
 
 /// A command the host posts to a running panel thread (D2): an apply, a
 /// toggle, a show or a
@@ -398,22 +398,33 @@ fn run_thread(
     let focused = Rc::new(Cell::new(false));
     let draw_offset = Rc::new(Cell::new(0.0));
 
-    let mut state = PanelState::headless(handshake.clone(), poisoned.clone(), inner, startup, cell);
-    state.terminal = Some(Rc::clone(path.terminal()));
-    state.repaint = Rc::clone(path.repaint());
-    state.stale_grid_px = Rc::clone(path.stale_grid_px());
-    state.draw_offset = Rc::clone(&draw_offset);
-    state.seat_links = Some(glue::seat_links(
-        path.terminal(),
-        path.repaint(),
-        &draw_offset,
-        &focused,
+    // The state is built whole (typed-publish-path D4): the wiring bundle
+    // the thread assembles from the byte path — the shared terminal, the
+    // repaint latch, the stale record, the draw-offset cell, the seat
+    // links and the render bundle — in the one `PanelState::new` call.
+    let mut state = PanelState::new(
+        handshake.clone(),
         poisoned.clone(),
-    ));
-    state.render = Some(tween_draw::TweenRender {
-        terminal: Rc::clone(path.terminal()),
-        renderer,
-    });
+        inner,
+        startup,
+        cell,
+        Wiring {
+            repaint: Rc::clone(path.repaint()),
+            stale_grid_px: Rc::clone(path.stale_grid_px()),
+            draw_offset: Rc::clone(&draw_offset),
+            seat_links: glue::seat_links(
+                path.terminal(),
+                path.repaint(),
+                &draw_offset,
+                &focused,
+                poisoned.clone(),
+            ),
+            render: tween_draw::TweenRender {
+                terminal: Rc::clone(path.terminal()),
+                renderer,
+            },
+        },
+    );
 
     // The calloop loop exists before the bind: the
     // keyboard's repeat source installs itself from `new_capability`, which
@@ -526,24 +537,19 @@ fn run_loop(
     // D3); the
     // writes and the winsize pushes keep working, only the reads are gone.
     let tween_flag = state.tween.tween_flag();
-    let mut pty_source = state.render.as_ref().and_then(|render| {
-        let terminal = Rc::clone(&render.terminal);
-        let (fd, fd_slot, pty_poisoned) = pty.read_source();
-        // `.ok()`: a failed attach degrades to no read source (port-to-rust
-        // D3) — the writes and the winsize
-        // pushes keep working, only the reads are gone.
-        attach_calloop(
-            handle.clone(),
-            fd,
-            fd_slot,
-            tween_flag,
-            pty_poisoned,
-            move |data| terminal.borrow_mut().push_pty_data(data),
-        )
-        .ok()
-    });
-    // No terminal (unreachable on a production thread, which builds it
-    // before the bind): nothing to feed, and no source to attach.
+    // The terminal the pty source feeds is the render bundle's — the one
+    // shared terminal, valid from construction (typed-publish-path D4).
+    let terminal = Rc::clone(&state.render.terminal);
+    let (fd, fd_slot, pty_poisoned) = pty.read_source();
+    let mut pty_source = attach_calloop(
+        handle.clone(),
+        fd,
+        fd_slot,
+        tween_flag,
+        pty_poisoned,
+        move |data| terminal.borrow_mut().push_pty_data(data),
+    )
+    .ok();
 
     loop {
         if state.done {

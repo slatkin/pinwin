@@ -46,9 +46,10 @@ impl PanelState {
         let seat = SeatState::new(&globals, qh);
         // The seat side over the thread's links: the hooks the seat
         // handlers route into. The links stay on the
-        // state for the draw path; the side clones them. A state without
-        // links — the tests, which never bind — cannot get here.
-        let seat_side = SeatSide::new(self.seat_links.clone().ok_or(BindFailure::Internal)?);
+        // state for the draw path; the side clones them. Only a bound
+        // state gets here, and a bound state was built whole
+        // (typed-publish-path D4), links included.
+        let seat_side = SeatSide::new(self.seat_links.clone());
         // The panel surface is created with no output, so the compositor
         // places it on the focused output (D3); the first enter names it.
         let surface = compositor.create_surface_with_data(qh, None, 1, SurfaceId::Panel);

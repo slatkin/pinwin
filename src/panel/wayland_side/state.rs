@@ -3,10 +3,12 @@
 //! bound session's globals and the two layer surfaces, and the grid sizing
 //! the configures drive.
 //!
-//! The state exists in two phases. [`PanelState::headless`] builds the
-//! display-free core — the D5 latch, the start handshake, the loop-end flag
-//! and the handle state — before any Wayland object exists, which is what the
-//! command-handling tests run against (`port-to-rust` D10).
+//! The state is built whole (typed-publish-path D4): [`PanelState::new`]
+//! takes the wiring bundle the thread assembles from its byte path — the
+//! shared terminal (carried inside the render bundle and the seat links),
+//! the repaint latch, the stale pre-resize record, the draw-offset cell,
+//! the seat links and the render bundle — and the tests reach it through
+//! the `#[cfg(test)]` `headless` shim in [`super::glue`].
 //! [`PanelState::bind`] then binds the globals (D1: `wl_compositor`,
 //! `wl_shm` and `zwlr_layer_shell_v1` required, their absence is the spec's
 //! "no display" case), creates the panel surface and stores the session. From
@@ -21,7 +23,9 @@
 //! [`crate::guard::guard_always`] so a latched panel
 //! still ends.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
+#[cfg(test)]
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -40,7 +44,6 @@ use wayland_client::protocol::wl_output;
 use crate::guard::Poisoned;
 use crate::layout::{CellSize, Layout, OutputSize};
 use crate::surfaces::gap::{HeldGap, start_held_gap};
-use crate::term::Terminal;
 
 use super::super::handshake::{Handshake, StartOutcome};
 use super::Startup;
@@ -143,11 +146,6 @@ pub(crate) struct PanelState {
     /// the value is the measurement, not a startup input; the tests pass a
     /// synthetic one through the same parameter.
     pub(crate) cell: CellSize,
-    /// The shared terminal the thread owns: the pty read source
-    /// feeds it, the seat links and the tween's render bundle hold clones.
-    /// `None` on a headless state — the tests — and set by the production
-    /// thread before the bind, so every push and feed after sees it.
-    pub(crate) terminal: Option<Rc<RefCell<Terminal>>>,
     /// The repaint request the terminal's callbacks latch: the
     /// terminal's `queue_draw` closure sets it, and the loop reads and
     /// clears it after each dispatch, where the draw step turns it into a
@@ -172,8 +170,7 @@ pub(crate) struct PanelState {
     /// The seat links the thread built from its pieces: the draw reads
     /// the focus flag the accent draws from through them, and the seat
     /// handlers update the same shared cell when the Wayland events arrive.
-    /// `None` on a headless state — the tests.
-    pub(crate) seat_links: Option<SeatLinks>,
+    pub(crate) seat_links: SeatLinks,
     pub(crate) sizing: Sizing,
     /// The held gap the reserve surface draws (overlay-expand D2, D5):
     /// seeded from the startup layout's own choice — a pushing start holds
@@ -200,9 +197,10 @@ pub(crate) struct PanelState {
     pub(crate) tween_draw: Option<TweenDraw>,
     /// The render state the tween's wide draw reads (D7,
     /// [`super::tween_draw`]): the terminal and the handle to the thread's
-    /// one renderer. The thread fills it at start, so an animated
-    /// apply draws its wide cache instead of snapping.
-    pub(crate) render: Option<TweenRender>,
+    /// one renderer, built at start in the wiring bundle, so an animated
+    /// apply draws its wide cache instead of snapping. The terminal the
+    /// pty source and the seat links feed is this one.
+    pub(crate) render: TweenRender,
     pub(crate) session: Option<Session>,
     /// The frame ops the tween glue issued, in issue order (the
     /// recording seam, see [`FrameOp`]): appended by
@@ -234,22 +232,55 @@ pub(crate) enum BindFailure {
     Internal,
 }
 
+/// The wiring bundle one panel thread assembles at its start
+/// (typed-publish-path D4): the pieces [`run_thread`](super::run_thread)
+/// builds from the byte path, handed to [`PanelState::new`] whole so the
+/// state is valid from construction. The shared terminal rides inside the
+/// seat links and the render bundle; the repaint latch, the stale record
+/// and the draw-offset cell are the same cells the terminal's callbacks
+/// and the seat links hold clones of.
+pub(crate) struct Wiring {
+    /// The repaint request the terminal's callbacks latch and the loop
+    /// reads and clears after each dispatch.
+    pub(crate) repaint: Rc<Cell<bool>>,
+    /// The pixel width of the stale pre-resize grid the terminal's output
+    /// clears.
+    pub(crate) stale_grid_px: Rc<Cell<i32>>,
+    /// The docked-edge draw offset the frames publish and the pointer
+    /// mapping reads.
+    pub(crate) draw_offset: Rc<Cell<f64>>,
+    /// The seat links the seat handlers route the Wayland events into.
+    pub(crate) seat_links: SeatLinks,
+    /// The render bundle the tween's wide draw and the live frames read.
+    pub(crate) render: TweenRender,
+}
+
 impl PanelState {
-    /// The display-free core, before the session is bound (D10): the command
-    /// tests and the pre-bind window of [`super::run_thread`] both start
-    /// here. `cell` is the cell the thread measured from its font (D3);
+    /// The one constructor (typed-publish-path D4): the display-free core
+    /// — the D5 latch, the start handshake, the loop-end flag and the
+    /// handle state — plus the wiring bundle, so the state is valid from
+    /// construction and nothing on it is an `Option` the thread fills
+    /// later. `cell` is the cell the thread measured from its font (D3);
     /// without a cell no configure could derive a grid and the
     /// panel would silently never map, so it is a required input.
-    pub(crate) fn headless(
+    pub(crate) fn new(
         handshake: Handshake,
         poisoned: Poisoned,
         inner: Arc<super::Inner>,
         startup: Startup,
         cell: CellSize,
+        wiring: Wiring,
     ) -> Self {
         // The layout is read before the startup moves into the state
         // (serve-instance-socket D1: `Startup` is no longer `Copy`).
         let layout = startup.layout();
+        let Wiring {
+            repaint,
+            stale_grid_px,
+            draw_offset,
+            seat_links,
+            render,
+        } = wiring;
         PanelState {
             poisoned,
             handshake,
@@ -257,19 +288,18 @@ impl PanelState {
             inner,
             startup,
             cell,
-            terminal: None,
-            repaint: Rc::new(Cell::new(false)),
+            repaint,
             panel_size: None,
-            stale_grid_px: Rc::new(Cell::new(0)),
-            draw_offset: Rc::new(Cell::new(0.0)),
-            seat_links: None,
+            stale_grid_px,
+            draw_offset,
+            seat_links,
             sizing: Sizing::new(layout.cols(), cell),
             held: start_held_gap(layout, cell.width().get()),
             applied: layout,
             tween: TweenDriver::default(),
             visibility: Visibility::Shown,
             tween_draw: None,
-            render: None,
+            render,
             session: None,
             #[cfg(test)]
             frame_ops: RefCell::new(Vec::new()),
@@ -540,12 +570,12 @@ impl PanelState {
         else {
             return;
         };
-        if let Some(terminal) = &self.terminal {
-            terminal.borrow().scale_note().set(scale.units_120());
-        }
-        if let Some(render) = &self.render {
-            render.renderer.borrow_mut().set_scale(scale.as_f64());
-        }
+        self.render
+            .terminal
+            .borrow()
+            .scale_note()
+            .set(scale.units_120());
+        self.render.renderer.borrow_mut().set_scale(scale.as_f64());
     }
 
     /// Note the integer preferred buffer scale the compositor reported for

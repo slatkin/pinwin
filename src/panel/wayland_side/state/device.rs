@@ -108,6 +108,7 @@ mod tests {
     use crate::layout::{CellSize, Keyboard, Layout, Side};
     use crate::panel::handshake::Handshake;
     use crate::panel::wayland_side::sizing::Sizing;
+    use crate::panel::wayland_side::tween_draw::TweenRender;
     use crate::panel::wayland_side::{Inner, Startup, glue};
     use std::num::NonZeroU16;
     use std::os::fd::AsRawFd;
@@ -196,7 +197,14 @@ mod tests {
             startup,
             cell(),
         );
-        state.terminal = Some(Rc::clone(path.terminal()));
+        // The fixture's byte path replaces the shim's: the render bundle's
+        // terminal is the one the re-push feeds, and the repaint and stale
+        // cells are the path's (the renderer handle stays the shim's).
+        let renderer = Rc::clone(&state.render.renderer);
+        state.render = TweenRender {
+            terminal: Rc::clone(path.terminal()),
+            renderer,
+        };
         state.repaint = Rc::clone(path.repaint());
         state.stale_grid_px = Rc::clone(path.stale_grid_px());
         // Record the configure height the re-push re-derives its grid
@@ -257,7 +265,7 @@ mod tests {
             (640, 1943),
             "the re-push carries the new device pixels"
         );
-        let terminal = state.terminal.as_ref().expect("the byte path wired it");
+        let terminal = &state.render.terminal;
         let term = terminal.borrow();
         assert_eq!((term.cols(), term.rows()), (40, 67));
         assert_eq!(

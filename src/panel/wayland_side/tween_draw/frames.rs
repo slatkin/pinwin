@@ -79,13 +79,8 @@ impl PanelState {
             // The seat's focus flag is the accent's source (D8): the
             // redraw reads the renderer's flag, so it syncs from the
             // shared cell the seat links hold first.
-            let focused = self
-                .seat_links
-                .as_ref()
-                .is_some_and(|links| links.focused.get());
-            let Some(render) = self.render.clone() else {
-                return;
-            };
+            let focused = self.seat_links.focused.get();
+            let render = self.render.clone();
             render.renderer.borrow_mut().set_focused(focused);
             let Some(session) = self.session.as_mut() else {
                 return;

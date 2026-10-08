@@ -260,9 +260,7 @@ impl PanelState {
     /// the commit. The stale pre-resize width keys the docked-edge offset
     /// until the terminal produces output for the new width.
     pub fn draw_frame_at(&mut self, width: u32, height: u32) -> ServiceOutcome {
-        let Some(render) = self.render.clone() else {
-            return ServiceOutcome::Idle;
-        };
+        let render = self.render.clone();
         let Some(session) = self.session.as_ref() else {
             return ServiceOutcome::Idle;
         };
@@ -275,10 +273,7 @@ impl PanelState {
         // the draw syncs the renderer's flag from the shared cell the seat
         // links hold, so a focus enter the seat latched reaches the next
         // frame — and the wide draw's cache rebuilds read the same flag.
-        let focused = self
-            .seat_links
-            .as_ref()
-            .is_some_and(|links| links.focused.get());
+        let focused = self.seat_links.focused.get();
         let (theme, accent) = {
             let mut renderer = render.renderer.borrow_mut();
             renderer.set_focused(focused);

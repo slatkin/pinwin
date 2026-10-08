@@ -5,6 +5,7 @@ use crate::layout::{CellSize, Keyboard, Layout, OutputSize, Side};
 use crate::panel::PinwinError;
 use crate::panel::handshake::{Handshake, map_start};
 use crate::panel::wayland_side::sizing::Sizing;
+use crate::panel::wayland_side::tween_draw::TweenRender;
 use crate::pty::attach_calloop;
 use crate::render::font::FontBook;
 use crate::render::text_pass::test_support;
@@ -374,7 +375,14 @@ fn state_over_pty(master: &std::fs::File) -> StateOverPty {
         startup,
         cell,
     );
-    state.terminal = Some(Rc::clone(&terminal));
+    // The fixture's byte path replaces the shim's: the render bundle's
+    // terminal is the one the tests read back, and the repaint and stale
+    // cells are the path's (the renderer handle stays the shim's).
+    let renderer = Rc::clone(&state.render.renderer);
+    state.render = TweenRender {
+        terminal: Rc::clone(&terminal),
+        renderer,
+    };
     state.repaint = Rc::clone(&repaint);
     state.stale_grid_px = Rc::clone(&stale_px);
     (state, terminal, repaint, stale_px, pty)

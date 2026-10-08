@@ -133,9 +133,7 @@ impl PanelState {
         // Forcing the next frame to repaint everything makes the show's
         // configure always present. The gate lives on the thread's one
         // renderer, so the flag survives until that draw consumes it.
-        if let Some(render) = &self.render {
-            render.renderer.borrow_mut().invalidate();
-        }
+        self.render.renderer.borrow_mut().invalidate();
         if let Some(session) = self.session.as_mut()
             && let Some(surfaces) = session.surfaces.as_mut()
         {
@@ -502,15 +500,15 @@ mod tests {
         let term = terminal(cell);
         term.borrow_mut().push_pty_data(b"\x1b[?25lhi");
         let test_frame = frame(cell);
-        state.render = Some(TweenRender {
+        state.render = TweenRender {
             terminal: Rc::clone(&term),
             renderer: Rc::new(RefCell::new(renderer(setup))),
-        });
+        };
 
         // Two identical draws: the second plans nothing, the gate's clean
         // verdict — the case that left a re-shown idle panel unmapped.
         {
-            let panel = state.render.as_ref().expect("the render state");
+            let panel = &state.render;
             let mut renderer = panel.renderer.borrow_mut();
             let _first = renderer.draw(&mut term.borrow_mut(), &test_frame);
             assert_eq!(
@@ -524,7 +522,7 @@ mod tests {
         // show-time configure's — presents the whole surface.
         state.toggle();
         state.toggle();
-        let panel = state.render.as_ref().expect("the render state");
+        let panel = &state.render;
         let (w, h) = test_frame.device_size();
         assert_eq!(
             panel
@@ -552,15 +550,15 @@ mod tests {
         let term = terminal(cell);
         term.borrow_mut().push_pty_data(b"\x1b[?25lhi");
         let test_frame = frame(cell);
-        state.render = Some(TweenRender {
+        state.render = TweenRender {
             terminal: Rc::clone(&term),
             renderer: Rc::new(RefCell::new(renderer(setup))),
-        });
+        };
 
         // Two identical draws: the second plans nothing, the gate's clean
         // verdict.
         {
-            let panel = state.render.as_ref().expect("the render state");
+            let panel = &state.render;
             let mut renderer = panel.renderer.borrow_mut();
             let _first = renderer.draw(&mut term.borrow_mut(), &test_frame);
             assert_eq!(
@@ -574,7 +572,7 @@ mod tests {
         // so the next draw plans nothing and no commit follows.
         state.show();
         assert_eq!(state.visibility, Visibility::Shown);
-        let panel = state.render.as_ref().expect("the render state");
+        let panel = &state.render;
         assert_eq!(
             panel
                 .renderer
