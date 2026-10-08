@@ -25,7 +25,7 @@
 mod error;
 mod handshake;
 mod startup;
-pub mod wayland_side;
+pub(crate) mod wayland_side;
 
 pub use error::PinwinError;
 pub use startup::Startup;
