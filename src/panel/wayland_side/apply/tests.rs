@@ -225,8 +225,7 @@ fn an_apply_before_the_first_configure_records_the_columns() {
 }
 
 /// The production apply without a bound session is `NotLive` (D10): the
-/// headless core has no resolved output to validate against, the same
-/// lifecycle verdict the GTK side's missing monitor gives.
+/// headless core has no resolved output to validate against.
 #[test]
 fn an_apply_without_a_session_is_not_live() {
     let mut state = headless_state();
@@ -238,8 +237,9 @@ fn an_apply_without_a_session_is_not_live() {
     assert!(!state.done, "an apply does not end the thread");
 }
 
-/// The animated apply's staging defers the grid push (row 6.2): the
-/// staging records the target columns without deriving or pushing, and
+/// The animated apply's staging defers the grid push
+/// (replace-gtk-with-wayland D7): the staging records the target columns
+/// without deriving or pushing, and
 /// the finish pushes once through the sizing path — the new columns,
 /// the rows of the latest configure height.
 #[test]
@@ -272,8 +272,9 @@ fn an_animated_apply_defers_the_push_and_the_finish_pushes_once() {
     assert_eq!(pushed[0].rows(), 1080 / 16, "the recorded height's rows");
 }
 
-/// A snap apply during a running tween pushes at once (row 6.2): the
-/// stop relay drops the wide cache, cancels the driver and lifts the
+/// A snap apply during a running tween pushes at once
+/// (replace-gtk-with-wayland D7): the stop relay drops the wide cache,
+/// cancels the driver and lifts the
 /// sizing defer, so the deferred grid lands in the same apply.
 #[test]
 fn a_snap_apply_during_a_tween_pushes_at_once() {
@@ -309,7 +310,7 @@ fn a_snap_apply_during_a_tween_pushes_at_once() {
 }
 
 /// A snap apply whose staging the output rejects leaves a running tween
-/// alone — the relay runs after the staged mutation, the GTK publish's
+/// alone — the relay runs after the staged mutation, the
 /// reject-before-mutate order (overlay-expand D4) — and pushes nothing.
 #[test]
 fn a_rejected_snap_apply_leaves_the_tween_running() {
@@ -335,8 +336,7 @@ fn a_rejected_snap_apply_leaves_the_tween_running() {
 }
 
 /// A rejected animated staging restores the defer a running tween
-/// holds: the tween keeps deferring its pushes, the way the GTK
-/// publish's rejected apply leaves the tween's resize deferred.
+/// holds: the tween keeps deferring its pushes.
 #[test]
 fn a_rejected_animated_staging_keeps_the_running_tweens_defer() {
     let mut state = headless_state();
@@ -394,10 +394,11 @@ fn a_snap_apply_without_a_tween_pushes_once() {
 }
 
 /// A repeat animated apply of the same layout during a running tween
-/// leaves the tween running and the deferred push pending — the GTK
-/// publish's "a tween already heading for these columns keeps going": the
-/// repeat animates nothing, so it takes the quiet path and the stop relay
-/// does not run. The deferred push lands at the tween's finish.
+/// leaves the tween running and the deferred push pending — a tween
+/// already heading for these columns keeps going (the tween's retarget
+/// rule, replace-gtk-with-wayland D7): the repeat animates nothing, so
+/// it takes the quiet path and the stop relay does not run. The deferred
+/// push lands at the tween's finish.
 #[test]
 fn a_repeat_animated_apply_leaves_the_running_tween_alone() {
     let mut state = headless_state();

@@ -1,6 +1,4 @@
-//! The layout apply on the wayland surfaces (replace-gtk-with-wayland row
-//! 3.5): the shape of the GTK side's `Surfaces::publish`
-//! ([`crate::surfaces`]) without the tween — validation, the held gap,
+//! The layout apply on the wayland surfaces: validation, the held gap,
 //! covering layouts and side switches, applied at the final width.
 //!
 //! The pure decisions stay in [`crate::surfaces::gap`]: `staged_publish`
@@ -8,9 +6,10 @@
 //! state starts from, and the held gap is what the reserve surface follows —
 //! a covering apply leaves the strip where the last pushing layout put it,
 //! and a side switch moves it to the new side at the held width
-//! (overlay-expand D2). No tween runs yet, so the drawn gap is exactly the
-//! held one and `gap::reserve_gap`'s tweening case does not apply; group 6
-//! (decision 7) routes the animated applies through it.
+//! (overlay-expand D2). The non-animated applies run no tween, so the
+//! drawn gap is exactly the held one and `gap::reserve_gap`'s tweening
+//! case does not apply; the animated applies route through it
+//! (replace-gtk-with-wayland D7).
 //!
 //! `PanelState::apply_against` is the display-free seam (`port-to-rust`
 //! D10): the output and the grid-push sink are parameters, so the tests
@@ -40,7 +39,8 @@ pub(crate) struct StagedApply {
     pub(crate) held_gap: HeldGap,
 }
 
-/// One validated animated apply, staged (row 6.2): everything the wide
+/// One validated animated apply, staged (replace-gtk-with-wayland D7):
+/// everything the wide
 /// cache and the tween frames need, read before the apply mutated the
 /// applied layout and held gap. Constructed only by
 /// [`PanelState::stage_animated`] (`port-to-rust` D6).
@@ -70,8 +70,8 @@ pub(crate) struct StagedTween {
     pub(crate) duration_ms: u32,
 }
 
-/// Validate a layout the way `Surfaces::publish` does and stage the mutation
-/// a validated one may make: [`staged_publish`] runs the metrics and layout
+/// Validate a layout and stage the mutation a validated one may make:
+/// [`staged_publish`] runs the metrics and layout
 /// checks, so `None` is a rejected apply that leaves the applied state — the
 /// layout, the column count and the held gap — untouched.
 fn stage(output: OutputSize, cell: CellSize, held: HeldGap, layout: Layout) -> Option<StagedApply> {
@@ -120,25 +120,25 @@ fn surface_geometry(staged: &StagedApply, cell: CellSize) -> SurfaceGeometry {
 }
 
 impl PanelState {
-    /// The production apply (row 3.5, animated in row 6.2), the shape of
-    /// the GTK side's `dispatch_apply`: validate against the resolved
-    /// output, stage, move the held gap, push the grid through the row 3.3
-    /// sizing path — deferred to the tween's finish when the apply animates
-    /// — and write the geometry onto the two surfaces. Answers `NotLive`
-    /// while the output is unresolved (the GTK side's missing monitor) or
-    /// the surfaces are gone (torn down, the GTK side's closed),
+    /// The production apply: validate against the resolved output, stage,
+    /// move the held gap, push the grid through the sizing path — a layout
+    /// apply is one of the two push sources (replace-gtk-with-wayland D3)
+    /// — deferred to the tween's finish when the apply animates
+    /// (replace-gtk-with-wayland D7) — and write the geometry onto the two
+    /// surfaces. Answers `NotLive` while the output is unresolved or the
+    /// surfaces are torn down — a panel with nothing live cannot publish —
     /// `InvalidLayout` for a layout the output refuses, and `Applied`
     /// otherwise.
     pub(crate) fn apply(&mut self, layout: Layout, duration_ms: u32) -> PublishOutcome {
-        // The width animation is row 6.2 (decision 7): a positive duration
-        // between layouts that match in side and gutters tweens on the
-        // frame callbacks; every other apply takes the row 3.5 end state.
+        // The width animation (replace-gtk-with-wayland D7): a positive
+        // duration between layouts that match in side and gutters tweens
+        // on the frame callbacks; every other apply takes the end state.
         let Some(output) = self.session.as_ref().and_then(|session| session.resolved) else {
             return PublishOutcome::NotLive;
         };
         // A torn-down session has no surfaces to write, even though its
-        // resolved output still is: the panel is gone (NotLive, the same
-        // lifecycle verdict the GTK side's closed surfaces give).
+        // resolved output still is: the panel is gone, and `NotLive` is
+        // the verdict.
         if self
             .session
             .as_ref()
@@ -146,7 +146,7 @@ impl PanelState {
         {
             return PublishOutcome::NotLive;
         }
-        // While hidden (row 9.1, replace-gtk-with-wayland D4): the apply
+        // While hidden (replace-gtk-with-wayland D4): the apply
         // validates and stores the layout and resizes the grid as usual,
         // with no animation and nothing on screen — the next show uses it.
         // A hidden panel runs no tween (a hide ended any), so the animate
@@ -154,10 +154,10 @@ impl PanelState {
         if self.visibility == Visibility::Hidden {
             return self.apply_hidden(output, layout);
         }
-        // The animate decision (row 6.2) against the applied layout, the
-        // GTK path's `should_animate` rule. An animated apply whose columns
-        // and coverage the applied layout already has animates nothing (the
-        // GTK publish's rule): it stages the end state and applies the
+        // The animate decision (`tween::should_animate`,
+        // replace-gtk-with-wayland D7) against the applied layout. An
+        // animated apply whose columns and coverage the applied layout
+        // already has animates nothing: it stages the end state and applies the
         // geometry, leaving a running tween — already heading for these
         // columns — alone, its deferred push waiting for the finish. Only
         // the snap path runs the stop relay.
@@ -170,15 +170,14 @@ impl PanelState {
         self.apply_snap(output, layout)
     }
 
-    /// Whether an animated apply moves the width (row 6.2, the GTK
-    /// publish's second rule): only a change in the column count or the
-    /// push/cover choice does. An apply the animate rule accepts but that
-    /// changes neither restages quietly.
+    /// Whether an animated apply moves the width: only a change in the
+    /// column count or the push/cover choice does. An apply the animate
+    /// rule accepts but that changes neither restages quietly.
     fn animates_width(applied: &Layout, layout: &Layout) -> bool {
         layout.cols().get() != applied.cols().get() || layout.coverage() != applied.coverage()
     }
 
-    /// The hidden apply (row 9.1, replace-gtk-with-wayland D4): validate
+    /// The hidden apply (replace-gtk-with-wayland D4): validate
     /// and store the layout and push the derived grid through the sizing
     /// path as usual — the same half a shown snap apply runs — but with no
     /// tween, no surface write and no commit, so nothing appears and the
@@ -205,13 +204,14 @@ impl PanelState {
         }
     }
 
-    /// The snap apply (row 3.5, and row 6.2's animated-apply fallbacks): a
-    /// zero duration, an unanimateable layout, or an animated apply whose
-    /// wide cache could not be built. The stop relay of a running tween
-    /// runs after the staged mutation — the GTK publish cancels there too,
-    /// so a rejected apply leaves the tween running — and lifts the sizing
-    /// defer, so the deferred grid pushes here, once, through the sizing
-    /// path: the push the staging could not make while the defer held.
+    /// The snap apply: a zero duration, an unanimateable layout, or an
+    /// animated apply whose wide cache could not be built (the fallback of
+    /// [`Self::apply_animated`]). The stop relay of a running tween runs
+    /// after the staged mutation — so a rejected apply leaves the tween
+    /// running (the reject-before-mutate order, overlay-expand D4) — and
+    /// lifts the sizing defer, so the deferred grid pushes here, once,
+    /// through the sizing path: the push the staging could not make while
+    /// the defer held.
     fn apply_snap(&mut self, output: OutputSize, layout: Layout) -> PublishOutcome {
         let mut push = self.grid_sink();
         match self.apply_snap_against(output, layout, &mut push) {
@@ -223,11 +223,11 @@ impl PanelState {
         }
     }
 
-    /// The quiet apply (row 6.2): an animated apply whose columns and
-    /// coverage the applied layout already has. It stages the end state and
-    /// applies the geometry — the top and bottom gutters may still differ —
-    /// and leaves a running tween alone: the tween already heads for these
-    /// columns (the GTK publish's rule), so the stop relay does not run,
+    /// The quiet apply: an animated apply whose columns and coverage the
+    /// applied layout already has. It stages the end state and applies the
+    /// geometry — the top and bottom gutters may still differ — and leaves
+    /// a running tween alone: the tween already heads for these columns,
+    /// so the stop relay does not run,
     /// the wide cache stays and the deferred push waits for the finish.
     fn apply_quiet(&mut self, output: OutputSize, layout: Layout) -> PublishOutcome {
         let mut push = self.grid_sink();
@@ -240,13 +240,13 @@ impl PanelState {
         }
     }
 
-    /// The animated apply (row 6.2, D7): stage with the push deferred,
-    /// begin the tween from the current width, draw the grid once into the
-    /// wide cache — kept from an equal retarget, drawn fresh otherwise —
-    /// commit the begin frame at the from width with the first frame
-    /// callback requested before that commit (row 9.8). The frames then
-    /// carry the size, margins, viewport
-    /// crop, reserve zone and buffer until the tween's finish applies the
+    /// The animated apply (replace-gtk-with-wayland D7): stage with the
+    /// push deferred, begin the tween from the current width, draw the
+    /// grid once into the wide cache — kept from an equal retarget, drawn
+    /// fresh otherwise — commit the begin frame at the from width with the
+    /// first frame callback requested before that commit. The frames then
+    /// carry the size, margins, viewport crop, reserve zone and buffer
+    /// until the tween's finish applies the
     /// final geometry and pushes the deferred grid.
     fn apply_animated(
         &mut self,
@@ -263,7 +263,8 @@ impl PanelState {
         // previous tween's wide cache is taken, and an equal one survives
         // the retarget below.
         let previous = self.tween_draw.take();
-        // The frame log (row 6.3): built on the state, which reads the
+        // The frame log (replace-gtk-with-wayland D7): built on the state,
+        // which reads the
         // environment once and picks the session's presentation-time
         // source.
         let frame_log = self.new_frame_log();
@@ -275,33 +276,36 @@ impl PanelState {
             frame_log,
         );
 
-        // The wide cache (D7): a retarget keeps an equal one, otherwise the
-        // grid is drawn once into a fresh wide canvas. The upload and the
-        // scale read are the session's; the draw itself needs the render
-        // state, which row 8.1 fills — a cache that cannot be built or kept
-        // snaps the apply, because a tween has nothing to present.
+        // The wide cache (replace-gtk-with-wayland D7): a retarget keeps
+        // an equal one, otherwise the grid is drawn once into a fresh wide
+        // canvas. The upload and the scale read are the session's; the
+        // draw itself needs the render state, which the thread fills at
+        // start — a cache that cannot be built or kept snaps the apply,
+        // because a tween has nothing to present.
         let height = self.sizing.height();
         let cache = self.build_tween_cache(previous, &staged, height);
         let Some(holder) = cache else {
             return self.apply_snap(output, layout);
         };
         self.tween_draw = Some(holder);
-        // The begin frame's Wayland order (row 9.8): the first callback is
-        // requested before the commit it belongs to, the same order every
-        // eased frame runs — committed first, the request would bind to a
-        // commit no tween frame makes and no callback would ever fire.
+        // The begin frame's Wayland order (replace-gtk-with-wayland D7):
+        // the first callback is requested before the commit it belongs to,
+        // the same order every eased frame runs — committed first, the
+        // request would bind to a commit no tween frame makes and no
+        // callback would ever fire.
         self.request_and_commit_tween_frame(staged.from_px);
         PublishOutcome::Applied
     }
 
-    /// Build the wide cache for a staged animated apply (row 6.2, D7): a
-    /// retarget keeps an equal cache — its layout and gap state move to the
-    /// new apply's — and anything else draws the live grid once into a
-    /// fresh wide canvas, uploaded into a pool buffer when the compositor
-    /// has a viewport for the panel. `None` is a cache the tween cannot
-    /// present with: no session or surfaces left, no configure height yet,
-    /// no render state on this thread (row 8.1 fills it), or a canvas or
-    /// buffer the draw refused. The caller snaps the apply.
+    /// Build the wide cache for a staged animated apply
+    /// (replace-gtk-with-wayland D7): a retarget keeps an equal cache —
+    /// its layout and gap state move to the new apply's — and anything
+    /// else draws the live grid once into a fresh wide canvas, uploaded
+    /// into a pool buffer when the compositor has a viewport for the
+    /// panel. `None` is a cache the tween cannot present with: no session
+    /// or surfaces left, no configure height yet, no render state on this
+    /// thread, or a canvas or buffer the draw refused. The caller snaps
+    /// the apply.
     fn build_tween_cache(
         &mut self,
         previous: Option<TweenDraw>,
@@ -322,7 +326,8 @@ impl PanelState {
             return Some(kept);
         }
         let render = self.render.as_mut()?;
-        // The seat's focus flag is the accent's source (D8): the wide draw
+        // The seat's focus flag is the accent's source
+        // (replace-gtk-with-wayland D8): the wide draw
         // reads the renderer's flag, so it syncs from the shared cell the
         // seat links hold first.
         let focused = self
@@ -369,15 +374,15 @@ impl PanelState {
         Ok(geometry)
     }
 
-    /// The animated apply's staging half (row 6.2): the reads
-    /// `Surfaces::publish` makes before it mutates the applied layout and
+    /// The animated apply's staging half (replace-gtk-with-wayland D7):
+    /// the reads the apply makes before it mutates the applied layout and
     /// held gap — the current width, the strip the gap rests at, the
     /// gap-tween decision — then the sizing defer and the staging, whose
     /// `apply_columns` records the target columns without pushing. Returns
     /// everything the wide cache and the tween frames need; `None` is a
     /// rejected apply, which restores the defer a running tween holds and
-    /// leaves the tween running (the GTK publish's reject-before-mutate
-    /// order, overlay-expand D4).
+    /// leaves the tween running (the reject-before-mutate order,
+    /// overlay-expand D4).
     pub(crate) fn stage_animated(
         &mut self,
         output: OutputSize,
@@ -391,9 +396,9 @@ impl PanelState {
         let crop = TweenCrop::new(layout.side(), from_px, target_px)?;
         let grid_px = grid_width_px(self.sizing.live_cols(), self.cell)?;
         // The gap the strip rests at right now, before this apply mutates
-        // the held gap (exactly `Surfaces::publish`'s read): a retarget's
-        // flagged gap tween moves the strip with the panel, so the decision
-        // compares the target strip against the moving one.
+        // the held gap: a retarget's flagged gap tween moves the strip
+        // with the panel, so the decision compares the target strip
+        // against the moving one.
         let gap_active = self
             .tween_draw
             .as_ref()
@@ -432,9 +437,9 @@ impl PanelState {
     /// The apply's decision and state half, against an output the caller
     /// names and with the grid pushes observed through `push`
     /// (`port-to-rust` D10): validate and stage, move the held gap, and push
-    /// the derived grid through the row 3.3 sizing path — a layout apply is
-    /// one of the two push sources, and a repeated apply of the same columns
-    /// derives the same grid and pushes nothing. Returns the geometry the
+    /// the derived grid through the sizing path — a layout apply is one of
+    /// the two push sources (replace-gtk-with-wayland D3), and a repeated
+    /// apply of the same columns derives the same grid and pushes nothing. Returns the geometry the
     /// caller writes onto the surfaces; `Err` is the publish verdict and
     /// stages nothing.
     pub(crate) fn apply_against(
