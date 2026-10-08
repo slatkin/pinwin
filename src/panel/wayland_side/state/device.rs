@@ -111,6 +111,7 @@ mod tests {
     use crate::panel::wayland_side::{Inner, Startup, glue};
     use std::num::NonZeroU16;
     use std::os::fd::AsRawFd;
+    use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
@@ -187,7 +188,7 @@ mod tests {
             Keyboard::OnDemand,
             None,
         );
-        let (terminal, repaint, stale_px, _pty) = glue::byte_path(Poisoned::new(), startup.fd());
+        let path = glue::byte_path(Poisoned::new(), startup.fd());
         let mut state = PanelState::headless(
             Handshake::new(mpsc::channel().0),
             Poisoned::new(),
@@ -195,9 +196,9 @@ mod tests {
             startup,
             cell(),
         );
-        state.terminal = Some(terminal);
-        state.repaint = repaint;
-        state.stale_grid_px = stale_px;
+        state.terminal = Some(Rc::clone(path.terminal()));
+        state.repaint = Rc::clone(path.repaint());
+        state.stale_grid_px = Rc::clone(path.stale_grid_px());
         // Record the configure height the re-push re-derives its grid
         // from; the sink records without touching the pty fd.
         state.sizing.configure(1080, &mut |_| {});

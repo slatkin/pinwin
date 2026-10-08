@@ -393,23 +393,26 @@ fn run_thread(
         handshake.report(StartOutcome::Internal);
         return;
     };
-    let (terminal, repaint, stale_px, pty) = glue::byte_path(poisoned.clone(), startup.fd());
+    let path = glue::byte_path(poisoned.clone(), startup.fd());
     let focused = Rc::new(Cell::new(false));
     let draw_offset = Rc::new(Cell::new(0.0));
 
     let mut state = PanelState::headless(handshake.clone(), poisoned.clone(), inner, startup, cell);
-    state.terminal = Some(Rc::clone(&terminal));
-    state.repaint = Rc::clone(&repaint);
-    state.stale_grid_px = stale_px;
+    state.terminal = Some(Rc::clone(path.terminal()));
+    state.repaint = Rc::clone(path.repaint());
+    state.stale_grid_px = Rc::clone(path.stale_grid_px());
     state.draw_offset = Rc::clone(&draw_offset);
     state.seat_links = Some(glue::seat_links(
-        &terminal,
-        &repaint,
+        path.terminal(),
+        path.repaint(),
         &draw_offset,
         &focused,
         poisoned.clone(),
     ));
-    state.render = Some(tween_draw::TweenRender { terminal, renderer });
+    state.render = Some(tween_draw::TweenRender {
+        terminal: Rc::clone(path.terminal()),
+        renderer,
+    });
 
     // The calloop loop exists before the bind (row 8.1's seat wiring): the
     // keyboard's repeat source installs itself from `new_capability`, which
@@ -452,7 +455,16 @@ fn run_thread(
     // loop on, so nothing can have moved it before here).
     state.sync_renderer_scale();
 
-    if run_loop(&connection, &mut state, queue, commands, &pty, event_loop).is_err() {
+    if run_loop(
+        &connection,
+        &mut state,
+        queue,
+        commands,
+        path.pty(),
+        event_loop,
+    )
+    .is_err()
+    {
         // The wayland source surfaces a closed connection (and any other
         // fatal loop error) as a dispatch error: the compositor is gone, so
         // the panel is dead (D2).

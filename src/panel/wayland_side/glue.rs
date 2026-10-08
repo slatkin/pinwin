@@ -93,7 +93,50 @@ pub(crate) fn thread_renderer(
 /// The byte path's return: the shared terminal, the repaint flag its
 /// callbacks latch, the stale pre-resize record its output clears, and the
 /// pty the writer and the fd slot come from.
-pub(crate) type BytePath = (Rc<RefCell<Terminal>>, Rc<Cell<bool>>, Rc<Cell<i32>>, Pty);
+pub(crate) struct BytePath {
+    terminal: Rc<RefCell<Terminal>>,
+    repaint: Rc<Cell<bool>>,
+    stale_grid_px: Rc<Cell<i32>>,
+    pty: Pty,
+}
+
+impl BytePath {
+    /// The shared terminal the seat links and the tween's render bundle
+    /// hold clones of.
+    #[must_use]
+    pub(crate) fn terminal(&self) -> &Rc<RefCell<Terminal>> {
+        &self.terminal
+    }
+
+    /// The flag the terminal's callbacks latch and the loop reads and
+    /// clears after each dispatch.
+    #[must_use]
+    pub(crate) fn repaint(&self) -> &Rc<Cell<bool>> {
+        &self.repaint
+    }
+
+    /// The stale pre-resize record the terminal's output clears.
+    #[must_use]
+    pub(crate) fn stale_grid_px(&self) -> &Rc<Cell<i32>> {
+        &self.stale_grid_px
+    }
+
+    /// The pty the read source's fd and fd slot come from.
+    #[must_use]
+    pub(crate) fn pty(&self) -> &Pty {
+        &self.pty
+    }
+}
+
+impl std::fmt::Debug for BytePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BytePath")
+            .field("repaint", &self.repaint)
+            .field("stale_grid_px", &self.stale_grid_px)
+            .field("pty", &self.pty)
+            .finish_non_exhaustive()
+    }
+}
 
 pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd) -> BytePath {
     let pty = Pty::new(poisoned.clone(), fd);
@@ -118,7 +161,12 @@ pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd) -> BytePath {
         },
         Rc::clone(&scale_note),
     )));
-    (terminal, repaint, stale_grid_px, pty)
+    BytePath {
+        terminal,
+        repaint,
+        stale_grid_px,
+        pty,
+    }
 }
 
 /// The seat links the thread's pieces build (row 8.1, dispatch D4c): the
@@ -379,7 +427,9 @@ mod tests {
     /// loop later reads and clears.
     #[test]
     fn the_byte_path_shares_one_flag_between_the_terminal_and_the_state() {
-        let (terminal, repaint, _stale, _pty) = byte_path(Poisoned::new(), -1);
+        let BytePath {
+            terminal, repaint, ..
+        } = byte_path(Poisoned::new(), -1);
         assert!(
             terminal.borrow_mut().push_size(8, 4, 9, 16),
             "the test grid pushes"
@@ -401,7 +451,12 @@ mod tests {
     #[test]
     fn the_byte_path_records_and_clears_the_widened_grid() {
         let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
-        let (terminal, repaint, stale, _pty) = byte_path(Poisoned::new(), -1);
+        let BytePath {
+            terminal,
+            repaint,
+            stale_grid_px: stale,
+            ..
+        } = byte_path(Poisoned::new(), -1);
         assert!(
             terminal.borrow_mut().push_size(40, 4, 9, 16),
             "the test grid pushes"
@@ -452,7 +507,9 @@ mod tests {
     fn a_focus_enter_through_the_seat_links_flips_the_flag_and_requests_a_repaint() {
         use crate::panel::wayland_side::seat::SeatSide;
 
-        let (terminal, repaint, _stale, _pty) = byte_path(Poisoned::new(), -1);
+        let BytePath {
+            terminal, repaint, ..
+        } = byte_path(Poisoned::new(), -1);
         let focused = Rc::new(Cell::new(false));
         let draw_offset = Rc::new(Cell::new(0.0));
         let links = seat_links(&terminal, &repaint, &draw_offset, &focused, Poisoned::new());
@@ -522,7 +579,12 @@ mod tests {
         use std::os::fd::AsRawFd as _;
 
         let (master, mut slave) = pty_pair();
-        let (terminal, repaint, _stale, pty) = byte_path(Poisoned::new(), master.as_raw_fd());
+        let BytePath {
+            terminal,
+            repaint,
+            pty,
+            ..
+        } = byte_path(Poisoned::new(), master.as_raw_fd());
         assert!(
             terminal.borrow_mut().push_size(8, 4, 9, 16),
             "the test grid pushes"
@@ -589,7 +651,12 @@ mod tests {
             Keyboard::OnDemand,
             None,
         );
-        let (terminal, repaint, stale_px, pty) = byte_path(Poisoned::new(), startup.fd());
+        let BytePath {
+            terminal,
+            repaint,
+            stale_grid_px: stale_px,
+            pty,
+        } = byte_path(Poisoned::new(), startup.fd());
         let mut state = PanelState::headless(
             Handshake::new(mpsc::channel().0),
             Poisoned::new(),
