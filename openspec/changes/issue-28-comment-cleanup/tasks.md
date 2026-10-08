@@ -13,7 +13,7 @@
 
 ## 3. Comment rewrites: apply and tween
 
-- [ ] 3.1 Rewrite `row`/`dispatch` refs and `GTK side's`/`GTK publish's` prose in `src/panel/wayland_side/apply.rs` (incl. `apply/tests.rs`) as present-tense Wayland behaviour with `replace-gtk-with-wayland Dn` citations, deleting what the code makes obvious, and verify `cargo test panel::wayland_side::apply` passes
+- [x] 3.1 Rewrite `row`/`dispatch` refs and `GTK side's`/`GTK publish's` prose in `src/panel/wayland_side/apply.rs` (incl. `apply/tests.rs`) as present-tense Wayland behaviour with `replace-gtk-with-wayland Dn` citations, deleting what the code makes obvious, and verify `cargo test panel::wayland_side::apply` passes
 - [ ] 3.2 Rewrite `row`/`dispatch` refs and GTK prose in `tween.rs`, `tween/tests.rs`, `tween_draw.rs`, `tween_draw/frames.rs`, `tween_draw/tests.rs`, `crop.rs`, and `crop/draw.rs`, and verify `cargo test panel::wayland_side::tween` and `cargo test panel::wayland_side::crop` pass
 
 ## 4. Comment rewrites: frame log, watchdog, commands, toggle
