@@ -3,7 +3,7 @@
 ## 1. Visibility narrowing
 
 - [x] 1.1 Narrow `pub mod wayland_side` to `pub(crate)` in `src/panel.rs` and verify `cargo build --all-targets` succeeds with no external use errors
-- [ ] 1.2 Narrow the `pub` children in `src/panel/wayland_side.rs` (`buffers`, `commands`, `crop`, `present`, `renderer`, `seat`, `sizing`, `tween`) to `pub(crate)` wherever the build still passes, and verify with `cargo build --all-targets`
+- [x] 1.2 Narrow the `pub` children in `src/panel/wayland_side.rs` (`buffers`, `commands`, `crop`, `present`, `renderer`, `seat`, `sizing`, `tween`) to `pub(crate)` wherever the build still passes, and verify with `cargo build --all-targets`
 - [ ] 1.3 Triage any newly surfaced dead-code warnings: delete genuinely unused items or keep with a stated reason, adding no `allow` attributes, and verify `cargo clippy --all-targets -- -D warnings` is clean
 
 ## 2. `BytePath` named shape
