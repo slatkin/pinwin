@@ -1,5 +1,5 @@
 //! The width tween's holder and its frame glue (replace-gtk-with-wayland
-//! row 6.2, design decision 7): the state one running tween keeps on the
+//! D7): the state one running tween keeps on the
 //! panel thread — the crop plan, the wide canvas drawn once at the tween's
 //! start, the pool buffer it was uploaded into, the configure height and
 //! scale they were decided at, and the gap state the frames commit the
@@ -14,9 +14,9 @@
 //! (the cached wide buffer with a viewport, a fresh copy of the crop
 //! without one) and the damage-and-commit — and [`TweenDraw::keeps`]
 //! decides whether a retarget keeps the cache or redraws it. The executor
-//! and the render seam ([`TweenRender`], which row 8.1 fills with the
-//! terminal and the painter passes) are the compile-only half: they run
-//! only in a live session, and row 10.1 exercises them on niri.
+//! and the render seam ([`TweenRender`], the terminal and the renderer the
+//! thread assembles at its start) are the compile-only half: they run only
+//! in a live session.
 //!
 //! The gap state the frames commit is the read `Surfaces::publish` makes
 //! before it mutates the held gap (overlay-expand D3): the side and zone
@@ -52,7 +52,8 @@ pub(crate) use frames::on_tween_frame;
 #[cfg(test)]
 mod tests;
 
-/// The render state the tween's wide draw reads (row 6.2, D7): the
+/// The render state the tween's wide draw reads (replace-gtk-with-wayland
+/// D7): the
 /// terminal whose grid is drawn from — the one render piece the thread
 /// owns outside the renderer — and a handle to the thread's one
 /// [`Renderer`], which owns the text pass, the image pass, the metrics,
@@ -62,23 +63,24 @@ mod tests;
 /// for the one draw of a fresh tween's cache (the borrow cannot contend:
 /// the renderer is borrowed only here and by the live frames outside a
 /// tween, sequentially on the one thread). The thread fills the bundle at
-/// start (row 8.1) — the terminal it owns and the renderer over the font
+/// its start — the terminal it owns and the renderer over the font
 /// it measured — so an animated apply draws its wide cache instead of
-/// snapping. The fields are `pub(crate)`: the bundle is row 8.1's to
-/// assemble, and the D6 field-privacy rule guards the crate's public API,
+/// snapping. The fields are `pub(crate)`: the thread's start assembles the
+/// bundle, and the D6 field-privacy rule guards the crate's public API,
 /// not this internal one.
 #[derive(Clone)]
 pub(crate) struct TweenRender {
     /// The terminal whose grid the wide draw paints. Shared, because the
-    /// seat and the pty source that join this thread in row 8.1 hold the
-    /// same terminal.
+    /// seat and the pty source that join this thread hold the same
+    /// terminal.
     pub(crate) terminal: Rc<RefCell<crate::term::Terminal>>,
     /// The thread's one renderer, borrowed for the wide draw.
     pub(crate) renderer: Rc<RefCell<Renderer>>,
 }
 
 /// One commit action of a tween frame, in the order the frame commits it
-/// (row 6.2): the layer size, the margins, the viewport source and
+/// (replace-gtk-with-wayland D7): the layer size, the margins, the viewport
+/// source and
 /// destination, the reserve's anchor and zone, the buffer attach, then the
 /// damage-and-commit. The executor maps each onto its Wayland request; the
 /// plan is pure and tested here.
@@ -138,7 +140,8 @@ impl TweenFramePlan {
     }
 }
 
-/// The width tween's state on the panel thread (row 6.2): the crop plan,
+/// The width tween's state on the panel thread (replace-gtk-with-wayland
+/// D7): the crop plan,
 /// the wide canvas and its uploaded buffer, the height and scale they were
 /// decided at, and the gap state the frames commit the reserve with. Lives
 /// on [`PanelState`](super::state::PanelState) for exactly one running
@@ -157,8 +160,7 @@ pub(crate) struct TweenDraw {
     buffer: Option<Buffer>,
     /// The configure height the crop was decided at, in logical pixels: the
     /// frames keep committing it, so a mid-tween configure's new height
-    /// waits for the finish and the next configure — the same staleness the
-    /// GTK path had.
+    /// waits for the finish and the next configure.
     height: u32,
     /// The scale the crop geometry and the canvas were decided at; a scale
     /// change mid-tween invalidates the cache and the watchdog snaps.
@@ -173,11 +175,11 @@ pub(crate) struct TweenDraw {
     gap_side: Side,
     gap_zone: i32,
     gap_tweening: bool,
-    /// The live grid's pixel width the cache was drawn against (row 8.1):
-    /// the redraw keys the docked-edge offset against the same grid.
+    /// The live grid's pixel width the cache was drawn against: the redraw
+    /// keys the docked-edge offset against the same grid.
     grid_px: i32,
-    /// Whether terminal output has made the cache stale since it was drawn
-    /// (row 8.1): the next frame this holder presents redraws it from the
+    /// Whether terminal output has made the cache stale since it was drawn:
+    /// the next frame this holder presents redraws it from the
     /// live terminal first.
     stale: bool,
 }
@@ -295,7 +297,7 @@ impl TweenDraw {
         self.buffer.as_ref()
     }
 
-    /// Mark the cache stale (row 8.1): terminal output arrived while the
+    /// Mark the cache stale: terminal output arrived while the
     /// tween runs, and the next frame this holder presents redraws the
     /// cache from the live terminal instead of presenting the snapshot.
     pub(crate) fn note_output(&mut self) {
@@ -309,7 +311,7 @@ impl TweenDraw {
         self.stale
     }
 
-    /// Redraw the cache from the live terminal (row 8.1): the same crop,
+    /// Redraw the cache from the live terminal: the same crop,
     /// height, scale and grid width the first draw used, through the
     /// renderer's passes into a fresh wide canvas, re-uploaded into the
     /// pool buffer when the compositor has a viewport. `false` is a draw
@@ -335,7 +337,8 @@ impl TweenDraw {
         true
     }
 
-    /// One tween frame's commit plan at the eased width `px` (row 6.2): the
+    /// One tween frame's commit plan at the eased width `px`
+    /// (replace-gtk-with-wayland D7): the
     /// layer size, the margins, the viewport source and destination (only
     /// with a viewport), the reserve's anchor and zone, the buffer attach
     /// (the cached wide buffer with a viewport, a fresh copy of the crop

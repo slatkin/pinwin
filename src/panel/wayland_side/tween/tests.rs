@@ -86,7 +86,8 @@ fn scripted_frames_ease_to_the_target() {
 }
 
 /// A tween frame requests its next callback before the commit it belongs
-/// to (row 9.8): a `wl_surface.frame` request binds to the commit that
+/// to (replace-gtk-with-wayland D7): a `wl_surface.frame` request binds to
+/// the commit that
 /// follows it, so a frame that commits first and requests second binds its
 /// callback to a commit no tween frame makes — no callback ever fires, and
 /// the watchdog snaps the tween to its target, which is what the live niri
@@ -245,7 +246,7 @@ fn an_idle_driver_reports_the_applied_width() {
 /// The armed watchdog timer stops a stalled tween through a real calloop
 /// loop (`port-to-rust` D10): the timer fires at the deadline and the
 /// driver's state ends. The headless state has no session, so the
-/// finish's geometry write itself is exercised only on niri (row 10.1).
+/// finish's geometry write itself is exercised only on niri.
 #[test]
 fn the_armed_watchdog_stops_a_stalled_tween() {
     let (tx, _rx) = mpsc::channel();
@@ -359,10 +360,9 @@ fn an_idle_driver_arms_nothing() {
     assert!(!state.done, "an idle watchdog does not end the loop");
 }
 
-/// The animate decision is the GTK path's `should_animate` rule read
-/// against the applied layout: a positive duration between layouts that
-/// match in side and left and right gutters animates; a zero duration,
-/// a side switch and a gutter change snap.
+/// The animate decision read against the applied layout: a positive
+/// duration between layouts that match in side and left and right gutters
+/// animates; a zero duration, a side switch and a gutter change snap.
 #[test]
 fn the_animate_decision_follows_the_gtk_rule() {
     fn layout(side: Side, cols: u16, left: i32, right: i32) -> Layout {
@@ -407,7 +407,8 @@ fn the_animate_decision_follows_the_gtk_rule() {
     );
 }
 
-/// One print per tween (row 6.3): a running tween holds its log
+/// One print per tween (replace-gtk-with-wayland D7): a running tween
+/// holds its log
 /// exactly between its begin and its first stop, and every stop path —
 /// a frame finish, the watchdog, a cancel, a retarget — takes it and
 /// prints its one summary, so no later stop prints again.
@@ -528,9 +529,9 @@ fn the_presentation_feed_follows_the_generation() {
     );
 }
 
-/// The frame-log gate (row 6.3): a begin whose log is `Some` carries it —
-/// the caller requests presentation feedback only then — and a begin
-/// without one holds none; the stop takes the log away.
+/// The frame-log gate (replace-gtk-with-wayland D7): a begin whose log is
+/// `Some` carries it — the caller requests presentation feedback only then
+/// — and a begin without one holds none; the stop takes the log away.
 #[test]
 fn the_driver_holds_a_frame_log_only_while_one_was_begun() {
     let mut driver = TweenDriver::default();
@@ -548,9 +549,9 @@ fn the_driver_holds_a_frame_log_only_while_one_was_begun() {
     assert!(!driver.has_log(), "the stop took the log away");
 }
 
-/// The pty read source's tween flag (row 8.1): a begin that stages a tween
-/// sets it and the finish frame clears it — the drain's budget follows the
-/// driver's own state.
+/// The pty read source's tween flag (replace-gtk-with-wayland D2): a begin
+/// that stages a tween sets it and the finish frame clears it — the
+/// drain's budget follows the driver's own state.
 #[test]
 fn the_tween_flag_sets_at_the_begin_and_clears_at_the_finish() {
     let mut driver = TweenDriver::default();

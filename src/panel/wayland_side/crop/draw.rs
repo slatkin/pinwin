@@ -1,5 +1,5 @@
 //! The tween's wide draw and its copies (replace-gtk-with-wayland
-//! row 6.2, design decision 7): the grid drawn once into a wide
+//! D7): the grid drawn once into a wide
 //! [`crate::render::canvas::Canvas`] through the existing painter, the one
 //! upload of the cached
 //! canvas into its `wl_shm` buffer, and the no-viewporter fallback that
@@ -18,7 +18,8 @@ use crate::term::Terminal;
 
 use super::{CropFrame, WideDraw};
 
-/// Draw the live grid once into the wide canvas (D7, row 6.2): the theme
+/// Draw the live grid once into the wide canvas (replace-gtk-with-wayland
+/// D7): the theme
 /// background fills the whole canvas and the grid sits against the docked
 /// edge, shifted by the draw offset [`super::TweenCrop::wide_draw`] decided. The
 /// existing painter draws every layer — nothing about it changes.
@@ -209,7 +210,7 @@ mod tests {
             .expect("test width scales"))
     }
 
-    /// The row 6.2 pixel verify: the crop of the wide buffer matches what a
+    /// The pixel verify: the crop of the wide buffer matches what a
     /// direct draw at the narrower width shows at the docked edge, for both
     /// sides, at scale 1.5.
     #[test]

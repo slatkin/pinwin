@@ -1,5 +1,5 @@
 //! The width tween's crop plan and wide buffer (replace-gtk-with-wayland
-//! row 6.2, design decision 7): the pure half of the animation's drawing —
+//! D7): the pure half of the animation's drawing —
 //! the wide buffer the grid is drawn into once at the tween's start, the
 //! per-frame viewport crop that shows its docked-edge portion at the eased
 //! width, and the no-viewporter copy. Pure and display-free (`port-to-rust`
@@ -13,7 +13,7 @@
 //! The rounding rule, stated once: a device size is its logical size times
 //! the scale, rounded half up in exact 1/120 rational arithmetic —
 //! [`FractionalScale::scale_dimension`], the same function the buffer pool
-//! sizes its buffers with (row 4.1). No `f64` product joins the decision:
+//! sizes its buffers with. No `f64` product joins the decision:
 //! at a scale like 1.45 the `f64` product of a tie width can round the
 //! other way from the exact rational, and one pixel of disagreement between
 //! the crop and the buffer it crops would show. The eased width itself is

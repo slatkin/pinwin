@@ -43,7 +43,8 @@ fn holder(side: Side, start: i32, end: i32, units: u32, gap_tweening: bool) -> T
     }
 }
 
-/// The commit plan orders the actions the frame commits (row 6.2): the
+/// The commit plan orders the actions the frame commits
+/// (replace-gtk-with-wayland D7): the
 /// layer size, the margins, the viewport source and destination, the
 /// reserve's anchor and zone, the wide buffer's attach, then the
 /// damage-and-commit — and the damaged rectangle is the wide buffer's.
@@ -211,8 +212,8 @@ fn a_kept_retarget_moves_the_layout_and_gap_state() {
 }
 
 /// A fresh holder draws the live grid into the wide canvas through the
-/// render state and plans its begin frame — the seam row 8.1 fills,
-/// driven here with the thread's renderer over the test family
+/// render state and plans its begin frame — driven here with the thread's
+/// renderer over the test family
 /// (font-gated, like the crop module's draw tests).
 #[test]
 fn a_fresh_holder_draws_from_the_render_state() {
@@ -279,11 +280,11 @@ fn a_fresh_holder_draws_from_the_render_state() {
     assert_eq!(plan.damage(), (1620, 1080));
 }
 
-/// The finish's final frame (row 6.1): the plan at the target is the
-/// whole wide buffer — the viewport source and destination end at the
-/// exact target, and the fallback's fresh copy covers the buffer too.
-/// The finish commits it before dropping the cache (the proof: row
-/// 8.1's render state makes it reachable).
+/// The finish's final frame (replace-gtk-with-wayland D7): the plan at the
+/// target is the whole wide buffer — the viewport source and destination
+/// end at the exact target, and the fallback's fresh copy covers the
+/// buffer too. The finish commits it before dropping the cache (the
+/// render seam makes it reachable).
 #[test]
 fn the_finishs_final_frame_plan_shows_the_full_wide_buffer_at_the_target() {
     let held = holder(Side::Left, 360, 1080, 180, true);

@@ -1,7 +1,6 @@
-//! The tween frames' executor (split from the `tween_draw` module in row
-//! 8.1's dispatch D1): the per-frame glue that turns one compositor frame
-//! callback into the commit plan's Wayland requests, the frame-request
-//! bookkeeping and the finish's final geometry.
+//! The tween frames' executor: the per-frame glue that turns one
+//! compositor frame callback into the commit plan's Wayland requests, the
+//! frame-request bookkeeping and the finish's final geometry.
 
 use super::super::crop::copy_crop;
 use super::super::present::{FinishViewport, finish_end_state};
@@ -11,10 +10,11 @@ use super::super::surfaces::SurfaceId;
 use super::super::tween::FrameStep;
 use super::{TweenAction, TweenDraw};
 
-/// One `wl_surface.frame` callback for the panel surface (row 6.2): the
-/// compositor's event time steps the tween driver, and the step decides the
-/// frame. An eased frame requests the next callback and commits through
-/// [`PanelState::request_and_commit_tween_frame`] in that order (row 9.8);
+/// One `wl_surface.frame` callback for the panel surface
+/// (replace-gtk-with-wayland D7): the compositor's event time steps the
+/// tween driver, and the step decides the frame. An eased frame requests
+/// the next callback and commits through
+/// [`PanelState::request_and_commit_tween_frame`] in that order;
 /// the finish relays the stop and applies the final geometry, requesting
 /// none.
 pub(crate) fn on_tween_frame(state: &mut PanelState, time_ms: u32) {
@@ -29,13 +29,14 @@ pub(crate) fn on_tween_frame(state: &mut PanelState, time_ms: u32) {
 }
 
 impl PanelState {
-    /// Record one frame op (row 9.8's seam): test builds only.
+    /// Record one frame op (the test seam for the frame order): test builds only.
     #[cfg(test)]
     fn record_frame_op(&self, op: super::super::state::FrameOp) {
         self.frame_ops.borrow_mut().push(op);
     }
 
-    /// One tween frame's Wayland order (row 9.8): the `wl_surface.frame`
+    /// One tween frame's Wayland order (replace-gtk-with-wayland D7): the
+    /// `wl_surface.frame`
     /// request goes first and the eased commit second. A frame request
     /// binds to the commit that follows it, so a committed frame's callback
     /// fires when the compositor next repaints after that commit — the
@@ -49,7 +50,8 @@ impl PanelState {
         self.commit_tween_frame(px);
     }
 
-    /// Commit one eased tween frame at `px` (row 6.2): the plan
+    /// Commit one eased tween frame at `px` (replace-gtk-with-wayland D7):
+    /// the plan
     /// [`TweenDraw::commit_plan`] decided, executed in its order against
     /// the two surfaces. A scale change since the cache was drawn
     /// invalidates the cache (D7) and the frames stop; the watchdog snaps
@@ -68,12 +70,11 @@ impl PanelState {
             self.tween_draw = None;
             return;
         }
-        // Mid-tween output (row 8.1): the wide cache is a snapshot of the
-        // grid at the tween's start, and a repaint request while the tween
-        // runs marks the holder stale — the next frame, this one, redraws
-        // the cache from the live terminal before presenting it, the old
-        // path's cache redraw. A refused redraw skips the frame; the next
-        // one or the watchdog retries.
+        // Mid-tween output: the wide cache is a snapshot of the grid at the
+        // tween's start, and a repaint request while the tween runs marks
+        // the holder stale — the next frame, this one, redraws the cache
+        // from the live terminal before presenting it. A refused redraw
+        // skips the frame; the next one or the watchdog retries.
         if self.tween_draw.as_ref().is_some_and(TweenDraw::is_stale) {
             // The seat's focus flag is the accent's source (D8): the
             // redraw reads the renderer's flag, so it syncs from the
@@ -165,10 +166,12 @@ impl PanelState {
     /// Request the panel surface's next `wl_surface.frame` callback (row
     /// 6.2): the tween's frames are driven by these callbacks, so every
     /// committed frame requests the next one — issued before the commit it
-    /// belongs to, by [`Self::request_and_commit_tween_frame`] (row 9.8).
+    /// belongs to, by [`Self::request_and_commit_tween_frame`]
+    /// (replace-gtk-with-wayland D7).
     /// The queue handle lives on the session, so the apply's begin frame
     /// can request one too. The same committed frame requests its
-    /// presentation feedback (row 6.3), tagged with the tween's generation
+    /// presentation feedback (replace-gtk-with-wayland D7), tagged with the
+    /// tween's generation
     /// so a late `presented` from a tween that already stopped cannot reach
     /// the next tween's log; without the presentation-time global the
     /// request is skipped and the frame log rides on the callbacks' times
@@ -183,7 +186,8 @@ impl PanelState {
             return;
         };
         surfaces.request_frame(&session.qh);
-        // The presentation feedback feeds only a frame log (row 6.3): with
+        // The presentation feedback feeds only a frame log
+        // (replace-gtk-with-wayland D7): with
         // no log the generation filter would drop every sample, so no
         // request is made and the log rides on the callbacks' times alone.
         if self.tween.has_log() {
@@ -195,13 +199,12 @@ impl PanelState {
         }
     }
 
-    /// The tween's finish action (row 6.1, wired in row 6.2): the stop
+    /// The tween's finish action (replace-gtk-with-wayland D7): the stop
     /// relay first — drop the wide cache, lift the sizing defer and push
     /// the deferred grid once through the sizing path, the new columns
-    /// derived from the latest configure height (the GTK path's
-    /// `on_tween_stopped`) — then the final geometry, the same path a plain
-    /// apply writes. The viewport end state follows (dispatch D4c): the
-    /// last eased frame left a source crop and a destination on the
+    /// derived from the latest configure height — then the final geometry,
+    /// the same path a plain apply writes. The viewport end state follows:
+    /// the last eased frame left a source crop and a destination on the
     /// panel's viewport, and the live buffer the finish's repaint draws
     /// needs the crop unset and the destination at the final logical size,
     /// so the surface no longer shows the crop. The finish latches the
@@ -209,11 +212,12 @@ impl PanelState {
     /// the final size. The push sink is a parameter so the display-free
     /// tests observe it (`port-to-rust` D10); the production callers sink
     /// the pty winsize. The headless core has no session, so the geometry
-    /// write is exercised only on niri (row 10.1); the relay is
+    /// write is exercised only on niri; the relay is
     /// display-free and tested in the apply module.
     pub(crate) fn tween_finished(&mut self, target_px: i32, push: &mut dyn FnMut(Grid)) {
         // The final frame commits at the target before the cache drops
-        // (row 6.1): the viewport's source and destination are persistent
+        // (replace-gtk-with-wayland D7): the viewport's source and
+        // destination are persistent
         // state, so the last eased crop would pin the surface against the
         // finish's `set_size` — a blank panel.
         self.commit_tween_frame(target_px);
@@ -255,8 +259,8 @@ impl PanelState {
         if let (Some(height), Ok(width)) = (height, u32::try_from(target_px)) {
             self.panel_size = Some((width, height));
         }
-        // The live grid must replace the crop on screen (dispatch D4c): the
-        // draw step turns this request into the frame at the final size.
+        // The live grid must replace the crop on screen: the draw step
+        // turns this request into the frame at the final size.
         self.repaint.set(true);
     }
 }
