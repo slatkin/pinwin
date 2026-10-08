@@ -62,19 +62,19 @@ use super::Startup;
 use super::handshake::{APPLY_WAIT, Handshake, StartOutcome, wait_for_apply, wait_for_unit};
 
 pub(crate) mod apply;
-pub mod buffers;
-pub mod commands;
-pub mod crop;
+pub(crate) mod buffers;
+pub(crate) mod commands;
+pub(crate) mod crop;
 pub(crate) mod frame_log;
 pub(crate) mod glue;
-pub mod present;
-pub mod renderer;
-pub mod seat;
-pub mod sizing;
+pub(crate) mod present;
+pub(crate) mod renderer;
+pub(crate) mod seat;
+pub(crate) mod sizing;
 pub(crate) mod state;
 mod surfaces;
 pub(crate) mod toggle;
-pub mod tween;
+pub(crate) mod tween;
 pub(crate) mod tween_draw;
 pub(crate) mod watchdog;
 
