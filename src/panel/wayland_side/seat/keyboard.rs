@@ -358,7 +358,7 @@ xkb_keymap {
     /// the +8 keycode, the keysym, the held modifiers, no
     /// consumed modifiers for a plain letter, and both codepoints.
     #[test]
-    fn a_press_after_the_keymap_builds_the_gdk_shape() {
+    fn a_press_after_the_keymap_builds_the_shape() {
         let mut keyboard = KeyboardSide::new();
         keyboard.keymap_updated(TEST_KEYMAP);
         keyboard.modifiers_updated(RawModifiers::default(), 0, SctkModifiers::default());

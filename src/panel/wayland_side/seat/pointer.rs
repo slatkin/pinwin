@@ -291,7 +291,7 @@ mod tests {
     /// eighth and forward (`BTN_EXTRA`) as the ninth button, everything else
     /// unknown.
     #[test]
-    fn evdev_buttons_map_like_the_gdk_composition() {
+    fn evdev_buttons_map_like_the_composition() {
         assert_eq!(button_from_evdev(BTN_LEFT), MouseButton::Left);
         assert_eq!(button_from_evdev(BTN_MIDDLE), MouseButton::Middle);
         assert_eq!(button_from_evdev(BTN_RIGHT), MouseButton::Right);
