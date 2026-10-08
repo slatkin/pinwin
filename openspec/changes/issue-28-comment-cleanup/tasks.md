@@ -32,7 +32,7 @@
 
 ## 7. Final gates
 
-- [ ] 7.1 Run the gate set — `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `make check-code-file-lines` — and verify all three are clean
+- [x] 7.1 Run the gate set — `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `make check-code-file-lines` — and verify all three are clean
 - [x] 7.2 Exercise the demo per AGENTS.md (`cargo run --example demo`; width animation both ways, focus accent) and verify launch, animation, accent, and exit-cleanup behave as before
 
 ## Workflow follow-up
