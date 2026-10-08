@@ -13,7 +13,7 @@
 
 ## 3. Move `PublishOutcome`
 
-- [ ] 3.1 Move `PublishOutcome` into `src/panel/handshake.rs` as `pub(crate)`, delete `src/surfaces/publish.rs` and its `pub use`/`mod`, update imports in `wayland_side.rs`, `apply.rs`, `toggle.rs` and tests, and fix the `surfaces.rs` header; verify `cargo build --all-targets` and `cargo test panel::` pass and `rg "surfaces::PublishOutcome" src examples` returns nothing
+- [x] 3.1 Move `PublishOutcome` into `src/panel/handshake.rs` as `pub(crate)`, delete `src/surfaces/publish.rs` and its `pub use`/`mod`, update imports in `wayland_side.rs`, `apply.rs`, `toggle.rs` and tests, and fix the `surfaces.rs` header; verify `cargo build --all-targets` and `cargo test panel::` pass and `rg "surfaces::PublishOutcome" src examples` returns nothing
 
 ## 4. Seat plumbing
 
