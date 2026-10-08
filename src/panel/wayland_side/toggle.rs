@@ -1,5 +1,5 @@
 //! The show/hide toggle on the panel thread (replace-gtk-with-wayland
-//! row 9.1, decision 4): the command the host posts flips the panel between
+//! D4): the command the host posts flips the panel between
 //! its mapped and unmapped states.
 //!
 //! Hide ends a running width tween at its target — the stop relay, including
@@ -11,7 +11,7 @@
 //! Show re-sends the layer state an unmap reset — size, anchor, margins,
 //! exclusive zone -1, keyboard interactivity, `on-demand` directly in
 //! `on-demand` mode, the launch keeps its no-interactivity first map — and
-//! the layers themselves (row 9.9): the compositor's shell drops the whole
+//! the layers themselves (D4): the compositor's shell drops the whole
 //! double-buffered state to its defaults on the unmap commit, the default
 //! layer being `background`, so a show puts the panel back on `overlay` and
 //! the reserve on `bottom` before the remapping commit — and commits without
@@ -33,7 +33,7 @@ use super::apply::SurfaceGeometry;
 use super::state::PanelState;
 use super::surfaces::{grid_width_px, panel_margins};
 
-/// Whether the panel's surfaces are mapped or unmapped (row 9.1, D4). The
+/// Whether the panel's surfaces are mapped or unmapped (D4). The
 /// panel is shown at start; a toggle flips it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Visibility {
@@ -44,7 +44,7 @@ pub(crate) enum Visibility {
 }
 
 impl PanelState {
-    /// The posted toggle command (row 9.1, D4): hide a shown panel, show a
+    /// The posted toggle command (D4): hide a shown panel, show a
     /// hidden one. The caller answers the command's bounded reply after this
     /// returns — the hide's null-buffer commit, or the show's commit without
     /// a buffer; the rest of a show follows the configure.
@@ -65,7 +65,7 @@ impl PanelState {
     /// observe it (`port-to-rust` D10); the production caller supplies the
     /// state's own grid sink.
     pub(crate) fn hide(&mut self, push: &mut dyn FnMut(Grid)) {
-        // The tween's stop relay (row 6.1): the wide cache drops, the driver
+        // The tween's stop relay (D4): the wide cache drops, the driver
         // cancels, the sizing defer lifts and the deferred grid — the
         // target's, `self.applied` was staged at the begin — pushes once.
         self.tween_draw = None;
@@ -127,7 +127,7 @@ impl PanelState {
             self.create_reserve(&output, &qh);
         }
         // The show-time configure must attach a buffer even for an idle
-        // panel (row 9.1, D4): the remap happens when that configure draws,
+        // panel (D4): the remap happens when that configure draws,
         // and a frame gate whose last frame was clean plans nothing — the
         // panel would stay unmapped until pty output or a focus change.
         // Forcing the next frame to repaint everything makes the show's

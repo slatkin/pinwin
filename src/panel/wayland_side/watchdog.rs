@@ -1,9 +1,8 @@
 //! The startup watchdog (replace-gtk-with-wayland D2/D3): two calloop timers
-//! on the panel thread watching the start handshake, the wayland twin of the
-//! GTK side's single repeating `timeout_add_local` watchdog.
+//! on the panel thread watching the start handshake.
 //!
 //! The two timers keep two separate duties apart. The poll is a repeating
-//! 200 ms tick, like the GTK side's: while the handshake is still pending, a
+//! 200 ms tick: while the handshake is still pending, a
 //! latched shared flag (a panic somewhere in the startup path, D5) reports
 //! `Internal`, and the poll removes itself once the handshake resolves. A
 //! slow start is never a failure: start resolution depends on compositor
@@ -32,8 +31,7 @@ use crate::guard::guard_always;
 use super::super::handshake::{APPLY_WAIT, StartOutcome};
 use super::state::PanelState;
 
-/// The poll's bound: the 200 ms the GTK side's startup watchdog polled
-/// with, through `timeout_add_local`.
+/// The poll's bound: a 200 ms repeating tick.
 pub(crate) const START_WATCHDOG: Duration = Duration::from_millis(200);
 
 /// The hard deadline's bound: the same five seconds an apply waits for its
@@ -56,7 +54,7 @@ pub(crate) enum Tick {
 
 /// The poll tick's decision: a resolved handshake removes the timer, a
 /// pending one keeps polling unless the shared latch is set — a panic in the
-/// startup path reports `Internal` like the GTK side's watchdog's `Err` arm.
+/// startup path reports `Internal`.
 pub(crate) fn poll_tick(resolved: bool, poisoned: bool) -> Tick {
     if resolved {
         Tick::Done
@@ -177,7 +175,7 @@ mod tests {
         )
     }
 
-    /// The poll tick's decisions (the GTK side's repeating watchdog): a
+    /// The poll tick's decisions: a
     /// pending, healthy start keeps polling and reports nothing, a pending
     /// one on a latched flag reports `Internal`, a resolved one reports
     /// nothing and removes the timer.
@@ -198,7 +196,8 @@ mod tests {
         assert_eq!(deadline_tick(true), Tick::Done);
     }
 
-    /// The poll tick's bound: the same 200 ms the GTK side polls with.
+    /// The poll's bound: a 200 ms repeating tick; the hard deadline's
+    /// bound reuses the apply reply's wedge bound.
     #[test]
     fn the_poll_keeps_the_gtk_side_bound() {
         assert_eq!(START_WATCHDOG, Duration::from_millis(200));
@@ -256,8 +255,7 @@ mod tests {
 
     /// A slow start does not fail: a pending, healthy handshake polled
     /// repeatedly through a real loop stays pending — the poll reports
-    /// nothing and keeps the loop running (the old one-shot watchdog failed
-    /// exactly here).
+    /// nothing and keeps the loop running, however slow the compositor is.
     #[test]
     fn a_slow_start_is_never_failed_by_the_poll() {
         let (tx, rx) = mpsc::channel();

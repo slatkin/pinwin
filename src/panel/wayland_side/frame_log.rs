@@ -1,32 +1,30 @@
 //! The width tween's frame log on the panel thread (replace-gtk-with-wayland
-//! row 6.3, design decision 7): a GTK-free twin of the GTK path's frame log
-//! in [`crate::anim`], recording one timestamp per frame while
-//! `PINWIN_FRAMELOG=1` and printing one summary line per tween to stderr.
+//! D7): it records one timestamp per frame while `PINWIN_FRAMELOG=1` and
+//! prints one summary line per tween to stderr. The line format is stable —
+//! prefix, field names, `source=` suffix — so scripts parsing earlier
+//! releases' lines still work.
 //!
 //! Two time sources, one recorder. When the compositor offers the
 //! presentation-time protocol, the recorder takes each frame's timestamp
 //! from the `wp_presentation_feedback.presented` event — the time the frame
 //! actually reached the screen, combined from the `tv_sec_hi`, `tv_sec_lo`
 //! and `tv_nsec` fields into microseconds. Without the protocol, it takes
-//! the `wl_surface.frame` callback's compositor event time, exactly what
-//! the GTK path's tick callback recorded. The summary line names its source
-//! in a `source=` suffix and keeps the GTK line's prefix and field names, so
-//! a script parsing the GTK line still works.
+//! the `wl_surface.frame` callback's compositor event time. The summary
+//! line names its source in a `source=` suffix.
 //!
 //! The recorder is a pure struct whose enablement is injected as a bool
 //! ([`FrameLog::begin`]), so the tests never touch the environment; the
 //! production caller reads `PINWIN_FRAMELOG` once per tween through
-//! [`FrameLog::enabled`], as the GTK path read it once per begin. The
-//! driver in [`super::tween`] owns the recorder across the tween's
-//! lifecycle: created at the begin, fed on each frame, printed once at
-//! every stop point — a frame finish, the watchdog, a cancel, a retarget's
-//! stop relay — exactly where the GTK path's `stop_inner` printed.
+//! [`FrameLog::enabled`]. The driver in [`super::tween`] owns the recorder
+//! across the tween's lifecycle: created at the begin, fed on each frame,
+//! printed once at every stop point — a frame finish, the watchdog, a
+//! cancel, a retarget's stop relay.
 //!
 //! The protocol plumbing below the recorder — binding the optional
 //! `wp_presentation` global like the viewporter ([`Presentation`]) and the
 //! `Dispatch` impls for the manager and its feedback objects — is
-//! compile-only here: it runs only in a live session, and row 10.1 checks
-//! the summary line on niri. A `discarded` feedback records nothing, and a
+//! compile-only here: it runs only in a live session, where the niri check
+//! covers the summary line. A `discarded` feedback records nothing, and a
 //! feedback's generation tag ([`TweenDriver`](super::tween::TweenDriver)
 //! generations) keeps a late `presented` from a tween that already stopped
 //! or was retargeted out of the next tween's log.
@@ -187,8 +185,8 @@ impl FrameLog {
     }
 
     /// The one summary line per tween, or `None` when the log holds fewer
-    /// than two frames. The GTK line's prefix and field names are kept; the
-    /// source suffix is the row 6.3 addition.
+    /// than two frames. The prefix and field names are stable so parsing
+    /// scripts keep working; the `source=` suffix names the clock.
     #[must_use]
     pub(crate) fn summary_line(&self) -> Option<String> {
         let summary = self.summary()?;
@@ -229,7 +227,7 @@ pub(crate) fn presentation_us(tv_sec_hi: u32, tv_sec_lo: u32, tv_nsec: u32) -> O
 
 /// The gap between two timestamps, in ms: a backwards sample — a wrapped
 /// u32 millisecond callback clock, or an out-of-order presentation —
-/// clamps to zero, as the GTK log's `max(0)` did.
+/// clamps to zero.
 #[must_use]
 fn gap_ms(from_us: u64, to_us: u64) -> f64 {
     to_f64(to_us.saturating_sub(from_us)) / 1000.0
@@ -245,9 +243,8 @@ fn to_f64<T: num_traits::NumCast + ToPrimitive>(value: T) -> f64 {
 
 /// The nearest-rank p95 index over `n` sorted gaps: the 1-based rank
 /// `ceil(0.95 * n)`, computed in exact integer arithmetic as
-/// `ceil(19n/20) = (19n + 19) / 20`, then 0-based. The GTK log computed
-/// the same rank through f64; at the exact-multiple sample counts the two
-/// agree, and the integer form cannot drift with the f64 error.
+/// `ceil(19n/20) = (19n + 19) / 20`, then 0-based — the integer form
+/// cannot drift with an f64 rounding error.
 #[must_use]
 fn p95_rank(n: usize) -> usize {
     let rank = n.saturating_mul(19).saturating_add(19) / 20;
@@ -255,8 +252,8 @@ fn p95_rank(n: usize) -> usize {
 }
 
 /// The optional `wp_presentation` global of one bound session, the frame
-/// log's presentation-time source (row 6.3). `None` inside when the
-/// compositor does not offer the protocol: the frame log degrades to the
+/// log's presentation-time source (replace-gtk-with-wayland D7). `None`
+/// inside when the compositor does not offer the protocol: the frame log degrades to the
 /// frame callbacks' times, never the start (D1's optional-globals rule).
 #[derive(Debug, Default)]
 pub(crate) struct Presentation {
@@ -353,8 +350,7 @@ mod tests {
     use super::*;
 
     /// The summary math: mean, p95 (nearest rank) and max over the gaps
-    /// between successive frame times, in ms — the same numbers the GTK
-    /// log's test pins.
+    /// between successive frame times, in ms.
     #[test]
     fn the_summary_reports_mean_p95_and_max_gaps() {
         let mut log = FrameLog::begin(true, false).expect("an enabled callback log");
@@ -385,8 +381,8 @@ mod tests {
         assert_eq!(summary.max, 0.0);
     }
 
-    /// The line format keeps the GTK log's prefix and field names and adds
-    /// the source suffix the script can read.
+    /// The line format is stable — the prefix and field names — and names
+    /// the clock in the source suffix a script can parse.
     #[test]
     fn the_summary_line_keeps_the_gtk_format_and_names_the_source() {
         let mut log = FrameLog::begin(true, false).expect("an enabled callback log");
@@ -415,7 +411,8 @@ mod tests {
         assert!(FrameLog::begin(false, false).is_none());
     }
 
-    /// The source switch (row 6.3): the presentation-time protocol wins
+    /// The source switch (replace-gtk-with-wayland D7): the
+    /// presentation-time protocol wins
     /// when the compositor offers it, the frame callbacks otherwise, and
     /// each recorder ignores the other source's feed.
     #[test]

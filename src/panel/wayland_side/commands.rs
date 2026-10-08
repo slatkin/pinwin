@@ -12,8 +12,8 @@ use crate::guard::{Poisoned, guard, guard_always};
 
 use super::state::PanelState;
 
-/// The command channel's callback (D5 boundary): a callback is a boundary
-/// like a GTK closure, so ordinary commands run under the shared [`guard`]
+/// The command channel's callback (D5 boundary): a callback is a boundary,
+/// so ordinary commands run under the shared [`guard`]
 /// and a latched panel runs no more glue code. The stop relays — a teardown
 /// and a closed command channel — must run even on a latched flag (D5):
 /// skipping them would drop the teardown's reply (the host's drop waits the
@@ -41,9 +41,8 @@ pub(crate) fn on_command_event(state: &mut PanelState, event: Event<super::Panel
     }
 }
 
-/// One posted command (D2): the guarded arms mirror the GTK side's
-/// dispatched glue, each answering through the bounded reply the command
-/// carried.
+/// One posted command (D2): the guarded arms each answer through the
+/// bounded reply the command carried.
 fn handle_command(state: &mut PanelState, command: super::PanelCommand) {
     match command {
         super::PanelCommand::Apply {
@@ -56,7 +55,7 @@ fn handle_command(state: &mut PanelState, command: super::PanelCommand) {
         super::PanelCommand::Toggle { reply } => {
             // The toggle itself answers nothing: the reply says the hide's
             // null-buffer commit or the show's commit without a buffer went
-            // out (row 9.1, D4); the rest of a show follows the configure.
+            // out (D4); the rest of a show follows the configure.
             state.toggle();
             let _ = reply.send(());
         }
@@ -153,7 +152,7 @@ mod tests {
     }
 
     /// A toggle command flips the headless state's visibility and replies
-    /// `Ok` through the same bounded reply (row 9.1): the first hides, the
+    /// `Ok` through the same bounded reply (D4): the first hides, the
     /// second shows again (D10 — the state machine runs without a display;
     /// the surface writes are the session-guarded tail).
     #[test]
