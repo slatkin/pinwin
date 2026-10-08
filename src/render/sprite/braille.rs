@@ -121,7 +121,7 @@ mod tests {
     /// The dot geometry pins the 8×16 pitch numbers:
     /// 2 px dots on the margins-and-spacing grid.
     #[test]
-    fn the_dot_geometry_matches_the_gtk_path() {
+    fn the_dot_geometry_matches_the_panel_path() {
         assert_eq!(geometry(8, 16), (2, [1, 5], [1, 5, 9, 13]));
     }
 

@@ -259,7 +259,7 @@ fn a_bar_cursor_is_three_device_pixels_wide_at_1_5() {
 /// The block cursor redraws the glyph under it only for a block with
 /// text and no wide tail.
 #[test]
-fn the_glyph_redraw_condition_follows_the_gtk_rule() {
+fn the_glyph_redraw_condition_follows_the_panel_rule() {
     let mut block = cursor(0, 0, CursorStyle::Block);
     assert!(glyph_redraw(&block, b"X"), "a block with text redraws");
     assert!(!glyph_redraw(&block, b""), "no text, no redraw");
@@ -274,7 +274,7 @@ fn the_glyph_redraw_condition_follows_the_gtk_rule() {
 
 /// A wide-tail block cursor keeps its full shape over the tail cell;
 /// only the glyph redraw is
-/// suppressed (pinned by `the_glyph_redraw_condition_follows_the_gtk_rule`).
+/// suppressed (pinned by `the_glyph_redraw_condition_follows_the_panel_rule`).
 #[test]
 fn a_wide_tail_cursor_keeps_its_shape() {
     let m = metrics(1.5);

@@ -105,7 +105,7 @@ mod tests {
     /// The logical vertices `sprite_shape` builds for `cp` in an 8×16 cell
     /// at `(cx, cy)` — the reference point tables, copied here so the canvas
     /// geometry is checked against them rather than against itself.
-    fn gtk_logical_points(cp: u32, cx: i32, cy: i32, wide: bool) -> [(f64, f64); 3] {
+    fn panel_logical_points(cp: u32, cx: i32, cy: i32, wide: bool) -> [(f64, f64); 3] {
         let x = f64::from(cx) * 8.0;
         let y = f64::from(cy) * 16.0;
         let w = if wide { 16.0 } else { 8.0 };
@@ -129,7 +129,7 @@ mod tests {
     /// equal the hand-computed snapped vertices, at several cell positions
     /// and for wide heads too.
     #[test]
-    fn the_vertices_equal_the_gtk_snapped_vertices() {
+    fn the_vertices_equal_the_snapped_vertices() {
         for scale in [1.0, 1.25, 1.5, 1.8] {
             let m = metrics(scale);
             for (cx, cy) in [(0, 0), (2, 1), (7, 3)] {
@@ -141,7 +141,7 @@ mod tests {
     }
 
     /// Assert every polygon code point's vertices for one cell at one
-    /// scale; split out of [`the_vertices_equal_the_gtk_snapped_vertices`]
+    /// scale; split out of [`the_vertices_equal_the_snapped_vertices`]
     /// to keep the loop nesting flat.
     fn assert_cells_match(m: &PainterMetrics, cx: i32, cy: i32, wide: bool, scale: f64) {
         let mut cell = cell(cx, cy);
@@ -150,7 +150,7 @@ mod tests {
         }
         for cp in EIGHT {
             let got = points(cp, m, &cell).expect("a polygon code point");
-            for (point, (lx, ly)) in got.iter().zip(gtk_logical_points(cp, cx, cy, wide)) {
+            for (point, (lx, ly)) in got.iter().zip(panel_logical_points(cp, cx, cy, wide)) {
                 assert_eq!(
                     *point,
                     (device(lx, scale), device(ly, scale)),
