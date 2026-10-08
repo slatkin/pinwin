@@ -38,10 +38,10 @@
 //! `CropRect::wl_fixed` produces that number with a checked multiply, and
 //! the tests assert it.
 //!
-//! The per-frame margins and the reserve's side and zone follow the
+//! The per-frame margins and the reserve's held gap follow the
 //! surfaces' own rules: `panel_margins` for the panel's insets and the
 //! held-gap rule (overlay-expand D3) through
-//! `crate::surfaces::gap::reserve_gap_parts` — the zone moves with the
+//! `crate::surfaces::gap::reserve_gap` — the zone moves with the
 //! panel only while a flagged gap tween runs on a pushing target.
 //!
 //! The wide draw ([`draw_wide`]) reuses the existing grid painter over a

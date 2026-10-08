@@ -19,11 +19,11 @@
 //! in a live session.
 //!
 //! The gap state the frames commit is the read `Surfaces::publish` makes
-//! before it mutates the held gap (overlay-expand D3): the side and zone
-//! the strip rests at, and the apply's gap-tween flag. While the flag is
-//! set, [`crate::surfaces::gap::reserve_gap_parts`] moves the strip with
-//! the panel and the held values are unused; while it is clear, the held
-//! values are the strip the apply staged — the decision
+//! before it mutates the held gap (overlay-expand D3): the held gap
+//! ([`HeldGap`]) the strip rests at, and the apply's gap-tween flag. While
+//! the flag is set, [`crate::surfaces::gap::reserve_gap`] moves the strip
+//! with the panel and the held gap is unused; while it is clear, the held
+//! gap is the strip the apply staged — the decision
 //! ([`crate::surfaces::gap::gap_tween_decision`]) only clears the flag when
 //! the target strip equals the strip the gap rests at, so the frames and
 //! the finish's final geometry agree in every case.
