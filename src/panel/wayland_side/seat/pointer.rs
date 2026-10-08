@@ -77,7 +77,8 @@ impl PointerSide {
     }
 
     /// Translate one pointer event into the terminal pushes it feeds. Pure:
-    /// no state, so a repeated call answers the same.
+    /// no state, so a repeated call answers the same. An associated
+    /// function: it reads no pointer-side state.
     ///
     /// Enter and leave translate to no push — they have no mouse
     /// counterpart — and only set the cursor shape (the
@@ -86,7 +87,6 @@ impl PointerSide {
     /// release and an axis report the last recorded position.
     #[must_use]
     pub fn handle(
-        &mut self,
         kind: &PointerEventKind,
         position: (f64, f64),
         draw_offset: f64,
@@ -140,7 +140,7 @@ impl PointerSide {
             if let PointerEventKind::Enter { serial } = kind {
                 self.cursor.set_default(*serial);
             }
-            for outcome in self.handle(kind, position, (links.draw_offset)()) {
+            for outcome in Self::handle(kind, position, (links.draw_offset)()) {
                 match outcome {
                     PointerOutcome::Mouse {
                         action,
@@ -280,8 +280,8 @@ mod tests {
 
     /// One outcome helper: a single push is the only shape these tests
     /// produce.
-    fn one(mut side: PointerSide, kind: &PointerEventKind, draw_offset: f64) -> PointerOutcome {
-        let outcomes = side.handle(kind, (50.0, 20.0), draw_offset);
+    fn one(_side: PointerSide, kind: &PointerEventKind, draw_offset: f64) -> PointerOutcome {
+        let outcomes = PointerSide::handle(kind, (50.0, 20.0), draw_offset);
         assert_eq!(outcomes.len(), 1, "one push per event");
         outcomes[0]
     }
@@ -357,11 +357,10 @@ mod tests {
     /// Enter and leave translate to no push.
     #[test]
     fn enter_and_leave_produce_no_pushes() {
-        let mut side = PointerSide::default();
         let enter = PointerEventKind::Enter { serial: 7 };
         let leave = PointerEventKind::Leave { serial: 7 };
-        assert_eq!(side.handle(&enter, (50.0, 20.0), 0.0), Vec::new());
-        assert_eq!(side.handle(&leave, (50.0, 20.0), 0.0), Vec::new());
+        assert_eq!(PointerSide::handle(&enter, (50.0, 20.0), 0.0), Vec::new());
+        assert_eq!(PointerSide::handle(&leave, (50.0, 20.0), 0.0), Vec::new());
     }
 
     /// A wheel frame's `value120` sums divide into wheel notches: 120 is one
@@ -461,9 +460,8 @@ mod tests {
     /// values, pushes nothing: the terminal would accumulate a zero delta.
     #[test]
     fn a_stop_frame_pushes_nothing() {
-        let mut side = PointerSide::default();
         assert_eq!(
-            side.handle(
+            PointerSide::handle(
                 &kind_axis(axis(0.0, 0, 0), axis(0.0, 0, 0)),
                 (50.0, 20.0),
                 0.0
@@ -476,10 +474,9 @@ mod tests {
     /// compositor frame replay changes nothing beyond its pushes.
     #[test]
     fn the_translation_is_stateless() {
-        let mut side = PointerSide::default();
         let kind = kind_axis(axis(0.0, 0, 0), axis(0.0, 0, 120));
-        let first = side.handle(&kind, (50.0, 20.0), 0.0);
-        let second = side.handle(&kind, (50.0, 20.0), 0.0);
+        let first = PointerSide::handle(&kind, (50.0, 20.0), 0.0);
+        let second = PointerSide::handle(&kind, (50.0, 20.0), 0.0);
         assert_eq!(first, second);
     }
 

@@ -139,7 +139,7 @@ impl KeyboardSide {
 
     /// One `repeat_info` update: the compositor's rate decides
     /// whether any key repeats; a rate of 0 disables it.
-    pub fn repeat_info_updated(&mut self, info: &RepeatInfo) {
+    pub fn repeat_info_updated(&mut self, info: RepeatInfo) {
         self.repeat
             .set_enabled(matches!(info, RepeatInfo::Repeat { .. }));
     }
@@ -473,7 +473,7 @@ xkb_keymap {
     fn a_repeating_key_arms_and_repeats() {
         let mut keyboard = KeyboardSide::new();
         keyboard.keymap_updated(TEST_KEYMAP);
-        keyboard.repeat_info_updated(&repeat_info());
+        keyboard.repeat_info_updated(repeat_info());
         let press = keyboard
             .pressed(&key_event(RAW_Q, 0x71))
             .expect("the keymap is live");
@@ -491,7 +491,7 @@ xkb_keymap {
     fn a_release_stops_the_repeat() {
         let mut keyboard = KeyboardSide::new();
         keyboard.keymap_updated(TEST_KEYMAP);
-        keyboard.repeat_info_updated(&repeat_info());
+        keyboard.repeat_info_updated(repeat_info());
         let _ = keyboard.pressed(&key_event(RAW_Q, 0x71));
         let _ = keyboard.released(&key_event(RAW_Q, 0x71));
         assert!(keyboard.repeated(&key_event(RAW_Q, 0x71)).is_none());
@@ -502,7 +502,7 @@ xkb_keymap {
     fn a_keyboard_leave_stops_the_repeat() {
         let mut keyboard = KeyboardSide::new();
         keyboard.keymap_updated(TEST_KEYMAP);
-        keyboard.repeat_info_updated(&repeat_info());
+        keyboard.repeat_info_updated(repeat_info());
         let _ = keyboard.pressed(&key_event(RAW_Q, 0x71));
         keyboard.left();
         assert!(keyboard.repeated(&key_event(RAW_Q, 0x71)).is_none());
@@ -514,7 +514,7 @@ xkb_keymap {
     fn a_modifier_key_never_repeats() {
         let mut keyboard = KeyboardSide::new();
         keyboard.keymap_updated(TEST_KEYMAP);
-        keyboard.repeat_info_updated(&repeat_info());
+        keyboard.repeat_info_updated(repeat_info());
         let _ = keyboard.pressed(&key_event(RAW_CTRL, 0xffe3));
         assert!(keyboard.repeated(&key_event(RAW_CTRL, 0xffe3)).is_none());
     }
@@ -528,7 +528,7 @@ xkb_keymap {
     fn a_modifier_press_keeps_the_armed_repeat() {
         let mut keyboard = KeyboardSide::new();
         keyboard.keymap_updated(TEST_KEYMAP);
-        keyboard.repeat_info_updated(&repeat_info());
+        keyboard.repeat_info_updated(repeat_info());
         let _ = keyboard.pressed(&key_event(RAW_Q, 0x71));
         let _ = keyboard.pressed(&key_event(RAW_SHIFT, 0xffe1));
         let _ = keyboard.released(&key_event(RAW_SHIFT, 0xffe1));
@@ -555,7 +555,7 @@ xkb_keymap {
     fn a_repeat_after_shift_went_down_carries_the_shifted_keysym() {
         let mut keyboard = KeyboardSide::new();
         keyboard.keymap_updated(TEST_KEYMAP);
-        keyboard.repeat_info_updated(&repeat_info());
+        keyboard.repeat_info_updated(repeat_info());
         keyboard.modifiers_updated(RawModifiers::default(), 0, SctkModifiers::default());
         let _ = keyboard.pressed(&key_event(RAW_Q, 0x71));
         keyboard.modifiers_updated(
@@ -597,9 +597,9 @@ xkb_keymap {
     fn a_zero_repeat_rate_disables_repeat() {
         let mut keyboard = KeyboardSide::new();
         keyboard.keymap_updated(TEST_KEYMAP);
-        keyboard.repeat_info_updated(&repeat_info());
+        keyboard.repeat_info_updated(repeat_info());
         let _ = keyboard.pressed(&key_event(RAW_Q, 0x71));
-        keyboard.repeat_info_updated(&RepeatInfo::Disable);
+        keyboard.repeat_info_updated(RepeatInfo::Disable);
         assert!(keyboard.repeated(&key_event(RAW_Q, 0x71)).is_none());
     }
 

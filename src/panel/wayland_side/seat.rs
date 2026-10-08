@@ -200,7 +200,7 @@ impl SeatSide {
 
     /// One `repeat_info` update: the compositor's rate decides
     /// whether any key repeats.
-    pub fn repeat_info_updated(&mut self, info: &RepeatInfo) {
+    pub fn repeat_info_updated(&mut self, info: RepeatInfo) {
         let poisoned = self.links.poisoned.clone();
         let _ = guard(&poisoned, || {
             self.keyboard.repeat_info_updated(info);
@@ -327,7 +327,7 @@ xkb_keymap {
         let (mut seat, links, writes) = seat_side();
         links.terminal.borrow_mut().push_pty_data(b"\x1b[>11u");
         seat.keymap_updated(TEST_KEYMAP);
-        seat.repeat_info_updated(&RepeatInfo::Repeat {
+        seat.repeat_info_updated(RepeatInfo::Repeat {
             rate: std::num::NonZeroU32::new(25).expect("test rate"),
             delay: 250,
         });
@@ -360,7 +360,7 @@ xkb_keymap {
         // text: the associated text is where the shifted character shows.
         links.terminal.borrow_mut().push_pty_data(b"\x1b[>27u");
         seat.keymap_updated(TEST_KEYMAP);
-        seat.repeat_info_updated(&RepeatInfo::Repeat {
+        seat.repeat_info_updated(RepeatInfo::Repeat {
             rate: std::num::NonZeroU32::new(25).expect("test rate"),
             delay: 250,
         });
@@ -422,7 +422,7 @@ xkb_keymap {
             .borrow_mut()
             .push_pty_data(b"\x1b[>11u\x1b[?1004h");
         seat.keymap_updated(TEST_KEYMAP);
-        seat.repeat_info_updated(&RepeatInfo::Repeat {
+        seat.repeat_info_updated(RepeatInfo::Repeat {
             rate: std::num::NonZeroU32::new(25).expect("test rate"),
             delay: 250,
         });

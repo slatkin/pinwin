@@ -93,14 +93,14 @@ impl TweenCrop {
     /// [`Self::wide_draw`] and [`Self::frame`].
     #[cfg(test)]
     #[must_use]
-    pub const fn wide_px(&self) -> i32 {
+    pub const fn wide_px(self) -> i32 {
         self.wide_px
     }
 
     /// The wide buffer's device width at `scale` — the size the pool buffer
     /// holding the cached wide canvas is allocated at.
     #[must_use]
-    pub fn wide_device(&self, scale: FractionalScale) -> Option<u32> {
+    pub fn wide_device(self, scale: FractionalScale) -> Option<u32> {
         scale.scale_dimension(u32::try_from(self.wide_px).ok()?)
     }
 
@@ -120,7 +120,7 @@ impl TweenCrop {
     /// pins the round trip. `None` when the height is zero — no buffer
     /// could hold it — or the grid width is negative.
     #[must_use]
-    pub fn wide_draw(&self, height: u32, grid_px: i32, scale: FractionalScale) -> Option<WideDraw> {
+    pub fn wide_draw(self, height: u32, grid_px: i32, scale: FractionalScale) -> Option<WideDraw> {
         if height == 0 || grid_px < 0 {
             return None;
         }
@@ -156,7 +156,7 @@ impl TweenCrop {
     /// protocol's integers. The caller skips such a frame; the next one or
     /// the watchdog ends the tween.
     #[must_use]
-    pub fn frame(&self, current_px: i32, height: u32, scale: FractionalScale) -> Option<CropFrame> {
+    pub fn frame(self, current_px: i32, height: u32, scale: FractionalScale) -> Option<CropFrame> {
         if current_px <= 0 || current_px > self.wide_px || height == 0 {
             return None;
         }

@@ -449,7 +449,7 @@ impl KeyboardHandler for PanelState {
         _keyboard: &WlKeyboard,
         info: RepeatInfo,
     ) {
-        seat_hook(self, |side| side.repeat_info_updated(&info));
+        seat_hook(self, |side| side.repeat_info_updated(info));
     }
 }
 
@@ -688,7 +688,7 @@ xkb_keymap {
     fn a_routed_repeat_reaches_the_pty_and_the_latch_stops_the_hooks() {
         let mut fixture = seat_fixture();
         fixture.terminal.borrow_mut().push_pty_data(b"\x1b[>11u");
-        fixture.side.repeat_info_updated(&SctkRepeatInfo::Repeat {
+        fixture.side.repeat_info_updated(SctkRepeatInfo::Repeat {
             rate: NonZeroU32::new(25).expect("test rate"),
             delay: 250,
         });
