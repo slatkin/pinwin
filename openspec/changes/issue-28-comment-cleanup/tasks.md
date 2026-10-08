@@ -22,7 +22,7 @@
 
 ## 5. Comment rewrites: seat and surfaces
 
-- [ ] 5.1 Rewrite the `GDK path's` controller/mouse/focus/key comments in `seat.rs` and `seat/` (`cursor.rs`, `focus.rs`, `keyboard.rs`, `pointer.rs`, `xkb.rs`) plus `state/seat_handlers.rs` as current Wayland seat behaviour, and verify `cargo test panel::wayland_side::seat` passes
+- [x] 5.1 Rewrite the `GDK path's` controller/mouse/focus/key comments in `seat.rs` and `seat/` (`cursor.rs`, `focus.rs`, `keyboard.rs`, `pointer.rs`, `xkb.rs`) plus `state/seat_handlers.rs` as current Wayland seat behaviour, and verify `cargo test panel::wayland_side::seat` passes
 - [ ] 5.2 Rewrite the remaining `row`/`GTK` refs in `surfaces.rs`, `state/device.rs`, `state/handlers.rs`, `state/session.rs`, `buffers.rs`, `present.rs` (incl. tests), `renderer.rs` (incl. `font_setup.rs` and tests), `sizing.rs`, `state.rs`, `glue.rs`, `tests.rs`, and `src/surfaces/publish.rs`, and verify `cargo test panel::` passes
 
 ## 6. Comment rewrites: long tail
