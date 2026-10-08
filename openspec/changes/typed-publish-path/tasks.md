@@ -2,7 +2,7 @@
 
 ## 1. Typed `staged_publish`
 
-- [ ] 1.1 Change `staged_publish` in `src/surfaces/gap.rs` to take `OutputSize` and `CellSize` and return `Option<(Layout, HeldGap)>`; update `apply.rs::stage`; verify `cargo test surfaces::gap` and `cargo test panel::wayland_side::apply` pass
+- [x] 1.1 Change `staged_publish` in `src/surfaces/gap.rs` to take `OutputSize` and `CellSize` and return `Option<(Layout, HeldGap)>`; update `apply.rs::stage`; verify `cargo test surfaces::gap` and `cargo test panel::wayland_side::apply` pass
 - [ ] 1.2 Delete `metrics_valid` and its `use` in `src/surfaces.rs`/`gap.rs`; move the bad-geometry assertions to `staged_publish` tests and confirm `CellSize::new`/`OutputSize::new` already test non-positive inputs (add them in `src/layout.rs` if not); verify `cargo test layout::` and `cargo test surfaces::` pass
 
 ## 2. `HeldGap` through the tween path
