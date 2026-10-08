@@ -230,7 +230,11 @@ impl CellSize {
     #[must_use]
     pub const fn new(width: i32, height: i32) -> Option<Self> {
         match (NonZeroI32::new(width), NonZeroI32::new(height)) {
-            (Some(width), Some(height)) => Some(Self { width, height }),
+            // `NonZeroI32` admits negatives; the metric must be at least
+            // one, so the constructor also rejects them (port-to-rust D6).
+            (Some(width), Some(height)) if width.get() > 0 && height.get() > 0 => {
+                Some(Self { width, height })
+            }
             _ => None,
         }
     }
@@ -257,7 +261,10 @@ impl OutputSize {
     #[must_use]
     pub const fn new(width: i32, height: i32) -> Option<Self> {
         match (NonZeroI32::new(width), NonZeroI32::new(height)) {
-            (Some(width), Some(height)) => Some(Self { width, height }),
+            // As `CellSize::new`: negatives are not at least one.
+            (Some(width), Some(height)) if width.get() > 0 && height.get() > 0 => {
+                Some(Self { width, height })
+            }
             _ => None,
         }
     }
@@ -405,6 +412,31 @@ mod tests {
 
     fn output(width: i32, height: i32) -> OutputSize {
         OutputSize::new(width, height).expect("test output size is non-zero")
+    }
+
+    /// The typed constructors carry the degenerate-metrics guard the old
+    /// `PINWIN_GEOM_ERR_METRICS` handled at runtime: any non-positive
+    /// dimension, zero or negative, yields `None`, so the invalid-layout
+    /// verdict never sees degenerate metrics (port-to-rust D6).
+    #[test]
+    fn cell_size_new_rejects_non_positive_dimensions() {
+        assert!(CellSize::new(8, 16).is_some());
+        assert_eq!(CellSize::new(0, 16), None);
+        assert_eq!(CellSize::new(8, 0), None);
+        assert_eq!(CellSize::new(-8, 16), None);
+        assert_eq!(CellSize::new(8, -16), None);
+        assert_eq!(CellSize::new(0, 0), None);
+    }
+
+    /// Same guard for the monitor's logical-pixel size.
+    #[test]
+    fn output_size_new_rejects_non_positive_dimensions() {
+        assert!(OutputSize::new(1920, 1080).is_some());
+        assert_eq!(OutputSize::new(0, 1080), None);
+        assert_eq!(OutputSize::new(1920, 0), None);
+        assert_eq!(OutputSize::new(-1920, 1080), None);
+        assert_eq!(OutputSize::new(1920, -1080), None);
+        assert_eq!(OutputSize::new(0, 0), None);
     }
 
     #[test]

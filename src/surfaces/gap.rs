@@ -372,4 +372,74 @@ mod tests {
         assert_eq!(staged.0, too_wide);
         assert_eq!(staged.1, held);
     }
+
+    /// A layout the output metrics refuse stages nothing either
+    /// (`staged_publish` validates before it stages, overlay-expand D4):
+    /// the reachable `Layout::validate` rejects — no reserve, no width,
+    /// no row and the checked-arithmetic overflow — all yield `None`, and
+    /// for contrast the same layout against roomier metrics stages.
+    #[test]
+    fn a_publish_the_layout_refuses_stages_nothing() {
+        fn output(width: i32, height: i32) -> OutputSize {
+            OutputSize::new(width, height).expect("test output is non-degenerate")
+        }
+        fn cell(width: i32, height: i32) -> CellSize {
+            CellSize::new(width, height).expect("test cell is non-degenerate")
+        }
+
+        let held = start_held_gap(layout(Side::Left, 40, 0, 0, 0, 12), 9);
+
+        // A pushing 600-column layout at a 1px cell exactly covers the
+        // 600px output: no reserve is left, so the publish rejects.
+        assert_eq!(
+            staged_publish(
+                output(600, 1080),
+                cell(1, 16),
+                held,
+                layout(Side::Left, 600, 0, 0, 0, 0)
+            ),
+            None
+        );
+        // Top and bottom gutters leave no row for even one cell.
+        assert_eq!(
+            staged_publish(
+                output(1920, 1080),
+                cell(9, 16),
+                held,
+                layout(Side::Left, 1, 1000, 1000, 0, 0)
+            ),
+            None
+        );
+        // Negative gutters reject the same way.
+        assert_eq!(
+            staged_publish(
+                output(1920, 1080),
+                cell(9, 16),
+                held,
+                layout(Side::Left, 1, 0, 0, -100, -100)
+            ),
+            None
+        );
+        // A 65535-column layout at a 65536px cell overflows the checked
+        // arithmetic before any verdict runs.
+        assert_eq!(
+            staged_publish(
+                output(1920, 1080),
+                cell(65536, 16),
+                held,
+                layout(Side::Left, 65535, 0, 0, 0, 0)
+            ),
+            None
+        );
+
+        // For contrast: the same overflow-free layout at a sane cell stages.
+        let staged = staged_publish(
+            output(1920, 1080),
+            cell(9, 16),
+            held,
+            layout(Side::Left, 40, 0, 0, 0, 12),
+        )
+        .expect("layout fits");
+        assert_eq!(staged.0, layout(Side::Left, 40, 0, 0, 0, 12));
+    }
 }
