@@ -39,7 +39,7 @@ impl FocusSide {
         let poisoned = self.links.poisoned.clone();
         let _ = guard(&poisoned, || {
             self.links.focused.set(true);
-            (self.links.queue_draw)();
+            self.links.queue_draw.set(true);
             self.links.terminal.borrow_mut().push_focus(true);
         });
     }
@@ -50,7 +50,7 @@ impl FocusSide {
         let poisoned = self.links.poisoned.clone();
         let _ = guard(&poisoned, || {
             self.links.focused.set(false);
-            (self.links.queue_draw)();
+            self.links.queue_draw.set(true);
             self.links.terminal.borrow_mut().push_focus(false);
         });
     }
@@ -83,11 +83,11 @@ mod tests {
         }
     }
 
-    /// How often the redraw closure ran.
-    type Redraws = Rc<Cell<u32>>;
+    /// The redraw latch the hooks set; the tests read it back.
+    type Redraws = Rc<Cell<bool>>;
 
     /// A focus side over a real display-free terminal (40x24 at 8x16) with
-    /// focus reporting enabled, plus the flag, the redraw counter and the
+    /// focus reporting enabled, plus the flag, the redraw latch and the
     /// pty bytes.
     type FocusFixture = (FocusSide, Rc<Cell<bool>>, Redraws, Arc<Mutex<Vec<u8>>>);
 
@@ -102,13 +102,12 @@ mod tests {
         assert!(terminal.push_size(40, 24, 8, 16));
         terminal.push_pty_data(b"\x1b[?1004h");
         let focused = Rc::new(Cell::new(false));
-        let redraws: Redraws = Rc::new(Cell::new(0));
-        let redraw_count = Rc::clone(&redraws);
+        let redraws: Redraws = Rc::new(Cell::new(false));
         let links = SeatLinks {
             terminal: Rc::new(RefCell::new(terminal)),
-            draw_offset: Rc::new(|| 0.0),
+            draw_offset: Rc::new(Cell::new(0.0)),
             focused: Rc::clone(&focused),
-            queue_draw: Rc::new(move || redraw_count.set(redraw_count.get() + 1)),
+            queue_draw: Rc::clone(&redraws),
             poisoned: GuardPoisoned::new(),
         };
         (FocusSide::new(links), focused, redraws, writes)
@@ -125,12 +124,12 @@ mod tests {
         let (mut focus, focused, redraws, writes) = focus_side();
         focus.entered();
         assert!(focused.get(), "the enter set the flag");
-        assert_eq!(redraws.get(), 1, "the enter queued one redraw");
+        assert!(redraws.get(), "the enter latched the redraw");
         assert_eq!(take(&writes), b"\x1b[I");
 
         focus.left();
         assert!(!focused.get(), "the leave cleared the flag");
-        assert_eq!(redraws.get(), 2, "the leave queued one redraw");
+        assert!(redraws.get(), "the leave latched the redraw");
         assert_eq!(take(&writes), b"\x1b[O");
     }
 
@@ -161,9 +160,9 @@ mod tests {
         let focused = Rc::new(Cell::new(false));
         let links = SeatLinks {
             terminal: Rc::new(RefCell::new(terminal)),
-            draw_offset: Rc::new(|| 0.0),
+            draw_offset: Rc::new(Cell::new(0.0)),
             focused: Rc::clone(&focused),
-            queue_draw: Rc::new(|| ()),
+            queue_draw: Rc::new(Cell::new(false)),
             poisoned: GuardPoisoned::new(),
         };
         let mut focus = FocusSide::new(links);
@@ -199,9 +198,9 @@ mod tests {
         let focused = Rc::new(Cell::new(false));
         let links = SeatLinks {
             terminal: Rc::new(RefCell::new(terminal)),
-            draw_offset: Rc::new(|| 0.0),
+            draw_offset: Rc::new(Cell::new(0.0)),
             focused: Rc::clone(&focused),
-            queue_draw: Rc::new(|| ()),
+            queue_draw: Rc::new(Cell::new(false)),
             poisoned: poisoned.clone(),
         };
         (FocusSide::new(links), focused, poisoned)

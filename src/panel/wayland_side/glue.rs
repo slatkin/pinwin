@@ -169,8 +169,8 @@ pub(crate) fn byte_path(poisoned: Poisoned, fd: RawFd) -> BytePath {
 
 /// The seat links the thread's pieces build: the
 /// encoders' terminal, the draw offset the frames publish, the focus flag
-/// the renderer draws the accent from, the repaint request the seat's
-/// `queue_draw` latches, and the shared latch. The seat handlers route the
+/// the renderer draws the accent from, the redraw latch the seat's
+/// `queue_draw` sets, and the shared latch. The seat handlers route the
 /// toolkit's events into them, and the focus flag and the offset cell are
 /// already the draw's sources.
 pub(crate) fn seat_links(
@@ -182,15 +182,9 @@ pub(crate) fn seat_links(
 ) -> SeatLinks {
     SeatLinks {
         terminal: Rc::clone(terminal),
-        draw_offset: {
-            let cell = Rc::clone(draw_offset);
-            Rc::new(move || cell.get())
-        },
+        draw_offset: Rc::clone(draw_offset),
         focused: Rc::clone(focused),
-        queue_draw: {
-            let repaint = Rc::clone(repaint);
-            Rc::new(move || repaint.set(true))
-        },
+        queue_draw: Rc::clone(repaint),
         poisoned,
     }
 }

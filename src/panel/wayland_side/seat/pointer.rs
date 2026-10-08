@@ -140,7 +140,7 @@ impl PointerSide {
             if let PointerEventKind::Enter { serial } = kind {
                 self.cursor.set_default(*serial);
             }
-            for outcome in Self::handle(kind, position, (links.draw_offset)()) {
+            for outcome in Self::handle(kind, position, links.draw_offset.get()) {
                 match outcome {
                     PointerOutcome::Mouse {
                         action,
@@ -517,9 +517,9 @@ mod tests {
         let poisoned = GuardPoisoned::new();
         let links = SeatLinks {
             terminal: Rc::new(RefCell::new(terminal)),
-            draw_offset: Rc::new(|| 0.0),
+            draw_offset: Rc::new(Cell::new(0.0)),
             focused: Rc::new(Cell::new(false)),
-            queue_draw: Rc::new(|| ()),
+            queue_draw: Rc::new(Cell::new(false)),
             poisoned: poisoned.clone(),
         };
         links

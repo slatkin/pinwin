@@ -50,13 +50,15 @@ pub struct SeatLinks {
     pub terminal: Rc<RefCell<Terminal>>,
     /// The width tween's draw offset: the drawing shift that keeps the grid
     /// against the docked edge while the surface animates; pointer x is
-    /// adjusted by it so the mouse reports land on the drawn grid.
-    pub draw_offset: Rc<dyn Fn() -> f64>,
+    /// adjusted by it so the mouse reports land on the drawn grid. The
+    /// panel state's draw step publishes into the same cell.
+    pub draw_offset: Rc<Cell<f64>>,
     /// Whether the panel holds keyboard focus; the renderer reads it for
     /// the focus accent (`g_focused`).
     pub focused: Rc<Cell<bool>>,
-    /// Queue a redraw of the panel's surface.
-    pub queue_draw: Rc<dyn Fn()>,
+    /// The redraw latch: a hook sets it to ask the loop for a frame, the
+    /// same repaint flag the terminal's callbacks and the draw step share.
+    pub queue_draw: Rc<Cell<bool>>,
     /// Latched when a hook body panicked (D5); the panel consults it.
     pub poisoned: Poisoned,
 }
@@ -291,9 +293,9 @@ xkb_keymap {
         assert!(terminal.push_size(40, 24, 8, 16));
         let links = SeatLinks {
             terminal: Rc::new(RefCell::new(terminal)),
-            draw_offset: Rc::new(|| 0.0),
+            draw_offset: Rc::new(Cell::new(0.0)),
             focused: Rc::new(Cell::new(false)),
-            queue_draw: Rc::new(|| ()),
+            queue_draw: Rc::new(Cell::new(false)),
             poisoned: GuardPoisoned::new(),
         };
         (SeatSide::new(links.clone()), links, writes)
@@ -513,9 +515,9 @@ xkb_keymap {
         let poisoned = GuardPoisoned::new();
         let links = SeatLinks {
             terminal: Rc::new(RefCell::new(terminal)),
-            draw_offset: Rc::new(|| 0.0),
+            draw_offset: Rc::new(Cell::new(0.0)),
             focused: Rc::new(Cell::new(false)),
-            queue_draw: Rc::new(|| ()),
+            queue_draw: Rc::new(Cell::new(false)),
             poisoned: poisoned.clone(),
         };
         let mut seat = SeatSide::new(links);

@@ -549,9 +549,9 @@ xkb_keymap {
             // The side and the fixture share the one terminal: the links
             // hold one clone, the tests hold the other.
             terminal: Rc::clone(&terminal),
-            draw_offset: Rc::new(|| 0.0),
+            draw_offset: Rc::new(Cell::new(0.0)),
             focused: Rc::clone(&focused),
-            queue_draw: Rc::new(|| ()),
+            queue_draw: Rc::new(Cell::new(false)),
             poisoned: poisoned.clone(),
         };
         let mut side = SeatSide::new(links);
