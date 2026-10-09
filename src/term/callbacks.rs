@@ -1,11 +1,12 @@
 //! libghostty effect callbacks (port-to-rust D3): the closures the
 //! `libghostty-vt` crate's terminal calls back into, moved out of the `term`
-//! module root (`term.rs`) so it stays under the module size cap. The creation path ([`init_ghostty`])
-//! installs the process-wide PNG decode forwarder (A4) and the per-terminal
-//! effect callbacks, sharing state through [`Rc<Shared>`] captures instead of
-//! a userdata pointer (A5). The crate's trampolines do not catch panics, so
-//! every closure body runs through the D5 guard, latching the poisoned flag
-//! so later calls become no-ops instead of aborting the host (A3).
+//! module root (`term.rs`) so it stays under the module size cap. The
+//! creation path ([`init_ghostty`]) installs the process-wide PNG decode
+//! forwarder (A4) and the per-terminal effect callbacks, sharing state
+//! through [`Rc<Shared>`] captures instead of a userdata pointer (A5). The
+//! crate's trampolines do not catch panics, so every closure body runs
+//! through the D5 guard, latching the poisoned flag so later calls become
+//! no-ops instead of aborting the host (A3).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

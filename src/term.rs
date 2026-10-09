@@ -109,10 +109,14 @@ struct Shared {
 }
 
 /// The crate handles a [`Terminal`] owns. Creation is all-or-nothing: every
-/// type frees itself when dropped, each through its own `*_free` call, and
-/// none of them borrows from another between calls — the references the
-/// crate's types carry live only across call lifetimes, so the field drop
-/// order (declaration order, `terminal` first) does not matter.
+/// type frees itself when dropped, each through its own `*_free` call on its
+/// own raw pointer, and none of them borrows from another between calls —
+/// the references the crate's types carry live only across call lifetimes
+/// (each `impl Drop` in the crate source — `terminal.rs`, `render.rs`,
+/// `kitty/graphics.rs`, `key.rs`, `mouse.rs` — frees only its own handle).
+/// The one drop order this module relies on is the frame dropping before the
+/// handles, so a stored snapshot never outlives the render state it borrows
+/// (see `cells::FrameState`).
 struct Handles {
     terminal: vt::Terminal<'static, 'static>,
     render_state: vt::RenderState<'static>,
