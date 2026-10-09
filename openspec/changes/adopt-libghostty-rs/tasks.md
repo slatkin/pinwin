@@ -30,5 +30,5 @@
 ## 6. Acceptance
 
 - [x] 6.1 Run `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo audit`, `cargo nextest run`, `make check-code-file-lines` and `openspec validate adopt-libghostty-rs --strict`. Make sure that all of them pass.
-- [ ] 6.2 Run `cargo run --example demo` with `DEMO_DENSE=1` in niri, as a user task. Make sure that text, colors, the cursor, kitty images, the width animation both ways, mouse clicks and focus reports behave as before.
+- [x] 6.2 Run `cargo run --example demo` with `DEMO_DENSE=1` in niri, as a user task. Make sure that text, colors, the cursor, kitty images, the width animation both ways, mouse clicks and focus reports behave as before.
 - [ ] 6.3 Close slatkin/pinwin#18 with a link to the merge commit, sync the delta into `openspec/specs/pinwin-panel/spec.md`, and archive the change.
