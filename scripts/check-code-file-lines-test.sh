@@ -50,8 +50,6 @@ for extension in lua sh js ts tsx c h cpp hpp zig; do
     write_lines "$repo/src/large.$extension" 801 || fail "unable to create .$extension fixture"
 done
 write_lines "$repo/src/nerd_font.rs" 1200 || fail 'unable to create generated-table fixture'
-mkdir -p "$repo/src/ghostty_sys"
-write_lines "$repo/src/ghostty_sys/mod.rs" 1200 || fail 'unable to create FFI fixture'
 write_lines "$repo/Makefile" 801 || fail 'unable to create Makefile fixture'
 write_lines "$repo/PKGBUILD" 801 || fail 'unable to create PKGBUILD fixture'
 write_lines "$repo/PKGBUILD-git" 801 || fail 'unable to create PKGBUILD-git fixture'
@@ -94,7 +92,7 @@ done
     fail 'classifier did not handle whitespace in a governed filename'
 [[ "$classifier_output" == *$'src/newline\nname.rs has 801 lines'* ]] ||
     fail 'classifier did not handle a newline in a governed filename'
-for excluded in src/nerd_font.rs src/ghostty_sys/mod.rs docs/large.sh .github/large.sh openspec/large.lua dist/large.rs \
+for excluded in src/nerd_font.rs docs/large.sh .github/large.sh openspec/large.lua dist/large.rs \
     assets/large.js fonts/large.ts contrib/large.service target/large.rs \
     build/large.rs generated/large.rs config.toml config.json config.yaml \
     Cargo.lock unit.service image.png; do

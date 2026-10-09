@@ -8,11 +8,6 @@ license = "MIT"
 repository = "https://github.com/slatkin/pinwin"
 keywords = ["terminal", "niri", "layer-shell", "wayland"]
 categories = ["command-line-utilities"]
-# The pinned libghostty-vt archive is still built by build.rs from the
-# commit in build.rs (port-to-rust D2); adopt-libghostty-rs moves the
-# terminal core to the `libghostty-vt` crate below, and task 5.1 removes
-# this build script together with `ghostty_sys`.
-build = "build.rs"
 
 [lib]
 name = "pinwin"

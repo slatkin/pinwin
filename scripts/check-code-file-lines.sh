@@ -16,12 +16,6 @@ is_governed_path() {
         src/nerd_font.rs)
             return 1
             ;;
-        # The hand-written `extern` declarations mirroring the pinned C
-        # headers (the only module that talks to C); mechanical FFI with no
-        # responsibility seam to split along. Documented exception.
-        src/ghostty_sys/*)
-            return 1
-            ;;
         .githooks/*)
             return 0
             ;;
