@@ -6,7 +6,7 @@
 
 ## 2. Golden output before the port
 
-- [ ] 2.1 Add a test in `src/term/cells/` that records the golden output (design A7). It feeds a fixed VT byte stream through `term::Terminal`. The stream holds wide characters and styled text (bold, italic, inverse, underline). It also holds 24-bit and palette colors, enough lines to scroll, a cursor at a known cell, and one kitty PNG placement. Use a test `PngDecoder` that returns a fixed 2x2 RGBA image. The test writes every `Cell`, the cursor, the colors and every `Image` as text and compares the result with a checked-in fixture file. Generate the fixture from the current FFI and commit it before any port code. Make sure that `cargo nextest run` passes.
+- [x] 2.1 Add a test in `src/term/cells/` that records the golden output (design A7). It feeds a fixed VT byte stream through `term::Terminal`. The stream holds wide characters and styled text (bold, italic, inverse, underline). It also holds 24-bit and palette colors, enough lines to scroll, a cursor at a known cell, and one kitty PNG placement. Use a test `PngDecoder` that returns a fixed 2x2 RGBA image. The test writes every `Cell`, the cursor, the colors and every `Image` as text and compares the result with a checked-in fixture file. Generate the fixture from the current FFI and commit it before any port code. Make sure that `cargo nextest run` passes.
 
 ## 3. Dependency and build
 

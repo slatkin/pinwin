@@ -35,6 +35,8 @@ use crate::ghostty_sys::style::{GHOSTTY_STYLE_COLOR_RGB, GhosttyColorRgb, Ghostt
 
 mod dirty;
 pub use dirty::FrameDirty;
+#[cfg(test)]
+mod golden;
 mod graphemes;
 pub(crate) use graphemes::first_codepoint;
 mod images;
