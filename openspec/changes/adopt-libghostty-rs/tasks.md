@@ -2,7 +2,7 @@
 
 ## 1. Gate
 
-- [ ] 1.1 Make sure that Uzaaft/libghostty-rs#84 and #85 are both merged into master (`gh pr view 84 -R Uzaaft/libghostty-rs --json state,mergeCommit` and the same for 85). If either PR is not merged, stop and report. Record the first master commit that contains both PRs as `<sha>` in this task. At `<sha>`, make sure that `crates/libghostty-vt-sys/build.rs` pins a ghostty commit at or past `3a3047f6` (`gh api repos/ghostty-org/ghostty/compare/3a3047f6b62a791fd8b12d9f07a85b3d2160370b...<pin>` reports `ahead` or `identical`). Make sure that `RowIteration::viewport_y` and `kitty::graphics::set_png_decoder` exist at `<sha>`. If any check fails, stop and report.
+- [x] 1.1 Make sure that Uzaaft/libghostty-rs#84 and #85 are both merged into master (`gh pr view 84 -R Uzaaft/libghostty-rs --json state,mergeCommit` and the same for 85). If either PR is not merged, stop and report. Record the first master commit that contains both PRs as `<sha>` in this task. At `<sha>`, make sure that `crates/libghostty-vt-sys/build.rs` pins a ghostty commit at or past `3a3047f6` (`gh api repos/ghostty-org/ghostty/compare/3a3047f6b62a791fd8b12d9f07a85b3d2160370b...<pin>` reports `ahead` or `identical`). Make sure that `RowIteration::viewport_y` and `kitty::graphics::set_png_decoder` exist at `<sha>`. If any check fails, stop and report. Verified 2026-10-09: `<sha>` = `e1e145f22bace96593ecaa348c09d874635ef637`, pin `3425025e585a3403340d4dc6d65132f42e05e605` (`ahead` by 66), both APIs present.
 
 ## 2. Golden output before the port
 
