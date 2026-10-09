@@ -11,7 +11,7 @@
 ## 3. Dependency and build
 
 - [x] 3.1 Add `libghostty-vt` as a git dependency at `rev = "<sha>"` with default features and without `png` (design A1). Raise `rust-version` to 1.90. Add `.cargo/config.toml` with `[env]` entries `LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseSafe"` and `LIBGHOSTTY_VT_SYS_CPU = "x86_64_v2"` (design A2). Delete `build.rs` and the `build = "build.rs"` line and its comment from `Cargo.toml`. Make sure that `cargo build -vv` shows `-Doptimize=ReleaseSafe` and `-Dcpu=x86_64_v2` in the zig command line for the dev and the release profile. Change the optimize value, rebuild, and make sure that zig runs again. If the crate does not build yet with `ghostty_sys` still present, fold this task into task 4.1 and do not commit it on its own.
-- [ ] 3.2 If the CI workflow `.github/workflows/build.yml` references `build.rs` or `PINWIN_GHOSTTY_SRC`, update it, including the cache key. Make sure that CI passes on the branch.
+- [x] 3.2 If the CI workflow `.github/workflows/build.yml` references `build.rs` or `PINWIN_GHOSTTY_SRC`, update it, including the cache key. Make sure that CI passes on the branch.
 
 ## 4. Port `src/term/`
 
@@ -29,6 +29,6 @@
 
 ## 6. Acceptance
 
-- [ ] 6.1 Run `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo audit`, `cargo nextest run`, `make check-code-file-lines` and `openspec validate adopt-libghostty-rs --strict`. Make sure that all of them pass.
+- [x] 6.1 Run `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo audit`, `cargo nextest run`, `make check-code-file-lines` and `openspec validate adopt-libghostty-rs --strict`. Make sure that all of them pass.
 - [ ] 6.2 Run `cargo run --example demo` with `DEMO_DENSE=1` in niri, as a user task. Make sure that text, colors, the cursor, kitty images, the width animation both ways, mouse clicks and focus reports behave as before.
 - [ ] 6.3 Close slatkin/pinwin#18 with a link to the merge commit, sync the delta into `openspec/specs/pinwin-panel/spec.md`, and archive the change.
