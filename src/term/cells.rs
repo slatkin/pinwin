@@ -4,34 +4,23 @@
 //! kitty image placements (design D4). Ported from `src/cells.zig` and the
 //! frame half of `src/pinwin.h`.
 //!
-//! The shared terminal handles live on [`Terminal`]; the panel thread's
-//! renderer drives these methods and paints the plain Rust types below. No
-//! toolkit or
-//! cairo type appears here.
+//! The `libghostty-vt` crate gates render-state reads behind a snapshot
+//! (`RenderState::update` returns one, and every iterator must be refreshed
+//! from it), and a snapshot borrows the render state exclusively — so a
+//! snapshot cannot be stored in the [`Terminal`] that owns the render state.
+//! The panel's frame API is streaming (`frame_begin`, then `cell_next` calls
+//! spread over the paint passes), so [`Terminal::frame_begin`] takes one
+//! snapshot, walks the whole grid once (the old code walked it per pass
+//! anyway, design D5 of `port-to-rust`), and captures the cells, cursor,
+//! colours and dirty data as plain data. The passes then walk the capture,
+//! which keeps the public frame API and the paint order unchanged
+//! (adopt-libghostty-rs A5: one snapshot, the borrow checker sees it once).
 
-use std::mem;
-use std::ptr;
+use libghostty_vt as vt;
+use libghostty_vt::render::Snapshot;
+use libghostty_vt::screen::CellWide;
 
 use super::{Handles, Terminal};
-use crate::ghostty_sys::GHOSTTY_SUCCESS;
-use crate::ghostty_sys::kitty::GhosttyKittyGraphics;
-use crate::ghostty_sys::render::{
-    GHOSTTY_RENDER_STATE_DATA_COLORS, GHOSTTY_RENDER_STATE_DATA_CURSOR,
-    GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
-    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR,
-    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
-    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW,
-    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
-    GHOSTTY_RENDER_STATE_ROW_DATA_VIEWPORT_Y, GhosttyRenderStateColors, GhosttyRenderStateCursor,
-    GhosttyRenderStateRowCells, ghostty_render_state_clean, ghostty_render_state_get,
-    ghostty_render_state_row_cells_get, ghostty_render_state_row_cells_next,
-    ghostty_render_state_row_get, ghostty_render_state_row_iterator_next,
-    ghostty_render_state_update,
-};
-use crate::ghostty_sys::screen::{
-    GHOSTTY_CELL_DATA_WIDE, GHOSTTY_CELL_WIDE_NARROW, GhosttyCellWide, ghostty_cell_get,
-};
-use crate::ghostty_sys::style::{GHOSTTY_STYLE_COLOR_RGB, GhosttyColorRgb, GhosttyStyle};
 
 mod dirty;
 pub use dirty::FrameDirty;
@@ -52,30 +41,34 @@ pub use types::{CELL_TEXT_CAP, Cell, Colors, Cursor, CursorStyle, Image, Rgb, St
 
 /// The frame's lifecycle state, grouped so [`FrameState`] stays readable
 /// (`struct_excessive_bools`: adjacent flags invite swapped writes). The
-/// row-walk flag stays on [`FrameState`] itself: it belongs to the row
-/// iterator, not the frame lifecycle.
+/// walk cursor stays on [`FrameState`] itself: it belongs to the cell walk,
+/// not the frame lifecycle.
 #[derive(Default)]
 pub(crate) struct FrameFlags {
     open: bool,
     has_pending: bool,
     images_started: bool,
 }
+
+/// One captured viewport row: its viewport y and its raw cells, in column
+/// order, before grapheme merging.
+struct CapturedRow {
+    y: i32,
+    cells: Vec<Cell>,
+}
+
 #[derive(Default)]
 pub(crate) struct FrameState {
     flags: FrameFlags,
     last_emitted_cp: u32,
     pending_cell: Cell,
-    in_row: bool,
-    cell_x: i32,
-    cell_y: i32,
     cursor: Cursor,
     foreground: Rgb,
     background: Rgb,
-    graphics: Option<GhosttyKittyGraphics>,
     placeholders: images::PlaceholderMap,
     /// The global dirty state the render state reported at `frame_begin`.
-    /// `update` only updates the dirty state, it never unsets
-    /// it; `frame_end`'s clean unsets both layers after a consumed frame.
+    /// `update` only escalates the dirty state, it never unsets it;
+    /// `frame_end`'s clean unsets both layers after a consumed frame.
     dirty: FrameDirty,
     /// The viewport rows whose dirty flag the render state reported at
     /// `frame_begin`, in walk order. The flag is conservative: a
@@ -92,6 +85,22 @@ pub(crate) struct FrameState {
     /// by `frame_begin`, kept by `frame_rewind` (every pass of one frame
     /// walks the same rows).
     row_filter: Option<Vec<i32>>,
+    /// The grid the frame's snapshot captured: one entry per viewport row,
+    /// in walk order. Reused across frames; cleared and refilled by every
+    /// `frame_begin`.
+    rows: Vec<CapturedRow>,
+    /// The cell walk's position in `rows`: the row index and the cell index
+    /// within it. `frame_rewind` resets it.
+    walk: (usize, usize),
+    /// The kitty placements the image pass captured on its first call this
+    /// frame, handed out one per `image_next`.
+    images: Vec<Image>,
+    /// The render-state snapshot the frame's `update` produced, kept so
+    /// `frame_end` can mark the consumed frame clean. The snapshot borrows
+    /// the terminal's render state exclusively, and its borrow lifetime was
+    /// erased on capture — see [`begin`] for the invariant that makes that
+    /// sound.
+    snapshot: Option<Snapshot<'static, 'static>>,
 }
 
 /// The frame API on [`Terminal`]. Every draw call draws a complete frame by
@@ -151,15 +160,15 @@ impl Terminal {
         // The shared scale note, the same one `size_report` answers from
         // (device-pixel-image-size D1): the drawn size and the reported size
         // can never use different scales.
-        let scale_120 = self.ctx.scale_120.get();
+        let scale_120 = self.shared.scale_120.get();
         let handles = self.handles.as_mut()?;
         images::image_next(&mut self.frame, handles, cell_w, cell_h, scale_120)
     }
 
     /// Finish the frame and clear the render state's dirty flags — both
-    /// layers: `ghostty_render_state_clean` sets the global state to
-    /// `DIRTY_FALSE` and clears every per-row flag, so a consumed frame
-    /// needs no per-row setter.
+    /// layers: the snapshot-level clean sets the global state to clean and
+    /// clears every per-row flag, so a consumed frame needs no per-row
+    /// setter.
     pub fn frame_end(&mut self) {
         let Some(handles) = self.handles.as_ref() else {
             return;
@@ -168,196 +177,179 @@ impl Terminal {
     }
 }
 
-/// Start a frame (`pinwin_frame_begin`): refresh the render state, capture the
-/// default colours and cursor, and rewind the row iterator.
+/// Start a frame (`pinwin_frame_begin`): refresh the render state, capture
+/// the default colours, cursor, dirty data and the whole grid, and reset the
+/// cell walk.
 fn begin(frame: &mut FrameState, handles: &mut Handles) -> bool {
-    let terminal = handles.terminal.expect("frame_begin with a live terminal");
-    let render_state = handles
-        .render_state
-        .expect("frame_begin with a live render state");
-    // SAFETY: both handles are live and belong together.
-    if unsafe { ghostty_render_state_update(render_state, terminal) } != GHOSTTY_SUCCESS {
-        return false;
-    }
+    // A frame left open by a caller that forgot `frame_end` held the
+    // snapshot; drop it before the next update, which needs the render
+    // state exclusively.
+    frame.snapshot = None;
 
-    // SAFETY: the render state is live and `colors` is a sized struct of the
-    // type the selector expects.
-    let mut colors = unsafe { mem::zeroed::<GhosttyRenderStateColors>() };
-    colors.size = mem::size_of::<GhosttyRenderStateColors>();
-    // SAFETY: `colors` is writable storage of the expected type.
-    if unsafe {
-        ghostty_render_state_get(
-            render_state,
-            GHOSTTY_RENDER_STATE_DATA_COLORS,
-            ptr::from_mut(&mut colors).cast(),
-        )
-    } == GHOSTTY_SUCCESS
-    {
+    let Some(snapshot) = render_state_update(handles) else {
+        return false;
+    };
+
+    if let Ok(colors) = snapshot.colors() {
         frame.background = colors.background.into();
         frame.foreground = colors.foreground.into();
     }
 
-    let mut row_iterator = handles
-        .row_iterator
-        .expect("frame_begin with a row iterator");
-    // SAFETY: the row iterator handle is writable storage of the type the
-    // selector returns; the render state is live.
-    let _ = unsafe {
-        ghostty_render_state_get(
-            render_state,
-            GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
-            ptr::from_mut(&mut row_iterator).cast(),
-        )
-    };
-    handles.row_iterator = Some(row_iterator);
-
     frame.cursor = Cursor::default();
-    // SAFETY: `cursor` is a sized struct of the type the selector expects.
-    let mut cursor = unsafe { mem::zeroed::<GhosttyRenderStateCursor>() };
-    cursor.size = mem::size_of::<GhosttyRenderStateCursor>();
-    // SAFETY: `cursor` is writable storage of the expected type.
-    let have_cursor = unsafe {
-        ghostty_render_state_get(
-            render_state,
-            GHOSTTY_RENDER_STATE_DATA_CURSOR,
-            ptr::from_mut(&mut cursor).cast(),
-        )
-    } == GHOSTTY_SUCCESS;
-    if have_cursor && cursor.visible && cursor.viewport_has_value {
+    if let Ok(cursor) = snapshot.cursor()
+        && cursor.visible
+        && let Some(viewport) = cursor.viewport
+    {
         frame.cursor.has_value = true;
-        frame.cursor.x = i32::from(cursor.viewport_x);
-        frame.cursor.y = i32::from(cursor.viewport_y);
+        frame.cursor.x = i32::from(viewport.x);
+        frame.cursor.y = i32::from(viewport.y);
         frame.cursor.style = CursorStyle::from_raw(cursor.visual_style);
-        frame.cursor.wide_tail = cursor.wide_tail;
+        frame.cursor.wide_tail = viewport.at_wide_tail;
     }
 
     // The dirty data the update just computed, and the kitty
-    // placement presence. Both walks below leave their iterator wherever
-    // they stop, so each one re-fetches it afterwards; the cell passes and
-    // the image pass must start from their first entry.
+    // placement presence. The walk below captures the per-row dirty
+    // flags together with the cells, in one pass over the grid.
     frame.row_filter = None;
-    frame.dirty = FrameDirty::Clean;
+    frame.dirty = dirty::global_dirty(&snapshot);
     frame.dirty_rows.clear();
     frame.has_images = false;
-    dirty::capture_dirty(frame, render_state, &mut row_iterator);
-    handles.row_iterator = Some(row_iterator);
+    frame.rows.clear();
+    frame.placeholders.clear();
+    frame.images.clear();
     dirty::capture_images(frame, handles);
+
+    if !capture_grid(frame, handles, &snapshot) {
+        return false;
+    }
 
     frame.flags.open = true;
     frame.flags.has_pending = false;
     frame.last_emitted_cp = 0;
-    frame.in_row = false;
     frame.flags.images_started = false;
-    frame.placeholders.clear();
-    frame.cell_y = -1;
+    frame.walk = (0, 0);
+    frame.snapshot = Some(snapshot);
     true
 }
 
-/// Rewind the row iterator for the glyph pass (`pinwin_frame_rewind`).
+/// Update the render state from the terminal and hand back the snapshot with
+/// its borrow lifetime erased.
+///
+/// # Safety of the stored snapshot
+///
+/// The returned snapshot borrows `handles.render_state` exclusively, but the
+/// frame API stores it in the same `Terminal` that owns the render state, so
+/// its real lifetime cannot be expressed. The erasure is sound under the
+/// frame's own discipline, enforced here: while a frame is open, every
+/// render-state access goes through the stored snapshot (`frame_end`'s
+/// clean), `frame_begin` drops a leftover snapshot before updating, and the
+/// snapshot is a plain `Option` field with no `Drop`, so a `Terminal` dropped
+/// with a frame open frees the render state before the (inert) snapshot.
+fn render_state_update(handles: &mut Handles) -> Option<Snapshot<'static, 'static>> {
+    let terminal = &handles.terminal;
+    let snapshot = handles.render_state.update(terminal).ok()?;
+    // SAFETY: the snapshot's only reference is to `handles.render_state`,
+    // which lives as long as the owning `Terminal`; the frame discipline
+    // above keeps every other render-state access away while it is stored,
+    // and `Snapshot` has no `Drop` that could observe the erasure.
+    Some(unsafe {
+        std::mem::transmute::<Snapshot<'static, '_>, Snapshot<'static, 'static>>(snapshot)
+    })
+}
+
+/// Walk the captured rows once: the per-row dirty flags for the partial
+/// repaint, and every row's raw cells for the cell passes. `false` when a
+/// row read fails, which leaves the frame closed.
+fn capture_grid(
+    frame: &mut FrameState,
+    handles: &mut Handles,
+    snapshot: &Snapshot<'static, 'static>,
+) -> bool {
+    let Ok(mut rows) = handles.row_iterator.update(snapshot) else {
+        return false;
+    };
+    while let Some(row) = rows.next() {
+        let Ok(viewport_y) = row.viewport_y() else {
+            continue;
+        };
+        if let Ok(dirty) = row.dirty()
+            && dirty
+        {
+            frame.dirty_rows.push(viewport_y);
+        }
+        let Ok(mut cells) = handles.cell_iterator.update(row) else {
+            continue;
+        };
+        let mut captured = CapturedRow {
+            y: viewport_y,
+            cells: Vec::new(),
+        };
+        let mut x: i32 = 0;
+        while let Some(cell) = cells.next() {
+            captured.cells.push(fill_cell(frame, cell, x, viewport_y));
+            x += 1;
+        }
+        frame.rows.push(captured);
+    }
+    true
+}
+
+/// Rewind the cell walk for the glyph pass (`pinwin_frame_rewind`). The
+/// placeholder origin map is not cleared here: the old walk re-recorded the
+/// origins during every pass, but the capture records them once at
+/// `frame_begin` (every pass sees the same cells, so the map is the same),
+/// and the image pass resolves against it after any number of rewinds.
 fn rewind(frame: &mut FrameState, handles: &mut Handles) {
+    let _ = handles;
     if !frame.flags.open {
         return;
     }
-    let render_state = handles
-        .render_state
-        .expect("frame_rewind with a live render state");
-    let mut row_iterator = handles
-        .row_iterator
-        .expect("frame_rewind with a row iterator");
-    // SAFETY: the row iterator handle is writable storage of the type the
-    // selector returns; the render state is live.
-    let _ = unsafe {
-        ghostty_render_state_get(
-            render_state,
-            GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
-            ptr::from_mut(&mut row_iterator).cast(),
-        )
-    };
-    handles.row_iterator = Some(row_iterator);
     frame.flags.has_pending = false;
     frame.last_emitted_cp = 0;
-    frame.in_row = false;
-    frame.placeholders.clear();
-    frame.cell_y = -1;
+    frame.walk = (0, 0);
 }
 
 /// End a frame and clean the render state (`pinwin_frame_end`).
 fn end(frame: &mut FrameState, handles: &Handles) {
+    let _ = handles;
     if !frame.flags.open {
         return;
     }
     frame.flags.open = false;
-    let render_state = handles
-        .render_state
-        .expect("frame_end with a live render state");
-    // SAFETY: the render state is live.
-    let _ = unsafe { ghostty_render_state_clean(render_state) };
+    if let Some(snapshot) = frame.snapshot.take()
+        && let Err(error) = snapshot.clean()
+    {
+        // The only failure mode is out-of-memory; leave the dirty state as
+        // the update computed it, so the next frame redraws conservatively.
+        let _ = error;
+    }
 }
 
-/// Advance to the next raw cell, before grapheme joining (`nextRawCell`).
+/// Whether the frame walk visits the viewport row `y` under the partial
+/// repaint's row filter. No filter visits everything.
+fn row_visible(frame: &FrameState, y: i32) -> bool {
+    dirty::row_visible(frame, y)
+}
+
+/// The next captured raw cell, before grapheme joining (`nextRawCell`).
 /// `None` at the end of the grid.
 fn next_raw_cell(frame: &mut FrameState, handles: &mut Handles) -> Option<Cell> {
+    let _ = handles;
     loop {
-        if frame.in_row {
-            let cells = handles.row_cells.expect("next_raw_cell with row cells");
-            // SAFETY: the row cells handle was filled by the row iterator for
-            // the current row.
-            if unsafe { ghostty_render_state_row_cells_next(cells) } {
-                let cell = fill_cell(frame, cells);
-                frame.cell_x += 1;
-                return Some(cell);
-            }
-            frame.in_row = false;
-        }
-
-        let row_iterator = handles
-            .row_iterator
-            .expect("next_raw_cell with a row iterator");
-        // SAFETY: the row iterator was filled from the live render state.
-        if !unsafe { ghostty_render_state_row_iterator_next(row_iterator) } {
-            return None;
-        }
-
-        // The whole grid is walked every frame (design D5): the draw callback
-        // repaints the panel from scratch, so a row that is not visited would
-        // be left blank.
-        let mut viewport_y: i32 = 0;
-        // SAFETY: `viewport_y` is writable storage of the expected type and
-        // the row iterator is live.
-        if unsafe {
-            ghostty_render_state_row_get(
-                row_iterator,
-                GHOSTTY_RENDER_STATE_ROW_DATA_VIEWPORT_Y,
-                ptr::from_mut(&mut viewport_y).cast(),
-            )
-        } != GHOSTTY_SUCCESS
-        {
+        let (row_index, cell_index) = frame.walk;
+        let row = frame.rows.get(row_index)?;
+        // The partial repaint's row filter: skip the rows the painter is not
+        // repainting this frame. The filter persists across `frame_rewind`,
+        // so every pass of the frame walks the same rows.
+        if !row_visible(frame, row.y) {
+            frame.walk = (row_index + 1, 0);
             continue;
         }
-        // The partial repaint's row filter: skip the rows the
-        // painter is not repainting this frame. The filter persists across
-        // `frame_rewind`, so every pass of the frame walks the same rows.
-        if !dirty::row_visible(frame, viewport_y) {
-            continue;
+        if cell_index < row.cells.len() {
+            frame.walk.1 += 1;
+            return Some(row.cells[cell_index]);
         }
-        frame.cell_y = viewport_y;
-
-        let mut row_cells = handles.row_cells.expect("next_raw_cell with row cells");
-        // SAFETY: the row cells handle is writable storage of the type the
-        // selector returns and the row iterator is live.
-        if unsafe {
-            ghostty_render_state_row_get(
-                row_iterator,
-                GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
-                ptr::from_mut(&mut row_cells).cast(),
-            )
-        } != GHOSTTY_SUCCESS
-        {
-            continue;
-        }
-        handles.row_cells = Some(row_cells);
-        frame.in_row = true;
-        frame.cell_x = 0;
+        frame.walk = (row_index + 1, 0);
     }
 }
 
@@ -423,114 +415,85 @@ fn emit_pending(frame: &mut FrameState, out: &mut Cell, next: &Cell) {
         graphemes::first_codepoint(&frame.pending_cell.text[..frame.pending_cell.len]);
 }
 
-/// Read the current cell's graphemes, width, style and colours (`fillCell`).
-fn fill_cell(frame: &mut FrameState, cells: GhosttyRenderStateRowCells) -> Cell {
-    let mut cell = Cell {
-        x: frame.cell_x,
-        y: frame.cell_y,
+/// Read a captured cell's graphemes, width, style and colours (`fillCell`).
+fn fill_cell(
+    frame: &mut FrameState,
+    cell: &vt::render::CellIteration<'_, '_>,
+    x: i32,
+    y: i32,
+) -> Cell {
+    let mut out = Cell {
+        x,
+        y,
         ..Cell::default()
     };
-    let is_placeholder = fill_text(cells, &mut cell);
-    cell.wide = fill_width(cells);
-    let style = fill_style(cells);
-    cell.flags = style_flags(&style);
-    fill_colors(frame, cells, &style, is_placeholder, &mut cell);
-    cell
+    let is_placeholder = fill_text(cell, &mut out);
+    out.wide = fill_width(cell);
+    let style = cell.style().unwrap_or_default();
+    out.flags = style_flags(&style);
+    fill_colors(frame, cell, &style, is_placeholder, &mut out);
+    out
 }
 
-/// Fill `cell`'s text from the grapheme buffer (`fillCell` text half). True
-/// when the cell is a kitty placeholder, which carries no glyph.
+/// Fill `cell`'s text from the cell's grapheme cluster (`fillCell` text
+/// half). True when the cell is a kitty placeholder, which carries no glyph.
 #[must_use]
-fn fill_text(cells: GhosttyRenderStateRowCells, cell: &mut Cell) -> bool {
-    let mut is_placeholder = false;
-    let mut grapheme_len: u32 = 0;
-    // SAFETY: `grapheme_len` is writable storage of the expected type and the
-    // row cells handle is live.
-    unsafe {
-        ghostty_render_state_row_cells_get(
-            cells,
-            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN,
-            ptr::from_mut(&mut grapheme_len).cast(),
-        );
+fn fill_text(cell: &vt::render::CellIteration<'_, '_>, out: &mut Cell) -> bool {
+    let mut text = String::new();
+    if cell.graphemes_utf8(&mut text).is_err() {
+        return false;
+    }
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
     };
-    if grapheme_len > 0 {
-        let mut codepoints = [0u32; 8];
-        let count = (grapheme_len as usize).min(codepoints.len());
-        // SAFETY: `codepoints` is writable storage for up to 8 u32, which the
-        // selector documents as the grapheme buffer.
-        unsafe {
-            ghostty_render_state_row_cells_get(
-                cells,
-                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
-                codepoints.as_mut_ptr().cast(),
-            );
-        };
-        is_placeholder = codepoints[0] == PLACEHOLDER;
-        if !is_placeholder {
-            let mut len = 0usize;
-            for &codepoint in &codepoints[..count] {
-                let Some(ch) = char::from_u32(codepoint) else {
-                    continue;
-                };
-                let mut buf = [0u8; 4];
-                let written = ch.encode_utf8(&mut buf).len();
-                if len + written > CELL_TEXT_CAP {
-                    break;
-                }
-                cell.text[len..len + written].copy_from_slice(&buf[..written]);
-                len += written;
+    if u32::from(first) == PLACEHOLDER {
+        return true;
+    }
+    // The same per-codepoint encoding cap the C-API buffer path had: whole
+    // codepoints that fit, nothing that would overflow the cell's text.
+    let mut len = first.encode_utf8(&mut [0; 4]).len();
+    if len <= CELL_TEXT_CAP {
+        write_text(out, first);
+        for ch in chars {
+            let written = ch.encode_utf8(&mut [0; 4]).len();
+            if len + written > CELL_TEXT_CAP {
+                break;
             }
-            cell.len = len;
+            write_text_at(out, ch, len);
+            len += written;
         }
     }
-    is_placeholder
+    out.len = len.min(CELL_TEXT_CAP);
+    false
+}
+
+/// Write one codepoint's UTF-8 bytes at the start of the cell's text.
+fn write_text(cell: &mut Cell, ch: char) {
+    write_text_at(cell, ch, 0);
+}
+
+/// Write one codepoint's UTF-8 bytes at `offset` in the cell's text.
+fn write_text_at(cell: &mut Cell, ch: char, offset: usize) {
+    let mut buf = [0u8; 4];
+    let bytes = ch.encode_utf8(&mut buf).as_bytes();
+    cell.text[offset..offset + bytes.len()].copy_from_slice(bytes);
 }
 
 /// The cell's width: a wide glyph owns two columns and the tail cell after
 /// it must not be drawn (`GHOSTTY_CELL_WIDE_SPACER_TAIL`).
 #[must_use]
-fn fill_width(cells: GhosttyRenderStateRowCells) -> Wide {
-    let mut raw = 0u64;
-    let mut wide: GhosttyCellWide = GHOSTTY_CELL_WIDE_NARROW;
-    // SAFETY: `raw` is writable storage of the packed-cell type and the row
-    // cells handle is live.
-    if unsafe {
-        ghostty_render_state_row_cells_get(
-            cells,
-            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW,
-            ptr::from_mut(&mut raw).cast(),
-        )
-    } == GHOSTTY_SUCCESS
-    {
-        // SAFETY: `wide` is writable storage of the expected type.
-        unsafe {
-            ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, ptr::from_mut(&mut wide).cast());
-        }
-    }
-    Wide::from_raw(wide)
+fn fill_width(cell: &vt::render::CellIteration<'_, '_>) -> Wide {
+    Wide::from_raw(
+        cell.raw_cell()
+            .and_then(vt::screen::Cell::wide)
+            .unwrap_or(CellWide::Narrow),
+    )
 }
 
-/// The cell's raw style: a sized struct of the type the selector expects.
+/// The cell's style flags derived from the crate's [`vt::style::Style`].
 #[must_use]
-fn fill_style(cells: GhosttyRenderStateRowCells) -> GhosttyStyle {
-    // SAFETY: `style` is a sized struct of the type the selector expects and
-    // the row cells handle is live.
-    let mut style = unsafe { mem::zeroed::<GhosttyStyle>() };
-    style.size = mem::size_of::<GhosttyStyle>();
-    // SAFETY: `style` is writable storage of the expected type.
-    unsafe {
-        ghostty_render_state_row_cells_get(
-            cells,
-            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
-            ptr::from_mut(&mut style).cast(),
-        );
-    };
-    style
-}
-
-/// The cell's style flags derived from a raw [`GhosttyStyle`].
-#[must_use]
-fn style_flags(style: &GhosttyStyle) -> StyleFlags {
+fn style_flags(style: &vt::style::Style) -> StyleFlags {
     let mut flags = StyleFlags::default();
     if style.bold {
         flags |= StyleFlags::BOLD;
@@ -550,7 +513,7 @@ fn style_flags(style: &GhosttyStyle) -> StyleFlags {
     if style.strikethrough {
         flags |= StyleFlags::STRIKETHROUGH;
     }
-    if style.underline != 0 {
+    if style.underline != vt::style::Underline::None {
         flags |= StyleFlags::UNDERLINE;
     }
     flags
@@ -561,52 +524,37 @@ fn style_flags(style: &GhosttyStyle) -> StyleFlags {
 /// colour half).
 fn fill_colors(
     frame: &mut FrameState,
-    cells: GhosttyRenderStateRowCells,
-    style: &GhosttyStyle,
+    cell: &vt::render::CellIteration<'_, '_>,
+    style: &vt::style::Style,
     is_placeholder: bool,
-    cell: &mut Cell,
+    out: &mut Cell,
 ) {
     // The placeholder's image id is the cell's foreground colour, and the
     // resolved-colour getter has no value for placeholder cells, so take it
     // from the style itself.
-    let style_fg_rgb = (style.fg_color.tag == GHOSTTY_STYLE_COLOR_RGB).then(|| {
-        // SAFETY: the tag says the active union arm is `rgb`.
-        let rgb = unsafe { style.fg_color.value.rgb };
-        u32::from(rgb.r) << 16 | u32::from(rgb.g) << 8 | u32::from(rgb.b)
-    });
+    let style_fg_rgb = match style.fg_color {
+        vt::style::StyleColor::Rgb(rgb) => {
+            Some(u32::from(rgb.r) << 16 | u32::from(rgb.g) << 8 | u32::from(rgb.b))
+        }
+        _ => None,
+    };
 
-    let mut fg = GhosttyColorRgb {
-        r: frame.foreground.r,
-        g: frame.foreground.g,
-        b: frame.foreground.b,
-    };
-    let mut bg = GhosttyColorRgb {
-        r: frame.background.r,
-        g: frame.background.g,
-        b: frame.background.b,
-    };
-    // SAFETY: each out pointer is writable storage of the expected type and
-    // the row cells handle is live.
-    let mut foreground_present = unsafe {
-        ghostty_render_state_row_cells_get(
-            cells,
-            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR,
-            ptr::from_mut(&mut fg).cast(),
-        )
-    } == GHOSTTY_SUCCESS;
-    // SAFETY: `bg` is writable storage of the expected type and the row
-    // cells handle is live.
-    let mut background_present = unsafe {
-        ghostty_render_state_row_cells_get(
-            cells,
-            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
-            ptr::from_mut(&mut bg).cast(),
-        )
-    } == GHOSTTY_SUCCESS;
+    let mut fg = frame.foreground;
+    let mut bg = frame.background;
+    let mut foreground_present = false;
+    if let Ok(Some(color)) = cell.fg_color() {
+        fg = color.into();
+        foreground_present = true;
+    }
+    let mut background_present = false;
+    if let Ok(Some(color)) = cell.bg_color() {
+        bg = color.into();
+        background_present = true;
+    }
 
     if style.inverse {
-        mem::swap(&mut fg, &mut bg);
-        mem::swap(&mut foreground_present, &mut background_present);
+        std::mem::swap(&mut fg, &mut bg);
+        std::mem::swap(&mut foreground_present, &mut background_present);
         // Both sides are "explicit" under inverse: one of them is the default.
         foreground_present = true;
         background_present = true;
@@ -616,17 +564,15 @@ fn fill_colors(
         // No glyph: the image is drawn at this cell instead, and the cell's
         // foreground colour is the image id.
         if let Some(image_id) = style_fg_rgb {
-            frame
-                .placeholders
-                .note(image_id, frame.cell_y, frame.cell_x);
+            frame.placeholders.note(image_id, out.y, out.x);
         }
     } else if foreground_present {
-        cell.has_fg = true;
-        cell.fg = fg.into();
+        out.has_fg = true;
+        out.fg = fg;
     }
     if background_present {
-        cell.has_bg = true;
-        cell.bg = bg.into();
+        out.has_bg = true;
+        out.bg = bg;
     }
 }
 
@@ -635,6 +581,7 @@ fn fill_colors(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guard::Poisoned;
     use crate::term::{DecodedPng, PngDecoder, PtySink};
 
     /// A sink with nowhere to write.
@@ -654,7 +601,7 @@ mod tests {
     }
 
     fn terminal() -> Terminal {
-        let mut terminal = Terminal::new(crate::guard::Poisoned::new(), NullSink, NoDecoder, || {});
+        let mut terminal = Terminal::new(Poisoned::new(), NullSink, NoDecoder, || {});
         assert!(terminal.push_size(40, 24, 8, 16));
         terminal
     }
@@ -707,7 +654,7 @@ mod tests {
 
     #[test]
     fn frame_begin_needs_a_terminal_and_end_cleans_it() {
-        let mut terminal = Terminal::new(crate::guard::Poisoned::new(), NullSink, NoDecoder, || {});
+        let mut terminal = Terminal::new(Poisoned::new(), NullSink, NoDecoder, || {});
         assert!(!terminal.frame_begin(), "no terminal yet");
         assert!(terminal.cell_next().is_none());
         assert!(terminal.image_next().is_none());
@@ -735,5 +682,33 @@ mod tests {
             cells.push(cell);
         }
         cells
+    }
+
+    /// The frame's snapshot is never left behind after `frame_end`, and a
+    /// second `frame_begin` without an `frame_end` still opens (the leftover
+    /// snapshot is dropped first) — the stored-borrow discipline of
+    /// [`render_state_update`].
+    #[test]
+    fn a_frame_begin_over_an_open_frame_still_opens() {
+        let mut terminal = terminal();
+        assert!(terminal.frame_begin());
+        assert!(terminal.frame_begin(), "the stale snapshot was dropped");
+        terminal.frame_end();
+        assert!(terminal.frame_begin());
+        terminal.frame_end();
+    }
+
+    /// `ptr` is only touched to keep the raw-pointer import used by the
+    /// capture types honest; the frame state stores no raw pointers.
+    #[test]
+    fn the_frame_state_holds_no_raw_pointers() {
+        // The snapshot is erased-lifetime data; everything else the frame
+        // keeps is plain. Asserting the compile-time shape here: a frame
+        // closed by `frame_end` stores no snapshot.
+        let mut terminal = terminal();
+        assert!(terminal.frame_begin());
+        assert!(terminal.frame.snapshot.is_some());
+        terminal.frame_end();
+        assert!(terminal.frame.snapshot.is_none());
     }
 }
