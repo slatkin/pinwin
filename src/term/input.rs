@@ -412,3 +412,192 @@ fn physical_key(keycode: u32, keyval: u32, is_modifier: bool) -> Key {
     }
     key
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::term::{DecodedPng, PngDecoder};
+    use std::sync::{Arc, Mutex};
+
+    /// Records every pty write so a test can assert the encoded bytes.
+    struct RecordingSink(Arc<Mutex<Vec<u8>>>);
+
+    impl PtySink for RecordingSink {
+        fn write_pty(&mut self, data: &[u8]) {
+            self.0.lock().expect("sink lock").extend_from_slice(data);
+        }
+    }
+
+    /// Rejects every image; these tests do not exercise PNG decoding.
+    struct NoDecoder;
+
+    impl PngDecoder for NoDecoder {
+        fn decode_png(&mut self, _data: &[u8]) -> Option<DecodedPng> {
+            None
+        }
+    }
+
+    /// A terminal sized 40x24 at 8x16 pixels, plus the bytes it wrote.
+    fn new_terminal() -> (Terminal, Arc<Mutex<Vec<u8>>>) {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let mut terminal = Terminal::new(
+            crate::guard::Poisoned::new(),
+            RecordingSink(Arc::clone(&writes)),
+            NoDecoder,
+            || {},
+        );
+        assert!(terminal.push_size(40, 24, 8, 16));
+        (terminal, writes)
+    }
+
+    /// Take everything written since the last call.
+    fn take(writes: &Arc<Mutex<Vec<u8>>>) -> Vec<u8> {
+        std::mem::take(&mut *writes.lock().expect("sink lock"))
+    }
+
+    /// A key event for `a`, no modifiers, with the given action.
+    fn key(action: KeyAction) -> KeyInput {
+        KeyInput {
+            action,
+            keyval: u32::from('a'),
+            keycode: 0x26,
+            mods: Modifiers::NONE,
+            consumed_mods: Modifiers::NONE,
+            is_modifier: false,
+            unshifted_codepoint: u32::from('a'),
+            keyval_unicode: u32::from('a'),
+        }
+    }
+
+    /// A plain 'a' press, no kitty flags: legacy text encoding.
+    #[test]
+    fn plain_key_press_encodes_text() {
+        let (mut terminal, writes) = new_terminal();
+        terminal.push_key(key(KeyAction::Press));
+        assert_eq!(take(&writes), b"a");
+    }
+
+    /// Shift+a encodes the shifted text, not the base key.
+    #[test]
+    fn shifted_key_press_encodes_shifted_text() {
+        let (mut terminal, writes) = new_terminal();
+        terminal.push_key(KeyInput {
+            keyval: u32::from('A'),
+            mods: Modifiers::SHIFT,
+            consumed_mods: Modifiers::SHIFT,
+            keyval_unicode: u32::from('A'),
+            ..key(KeyAction::Press)
+        });
+        assert_eq!(take(&writes), b"A");
+    }
+
+    /// A release with no kitty report-events flag writes nothing.
+    #[test]
+    fn release_without_kitty_report_events_writes_nothing() {
+        let (mut terminal, writes) = new_terminal();
+        terminal.push_key(key(KeyAction::Release));
+        assert_eq!(take(&writes), Vec::new());
+    }
+
+    /// The encoder picks up the terminal's kitty keyboard flags per event:
+    /// report-all turns a press into `CSI 97 u` and report-events turns a
+    /// release into `CSI 97 ; 1 : 3 u`.
+    #[test]
+    fn kitty_keyboard_flags_change_encoding() {
+        let (mut terminal, writes) = new_terminal();
+        terminal.push_pty_data(b"\x1b[>8u");
+        terminal.push_key(key(KeyAction::Press));
+        assert_eq!(take(&writes), b"\x1b[97u");
+
+        let (mut terminal, writes) = new_terminal();
+        terminal.push_pty_data(b"\x1b[>3u");
+        terminal.push_key(key(KeyAction::Release));
+        assert_eq!(take(&writes), b"\x1b[97;1:3u");
+    }
+
+    /// A key event before the terminal exists is dropped.
+    #[test]
+    fn key_before_init_is_dropped() {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let mut terminal = Terminal::new(
+            crate::guard::Poisoned::new(),
+            RecordingSink(Arc::clone(&writes)),
+            NoDecoder,
+            || {},
+        );
+        terminal.push_key(key(KeyAction::Press));
+        assert_eq!(take(&writes), Vec::new());
+    }
+
+    /// Mouse press/release/motion in SGR cells: the left button at (24,16)
+    /// pixels is column 4 row 2, motion has the motion bit and the shift
+    /// modifiers.
+    #[test]
+    fn mouse_press_release_motion_use_sgr() {
+        let (mut terminal, writes) = new_terminal();
+        terminal.push_pty_data(b"\x1b[?1003h\x1b[?1006h");
+        terminal.push_mouse(
+            MouseAction::Press,
+            24.0,
+            16.0,
+            MouseButton::Left,
+            Modifiers::NONE,
+        );
+        assert_eq!(take(&writes), b"\x1b[<0;4;2M");
+        terminal.push_mouse(
+            MouseAction::Release,
+            24.0,
+            16.0,
+            MouseButton::Left,
+            Modifiers::NONE,
+        );
+        assert_eq!(take(&writes), b"\x1b[<0;4;2m");
+        terminal.push_mouse(
+            MouseAction::Motion,
+            8.0,
+            32.0,
+            MouseButton::Unknown,
+            Modifiers::SHIFT,
+        );
+        assert_eq!(take(&writes), b"\x1b[<39;2;3M");
+    }
+
+    /// A wheel notch is one press of buttons 5/4/7/6, and surface units
+    /// coalesce a tenth of a notch each until a whole one is due.
+    #[test]
+    fn scroll_notches_and_surface_coalescing() {
+        let (mut terminal, writes) = new_terminal();
+        terminal.push_pty_data(b"\x1b[?1000h\x1b[?1006h");
+        terminal.push_scroll(24.0, 16.0, 0.0, 1.0, ScrollUnit::Wheel, Modifiers::NONE);
+        assert_eq!(take(&writes), b"\x1b[<65;4;2M");
+        terminal.push_scroll(24.0, 16.0, 0.0, -1.0, ScrollUnit::Wheel, Modifiers::NONE);
+        assert_eq!(take(&writes), b"\x1b[<64;4;2M");
+        terminal.push_scroll(24.0, 16.0, 1.0, 0.0, ScrollUnit::Wheel, Modifiers::NONE);
+        assert_eq!(take(&writes), b"\x1b[<67;4;2M");
+        terminal.push_scroll(24.0, 16.0, -1.0, 0.0, ScrollUnit::Wheel, Modifiers::NONE);
+        assert_eq!(take(&writes), b"\x1b[<66;4;2M");
+
+        terminal.push_scroll(24.0, 16.0, 0.0, 5.0, ScrollUnit::Surface, Modifiers::NONE);
+        assert_eq!(take(&writes), Vec::new());
+        terminal.push_scroll(24.0, 16.0, 0.0, 5.0, ScrollUnit::Surface, Modifiers::NONE);
+        assert_eq!(take(&writes), b"\x1b[<65;4;2M");
+    }
+
+    /// Focus reports need mode 1004; without it nothing is written and only
+    /// actual changes are reported.
+    #[test]
+    fn focus_reports_are_gated_by_mode_1004() {
+        let (mut terminal, writes) = new_terminal();
+        terminal.push_pty_data(b"\x1b[?1004h");
+        terminal.push_focus(true);
+        assert_eq!(take(&writes), b"\x1b[I");
+        terminal.push_focus(true);
+        assert_eq!(take(&writes), Vec::new());
+        terminal.push_focus(false);
+        assert_eq!(take(&writes), b"\x1b[O");
+
+        let (mut terminal, writes) = new_terminal();
+        terminal.push_focus(true);
+        assert_eq!(take(&writes), Vec::new());
+    }
+}
