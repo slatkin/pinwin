@@ -21,15 +21,9 @@ impl Key {
     /// The key no table names; it travels as text only.
     pub const UNIDENTIFIED: Key = Key(key::Key::Unidentified);
 
-    /// Wrap a raw `key::Key`.
-    #[must_use]
-    pub const fn new(raw: key::Key) -> Self {
-        Key(raw)
-    }
-
     /// The raw `key::Key` value for the FFI call.
     #[must_use]
-    pub const fn raw(self) -> key::Key {
+    pub(crate) const fn raw(self) -> key::Key {
         self.0
     }
 }

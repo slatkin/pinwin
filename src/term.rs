@@ -109,8 +109,10 @@ struct Shared {
 }
 
 /// The crate handles a [`Terminal`] owns. Creation is all-or-nothing: every
-/// type frees itself when dropped, and Rust's own drop order frees the leaf
-/// handles before the terminal they borrow from.
+/// type frees itself when dropped, each through its own `*_free` call, and
+/// none of them borrows from another between calls — the references the
+/// crate's types carry live only across call lifetimes, so the field drop
+/// order (declaration order, `terminal` first) does not matter.
 struct Handles {
     terminal: vt::Terminal<'static, 'static>,
     render_state: vt::RenderState<'static>,
@@ -481,11 +483,30 @@ mod tests {
         }
     }
 
-    /// A sink that panics, to prove a callback panic is contained.
-    struct PanickingSink;
+    /// A sink that records every write and then panics, to prove a callback
+    /// panic is contained and that a poisoned terminal stops writing.
+    struct PanickingSink {
+        writes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl PanickingSink {
+        fn pair() -> (Self, Arc<Mutex<Vec<u8>>>) {
+            let writes = Arc::new(Mutex::new(Vec::new()));
+            (
+                PanickingSink {
+                    writes: Arc::clone(&writes),
+                },
+                writes,
+            )
+        }
+    }
 
     impl PtySink for PanickingSink {
-        fn write_pty(&mut self, _data: &[u8]) {
+        fn write_pty(&mut self, data: &[u8]) {
+            self.writes
+                .lock()
+                .expect("sink lock")
+                .extend_from_slice(data);
             panic!("sink panicked");
         }
     }
@@ -595,19 +616,29 @@ mod tests {
     }
 
     /// A panicking sink must not unwind into C: the panic is caught, the
-    /// terminal is poisoned and the process keeps running.
+    /// terminal is poisoned and the process keeps running. Later calls do
+    /// nothing: a poisoned terminal neither writes again nor panics a
+    /// second time (task 4.2).
     #[test]
     fn panicking_sink_poisons_and_does_not_abort() {
-        let mut terminal = Terminal::new(
-            crate::guard::Poisoned::new(),
-            PanickingSink,
-            NoDecoder,
-            || {},
-        );
+        let (sink, writes) = PanickingSink::pair();
+        let mut terminal = Terminal::new(crate::guard::Poisoned::new(), sink, NoDecoder, || {});
         assert!(terminal.push_size(40, 24, 8, 16));
         assert!(!terminal.poisoned());
+
+        // The first reply panics inside the sink and latches the flag.
         terminal.push_pty_data(b"\x1b[c");
         assert!(terminal.poisoned());
+
+        // Push more pty data: the poisoned terminal answers nothing, so the
+        // buffer keeps exactly the one reply that already panicked.
+        terminal.push_pty_data(b"\x1b[c");
+        terminal.push_pty_data(b"more output\n");
+        assert_eq!(
+            writes.lock().expect("sink lock").clone(),
+            b"\x1b[?62;22;52c",
+            "a poisoned terminal writes no further pty data"
+        );
     }
 
     /// The optimise mode is the checked-in `.cargo/config.toml` override

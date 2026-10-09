@@ -41,9 +41,8 @@ pub enum FrameDirty {
 }
 
 impl FrameDirty {
-    /// The frame form of the crate's dirty state. A value that is none of
-    /// the declared variants reads as `Full` — the conservative end, like
-    /// every unknown the frame gate escalates.
+    /// The frame form of the crate's dirty state; `from_raw` matches every
+    /// declared variant, so the mapping is exact.
     pub(crate) fn from_raw(raw: vt::render::Dirty) -> FrameDirty {
         match raw {
             vt::render::Dirty::Clean => FrameDirty::Clean,

@@ -1,6 +1,6 @@
 //! libghostty effect callbacks (port-to-rust D3): the closures the
-//! `libghostty-vt` crate's terminal calls back into, moved out of `mod.rs` so
-//! it stays under the module size cap. The creation path ([`init_ghostty`])
+//! `libghostty-vt` crate's terminal calls back into, moved out of the `term`
+//! module root (`term.rs`) so it stays under the module size cap. The creation path ([`init_ghostty`])
 //! installs the process-wide PNG decode forwarder (A4) and the per-terminal
 //! effect callbacks, sharing state through [`Rc<Shared>`] captures instead of
 //! a userdata pointer (A5). The crate's trampolines do not catch panics, so
@@ -568,5 +568,18 @@ mod tests {
         // forwarder's guard.
         terminal.push_pty_data(b"\x1b_Ga=T,f=100,i=1,q=2;AAAA\x1b\\");
         assert!(terminal.poisoned(), "the decode panic latched the flag");
+
+        // Later calls do nothing (task 4.2): the poisoned forwarder rejects
+        // the decode instead of panicking into the crate a second time.
+        let mut rejected = vt::ffi::SysImage {
+            width: 0,
+            height: 0,
+            data: ptr::null_mut(),
+            data_len: 0,
+        };
+        // SAFETY: `rejected` is writable and `data` is readable; the
+        // forwarder resolves the live context itself.
+        let ok = unsafe { decode_into(ptr::null_mut(), b"AAAA", &raw mut rejected) };
+        assert!(!ok, "a poisoned terminal decodes nothing");
     }
 }
