@@ -358,6 +358,14 @@ mod tests {
         );
     }
 
+    fn output(width: i32, height: i32) -> OutputSize {
+        OutputSize::new(width, height).expect("test output is non-degenerate")
+    }
+
+    fn cell(width: i32, height: i32) -> CellSize {
+        CellSize::new(width, height).expect("test cell is non-degenerate")
+    }
+
     /// A rejected covering apply stages nothing (spec Requirement
     /// **Rejected-layout-safety**, task 1.2): the decision half validates
     /// first and stages second, so a covering layout the output cannot hold
@@ -366,13 +374,6 @@ mod tests {
     /// field is set (overlay-expand D4).
     #[test]
     fn a_rejected_covering_publish_stages_nothing() {
-        fn output(width: i32, height: i32) -> OutputSize {
-            OutputSize::new(width, height).expect("test output is non-degenerate")
-        }
-        fn cell(width: i32, height: i32) -> CellSize {
-            CellSize::new(width, height).expect("test cell is non-degenerate")
-        }
-
         // A pushing 40-column start at a 9px cell holds its own 372 strip.
         let held = start_held_gap(layout(Side::Left, 40, 0, 0, 0, 12), 9);
         let held = held_gap_after_publish(held, layout(Side::Left, 40, 0, 0, 0, 12), 9);
@@ -401,13 +402,6 @@ mod tests {
     /// for contrast the same layout against roomier metrics stages.
     #[test]
     fn a_publish_the_layout_refuses_stages_nothing() {
-        fn output(width: i32, height: i32) -> OutputSize {
-            OutputSize::new(width, height).expect("test output is non-degenerate")
-        }
-        fn cell(width: i32, height: i32) -> CellSize {
-            CellSize::new(width, height).expect("test cell is non-degenerate")
-        }
-
         let held = start_held_gap(layout(Side::Left, 40, 0, 0, 0, 12), 9);
 
         // A pushing 600-column layout at a 1px cell exactly covers the

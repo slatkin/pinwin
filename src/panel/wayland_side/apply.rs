@@ -72,7 +72,7 @@ pub(crate) struct StagedTween {
 /// Validate a layout and stage the mutation a validated one may make:
 /// [`staged_publish`] runs the metrics and layout
 /// checks, so `None` is a rejected apply that leaves the applied state — the
-/// layout, the column count and the held gap — untouched.
+/// layout and the held gap — untouched.
 fn stage(output: OutputSize, cell: CellSize, held: HeldGap, layout: Layout) -> Option<StagedApply> {
     let (layout, held_gap) = staged_publish(output, cell, held, layout)?;
     Some(StagedApply { layout, held_gap })

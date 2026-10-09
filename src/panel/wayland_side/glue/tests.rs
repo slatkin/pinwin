@@ -5,8 +5,6 @@ use crate::layout::{CellSize, Keyboard, Layout, OutputSize, Side};
 use crate::panel::PinwinError;
 use crate::panel::handshake::{Handshake, map_start};
 use crate::panel::wayland_side::sizing::Sizing;
-use crate::panel::wayland_side::state::Wiring;
-use crate::panel::wayland_side::tween_draw::TweenRender;
 use crate::pty::attach_calloop;
 use crate::render::font::FontBook;
 use crate::render::text_pass::test_support;
@@ -192,7 +190,7 @@ fn the_byte_path_records_and_clears_the_widened_grid() {
     // A widening push from 40 to 120 columns records 40 * 9.
     let push = |cols: u16, stale: &Cell<i32>, repaint: &Cell<bool>| {
         push_grid(
-            Some(&terminal),
+            &terminal,
             repaint,
             stale,
             -1,
@@ -215,44 +213,6 @@ fn the_byte_path_records_and_clears_the_widened_grid() {
     terminal.borrow_mut().push_pty_data(b"hi");
     assert_eq!(stale.get(), 0, "the output cleared the record");
     assert!(repaint.get(), "the output latched the repaint flag");
-}
-
-/// The winsize-only degrade keeps its direct unit test (typed-publish-path
-/// D4): a push with no terminal — the arm [`PanelState::grid_sink_at`]
-/// never passes — still applies the winsize and latches the repaint flag,
-/// and records no stale width, because the stale record is the terminal
-/// push's side effect.
-#[test]
-fn a_push_without_a_terminal_still_applies_the_winsize() {
-    let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");
-    block_sigwinch();
-    let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
-    let mut sizing = Sizing::new(NonZeroU16::new(40).expect("test columns"), cell);
-    let repaint = Cell::new(false);
-    let stale = Cell::new(0);
-    sizing.configure(1080, &mut |grid| {
-        push_grid(
-            None,
-            &repaint,
-            &stale,
-            master.as_raw_fd(),
-            FractionalScale::from_120ths(120),
-            grid,
-        );
-    });
-    let ws = read_winsize(master.as_raw_fd());
-    assert_eq!(
-        (ws.ws_col, ws.ws_row),
-        (40, 1080 / 16),
-        "the winsize went out"
-    );
-    assert_eq!(
-        (ws.ws_xpixel, ws.ws_ypixel),
-        (40 * 9, (1080 / 16) * 16),
-        "the scale-1 device pixels"
-    );
-    assert!(repaint.get(), "the push latched the repaint flag");
-    assert_eq!(stale.get(), 0, "no terminal, no stale record");
 }
 
 /// The seat links the thread's pieces build: a focus
@@ -407,38 +367,22 @@ fn state_over_pty(master: &std::fs::File) -> StateOverPty {
         Keyboard::OnDemand,
         None,
     );
+    let poisoned = Poisoned::new();
+    let path = byte_path(Poisoned::new(), startup.fd());
+    let wiring = path.wiring(test_renderer(), poisoned.clone());
     let BytePath {
         terminal,
         repaint,
         stale_grid_px: stale_px,
         pty,
-    } = byte_path(Poisoned::new(), startup.fd());
-    let poisoned = Poisoned::new();
-    let draw_offset = Rc::new(Cell::new(0.0));
-    let focused = Rc::new(Cell::new(false));
-    let links = seat_links(
-        &terminal,
-        &repaint,
-        &draw_offset,
-        &focused,
-        poisoned.clone(),
-    );
+    } = path;
     let state = PanelState::new(
         Handshake::new(mpsc::channel().0),
-        poisoned.clone(),
+        poisoned,
         live_inner(),
         startup,
         cell,
-        Wiring {
-            repaint: Rc::clone(&repaint),
-            stale_grid_px: Rc::clone(&stale_px),
-            draw_offset,
-            seat_links: links,
-            render: TweenRender {
-                terminal: Rc::clone(&terminal),
-                renderer: test_renderer(),
-            },
-        },
+        wiring,
     );
     (state, terminal, repaint, stale_px, pty)
 }

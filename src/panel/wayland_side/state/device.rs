@@ -108,17 +108,13 @@ mod tests {
     use crate::layout::{CellSize, Keyboard, Layout, Side};
     use crate::panel::handshake::Handshake;
     use crate::panel::wayland_side::sizing::Sizing;
-    use crate::panel::wayland_side::tween_draw::TweenRender;
     use crate::panel::wayland_side::{Inner, Startup, glue};
-    use std::cell::Cell;
     use std::num::NonZeroU16;
     use std::os::fd::AsRawFd;
-    use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
 
-    use super::super::Wiring;
 
     /// The test cell, the thread's measured pitch the sizing derives from.
     fn cell() -> CellSize {
@@ -194,31 +190,13 @@ mod tests {
         );
         let path = glue::byte_path(Poisoned::new(), startup.fd());
         let poisoned = Poisoned::new();
-        let draw_offset = Rc::new(Cell::new(0.0));
-        let focused = Rc::new(Cell::new(false));
-        let links = glue::seat_links(
-            path.terminal(),
-            path.repaint(),
-            &draw_offset,
-            &focused,
-            poisoned.clone(),
-        );
         let mut state = PanelState::new(
             Handshake::new(mpsc::channel().0),
             poisoned.clone(),
             live_inner(),
             startup,
             cell(),
-            Wiring {
-                repaint: Rc::clone(path.repaint()),
-                stale_grid_px: Rc::clone(path.stale_grid_px()),
-                draw_offset,
-                seat_links: links,
-                render: TweenRender {
-                    terminal: Rc::clone(path.terminal()),
-                    renderer: glue::test_renderer(),
-                },
-            },
+            path.wiring(glue::test_renderer(), poisoned),
         );
         // Record the configure height the re-push re-derives its grid
         // from; the sink records without touching the pty fd.

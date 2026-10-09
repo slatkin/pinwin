@@ -26,7 +26,8 @@ use super::buffers::FractionalScale;
 use super::renderer::{FontSetup, FontSetupError, Renderer};
 use super::seat::SeatLinks;
 use super::sizing::Grid;
-use super::state::{PanelState, apply_pty_size};
+use super::state::{PanelState, Wiring, apply_pty_size};
+use super::tween_draw::TweenRender;
 
 /// The font the thread starts with: [`FontSetup::load`] — the one
 /// font load the panel performs, on the thread that owns the text pass —
@@ -99,30 +100,31 @@ pub(crate) struct BytePath {
 }
 
 impl BytePath {
-    /// The shared terminal the seat links and the tween's render bundle
-    /// hold clones of.
-    #[must_use]
-    pub(crate) fn terminal(&self) -> &Rc<RefCell<Terminal>> {
-        &self.terminal
-    }
-
-    /// The flag the terminal's callbacks latch and the loop reads and
-    /// clears after each dispatch.
-    #[must_use]
-    pub(crate) fn repaint(&self) -> &Rc<Cell<bool>> {
-        &self.repaint
-    }
-
-    /// The stale pre-resize record the terminal's output clears.
-    #[must_use]
-    pub(crate) fn stale_grid_px(&self) -> &Rc<Cell<i32>> {
-        &self.stale_grid_px
-    }
-
     /// The pty the read source's fd and fd slot come from.
     #[must_use]
     pub(crate) fn pty(&self) -> &Pty {
         &self.pty
+    }
+
+    /// The wiring bundle [`PanelState::new`] takes: the seat links and the
+    /// render bundle over this path's terminal, with fresh focus and
+    /// draw-offset cells. The state reads its repaint latch from the seat
+    /// links, which hold this path's.
+    pub(crate) fn wiring(&self, renderer: Rc<RefCell<Renderer>>, poisoned: Poisoned) -> Wiring {
+        Wiring {
+            stale_grid_px: Rc::clone(&self.stale_grid_px),
+            seat_links: seat_links(
+                &self.terminal,
+                &self.repaint,
+                &Rc::new(Cell::new(0.0)),
+                &Rc::new(Cell::new(false)),
+                poisoned,
+            ),
+            render: TweenRender {
+                terminal: Rc::clone(&self.terminal),
+                renderer,
+            },
+        }
     }
 }
 
@@ -213,7 +215,7 @@ impl PanelState {
         let fd = self.startup.fd();
         move |grid| {
             push_grid(
-                Some(&terminal),
+                &terminal,
                 &repaint,
                 stale.as_ref(),
                 fd,
@@ -234,7 +236,7 @@ impl PanelState {
 /// helpers build their state with it; one that already holds its own
 /// renderer wires it through [`test_wiring_with`].
 #[cfg(test)]
-pub(crate) fn test_wiring(poisoned: &Poisoned) -> super::state::Wiring {
+pub(crate) fn test_wiring(poisoned: &Poisoned) -> Wiring {
     test_wiring_with(poisoned, test_renderer())
 }
 
@@ -242,41 +244,8 @@ pub(crate) fn test_wiring(poisoned: &Poisoned) -> super::state::Wiring {
 /// already resolved its own font setup wires that renderer through
 /// instead of the production fallback.
 #[cfg(test)]
-pub(crate) fn test_wiring_with(
-    poisoned: &Poisoned,
-    renderer: Rc<RefCell<Renderer>>,
-) -> super::state::Wiring {
-    let repaint = Rc::new(Cell::new(false));
-    let stale_grid_px = Rc::new(Cell::new(0));
-    let draw_offset = Rc::new(Cell::new(0.0));
-    let focused = Rc::new(Cell::new(false));
-    let terminal = Rc::new(RefCell::new(Terminal::new(
-        poisoned.clone(),
-        NullSink,
-        NoDecoder,
-        {
-            let repaint = Rc::clone(&repaint);
-            let stale = Rc::clone(&stale_grid_px);
-            move || {
-                stale.set(0);
-                repaint.set(true);
-            }
-        },
-    )));
-    let seat_links = seat_links(
-        &terminal,
-        &repaint,
-        &draw_offset,
-        &focused,
-        poisoned.clone(),
-    );
-    super::state::Wiring {
-        repaint,
-        stale_grid_px,
-        draw_offset,
-        seat_links,
-        render: super::tween_draw::TweenRender { terminal, renderer },
-    }
+pub(crate) fn test_wiring_with(poisoned: &Poisoned, renderer: Rc<RefCell<Renderer>>) -> Wiring {
+    byte_path(poisoned.clone(), -1).wiring(renderer, poisoned.clone())
 }
 
 /// The tests' renderer: a real one over the monospace fallback (normal
@@ -300,24 +269,6 @@ pub(crate) fn test_renderer() -> Rc<RefCell<Renderer>> {
     Rc::new(RefCell::new(renderer))
 }
 
-/// A sink with nowhere to write: the state tests never write to a pty.
-#[cfg(test)]
-struct NullSink;
-#[cfg(test)]
-impl crate::term::PtySink for NullSink {
-    fn write_pty(&mut self, _data: &[u8]) {}
-}
-
-/// Decodes nothing: the state tests place no kitty images.
-#[cfg(test)]
-struct NoDecoder;
-#[cfg(test)]
-impl crate::term::PngDecoder for NoDecoder {
-    fn decode_png(&mut self, _data: &[u8]) -> Option<crate::term::DecodedPng> {
-        None
-    }
-}
-
 /// Push one derived grid to the terminal and the pty, in this order: the
 /// terminal first — a terminal that cannot
 /// be allocated leaves the previous grid and the pty winsize in place —
@@ -330,7 +281,7 @@ impl crate::term::PngDecoder for NoDecoder {
 /// terminal's own output latches the same flag later and clears the
 /// record, when the vt answers the new width.
 fn push_grid(
-    terminal: Option<&Rc<RefCell<Terminal>>>,
+    terminal: &Rc<RefCell<Terminal>>,
     repaint: &Cell<bool>,
     stale: &Cell<i32>,
     fd: RawFd,
@@ -342,29 +293,27 @@ fn push_grid(
     let Ok(rows) = i32::try_from(grid.rows()) else {
         return;
     };
-    if let Some(terminal) = terminal {
-        let previous_cols = terminal.borrow().cols();
-        let pushed = terminal.borrow_mut().push_size(
-            i32::from(grid.cols()),
-            rows,
-            grid.cell_width(),
-            grid.cell_height(),
-        );
-        if !pushed {
-            return;
-        }
-        if i32::from(grid.cols()) > i32::from(previous_cols)
-            && let Some(previous_px) = i32::from(previous_cols).checked_mul(grid.cell_width())
-        {
-            // The narrowest stale width wins: a widening after a widening
-            // without any output in between keeps the narrower of the two.
-            let current = stale.get();
-            stale.set(if current > 0 {
-                current.min(previous_px)
-            } else {
-                previous_px
-            });
-        }
+    let previous_cols = terminal.borrow().cols();
+    let pushed = terminal.borrow_mut().push_size(
+        i32::from(grid.cols()),
+        rows,
+        grid.cell_width(),
+        grid.cell_height(),
+    );
+    if !pushed {
+        return;
+    }
+    if i32::from(grid.cols()) > i32::from(previous_cols)
+        && let Some(previous_px) = i32::from(previous_cols).checked_mul(grid.cell_width())
+    {
+        // The narrowest stale width wins: a widening after a widening
+        // without any output in between keeps the narrower of the two.
+        let current = stale.get();
+        stale.set(if current > 0 {
+            current.min(previous_px)
+        } else {
+            previous_px
+        });
     }
     apply_pty_size(fd, grid, output_scale);
     repaint.set(true);

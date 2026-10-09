@@ -38,7 +38,6 @@
 //! thread body and every callback the loop runs go through the shared
 //! [`crate::guard`] helpers, latching the panel's one shared poisoned flag.
 
-use std::cell::Cell;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -79,7 +78,7 @@ pub(crate) mod tween;
 pub(crate) mod tween_draw;
 pub(crate) mod watchdog;
 
-use state::{BindFailure, PanelState, Wiring};
+use state::{BindFailure, PanelState};
 
 /// A command the host posts to a running panel thread (D2): an apply, a
 /// toggle, a show or a
@@ -395,35 +394,17 @@ fn run_thread(
         return;
     };
     let path = glue::byte_path(poisoned.clone(), startup.fd());
-    let focused = Rc::new(Cell::new(false));
-    let draw_offset = Rc::new(Cell::new(0.0));
-
     // The state is built whole (typed-publish-path D4): the wiring bundle
-    // the thread assembles from the byte path — the shared terminal, the
-    // repaint latch, the stale record, the draw-offset cell, the seat
-    // links and the render bundle — in the one `PanelState::new` call.
+    // the thread assembles from the byte path — the seat links and the
+    // render bundle over the shared terminal — in the one
+    // `PanelState::new` call.
     let mut state = PanelState::new(
         handshake.clone(),
         poisoned.clone(),
         inner,
         startup,
         cell,
-        Wiring {
-            repaint: Rc::clone(path.repaint()),
-            stale_grid_px: Rc::clone(path.stale_grid_px()),
-            draw_offset: Rc::clone(&draw_offset),
-            seat_links: glue::seat_links(
-                path.terminal(),
-                path.repaint(),
-                &draw_offset,
-                &focused,
-                poisoned.clone(),
-            ),
-            render: tween_draw::TweenRender {
-                terminal: Rc::clone(path.terminal()),
-                renderer,
-            },
-        },
+        path.wiring(renderer, poisoned.clone()),
     );
 
     // The calloop loop exists before the bind: the

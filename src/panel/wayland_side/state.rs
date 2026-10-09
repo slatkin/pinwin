@@ -237,19 +237,12 @@ pub(crate) enum BindFailure {
 /// (typed-publish-path D4): the pieces [`run_thread`](super::run_thread)
 /// builds from the byte path, handed to [`PanelState::new`] whole so the
 /// state is valid from construction. The shared terminal rides inside the
-/// seat links and the render bundle; the repaint latch, the stale record
-/// and the draw-offset cell are the same cells the terminal's callbacks
-/// and the seat links hold clones of.
+/// seat links and the render bundle; the state takes its repaint latch
+/// and draw-offset cell from the seat links, so they cannot disagree.
 pub(crate) struct Wiring {
-    /// The repaint request the terminal's callbacks latch and the loop
-    /// reads and clears after each dispatch.
-    pub(crate) repaint: Rc<Cell<bool>>,
     /// The pixel width of the stale pre-resize grid the terminal's output
     /// clears.
     pub(crate) stale_grid_px: Rc<Cell<i32>>,
-    /// The docked-edge draw offset the frames publish and the pointer
-    /// mapping reads.
-    pub(crate) draw_offset: Rc<Cell<f64>>,
     /// The seat links the seat handlers route the Wayland events into.
     pub(crate) seat_links: SeatLinks,
     /// The render bundle the tween's wide draw and the live frames read.
@@ -276,12 +269,12 @@ impl PanelState {
         // (serve-instance-socket D1: `Startup` is no longer `Copy`).
         let layout = startup.layout();
         let Wiring {
-            repaint,
             stale_grid_px,
-            draw_offset,
             seat_links,
             render,
         } = wiring;
+        let repaint = Rc::clone(&seat_links.queue_draw);
+        let draw_offset = Rc::clone(&seat_links.draw_offset);
         PanelState {
             poisoned,
             handshake,

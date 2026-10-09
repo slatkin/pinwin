@@ -6,6 +6,7 @@ use super::*;
 use crate::guard::Poisoned as GuardPoisoned;
 use crate::layout::{Keyboard, Side};
 use crate::panel::handshake::wait_for_start;
+use std::cell::Cell;
 use std::num::NonZeroU16;
 use std::sync::atomic::AtomicBool;
 
