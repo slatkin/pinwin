@@ -117,7 +117,13 @@ impl Terminal {
         let Some(handles) = self.handles.as_mut() else {
             return false;
         };
-        begin(&mut self.frame, handles)
+        // Test-only failure injection (D10), like `callbacks::fail_point`:
+        // the render-state update step fails before any capture step.
+        #[cfg(test)]
+        let fail_update = self.shared.fail_point.get() == Some("frame_begin");
+        #[cfg(not(test))]
+        let fail_update = false;
+        begin(&mut self.frame, handles, fail_update)
     }
 
     /// Revisit the captured cells after painting all backgrounds, so glyphs may
@@ -180,13 +186,15 @@ impl Terminal {
 /// Start a frame (`pinwin_frame_begin`): refresh the render state, capture
 /// the default colours, cursor, dirty data and the whole grid, and reset the
 /// cell walk.
-fn begin(frame: &mut FrameState, handles: &mut Handles) -> bool {
+fn begin(frame: &mut FrameState, handles: &mut Handles, fail_update: bool) -> bool {
     // A frame left open by a caller that forgot `frame_end` held the
-    // snapshot; drop it before the next update, which needs the render
-    // state exclusively.
+    // snapshot; drop it and close the frame before the next update, which
+    // needs the render state exclusively — no failure path may expose a
+    // stale frame afterwards.
+    frame.flags.open = false;
     frame.snapshot = None;
 
-    let Some(snapshot) = render_state_update(handles) else {
+    let Some(snapshot) = render_state_update(handles, fail_update) else {
         return false;
     };
 
@@ -245,7 +253,15 @@ fn begin(frame: &mut FrameState, handles: &mut Handles) -> bool {
 /// clean), `frame_begin` drops a leftover snapshot before updating, and the
 /// snapshot is a plain `Option` field with no `Drop`, so a `Terminal` dropped
 /// with a frame open frees the render state before the (inert) snapshot.
-fn render_state_update(handles: &mut Handles) -> Option<Snapshot<'static, 'static>> {
+fn render_state_update(
+    handles: &mut Handles,
+    fail_update: bool,
+) -> Option<Snapshot<'static, 'static>> {
+    if fail_update {
+        // Test-only injection (D10): behave like an `update` that failed
+        // (out-of-memory), so frame tests can reach `begin`'s error paths.
+        return None;
+    }
     let terminal = &handles.terminal;
     let snapshot = handles.render_state.update(terminal).ok()?;
     // SAFETY: the snapshot's only reference is to `handles.render_state`,
@@ -694,6 +710,30 @@ mod tests {
         assert!(terminal.frame_begin());
         assert!(terminal.frame_begin(), "the stale snapshot was dropped");
         terminal.frame_end();
+        assert!(terminal.frame_begin());
+        terminal.frame_end();
+    }
+
+    /// A failed `frame_begin` over a frame the caller left open closes it:
+    /// the cursor and the cells are gone, so the accessors report an empty
+    /// frame and the failure cannot stain the next frames.
+    #[test]
+    fn a_failed_frame_begin_over_an_open_frame_closes_it() {
+        let mut terminal = terminal();
+        terminal.push_pty_data(b"\x1b[2;3H"); // row 2, column 3 (1-based)
+        assert!(terminal.frame_begin());
+        assert!(terminal.cursor().is_some(), "the frame owns a cursor");
+
+        // The caller forgets `frame_end`; the next `frame_begin` fails on
+        // the render-state update (the test-only fail point) and must
+        // close the frame.
+        terminal.fail_point().set(Some("frame_begin"));
+        assert!(!terminal.frame_begin());
+        terminal.fail_point().set(None);
+        assert!(terminal.cursor().is_none(), "a closed frame has no cursor");
+        assert!(terminal.cell_next().is_none());
+
+        // The failed begin leaves the terminal clean for the next frame.
         assert!(terminal.frame_begin());
         terminal.frame_end();
     }
