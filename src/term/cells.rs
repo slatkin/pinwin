@@ -194,7 +194,16 @@ fn begin(frame: &mut FrameState, handles: &mut Handles, fail_update: bool) -> bo
     frame.flags.open = false;
     frame.snapshot = None;
 
-    let Some(snapshot) = render_state_update(handles, fail_update) else {
+    // Test-only failure injection (D10): the render-state update step
+    // fails before any capture step when the seam honours `fail_update`.
+    // Release builds carry no fail-update parameter.
+    #[cfg(test)]
+    let snapshot = render_state_update(handles, fail_update);
+    #[cfg(not(test))]
+    let _ = fail_update;
+    #[cfg(not(test))]
+    let snapshot = render_state_update(handles);
+    let Some(snapshot) = snapshot else {
         return false;
     };
 
@@ -253,6 +262,7 @@ fn begin(frame: &mut FrameState, handles: &mut Handles, fail_update: bool) -> bo
 /// clean), `frame_begin` drops a leftover snapshot before updating, and the
 /// snapshot is a plain `Option` field with no `Drop`, so a `Terminal` dropped
 /// with a frame open frees the render state before the (inert) snapshot.
+#[cfg(test)]
 fn render_state_update(
     handles: &mut Handles,
     fail_update: bool,
@@ -262,6 +272,18 @@ fn render_state_update(
         // (out-of-memory), so frame tests can reach `begin`'s error paths.
         return None;
     }
+    update_render_state(handles)
+}
+
+/// The release build takes no fail-update parameter (D10 seam, like
+/// `callbacks::fail_point`).
+#[cfg(not(test))]
+fn render_state_update(handles: &mut Handles) -> Option<Snapshot<'static, 'static>> {
+    update_render_state(handles)
+}
+
+/// The render-state update the two [`render_state_update`] variants share.
+fn update_render_state(handles: &mut Handles) -> Option<Snapshot<'static, 'static>> {
     let terminal = &handles.terminal;
     let snapshot = handles.render_state.update(terminal).ok()?;
     // SAFETY: the snapshot's only reference is to `handles.render_state`,
