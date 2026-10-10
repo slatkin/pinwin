@@ -112,8 +112,10 @@ struct Shared {
 /// type frees itself when dropped, each through its own `*_free` call on its
 /// own raw pointer, and none of them borrows from another between calls —
 /// the references the crate's types carry live only across call lifetimes
-/// (each `impl Drop` in the crate source — `terminal.rs`, `render.rs`,
-/// `kitty/graphics.rs`, `key.rs`, `mouse.rs` — frees only its own handle).
+/// (the pinned dependency's own `impl Drop`s — libghostty-vt at rev
+/// `e1e145f22bace96593ecaa348c09d874635ef637`, in its `terminal.rs`,
+/// `render.rs`, `kitty/graphics.rs`, `key.rs`, `mouse.rs` — each free only
+/// their own raw pointer).
 /// The one drop order this module relies on is the frame dropping before the
 /// handles, so a stored snapshot never outlives the render state it borrows
 /// (see `cells::FrameState`).
