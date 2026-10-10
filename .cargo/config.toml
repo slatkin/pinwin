@@ -1,0 +1,7 @@
+# The libghostty-vt crate's build script reads these (adopt-libghostty-rs
+# design A2): the Zig optimise mode and CPU floor pinwin's own build.rs used.
+# Without the override the crate picks Debug for the dev profile, which the
+# spec forbids. `[env]` applies to every profile, dev and release alike.
+[env]
+LIBGHOSTTY_VT_SYS_OPTIMIZE = "ReleaseSafe"
+LIBGHOSTTY_VT_SYS_CPU = "x86_64_v2"

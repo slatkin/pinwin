@@ -11,17 +11,16 @@ are removed with the port.
 
 ## Install
 
-Building needs Zig 0.16 on PATH: `build.rs` fetches the pinned libghostty-vt
-commit and builds ghostty's own static VT library with `zig build` (a cold
+Building needs Zig 0.16 on PATH: the `libghostty-vt` crate's build script fetches
+its pinned ghostty commit and builds ghostty's own static VT library with `zig build` (a cold
 cache also needs `git` and network access). The system needs libxkbcommon
 and fontconfig, and running needs a Wayland compositor with wlr-layer-shell.
 Fractional output scale comes from the fractional-scale protocol; without it
 the panel uses the integer buffer scale. A width tween crops its cached
 buffer through viewporter, and copies the crop into a fresh buffer when the
 compositor lacks it. Set
-`PINWIN_GHOSTTY_SRC=<dir>`
-to build against an existing ghostty checkout at the pinned commit instead of
-fetching; a checkout at any other commit is rejected.
+`GHOSTTY_SOURCE_DIR=<dir>`
+to build against an existing ghostty checkout instead of fetching.
 
 ```sh
 cargo install --path .          # installs the `pinwin` binary
@@ -366,13 +365,12 @@ its own Wayland surfaces; `src/anim.rs` eases the width; `src/pty.rs` and
 `src/pty/` drive the host-supplied fd as a calloop source;
 `src/fontconfig.rs` reads the Ghostty font and theme; `src/nerd_font.rs`
 is a generated glyph table; `src/guard.rs`
-is the panic guard; `src/ghostty_sys.rs` and `src/ghostty_sys/` are the
-hand-written FFI to the pinned libghostty-vt. The `pinwin` host program
+is the panic guard. The `pinwin` host program
 `src/main.rs` owns the pty and the child's process, and binds the instance
 socket that the panel serves; its pure parts are `src/cli.rs` (arguments,
 `--toggle`, `--show`) and `src/settings.rs` (the environment contract). The
 socket itself (identity, bind, listener and client) lives in the library, in
-`src/instance.rs`. `build.rs` fetches and builds that pinned commit.
+`src/instance.rs`.
 
 The behaviour spec lives in `openspec/specs/pinwin-panel/spec.md`; the
 archived design decisions code comments cite as D-numbers are under
@@ -394,5 +392,6 @@ archived design decisions code comments cite as D-numbers are under
   would let a panic abort the host instead of being caught at the API
   boundary.
 - Building needs Zig 0.16 and, on a cold cache, `git` and network access.
-  pinwin's FFI targets one pinned ghostty commit; bumping it is a deliberate
-  change to `build.rs` and `src/ghostty_sys/`.
+  pinwin uses the `libghostty-vt` crate, which pins one ghostty commit; bumping
+  it is a deliberate change of the crate's `rev` in `Cargo.toml`, checked by
+  the golden test.

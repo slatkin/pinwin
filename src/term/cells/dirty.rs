@@ -1,19 +1,17 @@
 //! The render state's dirty data (`replace-gtk-with-wayland` D5):
 //! what [`crate::render::frame_gate`] reads to decide what a frame must
-//! redraw. The pinned libghostty-vt tracks dirtiness on two independent
-//! layers — a global state (`GHOSTTY_RENDER_STATE_DIRTY_FALSE`, `PARTIAL`,
-//! `FULL`, read with `GHOSTTY_RENDER_STATE_DATA_DIRTY`) and a per-row dirty
-//! flag (`GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY`, read on the row iterator).
-//! `ghostty_render_state_update` only updates both, it never unsets them;
-//! `ghostty_render_state_clean` — [`Terminal::frame_end`] — unsets both
-//! after a consumed frame, so no per-row setter is needed.
+//! redraw. The libghostty-vt render state tracks dirtiness on two
+//! independent layers — a global state (`Clean`, `Partial`, `Full`, read
+//! from the frame's snapshot) and a per-row dirty flag (read on the row
+//! iterator). An update only escalates both, it never unsets them;
+//! `frame_end`'s snapshot-level clean unsets both after a consumed frame, so
+//! no per-row setter is needed.
 //!
-//! Both layers are captured once per frame, in [`Terminal::frame_begin`]
-//! ([`capture_dirty`], [`capture_images`]), and exposed through the small
-//! read-only API at the bottom. The walk that captures the per-row flags
-//! leaves the row iterator at the end of the grid, so it re-fetches the
-//! iterator afterwards — the same re-fetch the glyph pass's rewind does —
-//! and the cell passes start from the first row.
+//! Both layers are captured once per frame, in [`Terminal::frame_begin`],
+//! and exposed through the small read-only API at the bottom. The capture
+//! shares the cell walk's single pass over the grid (see the `cells` module
+//! comment), so the dirty rows arrive in walk order with no extra row
+//! iterator pass.
 //!
 //! The row filter ([`Terminal::frame_walk_rows`], [`row_visible`]) is the
 //! partial repaint's other half: every cell pass shares the frame walk, so
@@ -22,28 +20,15 @@
 //! GTK-free (`replace-gtk-with-wayland` D10); the tests in this module run
 //! without a display.
 
-use std::ptr;
+use libghostty_vt as vt;
 
-use super::{FrameState, Handles, Terminal};
-use crate::ghostty_sys::GHOSTTY_SUCCESS;
-use crate::ghostty_sys::kitty::{
-    GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
-    GhosttyKittyGraphics, ghostty_kitty_graphics_get, ghostty_kitty_graphics_placement_get,
-    ghostty_kitty_graphics_placement_next,
-};
-use crate::ghostty_sys::render::{
-    GHOSTTY_RENDER_STATE_DATA_DIRTY, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
-    GHOSTTY_RENDER_STATE_DIRTY_FALSE, GHOSTTY_RENDER_STATE_DIRTY_PARTIAL,
-    GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, GHOSTTY_RENDER_STATE_ROW_DATA_VIEWPORT_Y,
-    GhosttyRenderState, GhosttyRenderStateDirty, GhosttyRenderStateRowIterator,
-    ghostty_render_state_get, ghostty_render_state_row_get, ghostty_render_state_row_iterator_next,
-};
-use crate::ghostty_sys::terminal::{GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, ghostty_terminal_get};
+use super::{FrameState, Terminal};
+use crate::term::Handles;
 
 /// The frame's global dirty state, read from the render state at
-/// `frame_begin` (`GHOSTTY_RENDER_STATE_DIRTY_*`, render.h): `Clean` frames
-/// draw and commit nothing, `Partial` frames redraw the dirty rows, `Full`
-/// frames redraw everything.
+/// `frame_begin` (the crate's `render::Dirty`): `Clean` frames draw and
+/// commit nothing, `Partial` frames redraw the dirty rows, `Full` frames
+/// redraw everything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum FrameDirty {
     /// Not dirty at all; rendering can be skipped.
@@ -56,15 +41,13 @@ pub enum FrameDirty {
 }
 
 impl FrameDirty {
-    /// The Rust form of the raw `GhosttyRenderStateDirty` value. A value
-    /// that is none of the declared constants reads as `Full` — the
-    /// conservative end, like every unknown the frame gate escalates.
-    pub(crate) fn from_raw(raw: GhosttyRenderStateDirty) -> FrameDirty {
+    /// The frame form of the crate's dirty state; `from_raw` matches every
+    /// declared variant, so the mapping is exact.
+    pub(crate) fn from_raw(raw: vt::render::Dirty) -> FrameDirty {
         match raw {
-            GHOSTTY_RENDER_STATE_DIRTY_FALSE => FrameDirty::Clean,
-            GHOSTTY_RENDER_STATE_DIRTY_PARTIAL => FrameDirty::Partial,
-            // The catch-all covers `FULL` and every undeclared value.
-            _ => FrameDirty::Full,
+            vt::render::Dirty::Clean => FrameDirty::Clean,
+            vt::render::Dirty::Partial => FrameDirty::Partial,
+            vt::render::Dirty::Full => FrameDirty::Full,
         }
     }
 }
@@ -126,142 +109,35 @@ pub(super) fn row_visible(frame: &FrameState, y: i32) -> bool {
         .is_none_or(|rows| rows.contains(&y))
 }
 
-/// Capture the render state's dirty data for this frame: the
-/// global state and the per-row dirty flags, walked off the row iterator.
-/// `update` only updates the dirty state — it never unsets it — so what is
-/// captured here is everything that changed since the last
-/// [`end`](crate::ghostty_sys::render::ghostty_render_state_clean). The
-/// walk leaves the row iterator at the end of the grid, so it re-fetches
-/// the iterator afterwards, the same re-fetch the glyph pass's rewind
-/// does, and the cell passes start from the first row.
-pub(super) fn capture_dirty(
-    frame: &mut FrameState,
-    render_state: GhosttyRenderState,
-    row_iterator: &mut GhosttyRenderStateRowIterator,
-) {
-    let mut dirty: GhosttyRenderStateDirty = 0;
-    // SAFETY: `dirty` is writable storage of the type `DATA_DIRTY` returns
-    // and the render state is live.
-    frame.dirty = if unsafe {
-        ghostty_render_state_get(
-            render_state,
-            GHOSTTY_RENDER_STATE_DATA_DIRTY,
-            ptr::from_mut(&mut dirty).cast(),
-        )
-    } == GHOSTTY_SUCCESS
-    {
-        FrameDirty::from_raw(dirty)
-    } else {
-        // An unreadable dirty state is treated as a full redraw: the
-        // conservative end, like every unknown the frame gate escalates.
-        FrameDirty::Full
-    };
-
-    frame.dirty_rows.clear();
-    loop {
-        // SAFETY: the row iterator was filled from the live render state.
-        if !unsafe { ghostty_render_state_row_iterator_next(*row_iterator) } {
-            break;
-        }
-        let mut viewport_y: i32 = 0;
-        // SAFETY: `viewport_y` is writable storage of the expected type and
-        // the row iterator is live.
-        if unsafe {
-            ghostty_render_state_row_get(
-                *row_iterator,
-                GHOSTTY_RENDER_STATE_ROW_DATA_VIEWPORT_Y,
-                ptr::from_mut(&mut viewport_y).cast(),
-            )
-        } != GHOSTTY_SUCCESS
-        {
-            continue;
-        }
-        let mut dirty = false;
-        // SAFETY: `dirty` is writable storage of the expected type and the
-        // row iterator is live.
-        if unsafe {
-            ghostty_render_state_row_get(
-                *row_iterator,
-                GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY,
-                ptr::from_mut(&mut dirty).cast(),
-            )
-        } == GHOSTTY_SUCCESS
-            && dirty
-        {
-            frame.dirty_rows.push(viewport_y);
-        }
+/// The frame's global dirty state, read off the snapshot the update just
+/// produced. An unreadable dirty state is treated as a full redraw: the
+/// conservative end, like every unknown the frame gate escalates.
+pub(super) fn global_dirty(snapshot: &vt::render::Snapshot<'static, 'static>) -> FrameDirty {
+    match snapshot.dirty() {
+        Ok(dirty) => FrameDirty::from_raw(dirty),
+        // An unreadable dirty state is a full redraw: the conservative end,
+        // like every unknown the frame gate escalates.
+        Err(_) => FrameDirty::Full,
     }
-
-    // Re-fetch the iterator so the cell passes start from the first row.
-    // SAFETY: the render state is live and the iterator is writable storage
-    // of the type the selector returns.
-    let _ = unsafe {
-        ghostty_render_state_get(
-            render_state,
-            GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
-            ptr::from_mut(row_iterator).cast(),
-        )
-    };
 }
 
-/// Capture whether the render state carries any kitty placement at all. The walk stops at the first placement with an image id; the
-/// image pass re-fetches the placement iterator through `begin_image_pass`,
-/// which resets it, so leaving it advanced here is harmless. The peek runs
-/// before the cell pass, so a virtual placement's placeholder origins are
-/// not recorded yet — presence alone is what the frame gate escalates on,
-/// not resolvability.
+/// Capture whether the render state carries any kitty placement at all. The
+/// peek runs before the cell pass, so a virtual placement's placeholder
+/// origins are not recorded yet — presence alone is what the frame gate
+/// escalates on, not resolvability. The image pass re-walks the placement
+/// iterator on its own first call, which resets it, so leaving it advanced
+/// here is harmless.
 pub(super) fn capture_images(frame: &mut FrameState, handles: &mut Handles) {
-    let Some(terminal) = handles.terminal else {
+    let Ok(graphics) = handles.terminal.kitty_graphics() else {
         return;
     };
-    let mut graphics = GhosttyKittyGraphics(ptr::null_mut());
-    // SAFETY: the terminal is live and `graphics` is writable storage of
-    // the type `GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS` returns.
-    let got = unsafe {
-        ghostty_terminal_get(
-            terminal,
-            GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
-            (&raw mut graphics).cast(),
-        )
-    };
-    if got != GHOSTTY_SUCCESS || graphics.0.is_null() {
-        return;
-    }
-    // No placement iterator means the image pass can draw no images
-    // either, so reporting "no images" here stays consistent with what
-    // the frame will actually draw.
-    let Some(mut iterator) = handles.placement_iterator else {
+    let Ok(mut placements) = handles.placement_iterator.update(&graphics) else {
         return;
     };
-    // SAFETY: `graphics` is live and the iterator is writable storage
-    // created by `ghostty_kitty_graphics_placement_iterator_new`.
-    if unsafe {
-        ghostty_kitty_graphics_get(
-            graphics,
-            GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
-            ptr::from_mut(&mut iterator).cast(),
-        )
-    } != GHOSTTY_SUCCESS
+    if let Some(placement) = placements.next()
+        && placement.image_id().is_ok()
     {
-        return;
-    }
-    // SAFETY: the iterator was initialized from the live graphics storage
-    // above.
-    while unsafe { ghostty_kitty_graphics_placement_next(iterator) } {
-        let mut image_id: u32 = 0;
-        // SAFETY: `image_id` is writable storage of the type the selector
-        // returns and the iterator is live.
-        if unsafe {
-            ghostty_kitty_graphics_placement_get(
-                iterator,
-                GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
-                (&raw mut image_id).cast(),
-            )
-        } == GHOSTTY_SUCCESS
-        {
-            frame.has_images = true;
-            return;
-        }
+        frame.has_images = true;
     }
 }
 

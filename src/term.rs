@@ -1,52 +1,30 @@
-//! The terminal core (port-to-rust D3): owns the pinned libghostty-vt handles
-//! and the effect callbacks that `src/main.zig` used to keep in process-global
-//! variables.
+//! The terminal core (port-to-rust D3): owns the pinned libghostty-vt
+//! terminal and the effect callbacks that `src/main.zig` used to keep in
+//! process-global variables, now through the `libghostty-vt` crate's safe
+//! API (adopt-libghostty-rs A5).
 //!
-//! `main.zig` exposed `term`, `render_state`, the row/placement iterators, the
-//! key/mouse encoders and events, and the grid metrics as `pub var` globals
-//! that `cells.zig` and `input.zig` read. Here a single [`Terminal`] owns
-//! them, so the next `term` sub-units (`cells`, `keys`, `input`) take the
-//! handles through accessors instead of reaching for globals. The type is
-//! `!Send`/`!Sync` (D2 item 8, D4): it lives on the panel thread only.
+//! A single [`Terminal`] owns the crate's terminal, render state, iterators
+//! and encoders, so the `term` sub-units (`cells`, `keys`, `input`) reach
+//! them through the handle instead of globals. The type is `!Send`/`!Sync`
+//! (D2 item 8, D4): it lives on the panel thread only.
 //!
-//! Panics must never cross back into C (D5). Every trampoline below runs its
-//! body through the shared [`crate::guard`] helper, and a panic latches a
-//! shared poisoned flag; later calls become no-ops.
+//! The crate's `extern "C"` trampolines do not catch panics, so a panic in a
+//! callback closure would abort the host (adopt-libghostty-rs A3). Every
+//! closure body below runs through the shared [`crate::guard`] helper with
+//! the terminal's poison latch, and a panic latches the flag so later calls
+//! become no-ops.
 //!
-//! The pty write sink and the PNG decoder are injected behind the [`PtySink`]
-//! and [`PngDecoder`] traits, so nothing here depends on the windowing
-//! layer (D3).
+//! Callbacks share state through `Rc<Shared>` captures instead of a userdata
+//! pointer (A5). The pty write sink and the PNG decoder are injected behind
+//! the [`PtySink`] and [`PngDecoder`] traits, so nothing here depends on the
+//! windowing layer (D3).
 
-use std::cell::Cell;
-use std::os::raw::c_void;
-use std::ptr;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::guard::Poisoned;
+use libghostty_vt as vt;
 
-use crate::ghostty_sys::input::{
-    GHOSTTY_MOUSE_ENCODER_OPT_SIZE, GhosttyKeyEncoder, GhosttyKeyEvent, GhosttyMouseEncoder,
-    GhosttyMouseEncoderSize, GhosttyMouseEvent, ghostty_key_encoder_free, ghostty_key_encoder_new,
-    ghostty_key_event_free, ghostty_key_event_new, ghostty_mouse_encoder_free,
-    ghostty_mouse_encoder_new, ghostty_mouse_encoder_setopt, ghostty_mouse_event_free,
-    ghostty_mouse_event_new,
-};
-use crate::ghostty_sys::kitty::{
-    GhosttyKittyGraphicsPlacementIterator, ghostty_kitty_graphics_placement_iterator_free,
-    ghostty_kitty_graphics_placement_iterator_new,
-};
-use crate::ghostty_sys::render::{
-    GhosttyRenderState, GhosttyRenderStateRowCells, GhosttyRenderStateRowIterator,
-    ghostty_render_state_free, ghostty_render_state_new, ghostty_render_state_row_cells_free,
-    ghostty_render_state_row_cells_new, ghostty_render_state_row_iterator_free,
-    ghostty_render_state_row_iterator_new,
-};
-use crate::ghostty_sys::terminal::{
-    GhosttyTerminal, GhosttyTerminalData, GhosttyTerminalOption, ghostty_terminal_free,
-    ghostty_terminal_get, ghostty_terminal_new, ghostty_terminal_resize, ghostty_terminal_set,
-    ghostty_terminal_vt_write,
-};
-use crate::ghostty_sys::{GHOSTTY_REJECTED, GHOSTTY_SUCCESS, GhosttyResult};
+use crate::guard::Poisoned;
 
 mod callbacks;
 pub mod cells;
@@ -88,190 +66,113 @@ pub trait PngDecoder: 'static {
     fn decode_png(&mut self, data: &[u8]) -> Option<DecodedPng>;
 }
 
-/// Everything the effect callbacks and the library share for one terminal.
-/// Its address is the `userdata` handed to libghostty, so it must live in a
-/// `Box` for as long as the terminal does.
-struct CallbackContext {
-    sink: Box<dyn PtySink>,
-    decoder: Box<dyn PngDecoder>,
-    queue_draw: Box<dyn Fn()>,
-    poisoned: Poisoned,
+/// The grid identity the size-report callback answers from: the clamped
+/// dimensions `push_size` last accepted.
+#[derive(Clone, Copy, Debug)]
+struct GridMetrics {
     cols: u16,
     rows: u16,
     cell_w: u32,
     cell_h: u32,
+}
+
+impl GridMetrics {
+    const DEFAULT: Self = Self {
+        cols: DEFAULT_COLS,
+        rows: DEFAULT_ROWS,
+        cell_w: 1,
+        cell_h: 1,
+    };
+}
+
+/// Everything the effect callbacks and the terminal share. The closures the
+/// crate's terminal calls back into capture an [`Rc`] to this, as do the
+/// `Terminal` and the PNG forwarder (adopt-libghostty-rs A5).
+struct Shared {
+    poisoned: Poisoned,
+    /// The pty write sink, behind a `RefCell` because the `on_pty_write`
+    /// callback and `push_focus` both write through it.
+    sink: RefCell<Box<dyn PtySink>>,
+    /// The PNG decoder, behind a `RefCell` because the process-global decode
+    /// forwarder is the only caller (adopt-libghostty-rs A4).
+    decoder: RefCell<Box<dyn PngDecoder>>,
+    /// The grid metrics the size-report callback answers from; `push_size`
+    /// publishes here.
+    metrics: Cell<GridMetrics>,
     /// The resolved scale in 1/120 units (device-pixel-cell-reports D3):
     /// `size_report` scales the logical cell by it; 120 is scale 1.
     scale_120: Rc<Cell<u32>>,
+    /// Test-only panic injection: the named callback's body panics before
+    /// doing anything, so the D5 guard tests can prove a panic is contained.
+    #[cfg(test)]
+    fail_point: Cell<Option<&'static str>>,
 }
 
-/// The owned ghostty handles. Each field is `Some` once the handle exists, so
-/// a partially failed creation frees exactly what it built in `Drop`.
-#[derive(Default)]
+/// The crate handles a [`Terminal`] owns. Creation is all-or-nothing: every
+/// type frees itself when dropped, each through its own `*_free` call on its
+/// own raw pointer, and none of them borrows from another between calls —
+/// the references the crate's types carry live only across call lifetimes
+/// (the pinned dependency's own `impl Drop`s — libghostty-vt at rev
+/// `e1e145f22bace96593ecaa348c09d874635ef637`, in its `terminal.rs`,
+/// `render.rs`, `kitty/graphics.rs`, `key.rs`, `mouse.rs` — each free only
+/// their own raw pointer).
+/// The one drop order this module relies on is the frame dropping before the
+/// handles, so a stored snapshot never outlives the render state it borrows
+/// (see `cells::FrameState`).
 struct Handles {
-    terminal: Option<GhosttyTerminal>,
-    render_state: Option<GhosttyRenderState>,
-    row_iterator: Option<GhosttyRenderStateRowIterator>,
-    row_cells: Option<GhosttyRenderStateRowCells>,
-    placement_iterator: Option<GhosttyKittyGraphicsPlacementIterator>,
-    key_encoder: Option<GhosttyKeyEncoder>,
-    key_event: Option<GhosttyKeyEvent>,
-    mouse_encoder: Option<GhosttyMouseEncoder>,
-    mouse_event: Option<GhosttyMouseEvent>,
+    terminal: vt::Terminal<'static, 'static>,
+    render_state: vt::RenderState<'static>,
+    row_iterator: vt::render::RowIterator<'static>,
+    cell_iterator: vt::render::CellIterator<'static>,
+    placement_iterator: vt::kitty::graphics::PlacementIterator<'static>,
+    key_encoder: vt::key::Encoder<'static>,
+    key_event: vt::key::Event<'static>,
+    mouse_encoder: vt::mouse::Encoder<'static>,
+    mouse_event: vt::mouse::Event<'static>,
 }
-
-impl Handles {
-    /// Create every handle, or fail and free whatever was created. The
-    /// terminal must outlive the handles that borrow from it.
-    fn create(cols: u16, rows: u16) -> Result<Self, ()> {
-        let mut handles = Handles::default();
-        // SAFETY: every out pointer is a valid, writable `Option`-free local
-        // of the right handle type; NULL selects the default allocator.
-        unsafe {
-            let mut terminal = GhosttyTerminal(ptr::null_mut());
-            if ghostty_terminal_new(ptr::null(), &raw mut terminal, cols, rows) != GHOSTTY_SUCCESS {
-                return Err(());
-            }
-            handles.terminal = Some(terminal);
-
-            let mut render_state = GhosttyRenderState(ptr::null_mut());
-            if ghostty_render_state_new(ptr::null(), &raw mut render_state) != GHOSTTY_SUCCESS {
-                return Err(());
-            }
-            handles.render_state = Some(render_state);
-
-            let mut row_iterator = GhosttyRenderStateRowIterator(ptr::null_mut());
-            if ghostty_render_state_row_iterator_new(ptr::null(), &raw mut row_iterator)
-                != GHOSTTY_SUCCESS
-            {
-                return Err(());
-            }
-            handles.row_iterator = Some(row_iterator);
-
-            let mut row_cells = GhosttyRenderStateRowCells(ptr::null_mut());
-            if ghostty_render_state_row_cells_new(ptr::null(), &raw mut row_cells)
-                != GHOSTTY_SUCCESS
-            {
-                return Err(());
-            }
-            handles.row_cells = Some(row_cells);
-
-            let mut placement_iterator = GhosttyKittyGraphicsPlacementIterator(ptr::null_mut());
-            if ghostty_kitty_graphics_placement_iterator_new(
-                ptr::null(),
-                &raw mut placement_iterator,
-            ) != GHOSTTY_SUCCESS
-            {
-                return Err(());
-            }
-            handles.placement_iterator = Some(placement_iterator);
-
-            let mut key_encoder = GhosttyKeyEncoder(ptr::null_mut());
-            if ghostty_key_encoder_new(ptr::null(), &raw mut key_encoder) != GHOSTTY_SUCCESS {
-                return Err(());
-            }
-            handles.key_encoder = Some(key_encoder);
-
-            let mut key_event = GhosttyKeyEvent(ptr::null_mut());
-            if ghostty_key_event_new(ptr::null(), &raw mut key_event) != GHOSTTY_SUCCESS {
-                return Err(());
-            }
-            handles.key_event = Some(key_event);
-
-            let mut mouse_encoder = GhosttyMouseEncoder(ptr::null_mut());
-            if ghostty_mouse_encoder_new(ptr::null(), &raw mut mouse_encoder) != GHOSTTY_SUCCESS {
-                return Err(());
-            }
-            handles.mouse_encoder = Some(mouse_encoder);
-
-            let mut mouse_event = GhosttyMouseEvent(ptr::null_mut());
-            if ghostty_mouse_event_new(ptr::null(), &raw mut mouse_event) != GHOSTTY_SUCCESS {
-                return Err(());
-            }
-            handles.mouse_event = Some(mouse_event);
-        };
-        Ok(handles)
-    }
-}
-
-impl Drop for Handles {
-    fn drop(&mut self) {
-        // SAFETY: each handle was created by the matching `*_new` and is freed
-        // exactly once, leaf objects before the terminal they borrow from.
-        unsafe {
-            if let Some(event) = self.mouse_event {
-                ghostty_mouse_event_free(event);
-            }
-            if let Some(event) = self.key_event {
-                ghostty_key_event_free(event);
-            }
-            if let Some(encoder) = self.mouse_encoder {
-                ghostty_mouse_encoder_free(encoder);
-            }
-            if let Some(encoder) = self.key_encoder {
-                ghostty_key_encoder_free(encoder);
-            }
-            if let Some(iterator) = self.placement_iterator {
-                ghostty_kitty_graphics_placement_iterator_free(iterator);
-            }
-            if let Some(cells) = self.row_cells {
-                ghostty_render_state_row_cells_free(cells);
-            }
-            if let Some(iterator) = self.row_iterator {
-                ghostty_render_state_row_iterator_free(iterator);
-            }
-            if let Some(state) = self.render_state {
-                ghostty_render_state_free(state);
-            }
-            if let Some(terminal) = self.terminal {
-                ghostty_terminal_free(terminal);
-            }
-        }
-    }
-}
-
-/// The creation step, injectable so a test can force init failure (D10).
-type InitFn = dyn FnMut(*mut c_void, u16, u16) -> Result<Handles, ()>;
 
 /// A libghostty-vt terminal and everything it owns. `!Send`/`!Sync`: it may
 /// only be used from the thread that created it (D4).
 pub struct Terminal {
+    /// The frame state, dropped before the handles so a stored snapshot can
+    /// never outlive the render state it borrows (see `cells::FrameState`).
+    frame: cells::FrameState,
     handles: Option<Handles>,
-    ctx: Box<CallbackContext>,
-    init: Option<Box<InitFn>>,
-    /// Sticky: once init fails, later calls report failure instead of
-    /// re-entering creation, whose partial handles would be unusable
-    /// (`src/main.zig`).
+    shared: Rc<Shared>,
+    /// The panel's repaint latch, called after terminal output (D3).
+    queue_draw: Box<dyn Fn()>,
+    /// The creation step, injectable so a test can force init failure (D10).
+    #[cfg(test)]
+    init: Option<Box<dyn FnMut() -> Result<(), ()>>>,
+    /// Sticky: once handle creation fails, later calls report failure instead
+    /// of re-entering creation, as `src/main.zig` did.
     init_failed: bool,
     /// PTY bytes that arrived before the terminal existed, replayed once it
     /// does (`src/main.zig`).
     early_pty_data: Vec<u8>,
     /// Scroll/focus/button state for the input encoders (D3).
     input_state: input::InputState,
-    /// Per-frame state for the cell/glyph protocol (port-to-rust D3).
-    frame: cells::FrameState,
 }
 
-/// The grid identity and lifecycle of a [`Terminal`]: the handles, sinks
-/// and decoder are intentionally absent (a `dyn PtySink` carries no `Debug`).
 impl std::fmt::Debug for Terminal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let metrics = self.shared.metrics.get();
         f.debug_struct("Terminal")
             .field("initialized", &self.handles.is_some())
-            .field("cols", &self.ctx.cols)
-            .field("rows", &self.ctx.rows)
-            .field("cell_w", &self.ctx.cell_w)
-            .field("cell_h", &self.ctx.cell_h)
+            .field("cols", &metrics.cols)
+            .field("rows", &metrics.rows)
+            .field("cell_w", &metrics.cell_w)
+            .field("cell_h", &metrics.cell_h)
             .field("init_failed", &self.init_failed)
             .finish_non_exhaustive()
     }
 }
 
 impl Terminal {
-    /// Build a terminal that lazily creates its handles on the first
+    /// Build a terminal that creates its libghostty handles on the first
     /// [`Terminal::push_size`]. `poisoned` is the owner's shared D5 latch: a
-    /// panic in an effect-callback trampoline latches it so the rest of the
-    /// panel's glue code stops too.
+    /// panic in an effect callback latches it so the rest of the panel's
+    /// glue code stops too.
     pub fn new(
         poisoned: Poisoned,
         sink: impl PtySink + 'static,
@@ -290,49 +191,41 @@ impl Terminal {
         queue_draw: impl Fn() + 'static,
         scale_120: Rc<Cell<u32>>,
     ) -> Self {
-        Self::with_init(
+        Self::from_shared(
             poisoned,
             Box::new(sink),
             Box::new(decoder),
             Box::new(queue_draw),
-            Box::new(callbacks::init_ghostty),
             scale_120,
         )
     }
 
-    fn with_init(
+    fn from_shared(
         poisoned: Poisoned,
         sink: Box<dyn PtySink>,
         decoder: Box<dyn PngDecoder>,
         queue_draw: Box<dyn Fn()>,
-        init: Box<InitFn>,
         scale_120: Rc<Cell<u32>>,
     ) -> Self {
+        let shared = Self::build_shared(poisoned, sink, decoder, scale_120);
+        callbacks::register_decode_context(&shared);
         Terminal {
+            frame: cells::FrameState::default(),
             handles: None,
-            ctx: Box::new(CallbackContext {
-                sink,
-                decoder,
-                queue_draw,
-                poisoned,
-                cols: DEFAULT_COLS,
-                rows: DEFAULT_ROWS,
-                cell_w: 1,
-                cell_h: 1,
-                scale_120,
-            }),
-            init: Some(init),
+            shared,
+            queue_draw,
+            #[cfg(test)]
+            init: None,
             init_failed: false,
             early_pty_data: Vec::new(),
             input_state: input::InputState::default(),
-            frame: cells::FrameState::default(),
         }
     }
 
     /// Whether a callback panicked and latched the terminal poisoned (D5).
     #[must_use]
     pub fn poisoned(&self) -> bool {
-        self.ctx.poisoned.is_poisoned()
+        self.shared.poisoned.is_poisoned()
     }
 
     /// Whether the handles exist.
@@ -344,193 +237,101 @@ impl Terminal {
     /// The grid width in columns.
     #[must_use]
     pub fn cols(&self) -> u16 {
-        self.ctx.cols
+        self.shared.metrics.get().cols
     }
 
     /// The grid height in rows.
     #[must_use]
     pub fn rows(&self) -> u16 {
-        self.ctx.rows
+        self.shared.metrics.get().rows
     }
 
     /// The cell width in pixels.
     #[must_use]
     pub fn cell_w(&self) -> u32 {
-        self.ctx.cell_w
+        self.shared.metrics.get().cell_w
     }
 
     /// The cell height in pixels.
     #[must_use]
     pub fn cell_h(&self) -> u32 {
-        self.ctx.cell_h
+        self.shared.metrics.get().cell_h
     }
 
     /// The shared scale note `size_report` reads, in 1/120 units
     /// (device-pixel-cell-reports D3).
     #[must_use]
     pub fn scale_note(&self) -> Rc<Cell<u32>> {
-        Rc::clone(&self.ctx.scale_120)
-    }
-
-    /// The terminal handle, once created.
-    #[must_use]
-    pub fn terminal(&self) -> Option<GhosttyTerminal> {
-        self.handles.as_ref().and_then(|handles| handles.terminal)
-    }
-
-    /// The key encoder handle, once created.
-    #[must_use]
-    pub fn key_encoder(&self) -> Option<GhosttyKeyEncoder> {
-        self.handles
-            .as_ref()
-            .and_then(|handles| handles.key_encoder)
-    }
-
-    /// The key event handle, once created.
-    #[must_use]
-    pub fn key_event(&self) -> Option<GhosttyKeyEvent> {
-        self.handles.as_ref().and_then(|handles| handles.key_event)
-    }
-
-    /// The mouse encoder handle, once created.
-    #[must_use]
-    pub fn mouse_encoder(&self) -> Option<GhosttyMouseEncoder> {
-        self.handles
-            .as_ref()
-            .and_then(|handles| handles.mouse_encoder)
-    }
-
-    /// The mouse event handle, once created.
-    #[must_use]
-    pub fn mouse_event(&self) -> Option<GhosttyMouseEvent> {
-        self.handles
-            .as_ref()
-            .and_then(|handles| handles.mouse_event)
-    }
-
-    /// Set a terminal option (a thin wrapper over `ghostty_terminal_set`),
-    /// returning [`GHOSTTY_REJECTED`] before the terminal exists.
-    ///
-    /// # Safety
-    /// `value` must point to a value of the type `option` expects, valid for
-    /// the duration of the call.
-    #[must_use]
-    pub unsafe fn set_option(
-        &self,
-        option: GhosttyTerminalOption,
-        value: *const c_void,
-    ) -> GhosttyResult {
-        match self.terminal() {
-            // SAFETY: the caller upholds the option/value contract.
-            Some(terminal) => unsafe { ghostty_terminal_set(terminal, option, value) },
-            None => GHOSTTY_REJECTED,
-        }
-    }
-
-    /// Query terminal state (a thin wrapper over `ghostty_terminal_get`),
-    /// returning [`GHOSTTY_REJECTED`] before the terminal exists.
-    ///
-    /// # Safety
-    /// `out` must point to storage of the type `data` returns, valid for the
-    /// duration of the call.
-    pub unsafe fn get_option(&self, data: GhosttyTerminalData, out: *mut c_void) -> GhosttyResult {
-        match self.terminal() {
-            // SAFETY: the caller upholds the data/out contract.
-            Some(terminal) => unsafe { ghostty_terminal_get(terminal, data, out) },
-            None => GHOSTTY_REJECTED,
-        }
+        Rc::clone(&self.shared.scale_120)
     }
 
     /// Apply a new grid size. Clamps each dimension to at least 1 (as
     /// `src/main.zig` did), creates the terminal on the first successful
     /// call, resizes it and syncs the mouse encoder's pixel size. Returns
-    /// false when the terminal could not be created; the previous grid stays
-    /// in effect and every later call keeps failing (`src/main.zig`).
+    /// false when the terminal could not be created or resized; the previous
+    /// grid stays in effect and a failed creation keeps failing
+    /// (`src/main.zig`).
     ///
     /// # Panics
     /// If handle creation reported success without installing handles, which
-    /// cannot happen: `ensure_init` installs them on every `Ok` path.
+    /// cannot happen: `ensure_init` installs them on every success path.
     pub fn push_size(&mut self, cols: i32, rows: i32, cell_w: i32, cell_h: i32) -> bool {
         if self.init_failed {
             return false;
         }
 
-        let previous = (
-            self.ctx.cols,
-            self.ctx.rows,
-            self.ctx.cell_w,
-            self.ctx.cell_h,
-        );
-        self.ctx.cols = clamp_u16(cols);
-        self.ctx.rows = clamp_u16(rows);
-        self.ctx.cell_w = clamp_u32(cell_w);
-        self.ctx.cell_h = clamp_u32(cell_h);
+        let previous = self.shared.metrics.get();
+        self.shared.metrics.set(GridMetrics {
+            cols: clamp_u16(cols),
+            rows: clamp_u16(rows),
+            cell_w: clamp_u32(cell_w),
+            cell_h: clamp_u32(cell_h),
+        });
 
         if !self.ensure_init() {
-            (
-                self.ctx.cols,
-                self.ctx.rows,
-                self.ctx.cell_w,
-                self.ctx.cell_h,
-            ) = previous;
+            self.shared.metrics.set(previous);
             return false;
         }
 
-        let handles = self.handles.as_ref().expect("ensure_init created handles");
-        // SAFETY: the handles are live and the grid values are the ones just
-        // passed to creation; resize only reads them.
-        unsafe {
-            ghostty_terminal_resize(
-                handles.terminal.expect("terminal created"),
-                self.ctx.cols,
-                self.ctx.rows,
-                self.ctx.cell_w,
-                self.ctx.cell_h,
-            );
-        };
+        let handles = self.handles.as_mut().expect("ensure_init built handles");
+        if handles
+            .terminal
+            .resize(
+                self.shared.metrics.get().cols,
+                self.shared.metrics.get().rows,
+                self.shared.metrics.get().cell_w,
+                self.shared.metrics.get().cell_h,
+            )
+            .is_err()
+        {
+            // The resize failed (an OOM during reflow): keep the previous
+            // grid, as the spec requires for a failed allocation.
+            self.shared.metrics.set(previous);
+            return false;
+        }
 
-        let mut size = GhosttyMouseEncoderSize {
-            size: std::mem::size_of::<GhosttyMouseEncoderSize>(),
-            screen_width: u32::from(self.ctx.cols) * self.ctx.cell_w,
-            screen_height: u32::from(self.ctx.rows) * self.ctx.cell_h,
-            cell_width: self.ctx.cell_w,
-            cell_height: self.ctx.cell_h,
+        handles.mouse_encoder.set_size(vt::mouse::EncoderSize {
+            screen_width: u32::from(self.shared.metrics.get().cols)
+                * self.shared.metrics.get().cell_w,
+            screen_height: u32::from(self.shared.metrics.get().rows)
+                * self.shared.metrics.get().cell_h,
+            cell_width: self.shared.metrics.get().cell_w,
+            cell_height: self.shared.metrics.get().cell_h,
             padding_top: 0,
             padding_bottom: 0,
             padding_right: 0,
             padding_left: 0,
-        };
-        // SAFETY: the mouse encoder is live and `size` is a sized struct of
-        // the type `GHOSTTY_MOUSE_ENCODER_OPT_SIZE` expects.
-        unsafe {
-            ghostty_mouse_encoder_setopt(
-                handles.mouse_encoder.expect("mouse encoder created"),
-                GHOSTTY_MOUSE_ENCODER_OPT_SIZE,
-                (&raw mut size).cast(),
-            );
-        };
+        });
         true
     }
 
     /// Feed pty bytes to the terminal. Before the terminal exists the bytes
     /// are buffered up to `EARLY_PTY_CAP` and replayed once it does; after a
     /// sticky init failure they are dropped (`src/main.zig`).
-    ///
-    /// # Panics
-    /// If the terminal handle is missing while other handles exist, which
-    /// cannot happen: the terminal is created first and freed last.
     pub fn push_pty_data(&mut self, data: &[u8]) {
-        if let Some(handles) = self.handles.as_ref() {
-            // SAFETY: the terminal is live and `data` is a valid slice for
-            // the call.
-            unsafe {
-                ghostty_terminal_vt_write(
-                    handles.terminal.expect("terminal created"),
-                    data.as_ptr(),
-                    data.len(),
-                );
-            };
-            (self.ctx.queue_draw)();
+        if let Some(handles) = self.handles.as_mut() {
+            handles.terminal.vt_write(data);
+            (self.queue_draw)();
             return;
         }
         if self.init_failed {
@@ -551,21 +352,23 @@ impl Terminal {
         if self.init_failed {
             return false;
         }
-        let Some(mut init) = self.init.take() else {
+        #[cfg(test)]
+        if let Some(mut init) = self.init.take()
+            && init().is_err()
+        {
             self.init_failed = true;
             return false;
-        };
-        let userdata = (&raw mut *self.ctx).cast::<c_void>();
-        callbacks::register_decode_context(userdata.cast::<CallbackContext>());
-        if let Ok(handles) = init(userdata, self.ctx.cols, self.ctx.rows) {
+        }
+        let metrics = self.shared.metrics.get();
+        if let Ok(handles) =
+            callbacks::init_ghostty(metrics.cols, metrics.rows, &Rc::clone(&self.shared))
+        {
             self.handles = Some(handles);
             self.replay_early_pty();
-            true
-        } else {
-            callbacks::unregister_decode_context(userdata.cast::<CallbackContext>());
-            self.init_failed = true;
-            false
+            return true;
         }
+        self.init_failed = true;
+        false
     }
 
     /// Replay pty bytes that arrived before the terminal existed, now that
@@ -574,27 +377,57 @@ impl Terminal {
         if self.early_pty_data.is_empty() {
             return;
         }
-        if let Some(handles) = self.handles.as_ref() {
-            // SAFETY: the terminal is live and `early_pty_data` is valid for
-            // the call.
-            unsafe {
-                ghostty_terminal_vt_write(
-                    handles.terminal.expect("terminal created"),
-                    self.early_pty_data.as_ptr(),
-                    self.early_pty_data.len(),
-                );
-            };
+        if let Some(handles) = self.handles.as_mut() {
+            handles.terminal.vt_write(&self.early_pty_data);
             self.early_pty_data.clear();
-            (self.ctx.queue_draw)();
+            (self.queue_draw)();
         }
+    }
+
+    /// The test-only forced-init seam (D10).
+    #[cfg(test)]
+    fn with_init(
+        poisoned: Poisoned,
+        sink: Box<dyn PtySink>,
+        decoder: Box<dyn PngDecoder>,
+        queue_draw: Box<dyn Fn()>,
+        init: Box<dyn FnMut() -> Result<(), ()>>,
+    ) -> Self {
+        let mut terminal =
+            Self::from_shared(poisoned, sink, decoder, queue_draw, Rc::new(Cell::new(120)));
+        terminal.init = Some(init);
+        terminal
+    }
+
+    /// The test-only panic-injection switch: the named callback panics at
+    /// its first step (see `callbacks::fail_point`).
+    #[cfg(test)]
+    pub(crate) fn fail_point(&self) -> &Cell<Option<&'static str>> {
+        &self.shared.fail_point
+    }
+
+    fn build_shared(
+        poisoned: Poisoned,
+        sink: Box<dyn PtySink>,
+        decoder: Box<dyn PngDecoder>,
+        scale_120: Rc<Cell<u32>>,
+    ) -> Rc<Shared> {
+        Rc::new(Shared {
+            poisoned,
+            sink: RefCell::new(sink),
+            decoder: RefCell::new(decoder),
+            metrics: Cell::new(GridMetrics::DEFAULT),
+            scale_120,
+            #[cfg(test)]
+            fail_point: Cell::new(None),
+        })
     }
 }
 
-/// Removing the context from the decode registry before the `Box` is freed
-/// keeps the process-global sys hook from ever seeing a dangling pointer.
+/// Stop routing decodes at this terminal's decoder before it is freed.
 impl Drop for Terminal {
     fn drop(&mut self) {
-        callbacks::unregister_decode_context(&raw mut *self.ctx);
+        callbacks::unregister_decode_context(&self.shared);
     }
 }
 
@@ -656,11 +489,30 @@ mod tests {
         }
     }
 
-    /// A sink that panics, to prove a callback panic is contained.
-    struct PanickingSink;
+    /// A sink that records every write and then panics, to prove a callback
+    /// panic is contained and that a poisoned terminal stops writing.
+    struct PanickingSink {
+        writes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl PanickingSink {
+        fn pair() -> (Self, Arc<Mutex<Vec<u8>>>) {
+            let writes = Arc::new(Mutex::new(Vec::new()));
+            (
+                PanickingSink {
+                    writes: Arc::clone(&writes),
+                },
+                writes,
+            )
+        }
+    }
 
     impl PtySink for PanickingSink {
-        fn write_pty(&mut self, _data: &[u8]) {
+        fn write_pty(&mut self, data: &[u8]) {
+            self.writes
+                .lock()
+                .expect("sink lock")
+                .extend_from_slice(data);
             panic!("sink panicked");
         }
     }
@@ -703,11 +555,10 @@ mod tests {
             Box::new(RecordingSink::new()),
             Box::new(NoDecoder),
             Box::new(|| {}),
-            Box::new(move |_, _, _| {
+            Box::new(move || {
                 calls_for_init.fetch_add(1, Ordering::Relaxed);
                 Err(())
             }),
-            Rc::new(Cell::new(120)),
         );
 
         assert!(!terminal.push_size(80, 24, 9, 18));
@@ -756,8 +607,8 @@ mod tests {
         );
     }
 
-    /// After init, a DA1 query reaches the sink through the `write_pty`
-    /// trampoline.
+    /// After init, a DA1 query reaches the sink through the `on_pty_write`
+    /// callback.
     #[test]
     fn write_pty_trampoline_delivers_bytes() {
         let (sink, writes) = RecordingSink::pair();
@@ -771,18 +622,39 @@ mod tests {
     }
 
     /// A panicking sink must not unwind into C: the panic is caught, the
-    /// terminal is poisoned and the process keeps running.
+    /// terminal is poisoned and the process keeps running. Later calls do
+    /// nothing: a poisoned terminal neither writes again nor panics a
+    /// second time (task 4.2).
     #[test]
     fn panicking_sink_poisons_and_does_not_abort() {
-        let mut terminal = Terminal::new(
-            crate::guard::Poisoned::new(),
-            PanickingSink,
-            NoDecoder,
-            || {},
-        );
+        let (sink, writes) = PanickingSink::pair();
+        let mut terminal = Terminal::new(crate::guard::Poisoned::new(), sink, NoDecoder, || {});
         assert!(terminal.push_size(40, 24, 8, 16));
         assert!(!terminal.poisoned());
+
+        // The first reply panics inside the sink and latches the flag.
         terminal.push_pty_data(b"\x1b[c");
         assert!(terminal.poisoned());
+
+        // Push more pty data: the poisoned terminal answers nothing, so the
+        // buffer keeps exactly the one reply that already panicked.
+        terminal.push_pty_data(b"\x1b[c");
+        terminal.push_pty_data(b"more output\n");
+        assert_eq!(
+            writes.lock().expect("sink lock").clone(),
+            b"\x1b[?62;22;52c",
+            "a poisoned terminal writes no further pty data"
+        );
+    }
+
+    /// The optimise mode is the checked-in `.cargo/config.toml` override
+    /// (adopt-libghostty-rs A2): never the Zig default, in the dev profile
+    /// the tests run under or any other.
+    #[test]
+    fn the_archive_is_built_release_safe() {
+        assert_eq!(
+            vt::build_info::optimize_mode().expect("build info"),
+            vt::build_info::OptimizeMode::ReleaseSafe,
+        );
     }
 }

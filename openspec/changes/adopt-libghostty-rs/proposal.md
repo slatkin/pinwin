@@ -7,8 +7,8 @@ pinwin maintains its own FFI to libghostty-vt: about 2,150 hand-written lines in
 libghostty-rs crates (`libghostty-vt`, `libghostty-vt-sys`) provide generated bindings, a safe
 API, and the same Zig build. The port-to-rust spike (D2, 2026-10-04) rejected the crate. Its
 ghostty pin was 1,404 commits behind ours, it had no row viewport Y, and its constructor ABI did
-not match our pin. Two open upstream PRs remove those blockers. Uzaaft/libghostty-rs#84 moves
-the pin to ghostty `0081d45`, which is 44 commits ahead of ours. Uzaaft/libghostty-rs#85 adds
+not match our pin. Two upstream PRs, now merged, removed those blockers. Uzaaft/libghostty-rs#84 moved
+the pin to ghostty `3425025`, which is 66 commits ahead of ours. Uzaaft/libghostty-rs#85 added
 `RowIteration::viewport_y`. Tracking issue: slatkin/pinwin#18.
 
 ## What Changes

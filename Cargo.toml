@@ -2,15 +2,12 @@
 name = "pinwin"
 version = "0.3.2"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.90"
 description = "Pin a Ghostty window (e.g. mbv) to the edge of niri as a fixed sidebar."
 license = "MIT"
 repository = "https://github.com/slatkin/pinwin"
 keywords = ["terminal", "niri", "layer-shell", "wayland"]
 categories = ["command-line-utilities"]
-# The pinned libghostty-vt archive is built by build.rs from the commit in
-# build.rs (port-to-rust D2); it is deliberately not a Cargo dependency.
-build = "build.rs"
 
 [lib]
 name = "pinwin"
@@ -21,6 +18,13 @@ name = "pinwin"
 path = "src/main.rs"
 
 [dependencies]
+# The terminal emulation core (adopt-libghostty-rs A1): the safe API over
+# libghostty-vt, pinned at the first master commit that carries both the
+# ghostty pin bump (#84) and `RowIteration::viewport_y` (#85). Default
+# features (kitty-graphics) stay; `png` stays off because pinwin decodes
+# PNG with the `png` crate above.
+libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "e1e145f22bace96593ecaa348c09d874635ef637" }
+
 # The winsize ioctl, the non-blocking fcntl switch, raise(SIGWINCH) and the
 # raw read/write on the host-supplied master fd (port-to-rust D7); libc is
 # already in the lock as a transitive dependency.

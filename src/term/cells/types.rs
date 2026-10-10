@@ -2,17 +2,9 @@
 //! `PinwinCell`, `PinwinCursor`, `PinwinImage` and the `PINWIN_*`/`WIDE_*`
 //! constants in `src/pinwin.h`. No toolkit or cairo type appears here.
 
-use std::ptr;
-
-use crate::ghostty_sys::render::{
-    GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK,
-    GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW,
-    GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE, GhosttyRenderStateCursorVisualStyle,
-};
-use crate::ghostty_sys::screen::{
-    GHOSTTY_CELL_WIDE_SPACER_TAIL, GHOSTTY_CELL_WIDE_WIDE, GhosttyCellWide,
-};
-use crate::ghostty_sys::style::GhosttyColorRgb;
+use libghostty_vt::render::CursorVisualStyle;
+use libghostty_vt::screen::CellWide;
+use libghostty_vt::style::RgbColor;
 
 /// The number of bytes a cell's UTF-8 text may hold (`PinwinCell.text`).
 pub const CELL_TEXT_CAP: usize = 32;
@@ -20,13 +12,12 @@ pub const CELL_TEXT_CAP: usize = 32;
 /// How many columns a cell occupies (`GHOSTTY_CELL_WIDE_*`). Only the three
 /// values the frame carries are named; anything else (an internal spacer head)
 /// is treated as narrow, matching how the C renderer reads the field.
-#[repr(i32)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Wide {
     #[default]
-    Narrow = 0,
-    Wide = 1,
-    SpacerTail = 2,
+    Narrow,
+    Wide,
+    SpacerTail,
 }
 
 impl Wide {
@@ -37,10 +28,11 @@ impl Wide {
     /// The second column of a wide glyph; it must not be drawn.
     pub const SPACER_TAIL: Wide = Wide::SpacerTail;
 
-    pub(super) fn from_raw(raw: GhosttyCellWide) -> Wide {
+    pub(super) fn from_raw(raw: CellWide) -> Wide {
         match raw {
-            GHOSTTY_CELL_WIDE_WIDE => Wide::Wide,
-            GHOSTTY_CELL_WIDE_SPACER_TAIL => Wide::SpacerTail,
+            CellWide::Wide => Wide::Wide,
+            CellWide::SpacerTail => Wide::SpacerTail,
+            // `Narrow`, `SpacerHead` and any value a future libghostty adds.
             _ => Wide::Narrow,
         }
     }
@@ -48,14 +40,13 @@ impl Wide {
 
 /// The shape drawn for the cursor (`PINWIN_CURSOR_*` /
 /// `GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_*`).
-#[repr(i32)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum CursorStyle {
     #[default]
-    Bar = 0,
-    Block = 1,
-    Underline = 2,
-    BlockHollow = 3,
+    Bar,
+    Block,
+    Underline,
+    BlockHollow,
 }
 
 impl CursorStyle {
@@ -68,11 +59,13 @@ impl CursorStyle {
     /// An outlined block.
     pub const BLOCK_HOLLOW: CursorStyle = CursorStyle::BlockHollow;
 
-    pub(super) fn from_raw(raw: GhosttyRenderStateCursorVisualStyle) -> CursorStyle {
+    pub(super) fn from_raw(raw: CursorVisualStyle) -> CursorStyle {
+        // The crate's style enum is `non_exhaustive`, so unknown values stay
+        // on the conservative default.
         match raw {
-            GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK => CursorStyle::Block,
-            GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE => CursorStyle::Underline,
-            GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW => CursorStyle::BlockHollow,
+            CursorVisualStyle::Block => CursorStyle::Block,
+            CursorVisualStyle::Underline => CursorStyle::Underline,
+            CursorVisualStyle::BlockHollow => CursorStyle::BlockHollow,
             _ => CursorStyle::Bar,
         }
     }
@@ -132,7 +125,6 @@ impl std::ops::BitOrAssign for StyleFlags {
 }
 
 /// An 8-bit RGB colour.
-#[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Rgb {
     /// Red channel.
@@ -143,8 +135,8 @@ pub struct Rgb {
     pub b: u8,
 }
 
-impl From<GhosttyColorRgb> for Rgb {
-    fn from(color: GhosttyColorRgb) -> Rgb {
+impl From<RgbColor> for Rgb {
+    fn from(color: RgbColor) -> Rgb {
         Rgb {
             r: color.r,
             g: color.g,
@@ -266,7 +258,7 @@ impl Default for Image {
             sh: 0,
             image_w: 0,
             image_h: 0,
-            pixels: ptr::null(),
+            pixels: std::ptr::null(),
         }
     }
 }

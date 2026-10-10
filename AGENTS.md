@@ -48,8 +48,6 @@ binary; the build is Cargo only. The pre-port C and Zig sources (`src/*.c`,
 - `src/fontconfig.rs` + `src/fontconfig/` — the Ghostty font and theme reader.
 - `src/nerd_font.rs` — the generated glyph-constraint table.
 - `src/guard.rs` — the shared panic guard.
-- `src/ghostty_sys.rs` + `src/ghostty_sys/` — the hand-written `extern`
-  declarations for the pinned libghostty-vt (the only module that talks to C).
 - `src/main.rs` — the `pinwin` host program: runs a command in a panel over
   the library API, owning the pty and the child's process (the panel serves
   the instance socket); its pure parts live in `src/cli.rs` (arguments,
@@ -59,7 +57,8 @@ binary; the build is Cargo only. The pre-port C and Zig sources (`src/*.c`,
 - `examples/demo/` — the dev-only demo example, never installed; it drives,
   through the `Panel` API, the live niri checks: hide/show toggle `t`,
   cover/inset/gutter toggles, `DEMO_ZONE`, `DEMO_KEYBOARD` and `DEMO_DENSE`.
-- `build.rs` — fetches and builds the pinned libghostty-vt.
+- `.cargo/config.toml` — the Zig optimise mode and CPU floor the `libghostty-vt`
+  crate's build script reads.
 
 `openspec/specs/pinwin-panel/spec.md` is the behaviour spec.
 `openspec/changes/archive/` holds the archived design decisions code comments
@@ -87,11 +86,12 @@ unless explicitly asked. Fix the cause instead (params struct, delete dead
 code and its tests, drop the unused import). Run `cargo fmt` for each Rust
 change (stock edition-2024 defaults) and accept all reflow. Run `make
 check-code-file-lines` just before pushing; `src/nerd_font.rs` is the only
-exception (generated table). The build needs Zig 0.16 on PATH: `build.rs` fetches the
-pinned libghostty-vt commit and builds ghostty's own static VT library with
-`zig build`, so a cold cache also needs `git` and network access. Set
-`PINWIN_GHOSTTY_SRC=<dir>` to build against an existing git checkout instead of
-fetching; its `HEAD` must be the pinned commit. The system needs libxkbcommon
+exception (generated table). The build needs Zig 0.16 on PATH: the `libghostty-vt` crate's build
+script fetches its pinned ghostty commit and builds ghostty's own static VT
+library with `zig build`, so a cold cache also needs `git` and network
+access. `.cargo/config.toml` sets `LIBGHOSTTY_VT_SYS_OPTIMIZE` and
+`LIBGHOSTTY_VT_SYS_CPU`. Set `GHOSTTY_SOURCE_DIR=<dir>` to build against an
+existing ghostty checkout instead of fetching. The system needs libxkbcommon
 and fontconfig. Live runs require a Wayland compositor with wlr-layer-shell
 (niri). If touching the legacy `pinwin.sh`, check it with `bash -n pinwin.sh`.
 
@@ -100,11 +100,9 @@ and fontconfig. Live runs require a Wayland compositor with wlr-layer-shell
 Rust only, `rustfmt` clean. Keep modules small and split them by
 responsibility: the port maps one Rust module to one former C/Zig file
 (`openspec/changes/port-to-rust/design.md` D3), and a file should stay at or
-under 800 lines. The documented exceptions are `src/nerd_font.rs`, a generated
-glyph table whose regeneration is described in its module comment, and
-`src/ghostty_sys/`, the hand-written `extern` declarations mirroring the
-pinned C headers (mechanical FFI, no responsibility seam to split along).
-Both are excluded in `scripts/check-code-file-lines.sh`. Public
+under 800 lines. The documented exception is `src/nerd_font.rs`, a generated
+glyph table whose regeneration is described in its module comment. It is
+excluded in `scripts/check-code-file-lines.sh`. Public
 types keep their fields private and expose constructors and accessors, so the
 invariant lives in the field type rather than a runtime check (`port-to-rust`
 D6). Panics must never cross the library's API: run any body that can panic —

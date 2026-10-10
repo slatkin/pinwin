@@ -9,28 +9,18 @@
 //! high byte travels in the third diacritic, which is the placement id. Origins
 //! are therefore keyed by those low 24 bits, and two placements of the same
 //! image share the first one's origin (design D4 of `port-to-rust`).
+//!
+//! Like the cells, the placements are captured as plain data: the image
+//! pass's first call in a frame walks the placement iterator once, resolves
+//! every visible placement against the terminal, and stores the resulting
+//! [`Image`]s on the frame; later calls hand them out one at a time. The
+//! pixel pointer outlives the walk the same way it always did: it points at
+//! the terminal's own storage, valid until the next mutating terminal call.
 
-use std::mem;
-use std::ptr;
-
-use crate::ghostty_sys::GHOSTTY_SUCCESS;
-use crate::ghostty_sys::kitty::{
-    GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_COLUMNS,
-    GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
-    GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_ROWS,
-    GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z, GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
-    GHOSTTY_KITTY_IMAGE_DATA_GENERATION, GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
-    GHOSTTY_KITTY_IMAGE_DATA_WIDTH, GhosttyKittyGraphics, GhosttyKittyGraphicsImage,
-    GhosttyKittyGraphicsImageData, GhosttyKittyGraphicsPlacementIterator,
-    GhosttyKittyGraphicsPlacementRenderInfo, ghostty_kitty_graphics_get,
-    ghostty_kitty_graphics_image, ghostty_kitty_graphics_image_get_multi,
-    ghostty_kitty_graphics_placement_get, ghostty_kitty_graphics_placement_next,
-    ghostty_kitty_graphics_placement_render_info,
-};
-use crate::ghostty_sys::terminal::{GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, ghostty_terminal_get};
-use crate::term::Handles;
+use libghostty_vt as vt;
 
 use super::{FrameState, Image};
+use crate::term::Handles;
 
 /// A placeholder cell carries only the low 24 bits of the image id in its
 /// foreground colour; the high byte travels in the third diacritic.
@@ -178,7 +168,7 @@ fn destination_size(
 /// placement's own counts (0 = not given); only an image-sized placement's
 /// destination divides by the scale (device-pixel-image-size D3).
 pub(super) fn viewport_rect(
-    info: &GhosttyKittyGraphicsPlacementRenderInfo,
+    info: &vt::kitty::graphics::PlacementRenderInfo,
     cell_w: u32,
     cell_h: u32,
     scale_120: u32,
@@ -204,156 +194,10 @@ pub(super) fn viewport_rect(
     }
 }
 
-/// Resolve the graphics storage and the placement iterator for the image
-/// pass. False when there is nothing to walk.
-#[must_use]
-fn begin_image_pass(frame: &mut FrameState, handles: &mut Handles) -> bool {
-    if frame.flags.images_started {
-        return true;
-    }
-    frame.flags.images_started = true;
-    let terminal = handles.terminal.expect("image_next with a live terminal");
-    let mut graphics = GhosttyKittyGraphics(ptr::null_mut());
-    // SAFETY: the terminal is live and `graphics` is writable storage of
-    // the type `GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS` returns.
-    let got = unsafe {
-        ghostty_terminal_get(
-            terminal,
-            GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
-            (&raw mut graphics).cast(),
-        )
-    };
-    if got != GHOSTTY_SUCCESS || graphics.0.is_null() {
-        return false;
-    }
-    frame.graphics = Some(graphics);
-    let mut placement_iterator = handles
-        .placement_iterator
-        .expect("image_next with a placement iterator");
-    // SAFETY: `graphics` is live and the placement iterator is writable
-    // storage created by `ghostty_kitty_graphics_placement_iterator_new`.
-    let iterator = unsafe {
-        ghostty_kitty_graphics_get(
-            graphics,
-            GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
-            ptr::from_mut(&mut placement_iterator).cast(),
-        )
-    };
-    if iterator != GHOSTTY_SUCCESS {
-        return false;
-    }
-    handles.placement_iterator = Some(placement_iterator);
-    true
-}
-
-/// Read the current placement's image id, z order and virtual flag. `None`
-/// when the placement carries no image id.
-#[must_use]
-fn placement_request(iterator: GhosttyKittyGraphicsPlacementIterator) -> Option<(u32, i32, bool)> {
-    let mut image_id: u32 = 0;
-    let mut z: i32 = 0;
-    let mut is_virtual = false;
-    // SAFETY: each out pointer is writable storage of the type its data
-    // selector names; the placement iterator is live.
-    let have_id = unsafe {
-        ghostty_kitty_graphics_placement_get(
-            iterator,
-            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
-            (&raw mut image_id).cast(),
-        )
-    } == GHOSTTY_SUCCESS;
-    if !have_id {
-        return None;
-    }
-    // SAFETY: each out pointer is writable storage of the type its data
-    // selector names; the placement iterator is live.
-    unsafe {
-        ghostty_kitty_graphics_placement_get(
-            iterator,
-            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z,
-            (&raw mut z).cast(),
-        );
-        ghostty_kitty_graphics_placement_get(
-            iterator,
-            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL,
-            (&raw mut is_virtual).cast(),
-        );
-    };
-    Some((image_id, z, is_virtual))
-}
-
-/// Read the image's handle, pixels, size and generation. `None` when the
-/// image is gone or has no pixels.
-#[must_use]
-fn placement_pixels(
-    graphics: GhosttyKittyGraphics,
-    image_id: u32,
-) -> Option<(GhosttyKittyGraphicsImage, *const u8, u32, u32, u64)> {
-    // SAFETY: `graphics` is live and `image_id` was read from it.
-    let image = unsafe { ghostty_kitty_graphics_image(graphics, image_id) };
-    if image.0.is_null() {
-        return None;
-    }
-
-    let mut pixels: *const u8 = ptr::null();
-    let mut image_w: u32 = 0;
-    let mut image_h: u32 = 0;
-    let mut generation: u64 = 0;
-    let kinds: [GhosttyKittyGraphicsImageData; 4] = [
-        GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
-        GHOSTTY_KITTY_IMAGE_DATA_WIDTH,
-        GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
-        GHOSTTY_KITTY_IMAGE_DATA_GENERATION,
-    ];
-    let mut values: [*mut std::os::raw::c_void; 4] = [
-        (&raw mut pixels).cast(),
-        (&raw mut image_w).cast(),
-        (&raw mut image_h).cast(),
-        (&raw mut generation).cast(),
-    ];
-    // SAFETY: `image` is live; `kinds`/`values` are parallel arrays of
-    // matching length and each value points at writable storage.
-    let ok = unsafe {
-        ghostty_kitty_graphics_image_get_multi(
-            image,
-            kinds.len(),
-            kinds.as_ptr(),
-            values.as_mut_ptr(),
-            ptr::null_mut(),
-        )
-    } == GHOSTTY_SUCCESS;
-    if !ok || pixels.is_null() || image_w == 0 || image_h == 0 {
-        return None;
-    }
-    Some((image, pixels, image_w, image_h, generation))
-}
-
-/// Read the placement's column and row counts (0 when the placement does
-/// not give one).
-#[must_use]
-fn placement_cell_counts(iterator: GhosttyKittyGraphicsPlacementIterator) -> (u32, u32) {
-    let mut columns: u32 = 0;
-    let mut rows: u32 = 0;
-    // SAFETY: each out pointer is writable storage of the type its data
-    // selector names; the placement iterator is live.
-    unsafe {
-        ghostty_kitty_graphics_placement_get(
-            iterator,
-            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_COLUMNS,
-            (&raw mut columns).cast(),
-        );
-        ghostty_kitty_graphics_placement_get(
-            iterator,
-            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_ROWS,
-            (&raw mut rows).cast(),
-        );
-    };
-    (columns, rows)
-}
-
 /// The next image placement of the frame, or `None` at the end. `scale_120`
 /// is the terminal's shared scale note (device-pixel-image-size D1), the
-/// same note `size_report` answers from.
+/// same note `size_report` answers from. The first call in a frame captures
+/// every placement; later calls hand the capture out.
 pub(super) fn image_next(
     frame: &mut FrameState,
     handles: &mut Handles,
@@ -364,26 +208,66 @@ pub(super) fn image_next(
     if !frame.flags.open {
         return None;
     }
-    if !begin_image_pass(frame, handles) {
+    if !frame.flags.images_started {
+        frame.flags.images_started = true;
+        capture_images(frame, handles, cell_w, cell_h, scale_120);
+    }
+    if frame.images.is_empty() {
         return None;
     }
+    // Hand the images out in capture order, one per call, like the old
+    // streaming walk did.
+    Some(frame.images.remove(0))
+}
 
-    let graphics = frame.graphics?;
-    let iterator = handles.placement_iterator.expect("image_next iterator");
-    if iterator.0.is_null() {
-        return None;
-    }
+/// Walk the placement iterator once and resolve every drawable placement
+/// against the terminal into the frame's capture. A placement that cannot be
+/// resolved (a missing image, pending pixels, an off-viewport rectangle) is
+/// skipped, as the old walk skipped it.
+fn capture_images(
+    frame: &mut FrameState,
+    handles: &mut Handles,
+    cell_w: u32,
+    cell_h: u32,
+    scale_120: u32,
+) {
+    let Ok(graphics) = handles.terminal.kitty_graphics() else {
+        return;
+    };
+    let Ok(mut placements) = handles.placement_iterator.update(&graphics) else {
+        return;
+    };
 
-    // SAFETY: `iterator` was initialized from the live graphics storage above.
-    while unsafe { ghostty_kitty_graphics_placement_next(iterator) } {
-        let Some((image_id, z, is_virtual)) = placement_request(iterator) else {
-            continue;
-        };
-        let Some((image, pixels, image_w, image_h, generation)) =
-            placement_pixels(graphics, image_id)
+    while let Some(placement) = placements.next() {
+        let (Ok(image_id), Ok(z), Ok(is_virtual)) =
+            (placement.image_id(), placement.z(), placement.is_virtual())
         else {
             continue;
         };
+        let Some(image) = graphics.image(image_id) else {
+            continue;
+        };
+        let (Ok(image_w), Ok(image_h), Ok(generation)) =
+            (image.width(), image.height(), image.generation())
+        else {
+            continue;
+        };
+        if image_w == 0 || image_h == 0 {
+            continue;
+        }
+        let Ok(Some(pixels)) = image.data() else {
+            continue;
+        };
+        // The painter reads `image_w * image_h * 4` bytes through the
+        // pointer; an image whose stored buffer is smaller is not drawable.
+        let needed = usize::try_from(image_w)
+            .ok()
+            .and_then(|w| usize::try_from(image_h).ok().and_then(|h| w.checked_mul(h)))
+            .and_then(|pixels| pixels.checked_mul(4));
+        let Some(needed) = needed else { continue };
+        if pixels.len() < needed {
+            continue;
+        }
 
         let mut out = Image {
             image_id,
@@ -391,7 +275,7 @@ pub(super) fn image_next(
             z,
             image_w: image_w.cast_signed(),
             image_h: image_h.cast_signed(),
-            pixels,
+            pixels: pixels.as_ptr(),
             ..Image::default()
         };
 
@@ -401,32 +285,25 @@ pub(super) fn image_next(
             };
             let rect = virtual_rect(origin, cell_w, cell_h, image_w, image_h, scale_120);
             out.apply_rect(rect);
-            return Some(out);
-        }
-
-        // SAFETY: `info` is a sized struct of the type the placement expects.
-        let mut info = unsafe { mem::zeroed::<GhosttyKittyGraphicsPlacementRenderInfo>() };
-        info.size = mem::size_of::<GhosttyKittyGraphicsPlacementRenderInfo>();
-        // SAFETY: `iterator`, `image` and the terminal are live, and `info` is
-        // a sized struct of the expected type.
-        let resolved = unsafe {
-            ghostty_kitty_graphics_placement_render_info(
-                iterator,
-                image,
-                handles.terminal.expect("image_next with a live terminal"),
-                (&raw mut info).cast(),
-            )
-        } == GHOSTTY_SUCCESS;
-        if !resolved || !info.viewport_visible {
+            frame.images.push(out);
             continue;
         }
-        let (columns, rows) = placement_cell_counts(iterator);
+
+        let Ok(info) = placement.placement_render_info(&image, &handles.terminal) else {
+            continue;
+        };
+        if !info.viewport_visible {
+            continue;
+        }
+        let (columns, rows) = (
+            placement.columns().unwrap_or(0),
+            placement.rows().unwrap_or(0),
+        );
         out.apply_rect(viewport_rect(
             &info, cell_w, cell_h, scale_120, columns, rows,
         ));
-        return Some(out);
+        frame.images.push(out);
     }
-    None
 }
 
 /// The image id the captured mbv 0.22.5 bytes carry (see
@@ -458,6 +335,7 @@ pub(crate) fn mbv_replay_bytes() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guard::Poisoned;
     use crate::term::{DecodedPng, PngDecoder, PtySink, Terminal};
 
     /// Rejects every image; these tests do not exercise PNG decoding.
@@ -563,8 +441,8 @@ mod tests {
 
     #[test]
     fn viewport_placement_uses_resolved_geometry() {
-        let info = GhosttyKittyGraphicsPlacementRenderInfo {
-            size: mem::size_of::<GhosttyKittyGraphicsPlacementRenderInfo>(),
+        let info = vt::kitty::graphics::PlacementRenderInfo {
+            size: std::mem::size_of::<vt::kitty::graphics::PlacementRenderInfo>(),
             pixel_width: 40,
             pixel_height: 20,
             grid_cols: 5,
@@ -586,8 +464,8 @@ mod tests {
 
     #[test]
     fn only_an_image_sized_viewport_placement_divides_the_resolved_size() {
-        let info = GhosttyKittyGraphicsPlacementRenderInfo {
-            size: mem::size_of::<GhosttyKittyGraphicsPlacementRenderInfo>(),
+        let info = vt::kitty::graphics::PlacementRenderInfo {
+            size: std::mem::size_of::<vt::kitty::graphics::PlacementRenderInfo>(),
             pixel_width: 576,
             pixel_height: 324,
             grid_cols: 72,
@@ -624,8 +502,7 @@ mod tests {
     }
 
     fn replay_terminal() -> Terminal {
-        let mut terminal =
-            Terminal::new(crate::guard::Poisoned::new(), ReplaySink, NoDecoder, || {});
+        let mut terminal = Terminal::new(Poisoned::new(), ReplaySink, NoDecoder, || {});
         assert!(terminal.push_size(40, 24, 8, 16));
         terminal
     }

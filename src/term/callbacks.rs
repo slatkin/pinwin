@@ -1,165 +1,171 @@
-//! libghostty effect callbacks (port-to-rust D3): the `extern "C"`
-//! trampolines libghostty calls back into, moved out of `mod.rs` so it stays
-//! under the module size cap. The creation path ([`init_ghostty`]) installs
-//! the process-global sys hooks and the per-terminal effect callbacks; every
-//! trampoline catches unwinds (D5), latching a poisoned flag so later calls
-//! become no-ops instead of unwinding into C.
+//! libghostty effect callbacks (port-to-rust D3): the closures the
+//! `libghostty-vt` crate's terminal calls back into, moved out of the `term`
+//! module root (`term.rs`) so it stays under the module size cap. The
+//! creation path ([`init_ghostty`]) installs the process-wide PNG decode
+//! forwarder (A4) and the per-terminal effect callbacks, sharing state
+//! through [`Rc<Shared>`] captures instead of a userdata pointer (A5). The
+//! crate's trampolines do not catch panics, so every closure body runs
+//! through the D5 guard, latching the poisoned flag so later calls become
+//! no-ops instead of aborting the host (A3).
 
-use std::cell::RefCell;
-use std::os::raw::c_void;
-use std::ptr;
-use std::slice;
-use std::sync::Once;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
-use super::{CallbackContext, Handles, KITTY_STORAGE_LIMIT};
-use crate::ghostty_sys::sys::{
-    GHOSTTY_SYS_OPT_DECODE_PNG, GHOSTTY_SYS_OPT_USERDATA, GhosttySysImage, ghostty_sys_set,
+use libghostty_vt as vt;
+use libghostty_vt::alloc::{Allocator, Bytes};
+use libghostty_vt::kitty::graphics::{self, DecodePng, DecodedImage};
+use libghostty_vt::terminal::{
+    ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType,
+    PrimaryDeviceAttributes, SecondaryDeviceAttributes, SizeReportSize, TertiaryDeviceAttributes,
 };
-use crate::ghostty_sys::terminal::{
-    GhosttyDeviceAttributes, GhosttySizeReportSize, GhosttyTerminal, ghostty_terminal_set,
-};
-use crate::ghostty_sys::{GHOSTTY_SUCCESS, GhosttyAllocator, ghostty_alloc};
+
+use super::{Handles, KITTY_STORAGE_LIMIT, Shared};
 use crate::guard::{guard, guard_default};
 
 thread_local! {
-    /// Live terminal contexts on this thread, oldest first. The sys PNG hook
-    /// is process-global and receives no terminal argument, so [`decode_png`]
-    /// consults this registry. libghostty calls it synchronously from the
-    /// thread driving the terminal (D4 keeps a terminal on one thread), and
-    /// `Terminal` removes its context before freeing it, so a decode can never
-    /// observe a dangling pointer.
-    static DECODE_CONTEXTS: RefCell<Vec<*mut CallbackContext>> =
-        const { RefCell::new(Vec::new()) };
+    /// Live terminal contexts on this thread, oldest first. The PNG decode
+    /// hook is process-global and receives no terminal argument, so
+    /// [`PngForwarder::decode_png`] consults this registry. libghostty calls
+    /// it synchronously from the thread driving the terminal (D4 keeps a
+    /// terminal on one thread), and `Terminal` removes its context before it
+    /// is freed, so a decode can never observe a freed context.
+    static DECODE_CONTEXTS: RefCell<Vec<Rc<Shared>>> = const { RefCell::new(Vec::new()) };
+
+    /// Whether this thread already installed the decode forwarder. The hook
+    /// crate stores its decoder per thread, so the installation is once per
+    /// thread, not once per process.
+    static DECODER_INSTALLED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Record a terminal's context as a decode target on this thread.
-pub(super) fn register_decode_context(ctx: *mut CallbackContext) {
-    DECODE_CONTEXTS.with(|contexts| contexts.borrow_mut().push(ctx));
+/// Record a terminal's shared state as a decode target on this thread.
+pub(super) fn register_decode_context(shared: &Rc<Shared>) {
+    DECODE_CONTEXTS.with(|contexts| contexts.borrow_mut().push(Rc::clone(shared)));
 }
 
 /// Stop routing decodes at a context before its `Terminal` frees it.
-pub(super) fn unregister_decode_context(ctx: *mut CallbackContext) {
-    DECODE_CONTEXTS.with(|contexts| contexts.borrow_mut().retain(|each| *each != ctx));
+pub(super) fn unregister_decode_context(shared: &Rc<Shared>) {
+    DECODE_CONTEXTS.with(|contexts| {
+        contexts
+            .borrow_mut()
+            .retain(|each| !Rc::ptr_eq(each, shared));
+    });
 }
 
 /// The context most recently registered on this thread, if any.
-fn current_decode_context() -> Option<*mut CallbackContext> {
-    DECODE_CONTEXTS.with(|contexts| contexts.borrow().last().copied())
+fn current_decode_context() -> Option<Rc<Shared>> {
+    DECODE_CONTEXTS.with(|contexts| contexts.borrow().last().cloned())
 }
 
-/// A process-lifetime token installed as the libghostty sys userdata. It is a
-/// `static`, so no `Terminal` drop can leave the process-global slot dangling;
-/// the decode forwarder finds the live context through [`DECODE_CONTEXTS`]
-/// rather than through this pointer.
-static SYS_USERDATA: u8 = 0;
+/// The process-wide PNG decode forwarder (adopt-libghostty-rs A4): the crate
+/// installs one global decoder, and this one routes every decode at the live
+/// terminal's [`PngDecoder`] through the per-thread registry.
+struct PngForwarder;
 
-/// Install the process-global libghostty hooks exactly once. libghostty wants
-/// these set once at startup and its userdata slot is process-global; the
-/// token above outlives every terminal, so later terminals never repoint it.
-fn install_sys_hooks() {
-    static INSTALLED: Once = Once::new();
-    INSTALLED.call_once(|| {
-        let userdata = &raw const SYS_USERDATA as *mut c_void;
-        // SAFETY: `ghostty_sys_set` takes the option's value directly (sys.zig
-        // casts it to the option's `InType`): the stable userdata token and
-        // the decode function pointer.
-        unsafe {
-            let _ = ghostty_sys_set(GHOSTTY_SYS_OPT_USERDATA, userdata);
-            let _ = ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, decode_png as *const c_void);
+impl DecodePng for PngForwarder {
+    fn decode_png<'alloc>(
+        &mut self,
+        alloc: &'alloc Allocator<'_>,
+        data: &[u8],
+    ) -> Option<DecodedImage<'alloc>> {
+        let shared = current_decode_context()?;
+        guard_default(&shared.poisoned, None, || {
+            let image = shared.decoder.borrow_mut().decode_png(data)?;
+            // Derive the RGBA length from the reported dimensions, as
+            // `src/main.zig` did, and reject a decoder whose buffer disagrees
+            // so the buffer handed to libghostty always matches the
+            // dimensions it receives.
+            let width = usize::try_from(image.width).ok()?;
+            let height = usize::try_from(image.height).ok()?;
+            let len = width.checked_mul(height)?.checked_mul(4)?;
+            if image.rgba.len() != len {
+                return None;
+            }
+            // libghostty frees the buffer with the allocator it passed in, so
+            // the output must come from that allocator (A4).
+            let mut bytes = Bytes::new_with_alloc(alloc, len).ok()?;
+            bytes.copy_from_slice(&image.rgba);
+            Some(DecodedImage {
+                width: image.width,
+                height: image.height,
+                data: bytes,
+            })
+        })
+    }
+}
+
+/// Install the decode forwarder exactly once per thread. libghostty wants the
+/// hook set before any kitty graphics traffic, which starts after the first
+/// terminal exists.
+fn install_png_decoder() {
+    DECODER_INSTALLED.with(|installed| {
+        if !installed.get() {
+            installed.set(true);
+            // A second installation would replace, not stack, so the result
+            // only reports an allocator failure in the hook crate.
+            let _ = graphics::set_png_decoder(Some(Box::new(PngForwarder)));
         }
     });
 }
 
-/// The real creation path: install the global hooks, create the handles,
-/// attach the effect callbacks and the kitty storage limit.
-pub(super) fn init_ghostty(userdata: *mut c_void, cols: u16, rows: u16) -> Result<Handles, ()> {
-    install_sys_hooks();
-    let handles = Handles::create(cols, rows)?;
-    let terminal = handles.terminal.expect("create built a terminal");
+/// The real creation path: install the decode forwarder, create the handles,
+/// attach the effect callbacks and the kitty storage limit. Every step frees
+/// what it built when a later one fails.
+pub(super) fn init_ghostty(cols: u16, rows: u16, shared: &Rc<Shared>) -> Result<Handles, ()> {
+    install_png_decoder();
 
-    // SAFETY: the terminal is live. `ghostty_terminal_set` takes the userdata
-    // pointer directly and each callback as a function pointer (terminal.zig
-    // casts the value to the option's `InType`); the storage limit is the one
-    // option that takes a pointer to a value.
-    unsafe {
-        if ghostty_terminal_set(
-            terminal,
-            crate::ghostty_sys::terminal::GHOSTTY_TERMINAL_OPT_USERDATA,
-            userdata,
-        ) != GHOSTTY_SUCCESS
-        {
-            return Err(());
-        }
+    let mut terminal = vt_terminal(cols, rows)?;
+    register_callbacks(&mut terminal, shared)?;
+    or_init_failure(terminal.set_kitty_image_storage_limit(KITTY_STORAGE_LIMIT))?;
 
-        if ghostty_terminal_set(
-            terminal,
-            crate::ghostty_sys::terminal::GHOSTTY_TERMINAL_OPT_WRITE_PTY,
-            write_pty as *const c_void,
-        ) != GHOSTTY_SUCCESS
-        {
-            return Err(());
-        }
-
-        if ghostty_terminal_set(
-            terminal,
-            crate::ghostty_sys::terminal::GHOSTTY_TERMINAL_OPT_SIZE,
-            size_report as *const c_void,
-        ) != GHOSTTY_SUCCESS
-        {
-            return Err(());
-        }
-
-        if ghostty_terminal_set(
-            terminal,
-            crate::ghostty_sys::terminal::GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,
-            device_attributes as *const c_void,
-        ) != GHOSTTY_SUCCESS
-        {
-            return Err(());
-        }
-
-        let storage_limit: u64 = KITTY_STORAGE_LIMIT;
-        if ghostty_terminal_set(
-            terminal,
-            crate::ghostty_sys::terminal::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
-            (&raw const storage_limit).cast(),
-        ) != GHOSTTY_SUCCESS
-        {
-            return Err(());
-        }
-    }
-
-    Ok(handles)
+    Ok(Handles {
+        render_state: or_init_failure(vt::RenderState::new())?,
+        row_iterator: or_init_failure(vt::render::RowIterator::new())?,
+        cell_iterator: or_init_failure(vt::render::CellIterator::new())?,
+        placement_iterator: or_init_failure(vt::kitty::graphics::PlacementIterator::new())?,
+        key_encoder: or_init_failure(vt::key::Encoder::new())?,
+        key_event: or_init_failure(vt::key::Event::new())?,
+        mouse_encoder: or_init_failure(vt::mouse::Encoder::new())?,
+        mouse_event: or_init_failure(vt::mouse::Event::new())?,
+        terminal,
+    })
 }
 
-/// # Safety
-/// Called by libghostty with a `userdata` previously set to a live
-/// `CallbackContext` and a `data`/`len` pair that is valid for the call.
-unsafe extern "C" fn write_pty(
-    _terminal: GhosttyTerminal,
-    userdata: *mut c_void,
-    data: *const u8,
-    len: usize,
-) {
-    if userdata.is_null() {
-        return;
+/// Collapse any crate error into pinwin's sticky init failure. The crate's
+/// error is not recoverable here (the allocation that failed is gone), the
+/// previous grid stays, and `push_size` reports false; nothing can log a
+/// more useful detail than the crate's own `Display` already would.
+fn or_init_failure<T, E>(result: Result<T, E>) -> Result<T, ()> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(_) => Err(()),
     }
-    // SAFETY: the caller guarantees `userdata` points at the live context.
-    let ctx = unsafe { &mut *userdata.cast::<CallbackContext>() };
-    if ctx.poisoned.is_poisoned() {
-        return;
-    }
-    let poisoned = ctx.poisoned.clone();
-    let _ = guard(&poisoned, || {
-        let bytes = if data.is_null() || len == 0 {
-            &[][..]
-        } else {
-            // SAFETY: the caller guarantees `data`/`len` describe a readable
-            // region; an empty write never touches the pointer.
-            unsafe { slice::from_raw_parts(data, len) }
-        };
-        ctx.sink.write_pty(bytes);
-    });
+}
+
+/// Create the crate's terminal; a failure maps to the sticky init failure
+/// (`push_size` reports false and keeps the previous grid).
+fn vt_terminal(cols: u16, rows: u16) -> Result<vt::Terminal<'static, 'static>, ()> {
+    or_init_failure(vt::Terminal::new(cols, rows))
+}
+
+/// Attach the effect callbacks to the terminal. Each closure captures an
+/// [`Rc`] clone of the shared state; a failed registration aborts creation.
+fn register_callbacks(
+    terminal: &mut vt::Terminal<'static, 'static>,
+    shared: &Rc<Shared>,
+) -> Result<(), ()> {
+    let pty_shared = Rc::clone(shared);
+    or_init_failure(terminal.on_pty_write(move |_, data| {
+        let _ = guard(&pty_shared.poisoned, || {
+            pty_shared.sink.borrow_mut().write_pty(data);
+        });
+    }))?;
+
+    let size_shared = Rc::clone(shared);
+    or_init_failure(terminal.on_size(move |_| size_report(&size_shared)))?;
+
+    let attributes_shared = Rc::clone(shared);
+    or_init_failure(terminal.on_device_attributes(move |_| device_attributes(&attributes_shared)))?;
+    Ok(())
 }
 
 /// One logical cell dimension in device pixels (device-pixel-cell-reports
@@ -172,161 +178,86 @@ fn device_cell(logical: u32, units_120: u32) -> u32 {
     u32::try_from(scaled / 120).unwrap_or(u32::MAX)
 }
 
-/// `GHOSTTY_TERMINAL_OPT_SIZE`: answer `CSI 14/16/18 t` with the live grid
-/// in device pixels (device-pixel-cell-reports D1/D3, D5 guard).
-///
-/// # Safety
-/// Same contract as [`write_pty`]; `out` must be writable.
-unsafe extern "C" fn size_report(
-    _terminal: GhosttyTerminal,
-    userdata: *mut c_void,
-    out: *mut GhosttySizeReportSize,
-) -> bool {
-    if userdata.is_null() || out.is_null() {
-        return false;
-    }
-    // SAFETY: the caller guarantees `userdata` points at the live context.
-    let ctx = unsafe { &*(userdata as *const CallbackContext) };
-    if ctx.poisoned.is_poisoned() {
-        return false;
-    }
-    let poisoned = ctx.poisoned.clone();
-    guard_default(&poisoned, false, || {
+/// The size-report callback: answer `CSI 14/16/18 t` with the live grid in
+/// device pixels (device-pixel-cell-reports D1/D3, D5 guard).
+fn size_report(shared: &Rc<Shared>) -> Option<SizeReportSize> {
+    guard_default(&shared.poisoned, None, || {
+        fail_point(shared, "size");
         // Device pixels: the logical cell times the panel thread's scale
         // note, rounded (D1/D3) — rows and columns answer unchanged.
-        let units_120 = ctx.scale_120.get();
-        let (cell_w, cell_h) = (
-            device_cell(ctx.cell_w, units_120),
-            device_cell(ctx.cell_h, units_120),
-        );
-        // SAFETY: the caller guarantees `out` is writable.
-        unsafe {
-            (*out).rows = ctx.rows;
-            (*out).columns = ctx.cols;
-            (*out).cell_width = cell_w;
-            (*out).cell_height = cell_h;
-        };
-        true
+        let metrics = shared.metrics.get();
+        let units_120 = shared.scale_120.get();
+        Some(SizeReportSize {
+            rows: metrics.rows,
+            columns: metrics.cols,
+            cell_width: device_cell(metrics.cell_w, units_120),
+            cell_height: device_cell(metrics.cell_h, units_120),
+        })
     })
 }
 
-/// `GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES`: reply with Ghostty's own DA1/DA2
+/// The device-attributes callback: reply with Ghostty's own DA1/DA2/DA3
 /// values (D5 guard).
-///
-/// # Safety
-/// Same contract as [`write_pty`]; `out` must be writable.
-unsafe extern "C" fn device_attributes(
-    _terminal: GhosttyTerminal,
-    userdata: *mut c_void,
-    out: *mut GhosttyDeviceAttributes,
-) -> bool {
-    if userdata.is_null() || out.is_null() {
-        return false;
-    }
-    // SAFETY: the caller guarantees `userdata` points at the live context.
-    let ctx = unsafe { &*(userdata as *const CallbackContext) };
-    if ctx.poisoned.is_poisoned() {
-        return false;
-    }
-    let poisoned = ctx.poisoned.clone();
-    guard_default(&poisoned, false, || {
-        // SAFETY: the caller guarantees `out` is writable.
-        unsafe {
-            (*out).primary.conformance_level = 62; // level 2, like Ghostty
-            (*out).primary.features[0] = 22; // ansi color
-            (*out).primary.features[1] = 52; // clipboard
-            (*out).primary.num_features = 2;
-            (*out).secondary.device_type = 1;
-            (*out).secondary.firmware_version = 10;
-            (*out).secondary.rom_cartridge = 0;
-            (*out).tertiary.unit_id = 0;
-        };
-        true
+fn device_attributes(shared: &Rc<Shared>) -> Option<DeviceAttributes> {
+    guard_default(&shared.poisoned, None, || {
+        fail_point(shared, "device_attributes");
+        Some(DeviceAttributes {
+            primary: PrimaryDeviceAttributes::new(
+                ConformanceLevel(62), // level 2, like Ghostty
+                &[
+                    DeviceAttributeFeature(22), // ansi color
+                    DeviceAttributeFeature(52), // clipboard
+                ],
+            ),
+            secondary: SecondaryDeviceAttributes {
+                device_type: DeviceType(1),
+                firmware_version: 10,
+                rom_cartridge: 0,
+            },
+            tertiary: TertiaryDeviceAttributes { unit_id: 0 },
+        })
     })
 }
 
-/// `GHOSTTY_SYS_OPT_DECODE_PNG`: decode a kitty-graphics PNG into a
-/// ghostty-allocated RGBA buffer (D5 guard).
-///
-/// # Safety
-/// Called by libghostty with a valid `allocator`, a readable `data`/`data_len`
-/// pair and a writable `out`. The `userdata` argument is ignored: the forwarder
-/// resolves the live terminal through the per-thread registry, so the
-/// process-global sys slot never has to hold a droppable pointer.
-unsafe extern "C" fn decode_png(
-    _userdata: *mut c_void,
-    allocator: *const GhosttyAllocator,
-    data: *const u8,
-    data_len: usize,
-    out: *mut GhosttySysImage,
-) -> bool {
-    if out.is_null() {
-        return false;
-    }
-    let Some(ctx) = current_decode_context() else {
-        return false;
-    };
-    // SAFETY: the context stays registered on this thread until its `Terminal`
-    // frees it, so it is live for the duration of this call.
-    let ctx = unsafe { &mut *ctx };
-    if ctx.poisoned.is_poisoned() {
-        return false;
-    }
-    let poisoned = ctx.poisoned.clone();
-    guard_default(&poisoned, false, || {
-        let bytes = if data.is_null() || data_len == 0 {
-            &[][..]
-        } else {
-            // SAFETY: the caller guarantees `data`/`data_len` describe a
-            // readable region; an empty decode never touches the pointer.
-            unsafe { slice::from_raw_parts(data, data_len) }
-        };
-        let Some(image) = ctx.decoder.decode_png(bytes) else {
-            return false;
-        };
-        // Derive the RGBA length from the reported dimensions, as
-        // `src/main.zig` did, and reject a decoder whose buffer disagrees so
-        // `out.data_len` always matches the dimensions handed to libghostty.
-        let Some(len) = (image.width as usize)
-            .checked_mul(image.height as usize)
-            .and_then(|pixels| pixels.checked_mul(4))
-        else {
-            return false;
-        };
-        if image.rgba.len() != len {
-            return false;
-        }
-        // SAFETY: `allocator` is the allocator libghostty handed us and `len`
-        // is the buffer size.
-        let buffer = unsafe { ghostty_alloc(allocator, len) };
-        if buffer.is_null() {
-            return false;
-        }
-        // SAFETY: `buffer` is `len` writable bytes and `image.rgba` is `len`
-        // readable bytes; they cannot overlap.
-        unsafe {
-            ptr::copy_nonoverlapping(image.rgba.as_ptr(), buffer, len);
-            (*out).width = image.width;
-            (*out).height = image.height;
-            (*out).data = buffer;
-            (*out).data_len = len;
-        };
-        true
-    })
+/// The test-only panic injection (D10): the named callback's body panics at
+/// its first step, so the guard tests prove a panic is contained.
+#[cfg(test)]
+fn fail_point(shared: &Rc<Shared>, name: &'static str) {
+    assert_ne!(shared.fail_point.get(), Some(name), "fail point: {name}");
+}
+
+#[cfg(not(test))]
+fn fail_point(shared: &Rc<Shared>, name: &'static str) {
+    let _ = (shared, name);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::os::raw::c_void;
+    use std::ptr;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use super::*;
+    use crate::guard::Poisoned;
     use crate::term::{DecodedPng, PngDecoder, PtySink, Terminal};
 
     /// Records writes so the size replies can be asserted.
     struct RecordingSink {
         writes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl RecordingSink {
+        fn pair() -> (Self, Arc<Mutex<Vec<u8>>>) {
+            let writes = Arc::new(Mutex::new(Vec::new()));
+            (
+                RecordingSink {
+                    writes: Arc::clone(&writes),
+                },
+                writes,
+            )
+        }
     }
 
     impl PtySink for RecordingSink {
@@ -360,7 +291,7 @@ mod tests {
     fn size_report_answers_the_note_scaled_cell_and_the_live_grid() {
         let writes = Arc::new(Mutex::new(Vec::new()));
         let mut terminal = Terminal::new(
-            crate::guard::Poisoned::new(),
+            Poisoned::new(),
             RecordingSink {
                 writes: Arc::clone(&writes),
             },
@@ -422,16 +353,16 @@ mod tests {
         }
     }
 
-    /// The sys userdata is process-global and libghostty's only decode hook.
+    /// The decode hook is process-global and libghostty's only decode entry.
     /// Building a second terminal and dropping it must not leave that hook
-    /// pointing at freed memory: the earlier terminal still answers a decode.
+    /// pointing at freed state: the earlier terminal still answers a decode.
     #[test]
     fn dropping_a_newer_terminal_leaves_the_older_decode_context_live() {
         let older_calls = Arc::new(AtomicUsize::new(0));
         let newer_calls = Arc::new(AtomicUsize::new(0));
 
         let mut older = Terminal::new(
-            crate::guard::Poisoned::new(),
+            Poisoned::new(),
             NullSink,
             OneShotDecoder {
                 calls: Arc::clone(&older_calls),
@@ -440,7 +371,7 @@ mod tests {
             || {},
         );
         let mut newer = Terminal::new(
-            crate::guard::Poisoned::new(),
+            Poisoned::new(),
             NullSink,
             OneShotDecoder {
                 calls: Arc::clone(&newer_calls),
@@ -453,7 +384,7 @@ mod tests {
 
         drop(newer);
 
-        let mut out = GhosttySysImage {
+        let mut out = vt::ffi::SysImage {
             width: 0,
             height: 0,
             data: ptr::null_mut(),
@@ -461,15 +392,7 @@ mod tests {
         };
         // SAFETY: `out` is writable and `data` is readable; the forwarder
         // resolves the live context itself.
-        let ok = unsafe {
-            decode_png(
-                ptr::null_mut(),
-                ptr::null(),
-                b"png".as_ptr(),
-                3,
-                &raw mut out,
-            )
-        };
+        let ok = unsafe { decode_into(ptr::null_mut(), b"png", &raw mut out) };
         assert!(ok, "the surviving terminal answered the decode");
         assert_eq!((out.width, out.height), (1, 1));
         assert_eq!(older_calls.load(Ordering::Relaxed), 1);
@@ -495,7 +418,7 @@ mod tests {
     fn decode_png_rejects_a_buffer_that_disagrees_with_the_dimensions() {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut terminal = Terminal::new(
-            crate::guard::Poisoned::new(),
+            Poisoned::new(),
             NullSink,
             ScriptedDecoder {
                 calls: Arc::clone(&calls),
@@ -518,46 +441,146 @@ mod tests {
         );
         assert!(terminal.push_size(40, 24, 8, 16));
 
-        let mut rejected = GhosttySysImage {
+        let mut rejected = vt::ffi::SysImage {
             width: 0,
             height: 0,
             data: ptr::null_mut(),
             data_len: 0,
         };
-        // SAFETY: `rejected` is writable and `data` is readable; the forwarder
-        // resolves the live context itself.
-        let ok = unsafe {
-            decode_png(
-                ptr::null_mut(),
-                ptr::null(),
-                b"png".as_ptr(),
-                3,
-                &raw mut rejected,
-            )
-        };
+        // SAFETY: `rejected` is writable and `data` is readable; the
+        // forwarder resolves the live context itself.
+        let ok = unsafe { decode_into(ptr::null_mut(), b"png", &raw mut rejected) };
         assert!(!ok, "a padded buffer is rejected");
 
-        let mut accepted = GhosttySysImage {
+        let mut accepted = vt::ffi::SysImage {
             width: 0,
             height: 0,
             data: ptr::null_mut(),
             data_len: 0,
         };
-        // SAFETY: `accepted` is writable and `data` is readable; the forwarder
-        // resolves the live context itself.
-        let ok = unsafe {
-            decode_png(
-                ptr::null_mut(),
-                ptr::null(),
-                b"png".as_ptr(),
-                3,
-                &raw mut accepted,
-            )
-        };
+        // SAFETY: `accepted` is writable and `data` is readable; the
+        // forwarder resolves the live context itself.
+        let ok = unsafe { decode_into(ptr::null_mut(), b"png", &raw mut accepted) };
         assert!(ok, "an exact buffer is accepted");
         assert_eq!(
             (accepted.width, accepted.height, accepted.data_len),
             (2, 2, 16)
         );
+    }
+
+    /// Drive the forwarder the way libghostty does: through its `DecodePng`
+    /// impl with the allocator libghostty would pass, filling a raw sys
+    /// image. The old trampoline shape, kept so the dimension checks stay
+    /// covered end to end.
+    ///
+    /// # Safety
+    /// `out` must be writable; `data` must be readable for `data.len()`.
+    unsafe fn decode_into(
+        _userdata: *mut c_void,
+        data: &[u8],
+        out: *mut vt::ffi::SysImage,
+    ) -> bool {
+        let mut forwarder = PngForwarder;
+        let Some(mut image) = forwarder.decode_png(&Allocator::GLOBAL, data) else {
+            return false;
+        };
+        // SAFETY: `out` is writable per the caller's contract and the image
+        // buffer outlives the write.
+        unsafe {
+            (*out).width = image.width;
+            (*out).height = image.height;
+            (*out).data = image.data.as_mut_ptr();
+            (*out).data_len = image.data.len();
+        };
+        true
+    }
+
+    /// A panicking size-report callback must not unwind into C: the panic is
+    /// caught, the terminal is poisoned and later size queries answer
+    /// nothing (adopt-libghostty-rs A3).
+    #[test]
+    fn panicking_size_report_poisons_and_does_not_abort() {
+        let (sink, writes) = RecordingSink::pair();
+        let mut terminal = Terminal::new(Poisoned::new(), sink, NoDecoder, || {});
+        assert!(terminal.push_size(40, 24, 8, 16));
+        assert!(!terminal.poisoned());
+
+        terminal.fail_point().set(Some("size"));
+        terminal.push_pty_data(b"\x1b[16t");
+        assert!(terminal.poisoned(), "the panic latched the flag");
+        assert!(
+            drain(&writes).is_empty(),
+            "the panicking reply wrote nothing"
+        );
+
+        // Later calls do nothing: the guard short-circuits while latched.
+        terminal.fail_point().set(None);
+        terminal.push_pty_data(b"\x1b[16t");
+        assert!(
+            drain(&writes).is_empty(),
+            "a poisoned terminal answers no size query"
+        );
+        assert!(terminal.poisoned());
+    }
+
+    /// A panicking device-attributes callback is contained the same way.
+    #[test]
+    fn panicking_device_attributes_poisons_and_does_not_abort() {
+        let (sink, writes) = RecordingSink::pair();
+        let mut terminal = Terminal::new(Poisoned::new(), sink, NoDecoder, || {});
+        assert!(terminal.push_size(40, 24, 8, 16));
+        assert!(!terminal.poisoned());
+
+        terminal.fail_point().set(Some("device_attributes"));
+        terminal.push_pty_data(b"\x1b[c");
+        assert!(terminal.poisoned(), "the panic latched the flag");
+        assert!(
+            drain(&writes).is_empty(),
+            "the panicking reply wrote nothing"
+        );
+
+        // Later calls do nothing: the guard short-circuits while latched.
+        terminal.fail_point().set(None);
+        terminal.push_pty_data(b"\x1b[c");
+        assert!(
+            drain(&writes).is_empty(),
+            "a poisoned terminal answers no attributes query"
+        );
+        assert!(terminal.poisoned());
+    }
+
+    /// The forwarder's own panic containment: a decoder that panics leaves
+    /// the decode rejected and the terminal poisoned, without aborting.
+    #[test]
+    fn panicking_png_decoder_poisons_and_rejects_the_image() {
+        struct PanickingDecoder;
+
+        impl PngDecoder for PanickingDecoder {
+            fn decode_png(&mut self, _data: &[u8]) -> Option<DecodedPng> {
+                panic!("decoder panicked");
+            }
+        }
+
+        let mut terminal = Terminal::new(Poisoned::new(), NullSink, PanickingDecoder, || {});
+        assert!(terminal.push_size(40, 24, 8, 16));
+        assert!(!terminal.poisoned());
+
+        // Feed a kitty PNG transmission: the decode runs inside the
+        // forwarder's guard.
+        terminal.push_pty_data(b"\x1b_Ga=T,f=100,i=1,q=2;AAAA\x1b\\");
+        assert!(terminal.poisoned(), "the decode panic latched the flag");
+
+        // Later calls do nothing (task 4.2): the poisoned forwarder rejects
+        // the decode instead of panicking into the crate a second time.
+        let mut rejected = vt::ffi::SysImage {
+            width: 0,
+            height: 0,
+            data: ptr::null_mut(),
+            data_len: 0,
+        };
+        // SAFETY: `rejected` is writable and `data` is readable; the
+        // forwarder resolves the live context itself.
+        let ok = unsafe { decode_into(ptr::null_mut(), b"AAAA", &raw mut rejected) };
+        assert!(!ok, "a poisoned terminal decodes nothing");
     }
 }

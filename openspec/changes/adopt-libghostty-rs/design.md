@@ -118,7 +118,7 @@ replaces the `ghostty_sys` layout tests, which check headers that no longer exis
 
 - [Unstable upstream API] → The `rev` pin freezes it. A pin bump is a separate change that runs
   the golden test.
-- [Ghostty behavior drift across 44 commits] → The golden test catches drift in cell output.
+- [Ghostty behavior drift across 66 commits] → The golden test catches drift in cell output.
   Input encoding drift is caught by the existing `term/input.rs` tests.
 - [A missed closure guard aborts the host] → Task 4.2 adds one test per closure that panics
   inside it and asserts poison without an abort.

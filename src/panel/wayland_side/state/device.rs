@@ -115,7 +115,6 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
 
-
     /// The test cell, the thread's measured pitch the sizing derives from.
     fn cell() -> CellSize {
         CellSize::new(9, 16).expect("test cell size is non-zero")

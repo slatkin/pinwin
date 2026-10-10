@@ -4,12 +4,11 @@
 //! (D4, D6): start takes a host-owned pty fd and a full layout, applies run
 //! through the handle, and dropping it closes the panel. The `panel` module
 //! owns the panel-thread lifecycle; the ported modules below are its parts —
-//! `guard` is the shared D5 panic guard, `ghostty_sys` the hand-written FFI
-//! against the pinned libghostty-vt (D2).
+//! `guard` is the shared D5 panic guard, and `term` wraps the `libghostty-vt`
+//! crate (adopt-libghostty-rs).
 
 pub mod anim;
 pub mod fontconfig;
-pub mod ghostty_sys;
 pub mod guard;
 pub mod instance;
 pub mod layout;

@@ -214,14 +214,7 @@ impl PanelState {
         let stale = Rc::clone(&self.stale_grid_px);
         let fd = self.startup.fd();
         move |grid| {
-            push_grid(
-                &terminal,
-                &repaint,
-                stale.as_ref(),
-                fd,
-                output_scale,
-                grid,
-            );
+            push_grid(&terminal, &repaint, stale.as_ref(), fd, output_scale, grid);
         }
     }
 }
