@@ -77,6 +77,25 @@ pub enum MouseButton {
 }
 
 impl MouseButton {
+    /// The input-state bit one press or release of this button toggles.
+    /// `Unknown` toggles nothing.
+    fn held_bit(self) -> u16 {
+        match self {
+            MouseButton::Unknown => 0,
+            MouseButton::Left => 1 << 0,
+            MouseButton::Right => 1 << 1,
+            MouseButton::Middle => 1 << 2,
+            MouseButton::Four => 1 << 3,
+            MouseButton::Five => 1 << 4,
+            MouseButton::Six => 1 << 5,
+            MouseButton::Seven => 1 << 6,
+            MouseButton::Eight => 1 << 7,
+            MouseButton::Nine => 1 << 8,
+            MouseButton::Ten => 1 << 9,
+            MouseButton::Eleven => 1 << 10,
+        }
+    }
+
     fn raw(self) -> Option<vt::mouse::Button> {
         match self {
             MouseButton::Unknown => None,
@@ -160,8 +179,10 @@ pub struct KeyInput {
 /// Per-terminal input state that `src/input.zig` kept in process globals.
 #[derive(Default, Debug)]
 pub struct InputState {
-    /// Whether a non-modifier button is currently held (mouse encoder input).
-    any_button_pressed: bool,
+    /// The buttons currently held, one bit per button number. Wheel notches
+    /// are button 4-7 presses without releases, so `push_scroll` never
+    /// touches this state; only seat press/release pairs do.
+    held_buttons: u16,
     /// The focus state last reported to the program. The compositor sends a
     /// leave at map
     /// time, before any enter; programs expect balanced reports, so only
@@ -169,6 +190,31 @@ pub struct InputState {
     focus_gained: bool,
     /// Left/right, up/down remainders of a scroll in notches.
     scroll_acc: [f64; 2],
+}
+
+impl InputState {
+    /// Whether a non-modifier button is currently held (mouse encoder input).
+    fn any_button_pressed(&self) -> bool {
+        self.held_buttons != 0
+    }
+
+    /// The held primary button a motion event reports, in the SGR low bits'
+    /// left/middle/right order. A held non-primary button (wheel or the
+    /// eighth/ninth and later buttons) reports no button: the protocol's
+    /// two low bits cannot name it, and the drag-carrying decoders
+    /// (crossterm and peers) would misread it as a primary-button drag.
+    fn held_primary_button(&self) -> MouseButton {
+        let held = |button: MouseButton| self.held_buttons & button.held_bit() != 0;
+        if held(MouseButton::Left) {
+            MouseButton::Left
+        } else if held(MouseButton::Middle) {
+            MouseButton::Middle
+        } else if held(MouseButton::Right) {
+            MouseButton::Right
+        } else {
+            MouseButton::Unknown
+        }
+    }
 }
 
 impl Terminal {
@@ -228,12 +274,26 @@ impl Terminal {
         if self.handles.is_none() {
             return;
         }
-        if action == MouseAction::Press && button != MouseButton::Unknown {
-            self.input_state.any_button_pressed = true;
+        match action {
+            MouseAction::Press => self.input_state.held_buttons |= button.held_bit(),
+            MouseAction::Release => self.input_state.held_buttons &= !button.held_bit(),
+            MouseAction::Motion => {}
         }
-        if action == MouseAction::Release {
-            self.input_state.any_button_pressed = false;
-        }
+        // A motion event must carry the held button so the encoder emits the
+        // drag form (`CSI < 0 ; … M`) the drag-reading TUIs decode as a drag;
+        // a button-less motion encodes as no button (code 3), which crossterm
+        // and peers read as plain hover (`Moved`). Wayland motion events name
+        // no button, so the held state tracked above supplies it.
+        let button = if action == MouseAction::Motion {
+            let held = self.input_state.held_primary_button();
+            if held == MouseButton::Unknown {
+                button
+            } else {
+                held
+            }
+        } else {
+            button
+        };
         self.send_mouse(action, x, y, button, mods);
     }
 
@@ -347,7 +407,7 @@ impl Terminal {
         });
         handles
             .mouse_encoder
-            .set_any_button_pressed(self.input_state.any_button_pressed);
+            .set_any_button_pressed(self.input_state.any_button_pressed());
 
         let event = &mut handles.mouse_event;
         event.set_action(action.raw());
@@ -560,6 +620,110 @@ mod tests {
             Modifiers::SHIFT,
         );
         assert_eq!(take(&writes), b"\x1b[<39;2;3M");
+    }
+
+    /// A drag reports the held button on motion in button-tracking mode
+    /// (1002), the mode drag-reading TUIs decode `Drag` from: the press
+    /// arms the held state, every motion while it holds carries the
+    /// button, and the release ends it. Motion without a held button is
+    /// not reported in this mode at all (the protocol's own rule).
+    #[test]
+    fn drag_motion_carries_the_held_button_in_button_tracking_mode() {
+        let (mut terminal, writes) = new_terminal();
+        terminal.push_pty_data(b"\x1b[?1002h\x1b[?1006h");
+        terminal.push_mouse(
+            MouseAction::Press,
+            24.0,
+            16.0,
+            MouseButton::Left,
+            Modifiers::NONE,
+        );
+        assert_eq!(take(&writes), b"\x1b[<0;4;2M");
+        terminal.push_mouse(
+            MouseAction::Motion,
+            32.0,
+            16.0,
+            MouseButton::Unknown,
+            Modifiers::NONE,
+        );
+        assert_eq!(take(&writes), b"\x1b[<32;5;2M");
+        terminal.push_mouse(
+            MouseAction::Release,
+            32.0,
+            16.0,
+            MouseButton::Left,
+            Modifiers::NONE,
+        );
+        assert_eq!(take(&writes), b"\x1b[<0;5;2m");
+        terminal.push_mouse(
+            MouseAction::Motion,
+            40.0,
+            16.0,
+            MouseButton::Unknown,
+            Modifiers::NONE,
+        );
+        assert_eq!(take(&writes), Vec::new());
+    }
+
+    /// The same drag in any-motion mode (1003, crossterm's set): motion
+    /// while the button holds carries the button (crossterm decodes it as
+    /// `Drag`), and motion after the release is button-less again (code
+    /// 3, decoded as plain hover).
+    #[test]
+    fn drag_motion_carries_the_held_button_in_any_motion_mode() {
+        let (mut terminal, writes) = new_terminal();
+        terminal.push_pty_data(b"\x1b[?1003h\x1b[?1006h");
+        terminal.push_mouse(
+            MouseAction::Press,
+            24.0,
+            16.0,
+            MouseButton::Left,
+            Modifiers::NONE,
+        );
+        assert_eq!(take(&writes), b"\x1b[<0;4;2M");
+        terminal.push_mouse(
+            MouseAction::Motion,
+            32.0,
+            16.0,
+            MouseButton::Unknown,
+            Modifiers::NONE,
+        );
+        assert_eq!(take(&writes), b"\x1b[<32;5;2M");
+        terminal.push_mouse(
+            MouseAction::Release,
+            32.0,
+            16.0,
+            MouseButton::Left,
+            Modifiers::NONE,
+        );
+        assert_eq!(take(&writes), b"\x1b[<0;5;2m");
+        terminal.push_mouse(
+            MouseAction::Motion,
+            40.0,
+            16.0,
+            MouseButton::Unknown,
+            Modifiers::NONE,
+        );
+        assert_eq!(take(&writes), b"\x1b[<35;6;2M");
+    }
+
+    /// A wheel notch never arms the held-button state: scroll presses go
+    /// through `push_scroll`, so the motion after a scroll stays
+    /// button-less.
+    #[test]
+    fn a_wheel_notch_does_not_arm_the_held_button_state() {
+        let (mut terminal, writes) = new_terminal();
+        terminal.push_pty_data(b"\x1b[?1003h\x1b[?1006h");
+        terminal.push_scroll(24.0, 16.0, 0.0, 1.0, ScrollUnit::Wheel, Modifiers::NONE);
+        assert_eq!(take(&writes), b"\x1b[<65;4;2M");
+        terminal.push_mouse(
+            MouseAction::Motion,
+            32.0,
+            16.0,
+            MouseButton::Unknown,
+            Modifiers::NONE,
+        );
+        assert_eq!(take(&writes), b"\x1b[<35;5;2M");
     }
 
     /// A wheel notch is one press of buttons 5/4/7/6, and surface units
