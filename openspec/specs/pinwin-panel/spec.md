@@ -621,13 +621,14 @@ message and exit 1.
 - **THEN** the child is hung up and reaped, a message is printed and `pinwin` exits 1
 
 ### Requirement: Optimised terminal library build
-The build SHALL compile libghostty-vt with an explicit Zig optimise mode, never the Zig
-default (Debug). The mode SHALL be recorded in the archive's source identity so that changing
-it rebuilds the archive.
+Every build of this repository SHALL compile libghostty-vt with an explicit Zig optimise mode.
+The mode SHALL never be the Zig default (Debug), in the dev or the release profile. Changing the mode SHALL
+rebuild libghostty-vt instead of reusing an archive built under the previous mode.
 
 #### Scenario: Explicit optimise mode
-- **WHEN** `build.rs` builds ghostty
-- **THEN** the zig command line includes `-Doptimize=` with the chosen mode
+- **WHEN** a `cargo build` from the repository root (dev or release profile) builds ghostty
+- **THEN** the zig command line includes `-Doptimize=` with the chosen mode, and the mode is
+  not `Debug`
 
 #### Scenario: Mode change invalidates the cache
 - **WHEN** an archive exists built under one optimise mode and the build now requests another
