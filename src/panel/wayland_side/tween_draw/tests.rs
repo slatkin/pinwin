@@ -37,7 +37,6 @@ fn holder(side: Side, start: i32, end: i32, units: u32, gap_tweening: bool) -> T
         layout: layout(side, u16::try_from(wide / 9).unwrap_or(1), left, right),
         gap: HeldGap::for_test(side, 372),
         gap_tweening,
-        grid_px: wide,
         stale: false,
     }
 }
@@ -214,12 +213,11 @@ fn a_kept_retarget_moves_the_layout_and_gap_state() {
     assert!(held.gap_tweening(), "the new apply's flag");
 }
 
-/// A fresh holder draws the live grid into the wide canvas through the
-/// render state and plans its begin frame — driven here with the thread's
-/// renderer over the test family
-/// (font-gated, like the crop module's draw tests).
-#[test]
-fn a_fresh_holder_draws_from_the_render_state() {
+/// A render state over the test family, with the measured cell — or
+/// `None` (printed) when the machine lacks the family. The terminal is an
+/// 8-column, 4-row grid with ink in every row, so a docked-edge offset
+/// shows in the canvas.
+fn render_state() -> Option<(TweenRender, i32, i32)> {
     use crate::fontconfig::FontConfig;
     use crate::guard::Poisoned;
     use crate::panel::wayland_side::renderer::FontSetup;
@@ -241,7 +239,7 @@ fn a_fresh_holder_draws_from_the_render_state() {
     let book = FontBook::new().expect("the font book opens");
     if !book.has_family(test_support::FAMILY) {
         println!("skipped: {} is not installed", test_support::FAMILY);
-        return;
+        return None;
     }
     let config = FontConfig {
         family: Some(test_support::FAMILY.to_owned()),
@@ -255,9 +253,27 @@ fn a_fresh_holder_draws_from_the_render_state() {
     let mut terminal = Terminal::new(Poisoned::new(), NullSink, NoDecoder, || {});
     assert!(terminal.push_size(8, 4, cell.width().get(), cell.height().get()));
     terminal.push_pty_data(test_support::HIDE_CURSOR);
-    let mut render = TweenRender {
-        terminal: Rc::new(RefCell::new(terminal)),
-        renderer: Rc::new(RefCell::new(renderer)),
+    for _ in 0..4 {
+        terminal.push_pty_data(b"ABCDEFGH");
+    }
+    Some((
+        TweenRender {
+            terminal: Rc::new(RefCell::new(terminal)),
+            renderer: Rc::new(RefCell::new(renderer)),
+        },
+        cell.width().get(),
+        cell.height().get(),
+    ))
+}
+
+/// A fresh holder draws the live grid into the wide canvas through the
+/// render state and plans its begin frame — driven here with the thread's
+/// renderer over the test family
+/// (font-gated, like the crop module's draw tests).
+#[test]
+fn a_fresh_holder_draws_from_the_render_state() {
+    let Some((mut render, _cell_w, _cell_h)) = render_state() else {
+        return;
     };
 
     // A 40 -> 120 column tween at a 9 px cell: the grid drawn is the
@@ -280,6 +296,80 @@ fn a_fresh_holder_draws_from_the_render_state() {
     let plan = held.commit_plan(360, true).expect("the begin frame plans");
     assert_eq!(plan.actions()[0], TweenAction::PanelSize(360));
     assert_eq!(plan.damage(), (1620, 1080));
+}
+
+/// A redraw anchors the docked-edge offset against the live terminal's
+/// grid, not the grid the cache was drawn from (issue #36): the animated
+/// apply pushes the target grid at the tween's start, so the terminal can
+/// be narrower than the cache's grid by the time output marks it stale.
+/// The redraw's canvas equals a fresh draw at the live grid and differs
+/// from one at the cache's own grid — with ink, so the comparison is not
+/// vacuous.
+#[test]
+fn a_redraw_keys_the_offset_against_the_live_grid() {
+    let Some((mut render, cell_w, cell_h)) = render_state() else {
+        return;
+    };
+    let scale = scale(180);
+    let height = u32::try_from(cell_h * 4).expect("the height fits u32");
+    let old_px = cell_w * 8;
+    let live_px = cell_w * 4;
+    // A shrinking tween whose wide buffer is the pre-push grid: the cache
+    // is drawn from the 8-column grid at offset 0 (right-docked), then the
+    // start push moves the terminal to the 4-column target.
+    let crop = TweenCrop::new(Side::Right, old_px, live_px).expect("a valid tween");
+    let layout = layout(Side::Right, 8, 0, 12);
+    let held = TweenDraw::draw(
+        crop,
+        height,
+        scale,
+        layout,
+        HeldGap::for_test(Side::Right, 372),
+        false,
+        old_px,
+        &mut render,
+    )
+    .expect("the wide cache draws");
+    assert!(
+        render.terminal.borrow_mut().push_size(4, 4, cell_w, cell_h),
+        "the start push resizes the terminal"
+    );
+    assert_eq!(render.terminal.borrow().cols(), 4, "the live grid");
+
+    let redrawn = held.redraw_canvas(&render).expect("the redraw draws");
+    let at_live = TweenDraw::draw(
+        crop,
+        height,
+        scale,
+        layout,
+        HeldGap::for_test(Side::Right, 372),
+        false,
+        live_px,
+        &mut render,
+    )
+    .expect("the live-grid draw");
+    let at_old = TweenDraw::draw(
+        crop,
+        height,
+        scale,
+        layout,
+        HeldGap::for_test(Side::Right, 372),
+        false,
+        old_px,
+        &mut render,
+    )
+    .expect("the old-grid draw");
+
+    assert_eq!(
+        redrawn.data(),
+        at_live.canvas().data(),
+        "the redraw anchors the live grid"
+    );
+    assert_ne!(
+        redrawn.data(),
+        at_old.canvas().data(),
+        "and not the grid the cache was drawn from"
+    );
 }
 
 /// The finish's final frame (replace-gtk-with-wayland D7): the plan at the

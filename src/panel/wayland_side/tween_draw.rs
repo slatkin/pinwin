@@ -175,9 +175,6 @@ pub(crate) struct TweenDraw {
     /// the apply's gap-tween flag.
     gap: HeldGap,
     gap_tweening: bool,
-    /// The live grid's pixel width the cache was drawn against: the redraw
-    /// keys the docked-edge offset against the same grid.
-    grid_px: i32,
     /// Whether terminal output has made the cache stale since it was drawn:
     /// the next frame this holder presents redraws it from the
     /// live terminal first.
@@ -186,7 +183,7 @@ pub(crate) struct TweenDraw {
 
 impl TweenDraw {
     /// Draw a fresh tween's wide cache (D7): the live grid — `grid_px`
-    /// wide, the columns the tween defers the resize of — drawn once into
+    /// wide — drawn once into
     /// a canvas as wide as the larger of the start and end widths, against
     /// the docked edge. `None` when the draw refuses: a zero or oversized
     /// canvas, or a draw offset the painter cannot place. The pool upload
@@ -219,7 +216,6 @@ impl TweenDraw {
             layout,
             gap,
             gap_tweening,
-            grid_px,
             stale: false,
         })
     }
@@ -313,24 +309,7 @@ impl TweenDraw {
     /// previous canvas and buffer stay in place and the frame is skipped,
     /// so the next one retries.
     pub(crate) fn redraw(&mut self, render: &TweenRender, pool: &mut BufferPool) -> bool {
-        // Unreachable for a real terminal — a positive cell pitch and
-        // non-negative columns — handled: a refused width skips the frame
-        // like any other refused redraw.
-        let Ok(cell_w) = i32::try_from(render.terminal.borrow().cell_w()) else {
-            return false;
-        };
-        let Some(live_px) = i32::from(render.terminal.borrow().cols()).checked_mul(cell_w) else {
-            return false;
-        };
-        let Some(draw) = self.crop.wide_draw(self.height, live_px, self.scale) else {
-            return false;
-        };
-        self.grid_px = live_px;
-        let canvas = {
-            let mut renderer = render.renderer.borrow_mut();
-            renderer.paint_wide(draw, &mut render.terminal.borrow_mut())
-        };
-        let Some(canvas) = canvas else {
+        let Some(canvas) = self.redraw_canvas(render) else {
             return false;
         };
         let previous = std::mem::replace(&mut self.canvas, canvas);
@@ -340,6 +319,24 @@ impl TweenDraw {
         }
         self.stale = false;
         true
+    }
+
+    /// The redraw's draw step, without the pool: a fresh wide canvas from
+    /// the live terminal at the same crop, height and scale. `None` is a
+    /// draw the renderer or the crop refused. Split from [`Self::redraw`]
+    /// so the display-free tests can drive the live-grid anchor without a
+    /// compositor pool.
+    fn redraw_canvas(&self, render: &TweenRender) -> Option<Canvas> {
+        // Unreachable for a real terminal — a positive cell pitch and
+        // non-negative columns — handled: a refused width skips the frame
+        // like any other refused redraw.
+        let Ok(cell_w) = i32::try_from(render.terminal.borrow().cell_w()) else {
+            return None;
+        };
+        let live_px = i32::from(render.terminal.borrow().cols()).checked_mul(cell_w)?;
+        let draw = self.crop.wide_draw(self.height, live_px, self.scale)?;
+        let mut renderer = render.renderer.borrow_mut();
+        renderer.paint_wide(draw, &mut render.terminal.borrow_mut())
     }
 
     /// One tween frame's commit plan at the eased width `px`

@@ -260,12 +260,14 @@ fn an_apply_without_a_session_is_not_live() {
 }
 
 /// The animated apply's staging defers the grid push
-/// (replace-gtk-with-wayland D7): the staging records the target columns
-/// without deriving or pushing, and
-/// the finish pushes once through the sizing path — the new columns,
-/// the rows of the latest configure height.
+/// (replace-gtk-with-wayland D7, issue #36): the staging records the
+/// target columns without deriving or pushing, and the finish's
+/// `apply_columns` pushes once through the sizing path — the new columns,
+/// the rows of the latest configure height. (The production
+/// `apply_animated` pushes at the tween's start too; this test drives the
+/// staging and finish seams directly.)
 #[test]
-fn an_animated_apply_defers_the_push_and_the_finish_pushes_once() {
+fn the_animated_staging_defers_the_push_and_the_finish_pushes_once() {
     let mut state = headless_state();
     let _ = state.sizing.configure(1080, &mut |_| true);
     let mut pushed: Vec<Grid> = Vec::new();

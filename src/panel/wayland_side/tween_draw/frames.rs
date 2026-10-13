@@ -221,13 +221,10 @@ impl PanelState {
         self.tween_draw = None;
         self.sizing.defer_pushes(false);
         let cols = self.applied.cols();
-        // A push the terminal refuses keeps the previous grid (issue #36):
-        // the panel is already at the final width and no handle call is
-        // returning through a frame or the watchdog — a later configure or
-        // apply retries the push (spec, "The library never exits"). The
-        // normal path does not push at all: the animated apply pushed the
-        // target grid at the tween's start, so this push only serves a
-        // mid-tween configure's recorded height.
+        // A refused push keeps the previous grid (issue #36). The normal
+        // path does not push at all: the animated apply pushed the target
+        // grid at the tween's start, so this push only serves a mid-tween
+        // configure's recorded height.
         let _ = self.sizing.apply_columns(cols, push);
         let geometry = self.committed_geometry();
         self.write_geometry(geometry);

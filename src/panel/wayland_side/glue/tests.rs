@@ -575,7 +575,9 @@ fn one_apply_pushes_the_winsize_and_the_terminal_grid_once() {
 
 /// The deferred tween-end push lands once, at the new columns and the
 /// recorded height: the staging pushes nothing, and the finish's single
-/// push reaches both the pty and the terminal.
+/// push reaches both the pty and the terminal. (The production
+/// `apply_animated` also pushes at the tween's start; this test drives the
+/// staging and finish seams directly, where the finish is the only push.)
 #[test]
 fn a_deferred_tween_end_push_pushes_the_winsize_and_the_grid_once() {
     let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");

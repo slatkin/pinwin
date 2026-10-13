@@ -54,9 +54,9 @@ pub(crate) struct StagedTween {
     pub(crate) target_px: i32,
     /// The tween's crop plan, decided from the two widths.
     pub(crate) crop: TweenCrop,
-    /// The live grid's pixel width: the columns the terminal actually
-    /// runs, which the deferred applies have not changed, times the cell
-    /// width. The wide draw keys the docked-edge offset against it.
+    /// The live grid's pixel width at staging time: the columns the
+    /// terminal runs before this apply's start push, times the cell width.
+    /// The wide draw keys the docked-edge offset against it.
     pub(crate) grid_px: i32,
     /// The gap state the frames commit the reserve with (overlay-expand
     /// D3): the held gap as it rested before this apply mutated it, and
@@ -489,9 +489,10 @@ impl PanelState {
         let gap = reserve_gap(self.held, gap_active, self.applied, from_px);
         let gap_tweening = gap_tween_decision(gap.zone(), true, layout, target_px);
 
-        // The grid push defers to the tween's finish (D7): the sizing
-        // records the target columns, and the finish derives and pushes
-        // once from the latest height.
+        // The staging defers the push (D7, narrowed by issue #36): the
+        // sizing records the target columns, and `apply_animated` pushes
+        // them at the tween's start; the finish only pushes a mid-tween
+        // configure's recorded height.
         self.sizing.defer_pushes(true);
         if self.apply_against(output, layout, push).is_err() {
             self.sizing.defer_pushes(self.tween.is_active());

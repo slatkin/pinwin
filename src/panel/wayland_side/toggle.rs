@@ -74,10 +74,8 @@ impl PanelState {
         self.tween.cancel();
         self.sizing.defer_pushes(false);
         let cols = self.applied.cols();
-        // A push the terminal refuses keeps the previous grid (issue #36):
-        // no handle call is returning through a toggle, and the panel is
-        // going hidden anyway — a later show's configure or apply retries
-        // the push (spec, "The library never exits").
+        // A refused push keeps the previous grid (issue #36); the next
+        // show retries it.
         let _ = self.sizing.apply_columns(cols, push);
         // The unmap: null buffers, committed. The surfaces stay alive; a
         // show re-sends the layer state an unmap reset.

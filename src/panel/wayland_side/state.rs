@@ -463,9 +463,7 @@ impl PanelState {
                 {
                     surfaces.panel_configured_under_tween();
                 }
-                // A refused push keeps the previous grid (issue #36): the
-                // tween's finish or a later apply retries (spec, "The
-                // library never exits").
+                // A refused push keeps the previous grid (issue #36).
                 let _ = self.configure_grid(height, &mut push);
                 return;
             }
@@ -498,8 +496,7 @@ impl PanelState {
             {
                 surfaces.panel_configured();
             }
-            // A refused push keeps the previous grid (issue #36): a later
-            // configure or apply retries (spec, "The library never exits").
+            // A refused push keeps the previous grid (issue #36).
             let _ = self.configure_grid(height, &mut push);
         } else if is_reserve && let Some(session) = self.session.as_mut() {
             // A stale configure of the reserve while hidden maps
@@ -534,8 +531,7 @@ impl PanelState {
         push: &mut dyn FnMut(Grid) -> bool,
     ) {
         self.panel_size = Some((width, height));
-        // A refused push keeps the previous grid (issue #36): the next
-        // show's configure or an apply retries (spec, "never exits").
+        // A refused push keeps the previous grid (issue #36).
         let _ = self.configure_grid(height, push);
     }
 
