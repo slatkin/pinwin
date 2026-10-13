@@ -196,8 +196,10 @@ impl PanelState {
 
     /// The tween's finish action (replace-gtk-with-wayland D7): the stop
     /// relay first — drop the wide cache, lift the sizing defer and push
-    /// the deferred grid once through the sizing path, the new columns
-    /// derived from the latest configure height — then the final geometry,
+    /// once through the sizing path. The tween's own target grid pushed at
+    /// the animation's start (issue #36), so the normal push is the
+    /// sizing's no-op; the push serves a mid-tween configure's recorded
+    /// height, the new rows derived from it — then the final geometry,
     /// the same path a plain apply writes. The viewport end state follows:
     /// the last eased frame left a source crop and a destination on the
     /// panel's viewport, and the live buffer the finish's repaint draws
@@ -209,7 +211,7 @@ impl PanelState {
     /// the pty winsize. The headless core has no session, so the geometry
     /// write is exercised only on niri; the relay is
     /// display-free and tested in the apply module.
-    pub(crate) fn tween_finished(&mut self, target_px: i32, push: &mut dyn FnMut(Grid)) {
+    pub(crate) fn tween_finished(&mut self, target_px: i32, push: &mut dyn FnMut(Grid) -> bool) {
         // The final frame commits at the target before the cache drops
         // (replace-gtk-with-wayland D7): the viewport's source and
         // destination are persistent
@@ -219,14 +221,15 @@ impl PanelState {
         self.tween_draw = None;
         self.sizing.defer_pushes(false);
         let cols = self.applied.cols();
-        self.sizing.apply_columns(cols, push);
-        let geometry = super::super::apply::SurfaceGeometry {
-            panel_side: self.applied.side(),
-            panel_margins: super::super::surfaces::panel_margins(self.applied),
-            panel_width: Some(target_px),
-            reserve_side: self.held.side(),
-            reserve_zone: self.held.zone(),
-        };
+        // A push the terminal refuses keeps the previous grid (issue #36):
+        // the panel is already at the final width and no handle call is
+        // returning through a frame or the watchdog — a later configure or
+        // apply retries the push (spec, "The library never exits"). The
+        // normal path does not push at all: the animated apply pushed the
+        // target grid at the tween's start, so this push only serves a
+        // mid-tween configure's recorded height.
+        let _ = self.sizing.apply_columns(cols, push);
+        let geometry = self.committed_geometry();
         self.write_geometry(geometry);
         let height = self.sizing.height();
         let viewporter = self

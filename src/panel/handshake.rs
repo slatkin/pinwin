@@ -15,8 +15,8 @@ use std::time::Duration;
 use super::error::PinwinError;
 
 /// The outcome of publishing a layout. The panel's callers map these onto
-/// `PinwinError`: `NotLive` is `NotRunning` and `InvalidLayout` is
-/// `InvalidLayout`.
+/// `PinwinError`: `NotLive` is `NotRunning`, `InvalidLayout` is
+/// `InvalidLayout` and `Internal` is `Internal`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PublishOutcome {
     /// The layout is applied and the grid follows.
@@ -25,6 +25,11 @@ pub(crate) enum PublishOutcome {
     NotLive,
     /// The layout the live monitor refuses.
     InvalidLayout,
+    /// The terminal could not allocate the layout's grid (issue #36): the
+    /// plain paths keep the previous grid and surfaces, the animated one
+    /// snaps to the requested layout — both report this, which
+    /// `map_outcome` turns into `PinwinError::Internal`.
+    Internal,
 }
 
 /// How long an apply — and a drop's teardown — waits for the panel side's
@@ -81,6 +86,7 @@ pub(crate) fn map_outcome(outcome: PublishOutcome) -> Result<(), PinwinError> {
         PublishOutcome::Applied => Ok(()),
         PublishOutcome::NotLive => Err(PinwinError::NotRunning),
         PublishOutcome::InvalidLayout => Err(PinwinError::InvalidLayout),
+        PublishOutcome::Internal => Err(PinwinError::Internal),
     }
 }
 
@@ -195,6 +201,10 @@ mod tests {
         assert_eq!(
             map_outcome(PublishOutcome::InvalidLayout),
             Err(PinwinError::InvalidLayout)
+        );
+        assert_eq!(
+            map_outcome(PublishOutcome::Internal),
+            Err(PinwinError::Internal)
         );
     }
 

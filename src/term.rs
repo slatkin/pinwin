@@ -399,6 +399,16 @@ impl Terminal {
         terminal
     }
 
+    /// Force the first `push_size` to refuse terminal creation, and every
+    /// later one with it — the sticky-failure rule. The panel tests' seam
+    /// (D10): the display-free apply tests drive the failed-allocation
+    /// paths through a terminal built this way. Call it before the first
+    /// push; a terminal that already created its handles keeps them.
+    #[cfg(test)]
+    pub(crate) fn fail_init(&mut self) {
+        self.init = Some(Box::new(|| Err(())));
+    }
+
     /// The test-only panic-injection switch: the named callback panics at
     /// its first step (see `callbacks::fail_point`).
     #[cfg(test)]

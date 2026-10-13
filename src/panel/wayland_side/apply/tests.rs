@@ -4,7 +4,6 @@ use crate::guard::Poisoned;
 use crate::layout::Keyboard;
 use crate::panel::handshake::Handshake;
 use crate::surfaces::gap::start_held_gap;
-use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
@@ -74,7 +73,10 @@ fn an_invalid_layout_is_rejected_and_stages_nothing() {
     // the 600px output: rejected.
     let too_wide = layout(Side::Left, 120, 0, 0, 0, 0).covering();
     let mut pushed: Vec<Grid> = Vec::new();
-    let outcome = state.apply_against(output(600, 1080), too_wide, &mut |grid| pushed.push(grid));
+    let outcome = state.apply_against(output(600, 1080), too_wide, &mut |grid| {
+        pushed.push(grid);
+        true
+    });
     assert_eq!(outcome, Err(PublishOutcome::InvalidLayout));
     assert!(pushed.is_empty(), "a rejected apply pushes no grid");
     assert_eq!(
@@ -91,12 +93,15 @@ fn an_invalid_layout_is_rejected_and_stages_nothing() {
 fn a_valid_pushing_apply_moves_the_zone_and_the_size() {
     let mut state = headless_state();
     // A configure delivered the startup height, so the rows are live.
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
 
     let target = layout(Side::Left, 120, 0, 0, 8, 12);
     let mut pushed: Vec<Grid> = Vec::new();
     let geometry = state
-        .apply_against(output(1920, 1080), target, &mut |grid| pushed.push(grid))
+        .apply_against(output(1920, 1080), target, &mut |grid| {
+            pushed.push(grid);
+            true
+        })
         .expect("the layout fits the output");
 
     assert_eq!(geometry.panel_side, Side::Left);
@@ -127,12 +132,15 @@ fn a_covering_apply_holds_the_strip() {
     // A pushing start holds its own strip: 40 columns at 9px.
     assert_eq!(state.held.zone(), 360);
     // A configure delivered the startup height, so the rows are live.
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
 
     let covering = layout(Side::Left, 120, 0, 0, 0, 0).covering();
     let mut pushed: Vec<Grid> = Vec::new();
     let geometry = state
-        .apply_against(output(1920, 1080), covering, &mut |grid| pushed.push(grid))
+        .apply_against(output(1920, 1080), covering, &mut |grid| {
+            pushed.push(grid);
+            true
+        })
         .expect("the covering layout fits the output");
 
     assert_eq!(geometry.panel_side, Side::Left);
@@ -152,11 +160,11 @@ fn a_covering_apply_holds_the_strip() {
 #[test]
 fn a_side_switch_re_anchors_both_surfaces() {
     let mut state = headless_state();
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
 
     let switched = layout(Side::Right, 120, 0, 0, 0, 0).covering();
     let geometry = state
-        .apply_against(output(1920, 1080), switched, &mut |_| {})
+        .apply_against(output(1920, 1080), switched, &mut |_| true)
         .expect("the layout fits the output");
 
     assert_eq!(geometry.panel_side, Side::Right, "the panel re-anchors");
@@ -170,12 +178,12 @@ fn a_side_switch_re_anchors_both_surfaces() {
 
     // A pushing switch also moves the strip to the new side's own.
     let mut state = headless_state();
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
     let geometry = state
         .apply_against(
             output(1920, 1080),
             layout(Side::Right, 40, 0, 0, 0, 0),
-            &mut |_| {},
+            &mut |_| true,
         )
         .expect("the layout fits the output");
     assert_eq!(geometry.reserve_side, Side::Right);
@@ -188,15 +196,21 @@ fn a_side_switch_re_anchors_both_surfaces() {
 #[test]
 fn a_repeat_apply_of_the_same_layout_pushes_no_extra_grid() {
     let mut state = headless_state();
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
     let target = layout(Side::Left, 120, 0, 0, 0, 0);
 
     let mut pushed: Vec<Grid> = Vec::new();
     let first = state
-        .apply_against(output(1920, 1080), target, &mut |grid| pushed.push(grid))
+        .apply_against(output(1920, 1080), target, &mut |grid| {
+            pushed.push(grid);
+            true
+        })
         .expect("the layout fits the output");
     let second = state
-        .apply_against(output(1920, 1080), target, &mut |grid| pushed.push(grid))
+        .apply_against(output(1920, 1080), target, &mut |grid| {
+            pushed.push(grid);
+            true
+        })
         .expect("the layout fits the output");
 
     assert_eq!(pushed.len(), 1, "the repeat apply pushes nothing");
@@ -215,13 +229,19 @@ fn an_apply_before_the_first_configure_records_the_columns() {
         .apply_against(
             output(1920, 1080),
             layout(Side::Left, 120, 0, 0, 0, 0),
-            &mut |grid| pushed.push(grid),
+            &mut |grid| {
+                pushed.push(grid);
+                true
+            },
         )
         .expect("the layout fits the output");
     assert!(pushed.is_empty(), "no height, no push");
     assert_eq!(geometry.panel_width, Some(1080));
 
-    state.sizing.configure(1080, &mut |grid| pushed.push(grid));
+    let _ = state.sizing.configure(1080, &mut |grid| {
+        pushed.push(grid);
+        true
+    });
     assert_eq!(pushed.len(), 1, "the next configure derives");
     assert_eq!(pushed[0].cols(), 120, "with the applied columns");
 }
@@ -247,7 +267,7 @@ fn an_apply_without_a_session_is_not_live() {
 #[test]
 fn an_animated_apply_defers_the_push_and_the_finish_pushes_once() {
     let mut state = headless_state();
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
     let mut pushed: Vec<Grid> = Vec::new();
 
     let staged = state
@@ -255,7 +275,10 @@ fn an_animated_apply_defers_the_push_and_the_finish_pushes_once() {
             output(1920, 1080),
             layout(Side::Left, 120, 0, 0, 0, 12),
             200,
-            &mut |grid| pushed.push(grid),
+            &mut |grid| {
+                pushed.push(grid);
+                true
+            },
         )
         .expect("the layout fits the output");
     assert!(pushed.is_empty(), "a staged animated apply pushes nothing");
@@ -268,7 +291,10 @@ fn an_animated_apply_defers_the_push_and_the_finish_pushes_once() {
     assert_eq!(staged.duration_ms, 200);
 
     // The finish pushes once, through the sizing path.
-    state.tween_finished(1080, &mut |grid| pushed.push(grid));
+    state.tween_finished(1080, &mut |grid| {
+        pushed.push(grid);
+        true
+    });
     assert_eq!(pushed.len(), 1, "exactly one push");
     assert_eq!(pushed[0].cols(), 120, "the tweened columns");
     assert_eq!(pushed[0].rows(), 1080 / 16, "the recorded height's rows");
@@ -281,13 +307,16 @@ fn an_animated_apply_defers_the_push_and_the_finish_pushes_once() {
 #[test]
 fn a_snap_apply_during_a_tween_pushes_at_once() {
     let mut state = headless_state();
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
     let mut pushed: Vec<Grid> = Vec::new();
     let _ = state.stage_animated(
         output(1920, 1080),
         layout(Side::Left, 120, 0, 0, 0, 12),
         200,
-        &mut |grid| pushed.push(grid),
+        &mut |grid| {
+            pushed.push(grid);
+            true
+        },
     );
     state.tween.begin(360, 1080, 200, Instant::now(), None);
     assert!(
@@ -301,12 +330,15 @@ fn a_snap_apply_during_a_tween_pushes_at_once() {
         .apply_snap_against(
             output(1920, 1080),
             layout(Side::Left, 120, 0, 0, 0, 12),
-            &mut |grid| pushed.push(grid),
+            &mut |grid| {
+                pushed.push(grid);
+                true
+            },
         )
         .expect("the layout fits the output");
     assert_eq!(pushed.len(), 1, "the snap pushes at once");
     assert_eq!(pushed[0].cols(), 120);
-    assert_eq!(geometry.panel_width, Some(1080));
+    assert_eq!(geometry.geometry.panel_width, Some(1080));
     assert!(!state.tween.is_active(), "the snap cancelled the tween");
     assert!(state.tween_draw.is_none(), "the wide cache dropped");
 }
@@ -317,21 +349,29 @@ fn a_snap_apply_during_a_tween_pushes_at_once() {
 #[test]
 fn a_rejected_snap_apply_leaves_the_tween_running() {
     let mut state = headless_state();
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
     let mut pushed: Vec<Grid> = Vec::new();
     let _ = state.stage_animated(
         output(1920, 1080),
         layout(Side::Left, 120, 0, 0, 0, 12),
         200,
-        &mut |grid| pushed.push(grid),
+        &mut |grid| {
+            pushed.push(grid);
+            true
+        },
     );
     state.tween.begin(360, 1080, 200, Instant::now(), None);
 
     // A covering 400-column layout is 3600px wide, past the output.
     let too_wide = layout(Side::Left, 400, 0, 0, 0, 12).covering();
     assert_eq!(
-        state.apply_snap_against(output(1920, 1080), too_wide, &mut |grid| pushed.push(grid)),
-        Err(PublishOutcome::InvalidLayout)
+        state
+            .apply_snap_against(output(1920, 1080), too_wide, &mut |grid| {
+                pushed.push(grid);
+                true
+            },)
+            .unwrap_err(),
+        PublishOutcome::InvalidLayout
     );
     assert!(state.tween.is_active(), "the tween keeps running");
     assert!(pushed.is_empty(), "a rejected apply pushes nothing");
@@ -342,13 +382,16 @@ fn a_rejected_snap_apply_leaves_the_tween_running() {
 #[test]
 fn a_rejected_animated_staging_keeps_the_running_tweens_defer() {
     let mut state = headless_state();
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
     let mut pushed: Vec<Grid> = Vec::new();
     let _ = state.stage_animated(
         output(1920, 1080),
         layout(Side::Left, 120, 0, 0, 0, 12),
         200,
-        &mut |grid| pushed.push(grid),
+        &mut |grid| {
+            pushed.push(grid);
+            true
+        },
     );
     state.tween.begin(360, 1080, 200, Instant::now(), None);
 
@@ -357,8 +400,10 @@ fn a_rejected_animated_staging_keeps_the_running_tweens_defer() {
     let too_wide = layout(Side::Left, 400, 0, 0, 0, 12).covering();
     assert!(
         state
-            .stage_animated(output(1920, 1080), too_wide, 200, &mut |grid| pushed
-                .push(grid))
+            .stage_animated(output(1920, 1080), too_wide, 200, &mut |grid| {
+                pushed.push(grid);
+                true
+            },)
             .is_none(),
         "the rejected staging stages nothing"
     );
@@ -367,12 +412,18 @@ fn a_rejected_animated_staging_keeps_the_running_tweens_defer() {
 
     // And a mid-tween configure pushes nothing either, while a height
     // lands for the finish to derive from.
-    state.sizing.configure(1040, &mut |grid| pushed.push(grid));
+    let _ = state.sizing.configure(1040, &mut |grid| {
+        pushed.push(grid);
+        true
+    });
     assert!(
         pushed.is_empty(),
         "the defer still holds the configure's push"
     );
-    state.tween_finished(1080, &mut |grid| pushed.push(grid));
+    state.tween_finished(1080, &mut |grid| {
+        pushed.push(grid);
+        true
+    });
     assert_eq!(pushed.len(), 1, "the finish pushes once, at the new height");
     assert_eq!(pushed[0].rows(), 1040 / 16);
 }
@@ -382,17 +433,20 @@ fn a_rejected_animated_staging_keeps_the_running_tweens_defer() {
 #[test]
 fn a_snap_apply_without_a_tween_pushes_once() {
     let mut state = headless_state();
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
     let mut pushed: Vec<Grid> = Vec::new();
     let geometry = state
         .apply_snap_against(
             output(1920, 1080),
             layout(Side::Left, 120, 0, 0, 0, 12),
-            &mut |grid| pushed.push(grid),
+            &mut |grid| {
+                pushed.push(grid);
+                true
+            },
         )
         .expect("the layout fits the output");
     assert_eq!(pushed.len(), 1);
-    assert_eq!(geometry.panel_width, Some(1080));
+    assert_eq!(geometry.geometry.panel_width, Some(1080));
 }
 
 /// A repeat animated apply of the same layout during a running tween
@@ -404,13 +458,16 @@ fn a_snap_apply_without_a_tween_pushes_once() {
 #[test]
 fn a_repeat_animated_apply_leaves_the_running_tween_alone() {
     let mut state = headless_state();
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
     let mut pushed: Vec<Grid> = Vec::new();
     let _ = state.stage_animated(
         output(1920, 1080),
         layout(Side::Left, 120, 0, 0, 0, 12),
         200,
-        &mut |grid| pushed.push(grid),
+        &mut |grid| {
+            pushed.push(grid);
+            true
+        },
     );
     state.tween.begin(360, 1080, 200, Instant::now(), None);
 
@@ -427,6 +484,187 @@ fn a_repeat_animated_apply_leaves_the_running_tween_alone() {
     assert!(state.tween.is_active(), "the tween keeps easing");
     assert!(pushed.is_empty(), "the deferred push waits for the finish");
 
-    state.tween_finished(1080, &mut |grid| pushed.push(grid));
+    state.tween_finished(1080, &mut |grid| {
+        pushed.push(grid);
+        true
+    });
     assert_eq!(pushed.len(), 1, "the finish pushes once");
+}
+
+/// A headless state whose terminal refuses every grid push (issue #36's
+/// failing-terminal wiring): the production apply paths report the
+/// refusal through the state's own sink.
+fn headless_state_failing_terminal() -> PanelState {
+    let (tx, _rx) = mpsc::channel();
+    let poisoned = Poisoned::new();
+    PanelState::new(
+        Handshake::new(tx),
+        poisoned.clone(),
+        live_inner(),
+        startup(),
+        cell(),
+        glue::test_wiring_failing_terminal(&poisoned),
+    )
+}
+
+/// The height a failing-terminal state records: the configure runs
+/// through the state's own refused sink, so the height is recorded and
+/// the pushed grid stays empty — exactly a terminal that cannot allocate.
+fn failing_state_at_height() -> PanelState {
+    let mut state = headless_state_failing_terminal();
+    let mut sink = state.grid_sink();
+    let _ = state.configure_grid(1080, &mut sink);
+    state
+}
+
+/// A snap apply whose terminal refuses the grid reports `Internal`
+/// (issue #36, spec "The library never exits"): the applied layout and
+/// the held gap stay as they were and no geometry comes back to write.
+#[test]
+fn a_snap_apply_whose_terminal_refuses_the_grid_reports_internal() {
+    let mut state = failing_state_at_height();
+    let outcome = state.apply_snap(output(1920, 1080), layout(Side::Left, 120, 0, 0, 8, 12));
+    assert_eq!(outcome, PublishOutcome::Internal, "the refusal reports");
+    assert_eq!(
+        state.applied.cols().get(),
+        40,
+        "the applied layout is untouched"
+    );
+    assert_eq!(
+        state.held,
+        start_held_gap(startup().layout(), cell().width().get()),
+        "the held gap is untouched"
+    );
+}
+
+/// A quiet apply whose terminal refuses the grid reports `Internal` and
+/// leaves the applied layout and the held gap as they were (issue #36).
+#[test]
+fn a_quiet_apply_whose_terminal_refuses_the_grid_reports_internal() {
+    let mut state = failing_state_at_height();
+    let same_cols = layout(Side::Left, 40, 4, 4, 0, 0);
+    assert!(tween::should_animate(200, &state.applied, &same_cols));
+    assert!(!PanelState::animates_width(&state.applied, &same_cols));
+    let outcome = state.apply_quiet(output(1920, 1080), same_cols);
+    assert_eq!(outcome, PublishOutcome::Internal, "the refusal reports");
+    assert_eq!(
+        state.applied,
+        startup().layout(),
+        "the applied layout is untouched"
+    );
+}
+
+/// A hidden apply whose terminal refuses the grid reports `Internal` and
+/// stores no layout: the next show keeps the previous one (issue #36).
+#[test]
+fn a_hidden_apply_whose_terminal_refuses_the_grid_reports_internal() {
+    let mut state = failing_state_at_height();
+    state.toggle();
+    assert_eq!(state.visibility, Visibility::Hidden);
+    let outcome = state.apply_hidden(output(1920, 1080), layout(Side::Left, 120, 0, 0, 8, 12));
+    assert_eq!(outcome, PublishOutcome::Internal, "the refusal reports");
+    assert_eq!(
+        state.applied.cols().get(),
+        40,
+        "no layout is stored for the next show"
+    );
+}
+
+/// An animated apply whose start push the sink refuses snaps the panel to
+/// the requested layout and reports `Internal` (issue #36, spec "No
+/// mid-state on failure"): the tween never begins, so no frame can show
+/// an intermediate width, and the sizing recorded nothing, so a later
+/// apply retries the grid.
+#[test]
+fn an_animated_apply_whose_start_push_is_refused_snaps_and_reports_internal() {
+    let mut state = headless_state();
+    let _ = state.sizing.configure(1080, &mut |_| true);
+    let mut pushed: Vec<Grid> = Vec::new();
+    let staged = state
+        .stage_animated(
+            output(1920, 1080),
+            layout(Side::Left, 120, 0, 0, 0, 12),
+            200,
+            &mut |grid| {
+                pushed.push(grid);
+                true
+            },
+        )
+        .expect("the layout stages");
+    assert!(pushed.is_empty(), "the staging defers the push");
+
+    let outcome = state.push_tween_start(staged.layout.cols(), &mut |grid| {
+        pushed.push(grid);
+        false
+    });
+    assert_eq!(
+        outcome,
+        Err(PublishOutcome::Internal),
+        "the refusal reports"
+    );
+    assert!(!state.tween.is_active(), "no tween began");
+    assert!(state.tween_draw.is_none(), "no wide cache either");
+    assert_eq!(
+        state.applied.cols().get(),
+        120,
+        "the requested layout is committed"
+    );
+    assert_eq!(pushed.len(), 1, "one refused start push");
+
+    // The sizing recorded nothing, so a later apply with a working sink
+    // derives the same grid and retries it.
+    let mut retried: Vec<Grid> = Vec::new();
+    state
+        .sizing
+        .apply_columns(state.applied.cols(), &mut |grid| {
+            retried.push(grid);
+            true
+        })
+        .expect("the retry pushes");
+    assert_eq!(retried.len(), 1, "the retry derives the same grid");
+}
+
+/// A snap that interrupts a tween whose push the sink refuses still hands
+/// back the requested final geometry (issue #36, spec "No mid-state on
+/// failure"): the staged layout is committed, so the caller writes the
+/// geometry and the panel never rests at the interrupted tween's
+/// intermediate width.
+#[test]
+fn a_snap_interrupting_a_tween_whose_push_is_refused_still_names_the_final_geometry() {
+    let mut state = headless_state();
+    let _ = state.sizing.configure(1080, &mut |_| true);
+    let mut pushed: Vec<Grid> = Vec::new();
+    let _ = state.stage_animated(
+        output(1920, 1080),
+        layout(Side::Left, 120, 0, 0, 0, 12),
+        200,
+        &mut |grid| {
+            pushed.push(grid);
+            true
+        },
+    );
+    state.tween.begin(360, 1080, 200, Instant::now(), None);
+    assert!(
+        state.tween.is_active(),
+        "the test tweens like the apply would"
+    );
+
+    let outcome = state
+        .apply_snap_against(
+            output(1920, 1080),
+            layout(Side::Left, 120, 0, 0, 0, 12),
+            &mut |grid| {
+                pushed.push(grid);
+                false
+            },
+        )
+        .expect("the staged layout is committed");
+    assert_eq!(outcome.verdict, Err(PublishOutcome::Internal));
+    assert_eq!(
+        outcome.geometry.panel_width,
+        Some(1080),
+        "the requested final width"
+    );
+    assert!(!state.tween.is_active(), "the snap cancelled the tween");
+    assert_eq!(state.applied.cols().get(), 120, "the layout stays applied");
 }

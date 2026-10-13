@@ -52,7 +52,7 @@ use super::buffers::{Scale, viewport_destination};
 use super::frame_log::{FrameLog, Presentation};
 use super::seat::SeatLinks;
 use super::seat::SeatSide;
-use super::sizing::{Grid, Sizing};
+use super::sizing::{Grid, Sizing, SizingPushFailed};
 use super::surfaces::{PanelSurfaces, SurfaceId};
 use super::toggle::Visibility;
 use super::tween::TweenDriver;
@@ -463,7 +463,10 @@ impl PanelState {
                 {
                     surfaces.panel_configured_under_tween();
                 }
-                self.configure_grid(height, &mut push);
+                // A refused push keeps the previous grid (issue #36): the
+                // tween's finish or a later apply retries (spec, "The
+                // library never exits").
+                let _ = self.configure_grid(height, &mut push);
                 return;
             }
             // The viewporter destination is the logical size (D5): set
@@ -495,7 +498,9 @@ impl PanelState {
             {
                 surfaces.panel_configured();
             }
-            self.configure_grid(height, &mut push);
+            // A refused push keeps the previous grid (issue #36): a later
+            // configure or apply retries (spec, "The library never exits").
+            let _ = self.configure_grid(height, &mut push);
         } else if is_reserve && let Some(session) = self.session.as_mut() {
             // A stale configure of the reserve while hidden maps
             // nothing: attaching the transparent buffer here would remap the
@@ -526,10 +531,12 @@ impl PanelState {
         &mut self,
         width: u32,
         height: u32,
-        push: &mut dyn FnMut(Grid),
+        push: &mut dyn FnMut(Grid) -> bool,
     ) {
         self.panel_size = Some((width, height));
-        self.configure_grid(height, push);
+        // A refused push keeps the previous grid (issue #36): the next
+        // show's configure or an apply retries (spec, "never exits").
+        let _ = self.configure_grid(height, push);
     }
 
     /// The grid size decision for one configure height (D3): the
@@ -537,9 +544,15 @@ impl PanelState {
     /// the push goes to the supplied sink — the thread's grid push — only
     /// when the derived grid changed. The sink is a parameter so
     /// the display-free tests can observe the pushes the state drives
-    /// (`port-to-rust` D10).
-    pub(crate) fn configure_grid(&mut self, height: u32, push: &mut dyn FnMut(Grid)) {
-        self.sizing.configure(height, push);
+    /// (`port-to-rust` D10). `Err` is a refused push (issue #36); the
+    /// configure callers degrade on it, keeping the previous grid until a
+    /// later configure or apply retries.
+    pub(crate) fn configure_grid(
+        &mut self,
+        height: u32,
+        push: &mut dyn FnMut(Grid) -> bool,
+    ) -> Result<(), SizingPushFailed> {
+        self.sizing.configure(height, push)
     }
 
     /// Take the repaint request the terminal's callbacks latched:
@@ -743,7 +756,10 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let mut state = headless_state(Handshake::new(tx));
         let mut pushed: Vec<Grid> = Vec::new();
-        state.configure_grid(1080, &mut |grid| pushed.push(grid));
+        let _ = state.configure_grid(1080, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert_eq!(pushed.len(), 1, "the configure pushes the startup grid");
         let grid = pushed[0];
         assert_eq!(grid.cols(), 40, "the columns come from the startup layout");

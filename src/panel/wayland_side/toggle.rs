@@ -64,15 +64,21 @@ impl PanelState {
     /// commits. The push sink is a parameter so the display-free tests
     /// observe it (`port-to-rust` D10); the production caller supplies the
     /// state's own grid sink.
-    pub(crate) fn hide(&mut self, push: &mut dyn FnMut(Grid)) {
+    pub(crate) fn hide(&mut self, push: &mut dyn FnMut(Grid) -> bool) {
         // The tween's stop relay (D4): the wide cache drops, the driver
-        // cancels, the sizing defer lifts and the deferred grid — the
-        // target's, `self.applied` was staged at the begin — pushes once.
+        // cancels, the sizing defer lifts and a grid a mid-tween configure
+        // recorded pushes once — the tween's own target grid pushed at the
+        // animation's start (issue #36), so the relay's normal push is the
+        // sizing's no-op.
         self.tween_draw = None;
         self.tween.cancel();
         self.sizing.defer_pushes(false);
         let cols = self.applied.cols();
-        self.sizing.apply_columns(cols, push);
+        // A push the terminal refuses keeps the previous grid (issue #36):
+        // no handle call is returning through a toggle, and the panel is
+        // going hidden anyway — a later show's configure or apply retries
+        // the push (spec, "The library never exits").
+        let _ = self.sizing.apply_columns(cols, push);
         // The unmap: null buffers, committed. The surfaces stay alive; a
         // show re-sends the layer state an unmap reset.
         if let Some(session) = self.session.as_mut()
@@ -354,19 +360,22 @@ mod tests {
     }
 
     /// A hide ends a running tween at its target: the stop relay drops the
-    /// wide cache, cancels the driver and pushes the deferred grid — the
-    /// target's columns — through the sizing path (D4, the relay of the
-    /// tween's finish).
+    /// wide cache, cancels the driver and pushes what a mid-tween configure
+    /// recorded through the sizing path (D4, the relay of the tween's
+    /// finish; the tween's own grid pushed at its start, issue #36).
     #[test]
     fn a_hide_ends_a_running_tween_at_its_target() {
         let mut state = headless_state();
-        state.sizing.configure(1080, &mut |_| {});
+        let _ = state.sizing.configure(1080, &mut |_| true);
         let mut pushed: Vec<crate::panel::wayland_side::sizing::Grid> = Vec::new();
         let _ = state.stage_animated(
             output(1920, 1080),
             layout(Side::Left, 120, 0, 0, 0, 12),
             200,
-            &mut |grid| pushed.push(grid),
+            &mut |grid| {
+                pushed.push(grid);
+                true
+            },
         );
         state
             .tween
@@ -379,7 +388,10 @@ mod tests {
 
         // The hide's push sink is a parameter (the `tween_finished` seam):
         // the test observes the deferred grid resize through it.
-        state.hide(&mut |grid| pushed.push(grid));
+        state.hide(&mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert_eq!(state.visibility, Visibility::Hidden, "the toggle hides");
         assert!(!state.tween.is_active(), "the hide ended the tween");
         assert!(state.tween_draw.is_none(), "the wide cache dropped");
@@ -394,7 +406,7 @@ mod tests {
     #[test]
     fn a_hidden_apply_stores_the_layout_without_starting_a_tween() {
         let mut state = headless_state();
-        state.sizing.configure(1080, &mut |_| {});
+        let _ = state.sizing.configure(1080, &mut |_| true);
         state.toggle();
         assert_eq!(state.visibility, Visibility::Hidden);
 
@@ -415,10 +427,11 @@ mod tests {
         // the same grid and pushes nothing, so an empty observation is the
         // evidence the hidden apply already pushed.
         let mut observed: Vec<crate::panel::wayland_side::sizing::Grid> = Vec::new();
-        state
+        let _ = state
             .sizing
             .apply_columns(state.applied.cols(), &mut |grid| {
                 observed.push(grid);
+                true
             });
         assert!(
             observed.is_empty(),
@@ -436,7 +449,7 @@ mod tests {
     #[test]
     fn a_hidden_apply_the_output_rejects_stages_nothing() {
         let mut state = headless_state();
-        state.sizing.configure(1080, &mut |_| {});
+        let _ = state.sizing.configure(1080, &mut |_| true);
         state.toggle();
 
         // A covering 120-column layout is 1080px wide at a 9px cell, past
@@ -462,12 +475,15 @@ mod tests {
     #[test]
     fn a_hidden_configure_records_the_height_and_pushes_the_grid() {
         let mut state = headless_state();
-        state.sizing.configure(1080, &mut |_| {});
+        let _ = state.sizing.configure(1080, &mut |_| true);
         state.toggle();
         assert_eq!(state.visibility, Visibility::Hidden);
 
         let mut pushed: Vec<crate::panel::wayland_side::sizing::Grid> = Vec::new();
-        state.configure_hidden_panel(1920, 1040, &mut |grid| pushed.push(grid));
+        state.configure_hidden_panel(1920, 1040, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert_eq!(
             state.panel_size,
             Some((1920, 1040)),
@@ -483,7 +499,10 @@ mod tests {
 
         // A repeat configure at the same height pushes nothing more.
         let mut pushed: Vec<crate::panel::wayland_side::sizing::Grid> = Vec::new();
-        state.configure_hidden_panel(1920, 1040, &mut |grid| pushed.push(grid));
+        state.configure_hidden_panel(1920, 1040, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert!(pushed.is_empty(), "the same height pushes nothing");
     }
 

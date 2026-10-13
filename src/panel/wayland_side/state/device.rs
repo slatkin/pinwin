@@ -97,7 +97,11 @@ impl PanelState {
             return;
         }
         let mut push = self.grid_sink_at(after);
-        push(grid);
+        // A push the terminal refuses keeps the previous grid and its old
+        // device cell (issue #36): no handle call is returning through a
+        // scale change, and a later configure or apply retries the push
+        // (spec, "The library never exits").
+        let _ = push(grid);
     }
 }
 
@@ -199,7 +203,7 @@ mod tests {
         );
         // Record the configure height the re-push re-derives its grid
         // from; the sink records without touching the pty fd.
-        state.sizing.configure(1080, &mut |_| {});
+        let _ = state.sizing.configure(1080, &mut |_| true);
         state
     }
 

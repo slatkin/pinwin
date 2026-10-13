@@ -193,13 +193,15 @@ pub(crate) fn seat_links(
 
 impl PanelState {
     /// The one grid push sink: every push the sizing decides — a
-    /// plain apply's, a mid-tween configure's and the deferred tween-end's —
+    /// plain apply's, a mid-tween configure's and the tween's start push —
     /// runs through it, each exactly once (the sizing's pushed-grid memory
     /// never repeats one). The closure owns clones of the shared terminal
     /// and the repaint flag, so the callers hold `&mut self` while it runs.
-    /// The winsize goes out
+    /// It answers whether the terminal accepted the grid (issue #36): the
+    /// apply paths map a refusal onto `PublishOutcome::Internal`, the other
+    /// callers keep the previous grid. The winsize goes out
     /// at the session's resolved scale (device-pixel-cell-reports D4).
-    pub(crate) fn grid_sink(&self) -> impl FnMut(Grid) + 'static {
+    pub(crate) fn grid_sink(&self) -> impl FnMut(Grid) -> bool + 'static {
         self.grid_sink_at(self.resolved_scale())
     }
 
@@ -208,14 +210,15 @@ impl PanelState {
     /// re-push pushes the new device pixels even though the session already
     /// resolved them — and stays unit-testable without a session. Every
     /// other caller uses [`PanelState::grid_sink`].
-    pub(crate) fn grid_sink_at(&self, output_scale: FractionalScale) -> impl FnMut(Grid) + 'static {
+    pub(crate) fn grid_sink_at(
+        &self,
+        output_scale: FractionalScale,
+    ) -> impl FnMut(Grid) -> bool + 'static {
         let terminal = Rc::clone(&self.render.terminal);
         let repaint = Rc::clone(&self.repaint);
         let stale = Rc::clone(&self.stale_grid_px);
         let fd = self.startup.fd();
-        move |grid| {
-            push_grid(&terminal, &repaint, stale.as_ref(), fd, output_scale, grid);
-        }
+        move |grid| push_grid(&terminal, &repaint, stale.as_ref(), fd, output_scale, grid)
     }
 }
 
@@ -231,6 +234,17 @@ impl PanelState {
 #[cfg(test)]
 pub(crate) fn test_wiring(poisoned: &Poisoned) -> Wiring {
     test_wiring_with(poisoned, test_renderer())
+}
+
+/// [`test_wiring`] over a terminal whose terminal creation fails
+/// stickily (issue #36's tests): every `push_size` refuses, so the
+/// display-free apply tests drive the failed-allocation paths the same
+/// way the production sink reports them.
+#[cfg(test)]
+pub(crate) fn test_wiring_failing_terminal(poisoned: &Poisoned) -> Wiring {
+    let wiring = test_wiring(poisoned);
+    wiring.render.terminal.borrow_mut().fail_init();
+    wiring
 }
 
 /// [`test_wiring`] over a caller-supplied renderer handle: a test that
@@ -266,7 +280,10 @@ pub(crate) fn test_renderer() -> Rc<RefCell<Renderer>> {
 /// terminal first — a terminal that cannot
 /// be allocated leaves the previous grid and the pty winsize in place —
 /// then the winsize with `SIGWINCH`, then the repaint request the
-/// post-resize repaint needs. The terminal keeps the grid's logical cell
+/// post-resize repaint needs. Answers whether the terminal accepted the
+/// grid (issue #36): `false` is a failed allocation, the caller keeps the
+/// previous grid — an apply maps it onto `PublishOutcome::Internal`, the
+/// other push callers degrade. The terminal keeps the grid's logical cell
 /// (device-pixel-cell-reports D2); only the winsize goes out at the device
 /// cell for `scale` (D1/D4). A widening push also records the previous
 /// grid's pixel width as the stale pre-resize content still on screen (the
@@ -280,11 +297,11 @@ fn push_grid(
     fd: RawFd,
     output_scale: FractionalScale,
     grid: Grid,
-) {
+) -> bool {
     // Unreachable for a derived grid — the configure height bounds the rows
     // — handled: no push at all rather than a truncated one.
     let Ok(rows) = i32::try_from(grid.rows()) else {
-        return;
+        return false;
     };
     let previous_cols = terminal.borrow().cols();
     let pushed = terminal.borrow_mut().push_size(
@@ -294,7 +311,10 @@ fn push_grid(
         grid.cell_height(),
     );
     if !pushed {
-        return;
+        // The terminal kept the previous grid: no winsize, no repaint, and
+        // the stale record stays where it was (spec, "The library never
+        // exits" — the allocation failure keeps the previous grid).
+        return false;
     }
     if i32::from(grid.cols()) > i32::from(previous_cols)
         && let Some(previous_px) = i32::from(previous_cols).checked_mul(grid.cell_width())
@@ -310,6 +330,7 @@ fn push_grid(
     }
     apply_pty_size(fd, grid, output_scale);
     repaint.set(true);
+    true
 }
 
 #[cfg(test)]

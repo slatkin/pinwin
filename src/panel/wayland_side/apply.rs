@@ -16,6 +16,7 @@
 //! drive the same staging, held-gap and pty-push path the production
 //! `PanelState::apply` runs against the resolved output and the pty fd.
 
+use std::num::NonZeroU16;
 use std::time::Instant;
 
 use crate::layout::{CellSize, Layout, OutputSize, Side};
@@ -23,7 +24,7 @@ use crate::panel::handshake::PublishOutcome;
 use crate::surfaces::gap::{HeldGap, gap_tween_decision, reserve_gap, staged_publish};
 
 use super::crop::TweenCrop;
-use super::sizing::Grid;
+use super::sizing::{Grid, SizingPushFailed};
 use super::state::PanelState;
 use super::surfaces::{grid_width_px, panel_margins};
 use super::toggle::Visibility;
@@ -69,6 +70,20 @@ pub(crate) struct StagedTween {
     pub(crate) duration_ms: u32,
 }
 
+/// The snap apply's outcome against the seams (issue #36): the geometry
+/// the caller writes and the verdict. `verdict` is `Err` only after the
+/// staged layout was committed — a push the terminal refused once the
+/// layout is applied, typically a snap that interrupts a tween — so the
+/// caller still writes the geometry: the panel never rests at an
+/// intermediate width (spec, "No mid-state on failure"). The `Err` arm of
+/// the outer result is a rejected or failed apply that committed nothing:
+/// the caller writes nothing and the previous surfaces stay.
+#[derive(Debug)]
+pub(crate) struct SnapOutcome {
+    pub(crate) geometry: SurfaceGeometry,
+    pub(crate) verdict: Result<(), PublishOutcome>,
+}
+
 /// Validate a layout and stage the mutation a validated one may make:
 /// [`staged_publish`] runs the metrics and layout
 /// checks, so `None` is a rejected apply that leaves the applied state — the
@@ -112,15 +127,29 @@ fn surface_geometry(staged: &StagedApply, cell: CellSize) -> SurfaceGeometry {
 }
 
 impl PanelState {
+    /// The geometry of the committed layout and held gap, the write a
+    /// finished tween and a failed animated apply (issue #36) both make:
+    /// the panel at the requested layout's final width, the reserve at the
+    /// held strip.
+    pub(crate) fn committed_geometry(&self) -> SurfaceGeometry {
+        SurfaceGeometry {
+            panel_side: self.applied.side(),
+            panel_margins: panel_margins(self.applied),
+            panel_width: grid_width_px(self.applied.cols(), self.cell),
+            reserve_side: self.held.side(),
+            reserve_zone: self.held.zone(),
+        }
+    }
+
     /// The production apply: validate against the resolved output, stage,
-    /// move the held gap, push the grid through the sizing path — a layout
-    /// apply is one of the two push sources (replace-gtk-with-wayland D3)
-    /// — deferred to the tween's finish when the apply animates
-    /// (replace-gtk-with-wayland D7) — and write the geometry onto the two
-    /// surfaces. Answers `NotLive` while the output is unresolved or the
-    /// surfaces are torn down — a panel with nothing live cannot publish —
-    /// `InvalidLayout` for a layout the output refuses, and `Applied`
-    /// otherwise.
+    /// push the grid through the sizing path — a layout apply is one of the
+    /// two push sources (replace-gtk-with-wayland D3), at the tween's start
+    /// when the apply animates (replace-gtk-with-wayland D7, issue #36) —
+    /// and write the geometry onto the two surfaces. Answers `NotLive` while
+    /// the output is unresolved or the surfaces are torn down — a panel with
+    /// nothing live cannot publish — `InvalidLayout` for a layout the output
+    /// refuses, and `Internal` for a grid the terminal cannot allocate
+    /// (issue #36); `Applied` otherwise.
     pub(crate) fn apply(&mut self, layout: Layout, duration_ms: u32) -> PublishOutcome {
         // The width animation (replace-gtk-with-wayland D7): a positive
         // duration between layouts that match in side and gutters tweens
@@ -203,15 +232,22 @@ impl PanelState {
     /// running (the reject-before-mutate order, overlay-expand D4) — and
     /// lifts the sizing defer, so the deferred grid pushes here, once,
     /// through the sizing path: the push the staging could not make while
-    /// the defer held.
+    /// the defer held. A push the terminal refuses reports `Internal`
+    /// (issue #36); when the staged layout is already committed — a snap
+    /// that interrupts a tween — the geometry is still written, so the
+    /// panel never rests at an intermediate width (spec, "No mid-state on
+    /// failure").
     fn apply_snap(&mut self, output: OutputSize, layout: Layout) -> PublishOutcome {
         let mut push = self.grid_sink();
         match self.apply_snap_against(output, layout, &mut push) {
-            Ok(geometry) => {
-                self.write_geometry(geometry);
-                PublishOutcome::Applied
+            Ok(outcome) => {
+                self.write_geometry(outcome.geometry);
+                match outcome.verdict {
+                    Ok(()) => PublishOutcome::Applied,
+                    Err(verdict) => verdict,
+                }
             }
-            Err(outcome) => outcome,
+            Err(verdict) => verdict,
         }
     }
 
@@ -232,14 +268,20 @@ impl PanelState {
         }
     }
 
-    /// The animated apply (replace-gtk-with-wayland D7): stage with the
-    /// push deferred, begin the tween from the current width, draw the
+    /// The animated apply (replace-gtk-with-wayland D7): stage, draw the
     /// grid once into the wide cache — kept from an equal retarget, drawn
-    /// fresh otherwise — commit the begin frame at the from width with the
-    /// first frame callback requested before that commit. The frames then
-    /// carry the size, margins, viewport crop, reserve zone and buffer
-    /// until the tween's finish applies the
-    /// final geometry and pushes the deferred grid.
+    /// fresh otherwise — push the target grid once at the tween's start
+    /// (the spec's "Terminal grid during a width animation": the resize
+    /// lands before the first frame; the cache was drawn from the pre-push
+    /// grid, so the frames show the same content the old deferred timing
+    /// showed), begin the tween from the current width and commit the begin
+    /// frame at the from width with the first frame callback requested
+    /// before that commit. The frames then carry the size, margins,
+    /// viewport crop, reserve zone and buffer until the tween's finish
+    /// applies the final geometry. A push the terminal refuses at the start
+    /// snaps the panel to the requested layout and reports `Internal`
+    /// (issue #36, spec "No mid-state on failure"): no tween began, so no
+    /// frame shows an intermediate width.
     fn apply_animated(
         &mut self,
         output: OutputSize,
@@ -251,10 +293,39 @@ impl PanelState {
             return PublishOutcome::InvalidLayout;
         };
 
-        // The stop relay before the begin (Anim::begin's rule): the
+        // The stop relay before the cache (Anim::begin's rule): the
         // previous tween's wide cache is taken, and an equal one survives
         // the retarget below.
         let previous = self.tween_draw.take();
+
+        // The wide cache (replace-gtk-with-wayland D7): a retarget keeps
+        // an equal one, otherwise the grid is drawn once into a fresh wide
+        // canvas. The upload and the scale read are the session's; the
+        // draw itself needs the render state, which the thread fills at
+        // start — a cache that cannot be built or kept snaps the apply,
+        // because a tween has nothing to present. Drawn from the pre-push
+        // grid: the start push below must not reflow the grid the frames
+        // draw.
+        let height = self.sizing.height();
+        let cache = self.build_tween_cache(previous, &staged, height);
+        let Some(holder) = cache else {
+            return self.apply_snap(output, layout);
+        };
+        self.tween_draw = Some(holder);
+
+        // The start push (issue #36): the terminal grid and the pty winsize
+        // resize once to the target columns here, before the tween begins
+        // (spec, "Terminal grid during a width animation"). The defer lifts
+        // for the one push and re-engages for the running tween, whose
+        // finish still pushes a mid-tween configure's recorded height. A
+        // refused push snaps the panel and reports `Internal`.
+        if self
+            .push_tween_start(staged.layout.cols(), &mut push)
+            .is_err()
+        {
+            return PublishOutcome::Internal;
+        }
+
         // The frame log (replace-gtk-with-wayland D7): built on the state,
         // which reads the
         // environment once and picks the session's presentation-time
@@ -267,19 +338,6 @@ impl PanelState {
             Instant::now(),
             frame_log,
         );
-
-        // The wide cache (replace-gtk-with-wayland D7): a retarget keeps
-        // an equal one, otherwise the grid is drawn once into a fresh wide
-        // canvas. The upload and the scale read are the session's; the
-        // draw itself needs the render state, which the thread fills at
-        // start — a cache that cannot be built or kept snaps the apply,
-        // because a tween has nothing to present.
-        let height = self.sizing.height();
-        let cache = self.build_tween_cache(previous, &staged, height);
-        let Some(holder) = cache else {
-            return self.apply_snap(output, layout);
-        };
-        self.tween_draw = Some(holder);
         // The begin frame's Wayland order (replace-gtk-with-wayland D7):
         // the first callback is requested before the commit it belongs to,
         // the same order every eased frame runs — committed first, the
@@ -287,6 +345,41 @@ impl PanelState {
         // callback would ever fire.
         self.request_and_commit_tween_frame(staged.from_px);
         PublishOutcome::Applied
+    }
+
+    /// The animated apply's start push (issue #36): the target grid pushes
+    /// once at the tween's start, before the first frame (spec, "Terminal
+    /// grid during a width animation"). The defer lifts for the one push
+    /// and re-engages for the running tween, whose finish still pushes a
+    /// mid-tween configure's recorded height. On a push the terminal
+    /// refuses, the previous grid stays, the tween never begins and the
+    /// panel snaps to the requested layout: the staged layout is already
+    /// committed, so the final geometry is written and no frame can show an
+    /// intermediate width (spec, "No mid-state on failure"). `Err` is that
+    /// refused push, reported as `PublishOutcome::Internal`.
+    pub(crate) fn push_tween_start(
+        &mut self,
+        cols: NonZeroU16,
+        push: &mut dyn FnMut(Grid) -> bool,
+    ) -> Result<(), PublishOutcome> {
+        self.sizing.defer_pushes(false);
+        let started = self.sizing.apply_columns(cols, push);
+        if started.is_err() {
+            // The grid cannot be allocated: the previous grid stays, the
+            // panel snaps to the requested layout and the call reports
+            // `Internal` (spec, "No mid-state on failure"). The stop relay
+            // clears the previous tween's state; this tween never began,
+            // so no frame shows an intermediate width. No tween runs
+            // afterwards — not even a retargeted previous one — so the
+            // sizing defer lifts with it.
+            self.tween_draw = None;
+            self.tween.cancel();
+            let geometry = self.committed_geometry();
+            self.write_geometry(geometry);
+            return Err(PublishOutcome::Internal);
+        }
+        self.sizing.defer_pushes(true);
+        Ok(())
     }
 
     /// Build the wide cache for a staged animated apply
@@ -341,20 +434,26 @@ impl PanelState {
     /// — drop the wide cache, cancel the driver, lift the sizing defer and
     /// push the deferred grid once through the sizing path. When no tween
     /// ran, the staging's own push already landed and this one is the
-    /// sizing's no-op, so either way the grid pushes exactly once.
+    /// sizing's no-op, so either way the grid pushes exactly once. A push
+    /// the terminal refuses (issue #36) reports `Internal` in the verdict
+    /// while the staged layout stays committed; the caller writes the
+    /// geometry either way (spec, "No mid-state on failure").
     pub(crate) fn apply_snap_against(
         &mut self,
         output: OutputSize,
         layout: Layout,
-        push: &mut dyn FnMut(Grid),
-    ) -> Result<SurfaceGeometry, PublishOutcome> {
+        push: &mut dyn FnMut(Grid) -> bool,
+    ) -> Result<SnapOutcome, PublishOutcome> {
         let geometry = self.apply_against(output, layout, push)?;
         self.tween_draw = None;
         self.tween.cancel();
         self.sizing.defer_pushes(false);
         let cols = self.applied.cols();
-        self.sizing.apply_columns(cols, push);
-        Ok(geometry)
+        let verdict = self
+            .sizing
+            .apply_columns(cols, push)
+            .map_err(|SizingPushFailed| PublishOutcome::Internal);
+        Ok(SnapOutcome { geometry, verdict })
     }
 
     /// The animated apply's staging half (replace-gtk-with-wayland D7):
@@ -371,7 +470,7 @@ impl PanelState {
         output: OutputSize,
         layout: Layout,
         duration_ms: u32,
-        push: &mut dyn FnMut(Grid),
+        push: &mut dyn FnMut(Grid) -> bool,
     ) -> Option<StagedTween> {
         let applied_px = grid_width_px(self.applied.cols(), self.cell)?;
         let target_px = grid_width_px(layout.cols(), self.cell)?;
@@ -412,24 +511,30 @@ impl PanelState {
 
     /// The apply's decision and state half, against an output the caller
     /// names and with the grid pushes observed through `push`
-    /// (`port-to-rust` D10): validate and stage, move the held gap, and push
-    /// the derived grid through the sizing path — a layout apply is one of
-    /// the two push sources (replace-gtk-with-wayland D3), and a repeated
-    /// apply of the same columns derives the same grid and pushes nothing. Returns the geometry the
-    /// caller writes onto the surfaces; `Err` is the publish verdict and
-    /// stages nothing.
+    /// (`port-to-rust` D10): validate and stage, push the derived grid
+    /// through the sizing path — a layout apply is one of the two push
+    /// sources (replace-gtk-with-wayland D3), and a repeated apply of the
+    /// same columns derives the same grid and pushes nothing — and move the
+    /// held gap and the applied layout only after the push landed (issue
+    /// #36): a push the terminal refuses stages nothing, so the applied
+    /// layout and the held gap stay as they were and the surfaces keep the
+    /// previous geometry (spec, "The library never exits"). Returns the
+    /// geometry the caller writes onto the surfaces; `Err` is the publish
+    /// verdict.
     pub(crate) fn apply_against(
         &mut self,
         output: OutputSize,
         layout: Layout,
-        push: &mut dyn FnMut(Grid),
+        push: &mut dyn FnMut(Grid) -> bool,
     ) -> Result<SurfaceGeometry, PublishOutcome> {
         let Some(staged) = stage(output, self.cell, self.held, layout) else {
             return Err(PublishOutcome::InvalidLayout);
         };
+        self.sizing
+            .apply_columns(staged.layout.cols(), push)
+            .map_err(|SizingPushFailed| PublishOutcome::Internal)?;
         self.held = staged.held_gap;
         self.applied = staged.layout;
-        self.sizing.apply_columns(staged.layout.cols(), push);
         Ok(surface_geometry(&staged, self.cell))
     }
 }

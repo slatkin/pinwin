@@ -3,7 +3,7 @@ use super::*;
 use crate::fontconfig::FontConfig;
 use crate::layout::{CellSize, Keyboard, Layout, OutputSize, Side};
 use crate::panel::PinwinError;
-use crate::panel::handshake::{Handshake, map_start};
+use crate::panel::handshake::{Handshake, PublishOutcome, map_start};
 use crate::panel::wayland_side::sizing::Sizing;
 use crate::pty::attach_calloop;
 use crate::render::font::FontBook;
@@ -86,7 +86,10 @@ fn the_thread_measures_the_cell_the_sizing_uses() {
         test_wiring_with(&poisoned, renderer),
     );
     let mut pushed: Vec<Grid> = Vec::new();
-    state.configure_grid(1080, &mut |grid| pushed.push(grid));
+    let _ = state.configure_grid(1080, &mut |grid| {
+        pushed.push(grid);
+        true
+    });
     assert_eq!(pushed.len(), 1, "the configure pushes the startup grid");
     assert_eq!(pushed[0].cols(), 40, "the columns come from the layout");
     assert_eq!(
@@ -184,7 +187,10 @@ fn the_byte_path_records_and_clears_the_widened_grid() {
     let grid_of = |cols: u16| {
         let mut sizing = Sizing::new(NonZeroU16::new(cols).expect("cols"), cell);
         let mut out = None;
-        sizing.configure(64, &mut |grid| out = Some(grid));
+        let _ = sizing.configure(64, &mut |grid| {
+            out = Some(grid);
+            true
+        });
         out.expect("the configure pushes")
     };
     // A widening push from 40 to 120 columns records 40 * 9.
@@ -213,6 +219,90 @@ fn the_byte_path_records_and_clears_the_widened_grid() {
     terminal.borrow_mut().push_pty_data(b"hi");
     assert_eq!(stale.get(), 0, "the output cleared the record");
     assert!(repaint.get(), "the output latched the repaint flag");
+}
+
+/// A push the terminal refuses reports `false` (issue #36): the previous
+/// grid stays, the stale record does not move and no repaint is asked —
+/// the callers keep the previous grid and a later push retries.
+#[test]
+fn a_refused_push_reports_false_and_changes_nothing() {
+    let cell = CellSize::new(9, 16).expect("test cell size is non-zero");
+    let path = byte_path(Poisoned::new(), -1);
+    path.terminal.borrow_mut().fail_init();
+    let BytePath {
+        terminal,
+        repaint,
+        stale_grid_px: stale,
+        ..
+    } = path;
+    // A grid of `cols` columns at the test cell, the way the sizing
+    // derives one for a configure.
+    let grid_of = |cols: u16| {
+        let mut sizing = Sizing::new(NonZeroU16::new(cols).expect("cols"), cell);
+        let mut out = None;
+        let _ = sizing.configure(64, &mut |grid| {
+            out = Some(grid);
+            true
+        });
+        out.expect("the configure pushes")
+    };
+    let before_cols = terminal.borrow().cols();
+    let refused = push_grid(
+        &terminal,
+        &repaint,
+        stale.as_ref(),
+        -1,
+        FractionalScale::from_120ths(120),
+        grid_of(120),
+    );
+    assert!(!refused, "the refused push reports it");
+    assert_eq!(
+        terminal.borrow().cols(),
+        before_cols,
+        "the previous grid stays"
+    );
+    assert_eq!(stale.get(), 0, "the stale record does not move");
+    assert!(!repaint.get(), "no repaint was asked");
+}
+
+/// A snap apply whose terminal refuses the grid reports `Internal`
+/// through the state's own sink (issue #36): the terminal keeps the
+/// previous grid, the pty winsize stays as it was, the stale record does
+/// not move and no repaint is asked.
+#[test]
+fn a_snap_whose_terminal_refuses_the_grid_reports_internal() {
+    let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");
+    block_sigwinch();
+    let (mut state, terminal, repaint, stale_px, _pty) = state_over_pty(&master);
+    // From here every push refuses: the sticky failed-init rule, set
+    // before the first push so the terminal never creates its handles.
+    terminal.borrow_mut().fail_init();
+    let mut sink = state.grid_sink();
+    let _ = state.configure_grid(1080, &mut sink);
+    let before_winsize = read_winsize(master.as_raw_fd());
+
+    let mut sink = state.grid_sink();
+    let outcome = state.apply_snap_against(
+        output(1920, 1080),
+        layout(Side::Left, 120, 0, 0, 0, 0),
+        &mut sink,
+    );
+    assert_eq!(outcome.unwrap_err(), PublishOutcome::Internal);
+    assert_eq!(
+        (
+            read_winsize(master.as_raw_fd()).ws_col,
+            read_winsize(master.as_raw_fd()).ws_row
+        ),
+        (before_winsize.ws_col, before_winsize.ws_row),
+        "no winsize went out"
+    );
+    assert_eq!(
+        terminal.borrow().cols(),
+        40,
+        "the terminal keeps the previous grid"
+    );
+    assert_eq!(stale_px.get(), 0, "the stale record does not move");
+    assert!(!repaint.get(), "no repaint was asked");
 }
 
 /// The seat links the thread's pieces build: a focus
@@ -452,14 +542,14 @@ fn one_apply_pushes_the_winsize_and_the_terminal_grid_once() {
     let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");
     block_sigwinch();
     let (mut state, terminal, repaint, _stale, _pty) = state_over_pty(&master);
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
     let target = layout(Side::Left, 120, 0, 0, 0, 0);
 
     let mut sink = state.grid_sink();
     let pushes = Cell::new(0usize);
     let mut counted = |grid: Grid| {
         pushes.set(pushes.get() + 1);
-        sink(grid);
+        sink(grid)
     };
     state
         .apply_against(output(1920, 1080), target, &mut counted)
@@ -474,7 +564,7 @@ fn one_apply_pushes_the_winsize_and_the_terminal_grid_once() {
     let pushes = Cell::new(0usize);
     let mut counted = |grid: Grid| {
         pushes.set(pushes.get() + 1);
-        sink(grid);
+        sink(grid)
     };
     state
         .apply_against(output(1920, 1080), target, &mut counted)
@@ -491,13 +581,13 @@ fn a_deferred_tween_end_push_pushes_the_winsize_and_the_grid_once() {
     let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");
     block_sigwinch();
     let (mut state, terminal, repaint, _stale, _pty) = state_over_pty(&master);
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
 
     let mut sink = state.grid_sink();
     let pushes = Cell::new(0usize);
     let mut counted = |grid: Grid| {
         pushes.set(pushes.get() + 1);
-        sink(grid);
+        sink(grid)
     };
     let _ = state.stage_animated(
         output(1920, 1080),
@@ -527,13 +617,13 @@ fn a_snap_during_a_tween_pushes_the_winsize_and_the_grid_once() {
     let master = std::fs::File::open("/dev/ptmx").expect("open /dev/ptmx");
     block_sigwinch();
     let (mut state, terminal, repaint, _stale, _pty) = state_over_pty(&master);
-    state.sizing.configure(1080, &mut |_| {});
+    let _ = state.sizing.configure(1080, &mut |_| true);
 
     let mut sink = state.grid_sink();
     let pushes = Cell::new(0usize);
     let mut counted = |grid: Grid| {
         pushes.set(pushes.get() + 1);
-        sink(grid);
+        sink(grid)
     };
     let _ = state.stage_animated(
         output(1920, 1080),

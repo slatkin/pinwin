@@ -60,6 +60,15 @@ impl Grid {
     }
 }
 
+/// A grid push the terminal refused (issue #36): `push_size` could not
+/// allocate the new grid, so the previous one stays and the sizing records
+/// nothing — a later apply or configure derives the same grid and retries.
+/// The apply paths map this onto `PublishOutcome::Internal` and the spec's
+/// `PinwinError::Internal`; the non-apply callers keep the previous grid
+/// and move on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SizingPushFailed;
+
 /// Whether the panel has seen a configure yet, and which height it named.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
@@ -107,11 +116,12 @@ impl Sizing {
         }
     }
 
-    /// The defer mode (D7): while a width tween runs, the grid and pty
-    /// push waits for the tween's finish — an animated apply and a mid-tween
-    /// configure record their inputs (the columns and the height) without
-    /// deriving or pushing, and the finish pushes once from the latest of
-    /// both.
+    /// The defer mode (D7, narrowed by issue #36): while a width tween
+    /// runs, a mid-tween configure's push waits for the tween's finish —
+    /// the tween's own target grid pushes at the animation's start, so
+    /// only a configure arriving while the tween runs records its input
+    /// without deriving or pushing, and the finish pushes once from the
+    /// latest of both.
     pub fn defer_pushes(&mut self, deferred: bool) {
         self.deferred = deferred;
     }
@@ -160,8 +170,8 @@ impl Sizing {
     #[must_use]
     pub fn started(cols: NonZeroU16, cell: CellSize, height: u32) -> Self {
         let mut sizing = Self::new(cols, cell);
-        let mut sink = |_: Grid| {};
-        sizing.configure(height, &mut sink);
+        let mut sink = |_: Grid| true;
+        let _ = sizing.configure(height, &mut sink);
         sizing
     }
 
@@ -171,26 +181,41 @@ impl Sizing {
     /// when its height is new and the derived grid differs from the pushed
     /// one. A configure that repeats the previous height never pushes, however
     /// often the compositor sends it.
-    pub fn configure(&mut self, height: u32, push: &mut dyn FnMut(Grid)) {
+    ///
+    /// A push the sink refuses (issue #36) records the height but leaves the
+    /// pushed grid and the live columns alone, so a later configure at a
+    /// different height, or an apply, derives a grid the pushed record does
+    /// not name and retries. `Err` is the refused push, not the repeated
+    /// height or a degenerate cell — neither of those attempts a push.
+    pub fn configure(
+        &mut self,
+        height: u32,
+        push: &mut dyn FnMut(Grid) -> bool,
+    ) -> Result<(), SizingPushFailed> {
         if let Stage::Running { height: previous } = self.stage
             && previous == height
         {
-            return;
+            return Ok(());
         }
         let Some(rows) = rows_for_height(height, self.cell) else {
-            return;
+            return Ok(());
         };
         self.stage = Stage::Running { height };
         if self.deferred {
             // The tween's finish derives and pushes once from the latest
             // height (D7); this configure only records the input.
-            return;
+            return Ok(());
         }
         let grid = Grid::new(self.cols.get(), rows, self.cell);
-        if self.pushed != Some(grid) {
-            push(grid);
+        if self.pushed == Some(grid) {
+            return Ok(());
+        }
+        if push(grid) {
             self.pushed = Some(grid);
             self.live = NonZeroU16::new(grid.cols).unwrap_or(self.live);
+            Ok(())
+        } else {
+            Err(SizingPushFailed)
         }
     }
 
@@ -200,24 +225,40 @@ impl Sizing {
     /// the pushed one. Before the first configure there is no height to
     /// derive from, so the apply only records the columns; the next configure
     /// derives with them.
-    pub fn apply_columns(&mut self, cols: NonZeroU16, push: &mut dyn FnMut(Grid)) {
+    ///
+    /// A push the sink refuses (issue #36) records nothing — not the columns,
+    /// not the pushed grid, not the live columns — so the applied layout the
+    /// caller stages stays unchanged and the next apply derives the same grid
+    /// and retries. `Err` is the refused push.
+    pub fn apply_columns(
+        &mut self,
+        cols: NonZeroU16,
+        push: &mut dyn FnMut(Grid) -> bool,
+    ) -> Result<(), SizingPushFailed> {
+        let previous_cols = self.cols;
         self.cols = cols;
         if self.deferred {
             // The same defer as `configure`'s: the finish derives and
             // pushes once from the recorded columns and height.
-            return;
+            return Ok(());
         }
         let Stage::Running { height } = self.stage else {
-            return;
+            return Ok(());
         };
         let Some(rows) = rows_for_height(height, self.cell) else {
-            return;
+            return Ok(());
         };
         let grid = Grid::new(cols.get(), rows, self.cell);
-        if self.pushed != Some(grid) {
-            push(grid);
+        if self.pushed == Some(grid) {
+            return Ok(());
+        }
+        if push(grid) {
             self.pushed = Some(grid);
             self.live = NonZeroU16::new(grid.cols).unwrap_or(self.live);
+            Ok(())
+        } else {
+            self.cols = previous_cols;
+            Err(SizingPushFailed)
         }
     }
 }
@@ -266,15 +307,27 @@ mod tests {
         let mut sizing = Sizing::started(cols(40), cell(9, 16), 1080);
         let mut pushed = Recorder::default();
 
-        sizing.configure(1080, &mut |grid| pushed.push(grid));
-        sizing.configure(1080, &mut |grid| pushed.push(grid));
-        sizing.configure(1080, &mut |grid| pushed.push(grid));
+        let _ = sizing.configure(1080, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
+        let _ = sizing.configure(1080, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
+        let _ = sizing.configure(1080, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert!(
             pushed.grids.is_empty(),
             "repeated configures at the startup height push nothing"
         );
 
-        sizing.configure(1040, &mut |grid| pushed.push(grid));
+        let _ = sizing.configure(1040, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert_eq!(pushed.grids.len(), 1, "exactly one resize");
         let grid = pushed.grids[0];
         assert_eq!(grid.cols(), 40, "the columns come from the layout");
@@ -289,12 +342,21 @@ mod tests {
         let mut sizing = Sizing::new(cols(40), cell(9, 16));
         let mut pushed = Recorder::default();
 
-        sizing.configure(1080, &mut |grid| pushed.push(grid));
+        let _ = sizing.configure(1080, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert_eq!(pushed.grids.len(), 1, "the startup apply pushes");
         assert_eq!(pushed.grids[0].rows(), 1080 / 16);
 
-        sizing.configure(1080, &mut |grid| pushed.push(grid));
-        sizing.configure(1080, &mut |grid| pushed.push(grid));
+        let _ = sizing.configure(1080, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
+        let _ = sizing.configure(1080, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert_eq!(pushed.grids.len(), 1, "repeated configures push nothing");
     }
 
@@ -307,7 +369,10 @@ mod tests {
         let mut pushed = Recorder::default();
 
         // 1080 and 1087 both hold 67 rows at a 16 px cell.
-        sizing.configure(1087, &mut |grid| pushed.push(grid));
+        let _ = sizing.configure(1087, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert!(pushed.grids.is_empty(), "the grid is unchanged");
     }
 
@@ -318,12 +383,18 @@ mod tests {
         let mut sizing = Sizing::started(cols(40), cell(9, 16), 1080);
         let mut pushed = Recorder::default();
 
-        sizing.apply_columns(cols(60), &mut |grid| pushed.push(grid));
+        let _ = sizing.apply_columns(cols(60), &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert_eq!(pushed.grids.len(), 1, "the widened layout pushes");
         assert_eq!(pushed.grids[0].cols(), 60);
         assert_eq!(pushed.grids[0].rows(), 1080 / 16, "the rows stay");
 
-        sizing.apply_columns(cols(60), &mut |grid| pushed.push(grid));
+        let _ = sizing.apply_columns(cols(60), &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert_eq!(pushed.grids.len(), 1, "the same columns push nothing");
     }
 
@@ -335,10 +406,16 @@ mod tests {
         let mut sizing = Sizing::new(cols(40), cell(9, 16));
         let mut pushed = Recorder::default();
 
-        sizing.apply_columns(cols(60), &mut |grid| pushed.push(grid));
+        let _ = sizing.apply_columns(cols(60), &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert!(pushed.grids.is_empty(), "no height, no push");
 
-        sizing.configure(1080, &mut |grid| pushed.push(grid));
+        let _ = sizing.configure(1080, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert_eq!(pushed.grids.len(), 1, "the next configure derives");
         assert_eq!(pushed.grids[0].cols(), 60, "with the applied columns");
     }
@@ -369,14 +446,17 @@ mod tests {
         let started = Sizing::started(cols(40), cell(9, 16), 1080);
         let mut from_scratch = Sizing::new(cols(40), cell(9, 16));
         let mut pushed = Recorder::default();
-        from_scratch.configure(1080, &mut |grid| pushed.push(grid));
+        let _ = from_scratch.configure(1080, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
 
         assert_eq!(started.pushed, from_scratch.pushed);
         assert_eq!(pushed.grids.len(), 1);
     }
 
-    /// The defer mode (D7): while it is on, an animated apply and a
-    /// mid-tween configure record their inputs without deriving or pushing,
+    /// The defer mode (D7, narrowed by issue #36): while it is on, a
+    /// mid-tween configure records its input without deriving or pushing,
     /// and the finish's plain `apply_columns` pushes once from the latest
     /// of both — the new columns, the rows of the latest configure height.
     #[test]
@@ -385,9 +465,15 @@ mod tests {
         let mut pushed = Recorder::default();
 
         sizing.defer_pushes(true);
-        sizing.apply_columns(cols(120), &mut |grid| pushed.push(grid));
+        let _ = sizing.apply_columns(cols(120), &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert!(pushed.grids.is_empty(), "a deferred apply pushes nothing");
-        sizing.configure(1040, &mut |grid| pushed.push(grid));
+        let _ = sizing.configure(1040, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert!(
             pushed.grids.is_empty(),
             "a deferred configure pushes nothing"
@@ -399,7 +485,10 @@ mod tests {
 
         // The finish lifts the defer and pushes once.
         sizing.defer_pushes(false);
-        sizing.apply_columns(cols(120), &mut |grid| pushed.push(grid));
+        let _ = sizing.apply_columns(cols(120), &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert_eq!(pushed.grids.len(), 1, "the finish pushes once");
         assert_eq!(pushed.grids[0].cols(), 120, "the tweened columns");
         assert_eq!(
@@ -410,7 +499,10 @@ mod tests {
         assert_eq!(sizing.live_cols(), cols(120));
 
         // A configure repeating the pushed grid still pushes nothing.
-        sizing.configure(1040, &mut |grid| pushed.push(grid));
+        let _ = sizing.configure(1040, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert_eq!(pushed.grids.len(), 1);
     }
 
@@ -423,18 +515,95 @@ mod tests {
         assert_eq!(sizing.height(), None, "no configure, no height");
 
         sizing.defer_pushes(true);
-        sizing.apply_columns(cols(60), &mut |_grid| panic!("no push"));
+        let _ = sizing.apply_columns(cols(60), &mut |_grid| panic!("no push"));
         assert_eq!(
             sizing.live_cols(),
             cols(40),
             "the push is still the old one"
         );
 
-        sizing.configure(1080, &mut |_grid| panic!("no push"));
+        let _ = sizing.configure(1080, &mut |_grid| panic!("no push"));
         sizing.defer_pushes(false);
         let mut pushed = Recorder::default();
-        sizing.apply_columns(cols(60), &mut |grid| pushed.push(grid));
+        let _ = sizing.apply_columns(cols(60), &mut |grid| {
+            pushed.push(grid);
+            true
+        });
         assert_eq!(pushed.grids.len(), 1, "the finish derives and pushes");
         assert_eq!(pushed.grids[0].cols(), 60);
+    }
+
+    /// A push the sink refuses records nothing (issue #36): the pushed
+    /// grid and the live columns stay at the previous grid, the recorded
+    /// columns revert, and the next apply derives the same grid and
+    /// retries it.
+    #[test]
+    fn a_refused_apply_push_records_nothing_and_the_next_apply_retries() {
+        let mut sizing = Sizing::started(cols(40), cell(9, 16), 1080);
+        let mut attempts = 0usize;
+        assert_eq!(
+            sizing.apply_columns(cols(120), &mut |_: Grid| {
+                attempts += 1;
+                false
+            },),
+            Err(SizingPushFailed),
+            "the refusal is the apply's outcome"
+        );
+        assert_eq!(attempts, 1, "the push was attempted once");
+        assert_eq!(sizing.live_cols(), cols(40), "the live columns stay");
+        assert_eq!(
+            sizing.current_grid().map(|grid| grid.cols()),
+            Some(40),
+            "the terminal's grid is the previous one"
+        );
+
+        // The next apply derives the same grid and retries it.
+        let mut pushed = Recorder::default();
+        assert_eq!(
+            sizing.apply_columns(cols(120), &mut |grid| {
+                pushed.push(grid);
+                true
+            }),
+            Ok(())
+        );
+        assert_eq!(pushed.grids.len(), 1, "the retry pushes");
+        assert_eq!(pushed.grids[0].cols(), 120);
+        assert_eq!(sizing.live_cols(), cols(120), "the success records");
+    }
+
+    /// A configure whose push the sink refuses records the height but
+    /// keeps the previous grid; a later configure at a different height
+    /// derives a grid the pushed record does not name and retries.
+    #[test]
+    fn a_refused_configure_keeps_the_previous_grid_and_a_later_one_retries() {
+        let mut sizing = Sizing::started(cols(40), cell(9, 16), 1080);
+        assert_eq!(
+            sizing.configure(1040, &mut |_| false),
+            Err(SizingPushFailed),
+            "the refusal is the configure's outcome"
+        );
+        assert_eq!(sizing.height(), Some(1040), "the height is recorded");
+        assert_eq!(
+            sizing.current_grid().map(|grid| grid.cols()),
+            Some(40),
+            "the terminal's grid is the previous one"
+        );
+
+        // A repeated configure at the refused height pushes nothing (the
+        // early return); one at a different height retries.
+        let mut pushed = Recorder::default();
+        let _ = sizing.configure(1040, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
+        assert!(
+            pushed.grids.is_empty(),
+            "the repeated height pushes nothing"
+        );
+        let _ = sizing.configure(1000, &mut |grid| {
+            pushed.push(grid);
+            true
+        });
+        assert_eq!(pushed.grids.len(), 1, "the different height retries");
     }
 }

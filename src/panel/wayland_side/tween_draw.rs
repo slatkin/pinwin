@@ -242,11 +242,11 @@ impl TweenDraw {
     }
 
     /// Whether this holder's wide cache can serve a retarget (D7): the same
-    /// wide width at the same scale drew the same canvas — the live grid
-    /// and the height it was drawn at cannot have changed while the tween
-    /// ran, because the grid push is deferred and the height waits for the
-    /// finish. An equal cache is kept; a different one is rebuilt and
-    /// redrawn.
+    /// wide width at the same scale drew the same canvas — the grid the
+    /// canvas was drawn from and the height it was drawn at cannot have
+    /// changed while the tween ran, because the cache is drawn before the
+    /// tween's start push (issue #36) and the height waits for the finish.
+    /// An equal cache is kept; a different one is rebuilt and redrawn.
     #[must_use]
     pub(crate) fn keeps(&self, crop: TweenCrop, scale: FractionalScale) -> bool {
         self.crop == crop && self.scale == scale
@@ -302,16 +302,30 @@ impl TweenDraw {
         self.stale
     }
 
-    /// Redraw the cache from the live terminal: the same crop,
-    /// height, scale and grid width the first draw used, through the
-    /// renderer's passes into a fresh wide canvas, re-uploaded into the
-    /// pool buffer when the compositor has a viewport. `false` is a draw
-    /// or upload that was refused: the previous canvas and buffer stay in
-    /// place and the frame is skipped, so the next one retries.
+    /// Redraw the cache from the live terminal: the same crop, height and
+    /// scale the first draw used, through the renderer's passes into a fresh
+    /// wide canvas, re-uploaded into the pool buffer when the compositor has
+    /// a viewport. The docked-edge offset keys against the live terminal's
+    /// current grid — the animated apply pushes the target grid at the
+    /// tween's start (issue #36), so the live grid can be wider than the
+    /// grid the first draw used, and the redraw must anchor the content it
+    /// actually paints. `false` is a draw or upload that was refused: the
+    /// previous canvas and buffer stay in place and the frame is skipped,
+    /// so the next one retries.
     pub(crate) fn redraw(&mut self, render: &TweenRender, pool: &mut BufferPool) -> bool {
-        let Some(draw) = self.crop.wide_draw(self.height, self.grid_px, self.scale) else {
+        // Unreachable for a real terminal — a positive cell pitch and
+        // non-negative columns — handled: a refused width skips the frame
+        // like any other refused redraw.
+        let Ok(cell_w) = i32::try_from(render.terminal.borrow().cell_w()) else {
             return false;
         };
+        let Some(live_px) = i32::from(render.terminal.borrow().cols()).checked_mul(cell_w) else {
+            return false;
+        };
+        let Some(draw) = self.crop.wide_draw(self.height, live_px, self.scale) else {
+            return false;
+        };
+        self.grid_px = live_px;
         let canvas = {
             let mut renderer = render.renderer.borrow_mut();
             renderer.paint_wide(draw, &mut render.terminal.borrow_mut())

@@ -370,7 +370,8 @@ thread, or inside a terminal or Wayland callback) are error values or degraded s
 `exit()`, abort or an unwinding panic that crosses the library's API. After a panic inside the
 library, the panel SHALL stop drawing and applying layouts and every later call on its handle
 SHALL return `Err(PinwinError::Internal)`. Terminal allocation failure keeps the previous grid
-and surfaces as `PinwinError::Internal`.
+and surfaces as `PinwinError::Internal`; an animated apply whose allocation fails instead
+leaves the panel snapped to the requested layout, as "No mid-state on failure" requires.
 
 #### Scenario: Bad layout does not kill the host
 - **WHEN** the host applies a layout the monitor cannot hold
@@ -783,8 +784,9 @@ keyboard mode.
 
 Neither hiding nor showing SHALL change the terminal grid or the pty window size, and neither
 SHALL raise a `SIGWINCH`. No frame SHALL show the panel at another size. Two cases are
-exempt. A width animation that a hide ends runs its deferred grid resize as it would at its
-own end. If the output's height changed while the panel was hidden, the configure that a show
+exempt. A width animation that a hide ends has already resized the grid at the animation's
+start, so the hide runs no grid resize of its own; a height a configure recorded while the
+tween ran still pushes as it would at the tween's own end. If the output's height changed while the panel was hidden, the configure that a show
 receives resizes the grid and the pty like any other configure with a new height. While the panel is
 hidden, a layout apply SHALL validate and store the layout as it does when shown, with no
 animation and nothing on screen. The next show uses that layout.
