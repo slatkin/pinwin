@@ -47,7 +47,7 @@ calloop-wayland-source = "0.4"
 # carries no consumed modifiers or level-0 keysym, so the seat side keeps a
 # keymap and state of its own. Same 0.8 line the toolkit pins, so one shared
 # build.
-xkbcommon = "0.8"
+xkbcommon = "0.9"
 
 # The renderer's CPU stack (replace-gtk-with-wayland D5/D6, row 2.1):
 # tiny-skia fills and scales, swash shapes and rasterizes, fontconfig resolves
