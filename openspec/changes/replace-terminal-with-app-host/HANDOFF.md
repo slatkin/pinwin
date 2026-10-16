@@ -57,7 +57,7 @@ A Wayland proxy, built on the `wl-proxy` Rust crate:
    bar use the IPC. Draft command set: `toggle`, `show`, `hide`,
    `set-edge`, `set-size`, `resize`, `set-output`, `set-layer`,
    `set-reserve`, `set-keyboard`, `focus`, `list-windows`, `set-policy`,
-   `status`, `subscribe` (events), `quit`, `restart-app`, `reload`.
+   `status`, `subscribe` (events), `quit`, `reload`.
 7. A config file (for example `~/.config/pinwin/config.toml`) with
    `[panel.defaults]` and per-name `[panel.<name>]` overrides. Precedence:
    launch flags, then per-name, then defaults. Runtime IPC changes do not
@@ -74,12 +74,13 @@ A Wayland proxy, built on the `wl-proxy` Rust crate:
 11. Single-instance apps (Ghostty without `--gtk-single-instance=false`,
     Firefox, Chromium, Electron) can escape the proxy. This is the user's
     problem. Document it once, do nothing more.
+12. The caller runs the app: `pinwin run --name <n> -- <cmd>` asks the
+    daemon for a panel socket, sets `WAYLAND_DISPLAY`, and runs the command
+    itself. The app keeps the caller's working folder and environment. The
+    daemon does not own the app process, so `restart-app` is not in the IPC.
 
 ## Proposed, not yet confirmed
 
-- The caller runs the app: `pinwin run --name <n> -- <cmd>` asks the
-  daemon for a panel socket, sets `WAYLAND_DISPLAY`, and runs the command
-  itself. The app keeps the caller's working folder and environment.
 - `pinwin run` starts the daemon if it is not running.
 - Toplevel policy: the first toplevel goes into the panel; later toplevels
   (dialogs, file pickers) pass through as normal windows.
@@ -89,20 +90,11 @@ A Wayland proxy, built on the `wl-proxy` Rust crate:
 
 ## Open questions
 
-1. Umbriel scratchpad (the user wants to explore this next). The user runs
-   the Umbriel compositor (docs: https://docs.noctalia.dev/umbriel/), not
-   niri. Umbriel has scratchpad and pinned windows plus a local IPC. Find
-   out: can a scratchpad or pinned window reserve an edge strip so tiled
-   windows shrink, or does it only float on top? Can it animate? This
-   decides how much of pinwin is still needed on Umbriel.
-2. Umbriel support for layer-shell popups and exclusive zones with its
-   scrolling layout is not verified. A live test with plain wl-paper on
-   Umbriel answers it. The user runs all live tests.
-3. Tween risks to design for: an app with its own `wp_viewport` (Firefox,
+1. Tween risks to design for: an app with its own `wp_viewport` (Firefox,
    Chromium) needs our crop combined with its source and destination;
    injected commits must not commit the app's half-finished pending state;
    with no viewporter the width snaps.
-4. Daemon crash ends every wrapped app's Wayland connection. Do not use
+2. Daemon crash ends every wrapped app's Wayland connection. Do not use
    `panic = "abort"`; the daemon must survive bad input.
 
 ## Rules for the next agent

@@ -32,13 +32,12 @@ panel can be a real Ghostty and pinwin can stop being a terminal.
   preferences, including `exit_when_idle`.
 - Changed: panel width is in pixels or a percent of the output, not in
   terminal columns.
+- New: a panel can dock at any of the four edges (today only left and
+  right).
+- Kept: the optional focus ring, now drawn by pinwin over the hosted app.
 - Kept: the width tween, done by the proxy with the same viewport-crop
   method as today, so the app redraws once per tween.
 - **BREAKING** License changes from MIT to GPL-3.0.
-
-Open question carried into design: what Umbriel's scratchpad and pinned
-windows already give (strip reservation, animation), and how that affects
-the scope on that compositor.
 
 ## Capabilities
 
