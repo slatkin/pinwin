@@ -121,7 +121,7 @@ below). Its code does not enter pinwin; only the findings do.
   (spec "Size values"). Verify: unit tests for "No visible length", "Too wide for the
   output", "Covering panel wider than the output", "Percent of the output", "Percent follows
   the output" and "Invalid size" pass.
-- [ ] 3.3 Adapt `src/proxy/crop.rs` to an `Edge`, so top and bottom panels crop the height.
+- [x] 3.3 Adapt `src/proxy/crop.rs` to an `Edge`, so top and bottom panels crop the height.
   Verify: crop unit tests pass for all four edges, including a right and a bottom shrink that
   stays at the docked edge.
 
