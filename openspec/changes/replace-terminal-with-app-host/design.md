@@ -195,6 +195,27 @@ No `wp_viewporter`: the change snaps (spec).
 `upload_wide`, `copy_crop`): the app draws the wide buffer, and there is no no-viewporter
 copy.
 
+Spike findings (row 1.2, hide/show spike; findings, not decisions):
+
+- D6 amendment 1: on show the proxy must send the layer-surface state again (size, margins,
+  anchors, exclusive zone, keyboard interactivity) before the commit with no buffer; smithay
+  clears the cached layer state on the unmap commit, otherwise the compositor answers with a
+  default, centred, wrong-size configure.
+- D6 amendment 2: a same-size configure does not make GTK3 redraw, so the surface never maps;
+  the proxy keeps the app's last visible buffer over the hide and attaches it after the app
+  acks the show configure.
+- D6 amendment 3 (release ownership): the proxy sends the app exactly one `wl_buffer.release`
+  per attach it dropped; it counts releases per buffer; an attach the proxy makes itself owns
+  its own release, which is swallowed and never forwarded. A second release for a buffer GTK3
+  considers free makes it abort.
+- D6 note: frame callbacks of an unmapped surface may still fire (compositor dependent), so
+  the app may keep drawing while hidden; attach is dropped and released each frame.
+- D8 rule: a client can create its `wp_viewport` before the panel exists (foot, GLFW/kitty);
+  a surface has one viewport, so the proxy creates its own only if the surface has none
+  (otherwise the compositor raises `viewport_exists` and closes the proxy connection). Such
+  clients get no client-side-decoration crop. Composing the app's viewport (D8) is still not
+  implemented.
+
 ### D9. Geometry in pixels for four edges
 
 `src/layout.rs` and `src/surfaces/gap.rs` become one pure geometry module: an `Edge`

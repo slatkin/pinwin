@@ -37,6 +37,21 @@ below). Its code does not enter pinwin; only the findings do.
   fake `wl_buffer.release` while hidden (D6). The user toggles 20 times with the app drawing,
   and checks: no protocol error, no wrong-size frame, the app redraws on show. Record the
   answer here.
+
+  Recorded answer (the user's words, word for word):
+
+  - galculator, first build: "show hide is fail. it hid it but then shows never showed it
+    again. it would reserve space for it, but nothing appeared."
+  - galculator, after the kept-buffer fix: "came back the second and third time, then:"
+    followed by a GTK abort (Gdk-WARNING buffer_release_callback, then a
+    cairo_surface_reference assertion, SIGABRT).
+  - galculator, after the release-accounting fix: "the first test is pass all the way."
+  - paw yes, first build: "second one fails on execute" (paw and kitty died before the
+    first configure; `kitty yes` printed an EGL error).
+  - paw yes, after the viewport fix: "the paw test is pass".
+  - code: "nothing." (no window appeared; the cause was not found; parked for row 1.3).
+
+  Kitty was not reported after the viewport fix.
 - [ ] 1.3 Add one grow and one shrink tween with the viewport crop and the piggyback-or-inject
   commit rule (D7, D8), with and without an app that sets its own viewport (a browser). The
   user checks: smooth width change, content stays at the docked edge, the app gets one size.
