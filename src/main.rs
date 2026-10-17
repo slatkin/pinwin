@@ -27,6 +27,7 @@ use crate::config::Config;
 use crate::daemon::DaemonSocket;
 use crate::daemon::SocketError;
 use crate::daemon::lifetime::{Daemon, Lifetime, SignalFd};
+use crate::guard::{Poisoned, guard};
 use crate::ipc::{Answer, CallError, ErrorKind, Request, Subscription};
 use crate::run::Exec;
 
@@ -54,6 +55,18 @@ const INVALID_CONFIG: u8 = 2;
 const COMMAND_NOT_FOUND: u8 = 127;
 
 fn main() -> ExitCode {
+    let poisoned = Poisoned::new();
+    let Ok(code) = guard(&poisoned, dispatch) else {
+        eprintln!("pinwin: a panic stopped the command");
+        return ExitCode::FAILURE;
+    };
+    code
+}
+
+/// Parse the command line and run the named command. The whole body runs
+/// under [`main`]'s D5 guard, so a panic in a subcommand reports an internal
+/// failure instead of unwinding out of the process.
+fn dispatch() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     match cli::parse_args(&args) {
         Ok(Command::Run(run)) => run_app(&run),

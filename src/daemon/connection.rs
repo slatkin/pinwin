@@ -25,7 +25,8 @@ use std::time::Duration;
 use super::create;
 use super::events::Bus;
 use super::lifetime::Lifetime;
-use crate::ipc::{self, MAX_LINE, Reply, Request};
+use crate::guard::{Poisoned, guard};
+use crate::ipc::{self, ErrorKind, MAX_LINE, Reply, Request};
 
 /// Serve one accepted connection: one request line and its reply, or the
 /// event stream of a `subscribe` request until the client closes.
@@ -58,6 +59,33 @@ pub fn serve(
         Ok(request) => request,
         Err(error) => return answer(&mut stream, &Reply::from(error), timeout),
     };
+    // D5: the request runs under the shared guard, so a panic in `create`,
+    // `reload` or `quit` latches this connection's flag and still answers the
+    // client with an `internal` error instead of a closed socket.
+    let poisoned = Poisoned::new();
+    let Ok(result) = guard(&poisoned, || {
+        carry_out(&mut stream, lifetime, request, timeout)
+    }) else {
+        return answer(
+            &mut stream,
+            &Reply::error(
+                ErrorKind::Internal,
+                "the daemon hit a panic while carrying out the request",
+            ),
+            timeout,
+        );
+    };
+    result
+}
+
+/// Carry out one parsed request on `stream` (D12): the panel requests go
+/// through the registry and the daemon's own requests through `lifetime`.
+fn carry_out(
+    stream: &mut UnixStream,
+    lifetime: &Arc<Lifetime>,
+    request: Request,
+    timeout: Duration,
+) -> Result<(), ipc::LineError> {
     match request {
         Request::Create {
             panel,
@@ -66,19 +94,19 @@ pub fn serve(
             options,
         } => {
             let reply = create::panel(lifetime, panel, app, &options, pid);
-            answer(&mut stream, &reply, timeout)
+            answer(stream, &reply, timeout)
         }
-        Request::Subscribe => subscribe(&mut stream, lifetime.bus(), timeout),
+        Request::Subscribe => subscribe(stream, lifetime.bus(), timeout),
         // The reply goes out first, so the client gets its success even
         // though the daemon and its panels end right after (spec "Quit").
         Request::Quit => {
-            let written = answer(&mut stream, &Reply::ok(), timeout);
+            let written = answer(stream, &Reply::ok(), timeout);
             lifetime.quit();
             written
         }
-        Request::Reload => answer(&mut stream, &lifetime.reload(), timeout),
+        Request::Reload => answer(stream, &lifetime.reload(), timeout),
         request => match lifetime.registry().route(&request, timeout) {
-            Some(reply) => answer(&mut stream, &reply, timeout),
+            Some(reply) => answer(stream, &reply, timeout),
             // The registry leaves only `subscribe`, `quit` and `reload` to
             // the daemon, and the arms above answered them.
             None => Ok(()),

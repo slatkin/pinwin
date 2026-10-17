@@ -33,6 +33,7 @@ use ksni::menu::{CheckmarkItem, MenuItem, RadioGroup, RadioItem, StandardItem, S
 
 use crate::daemon::lifetime::Lifetime;
 use crate::geometry::{Edge, ReserveMode};
+use crate::guard::{Poisoned, guard};
 use crate::ipc::{PanelEntry, Reply, Request};
 use crate::name::PanelName;
 
@@ -219,6 +220,7 @@ impl TrayService {
             lifetime,
             wait,
             model: MenuModel::default(),
+            poisoned: Poisoned::new(),
         };
         match tray.assume_sni_available(true).spawn() {
             Ok(handle) => Some(Self { handle }),
@@ -257,6 +259,10 @@ pub(crate) struct PinwinTray {
     /// The panels the menu shows, refreshed when the menu opens and after
     /// each action so it follows the IPC (spec "Menu follows the IPC").
     model: MenuModel,
+    /// The shared D5 latch of this item's callbacks: `ksni` runs them on its
+    /// own event loop, so a panic is caught and latched here instead of
+    /// unwinding into that loop.
+    poisoned: Poisoned,
 }
 
 impl PinwinTray {
@@ -264,33 +270,42 @@ impl PinwinTray {
     /// registry answers in start order, so the submenus stay in that order
     /// after a panel ends (spec "Submenus follow panels").
     fn refresh(&mut self) {
-        let Some(lifetime) = self.lifetime.upgrade() else {
-            return;
-        };
-        let reply = lifetime
-            .registry()
-            .route(&Request::Status { panel: None }, self.wait);
-        if let Some(reply) = reply {
-            self.model = MenuModel::from_reply(&reply);
-        }
+        let poisoned = self.poisoned.clone();
+        let _ = guard(&poisoned, || {
+            let Some(lifetime) = self.lifetime.upgrade() else {
+                return;
+            };
+            let reply = lifetime
+                .registry()
+                .route(&Request::Status { panel: None }, self.wait);
+            if let Some(reply) = reply {
+                self.model = MenuModel::from_reply(&reply);
+            }
+        });
     }
 
     /// Send one menu action through the same registry the IPC routes to
     /// (D14), then refresh the menu so the item shows the new state.
     fn act(&mut self, request: &Request) {
-        let Some(lifetime) = self.lifetime.upgrade() else {
-            return;
-        };
-        let _ = lifetime.registry().route(request, self.wait);
-        self.refresh();
+        let poisoned = self.poisoned.clone();
+        let _ = guard(&poisoned, || {
+            let Some(lifetime) = self.lifetime.upgrade() else {
+                return;
+            };
+            let _ = lifetime.registry().route(request, self.wait);
+            self.refresh();
+        });
     }
 
     /// End every panel and then the daemon, as the `quit` request does
     /// (spec "Quit from the menu", D14).
     fn quit(&mut self) {
-        if let Some(lifetime) = self.lifetime.upgrade() {
-            lifetime.quit();
-        }
+        let poisoned = self.poisoned.clone();
+        let _ = guard(&poisoned, || {
+            if let Some(lifetime) = self.lifetime.upgrade() {
+                lifetime.quit();
+            }
+        });
     }
 
     /// The submenu of one panel: its "Shown" check item, its edge group and
@@ -373,10 +388,14 @@ impl ksni::Tray for PinwinTray {
     /// `ksni` to re-read it when an app names itself or the oldest panel
     /// ends.
     fn icon_name(&self) -> String {
-        let Some(lifetime) = self.lifetime.upgrade() else {
-            return ICON_NAME.to_owned();
-        };
-        icon_for(&lifetime.registry().app_ids())
+        let poisoned = self.poisoned.clone();
+        guard(&poisoned, || {
+            let Some(lifetime) = self.lifetime.upgrade() else {
+                return ICON_NAME.to_owned();
+            };
+            icon_for(&lifetime.registry().app_ids())
+        })
+        .unwrap_or_else(|_| ICON_NAME.to_owned())
     }
 
     /// A primary click changes nothing (spec "Icon click opens nothing

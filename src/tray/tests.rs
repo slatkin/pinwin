@@ -16,6 +16,7 @@ use super::{
 use crate::config::PanelSettings;
 use crate::daemon::lifetime::Lifetime;
 use crate::geometry::{Edge, ReserveMode};
+use crate::guard::Poisoned;
 use crate::ipc::{PanelEntry, PanelStatus, Reply};
 use crate::name::PanelName;
 
@@ -44,6 +45,7 @@ fn tray(model: MenuModel) -> PinwinTray {
         lifetime: Weak::<Lifetime>::new(),
         wait: Duration::ZERO,
         model,
+        poisoned: Poisoned::new(),
     }
 }
 
