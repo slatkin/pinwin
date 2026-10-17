@@ -34,7 +34,8 @@ use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_shell_v1::{
     ZwlrLayerShellV1, ZwlrLayerShellV1Layer,
 };
 use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::{
-    ZwlrLayerSurfaceV1, ZwlrLayerSurfaceV1Handler, ZwlrLayerSurfaceV1KeyboardInteractivity,
+    ZwlrLayerSurfaceV1, ZwlrLayerSurfaceV1Anchor, ZwlrLayerSurfaceV1Handler,
+    ZwlrLayerSurfaceV1KeyboardInteractivity,
 };
 
 use super::dock;
@@ -123,13 +124,17 @@ impl Reserve {
         reserve
     }
 
-    /// Applies a held gap to the live surface: the strip's size and the
-    /// exclusive zone move together, and the proxy commits its own surface
-    /// so the compositor applies both at once.
+    /// Applies a held gap to the live surface: the strip's size, the edge it
+    /// anchors to and its exclusive zone move together, and the proxy commits
+    /// its own surface so the compositor applies all three at once. An edge
+    /// change moves the anchors as well as the strip, so the compositor stops
+    /// reserving beside the old edge (spec "Directional gutters and docking
+    /// geometry": an edge change moves the reservation to the new edge).
     pub(super) fn apply_gap(&self, gap: HeldGap) {
-        let (width, height) = gap.size();
-        self.layer_surface.send_set_size(width, height);
-        self.layer_surface.send_set_exclusive_zone(gap.zone());
+        let (size, anchor, zone) = gap_state(gap);
+        self.layer_surface.send_set_size(size.0, size.1);
+        self.layer_surface.send_set_anchor(anchor);
+        self.layer_surface.send_set_exclusive_zone(zone);
         self.surface.send_commit();
     }
 
@@ -201,6 +206,15 @@ impl Reserve {
     }
 }
 
+/// The layer-surface state a held gap asks for: the strip's size, the edge
+/// its anchors name and the exclusive zone. [`Reserve::apply_gap`] sends
+/// exactly this, so an edge change re-anchors the strip as well as resizing
+/// it. Margins stay zero: the strip always starts at the output edge (spike
+/// reserve).
+fn gap_state(gap: HeldGap) -> ((u32, u32), ZwlrLayerSurfaceV1Anchor, i32) {
+    (gap.size(), anchor_of(gap.anchors()), gap.zone())
+}
+
 /// The proxy's reserve layer surface handler: it acks configures and maps
 /// the surface on the first one. `closed` is a compositor-side teardown —
 /// for example the strip's output going away (D11) — and the routing
@@ -248,5 +262,42 @@ impl WlSurfaceHandler for ReserveSurfaceWatch {
         if let Some(routing) = self.routing.upgrade() {
             dock::on_reserve_entered(&routing, output);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1Anchor;
+
+    use super::gap_state;
+    use crate::geometry::{Edge, Geometry, Gutters, HeldGap, ReserveMode};
+
+    /// A pushing geometry of 320 pixels on `edge` with no gutters.
+    fn push(edge: Edge) -> Geometry {
+        Geometry::new(edge, 320, Gutters::new(0, 0, 0, 0), ReserveMode::Push)
+    }
+
+    fn anchors(gap: HeldGap) -> ZwlrLayerSurfaceV1Anchor {
+        gap_state(gap).1
+    }
+
+    #[test]
+    fn an_edge_change_republishes_the_reserve_anchor() {
+        let left = HeldGap::start(push(Edge::Left));
+        let right = left.after_publish(push(Edge::Right));
+        assert_eq!(
+            anchors(left),
+            ZwlrLayerSurfaceV1Anchor::LEFT
+                | ZwlrLayerSurfaceV1Anchor::TOP
+                | ZwlrLayerSurfaceV1Anchor::BOTTOM,
+            "the held strip anchors to the left edge and both ends"
+        );
+        assert_eq!(
+            anchors(right),
+            ZwlrLayerSurfaceV1Anchor::RIGHT
+                | ZwlrLayerSurfaceV1Anchor::TOP
+                | ZwlrLayerSurfaceV1Anchor::BOTTOM,
+            "an edge change re-anchors the held strip to the new edge"
+        );
     }
 }
