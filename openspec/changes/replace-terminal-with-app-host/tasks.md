@@ -155,7 +155,7 @@ below). Its code does not enter pinwin; only the findings do.
   eventfd; replies use a bounded wait. Verify: tests with a test thread in the panel's place
   pass for "Unknown panel", "Duplicate name", "Name is free again", "Status of all panels",
   "Status of one panel" and a panel that does not answer (error `internal`).
-- [ ] 5.4 Add the event bus and `subscribe` (spec "Event stream"). Verify: tests for "Toggle
+- [x] 5.4 Add the event bus and `subscribe` (spec "Event stream"). Verify: tests for "Toggle
   events", "Slow subscriber" and "Silent client" pass.
 - [ ] 5.5 Add daemon lifetime: `exit_when_idle`, `quit`, SIGINT and SIGTERM, socket removal,
   and `reload` (spec "Reload", "Runtime changes stay in memory"). Verify: tests for "Exit with
