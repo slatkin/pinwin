@@ -154,12 +154,13 @@ fn the_menu_has_a_submenu_for_each_panel_and_then_quit() {
     assert_eq!(QUIT_LABEL, "Quit pinwin");
 }
 
-/// The icon is the theme's `utilities-terminal` (D14: a themed icon name)
-/// and the item has one identity.
+/// The icon is the theme's `pinwin` (D14: a themed icon name) and the item
+/// has one identity.
 #[test]
 fn the_item_has_the_pinwin_icon_and_identity() {
     let item = tray(MenuModel::default());
     assert_eq!(item.icon_name(), ICON_NAME);
+    assert_eq!(item.icon_name(), "pinwin");
     assert_eq!(item.id(), "pinwin");
     assert_eq!(item.title(), "pinwin");
 }

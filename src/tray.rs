@@ -35,9 +35,9 @@ use crate::ipc::{PanelEntry, Reply, Request};
 use crate::name::PanelName;
 
 /// The theme icon the tray shows (D14: a themed icon name is enough for the
-/// first release). The pre-rewrite tray used the same theme name when the
-/// theme had no `pinwin` icon, and `ksni` carries one icon name.
-pub const ICON_NAME: &str = "utilities-terminal";
+/// first release). The tray host renders it from the user's icon theme;
+/// pinwin installs no icon file of its own.
+pub const ICON_NAME: &str = "pinwin";
 
 /// The check item that shows or hides a panel (spec "Menu for each panel").
 const SHOWN_LABEL: &str = "Shown";
