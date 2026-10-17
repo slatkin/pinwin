@@ -26,6 +26,10 @@ and several modules wait for the rows that wire them in (D15).
 - `src/instance.rs` + `src/instance/` — the instance socket: identity, bind,
   listener and client (`InstanceSocket`, `Request`, `instance::send`); the
   daemon socket grows from it.
+- `src/name.rs` — the panel name rules (spec "Panel names"): the validated
+  `PanelName` of 1..=64 characters from `[A-Za-z0-9_-]`, the default name
+  taken from the command's file name, and the two name errors. No module
+  compiles it yet; `tests/name.rs` includes it so its unit tests run.
 - `src/geometry.rs` — the display-free geometry core: `Edge`, `Size` (pixels
   or percent), `Gutters`, `ReserveMode`, the layer-surface anchors, margins
   and size, the reserved strip and the held gap (D9). `src/main.rs` compiles
@@ -89,9 +93,12 @@ from (an archived change, or the design of the change that added the code:
 
 Run `cargo nextest run` after any change; it runs the geometry core's unit
 tests in `src/geometry/tests.rs` — the spec's docking, gutter, reserve,
-held-gap, validation and size scenarios — and the three tests in
+held-gap, validation and size scenarios — the three tests in
 `tests/tween_crop.rs`, which cover the size tween's crop plan
-(`src/proxy/crop.rs`) on all four edges until the proxy owns it. The harness
+(`src/proxy/crop.rs`) on all four edges until the proxy owns it, and the
+three tests in `tests/name.rs`, which cover the name rules (spec "Default
+name", "Invalid default name") until the option parser and the daemon use
+`src/name.rs`. The crop harness
 includes `src/geometry.rs` as well, for the `Edge` the crop names, under a
 `dead_code` allow whose reason names the rows that use the accessors it does
 not. The other kept modules

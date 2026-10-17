@@ -25,45 +25,13 @@ fn temp_dir(tag: &str) -> PathBuf {
 const TOGGLE_LINE: &[u8] = b"toggle\n";
 const SHOW_LINE: &[u8] = b"show\n";
 
-/// A valid name parses, and the boundaries of the character set, the
-/// length range and the [`InvalidName`] message hold.
-#[test]
-fn the_instance_name_validates() {
-    let name = InstanceName::parse("notes").expect("valid");
-    assert_eq!(&*name, "notes");
-    assert_eq!(name.to_string(), "notes");
-
-    // The whole allowed character set, and the 64-character boundary.
-    InstanceName::parse("A-z_09-").expect("the full allowed set");
-    InstanceName::parse(&"a".repeat(64)).expect("64 characters");
-
-    // Empty, too long, and characters outside the set: the typed error,
-    // whose message carries the rejected name (the binary adds the
-    // `pinwin: <context>:` prefix).
-    for raw in ["", &"a".repeat(65), "a/b", "a b", "a.b", "ä"] {
-        let error = InstanceName::parse(raw).expect_err(raw);
-        assert!(matches!(error, InvalidName(_)), "raw = {raw:?}");
-        assert_eq!(
-            error.to_string(),
-            format!("expected a name of 1..=64 characters from [A-Za-z0-9_-], got '{raw}'"),
-            "raw = {raw:?}"
-        );
-    }
-}
-
-/// The name used when none is given is `default`.
-#[test]
-fn the_default_instance_name_is_default() {
-    assert_eq!(&*InstanceName::default_instance(), "default");
-}
-
 /// The socket path is `$XDG_RUNTIME_DIR/pinwin/$WAYLAND_DISPLAY-<name>.sock`,
 /// with the `wayland-0` fallback for an unset display, and a set display
 /// that is valid UTF-8 and holds no `/`. The runtime directory is passed
 /// through as an `OsStr`, with no lossy conversion.
 #[test]
 fn socket_path_composes_the_runtime_path() {
-    let name = InstanceName::parse("notes").expect("valid");
+    let name = PanelName::parse("notes").expect("valid");
     let os = OsStr::new;
     assert_eq!(
         socket_path(Some(os("/run/user/1000")), Some(os("wayland-1")), &name),
@@ -263,7 +231,7 @@ fn bind_without_a_runtime_directory_is_a_path_error() {
     // SAFETY: single-threaded with respect to this variable — no other
     // test in this process reads or writes `XDG_RUNTIME_DIR`.
     unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
-    let name = InstanceName::parse("notes").expect("valid");
+    let name = PanelName::parse("notes").expect("valid");
     assert!(
         matches!(
             InstanceSocket::bind(&name),

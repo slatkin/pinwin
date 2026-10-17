@@ -1,9 +1,9 @@
-//! The instance socket: the validated instance name, the socket path under
-//! `$XDG_RUNTIME_DIR/pinwin`, the duplicate check, stale-file removal and
-//! bind that all happen before any surface opens, the listener that parses
-//! `toggle\n` and `show\n` and answers `ok\n` or `error\n` until the host's
-//! child ends, and the client that sends a running host's panel a toggle or
-//! a show request
+//! The instance socket: the socket path under
+//! `$XDG_RUNTIME_DIR/pinwin` for a [`PanelName`], the duplicate check,
+//! stale-file removal and bind that all happen before any surface opens, the
+//! listener that parses `toggle\n` and `show\n` and answers `ok\n` or
+//! `error\n` until the host's child ends, and the client that sends a
+//! running host's panel a toggle or a show request
 //! (`keyboard-focus-request`'s socket plumbing, the toggle protocol of
 //! `replace-gtk-with-wayland` D4; the module moved into the library with
 //! `serve-instance-socket` D7, so a library host can serve the same socket).
@@ -14,7 +14,6 @@
 use std::ffi::OsStr;
 use std::fmt;
 use std::io::{self, Read, Write};
-use std::ops::Deref;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
@@ -24,68 +23,7 @@ use std::time::{Duration, Instant};
 use std::{fs, os::unix::net};
 
 use crate::guard::{Poisoned, guard_default};
-
-/// A validated instance name (`PINWIN_NAME`, `--toggle [name]`): 1..=64
-/// characters from `[A-Za-z0-9_-]`. The newtype keeps the socket path safe
-/// (no separators, no `.` or `..`) and inside the 108-byte `sun_path` limit
-/// of a socket address (keyboard-focus-request design).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InstanceName(String);
-
-impl InstanceName {
-    /// The name used when none is given: `default`.
-    #[must_use]
-    pub fn default_instance() -> InstanceName {
-        InstanceName("default".to_owned())
-    }
-
-    /// Validate `raw` into an [`InstanceName`]. The library reports the
-    /// rejection without a context label (`serve-instance-socket` D5); the
-    /// binary adds its `pinwin: <context>:` prefix.
-    pub fn parse(raw: &str) -> Result<InstanceName, InvalidName> {
-        let valid = (1..=64).contains(&raw.len())
-            && raw
-                .bytes()
-                .all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'));
-        if valid {
-            Ok(InstanceName(raw.to_owned()))
-        } else {
-            Err(InvalidName(raw.to_owned()))
-        }
-    }
-}
-
-/// Why a name is not a valid [`InstanceName`] (`serve-instance-socket` D5):
-/// it carries the rejected name, so its [`Display`](fmt::Display) can point
-/// at it; the binary adds the `pinwin: <context>:` prefix.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InvalidName(String);
-
-impl fmt::Display for InvalidName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "expected a name of 1..=64 characters from [A-Za-z0-9_-], got '{}'",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for InvalidName {}
-
-impl fmt::Display for InstanceName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl Deref for InstanceName {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        &self.0
-    }
-}
+use crate::name::PanelName;
 
 /// Why the socket for an instance could not be taken
 /// (`serve-instance-socket` D5).
@@ -162,7 +100,7 @@ impl std::error::Error for PathError {}
 pub fn socket_path(
     runtime_dir: Option<&OsStr>,
     display: Option<&OsStr>,
-    name: &InstanceName,
+    name: &PanelName,
 ) -> Result<PathBuf, PathError> {
     let Some(runtime_dir) = runtime_dir.filter(|dir| !dir.as_bytes().is_empty()) else {
         return Err(PathError::NoRuntimeDir);
@@ -515,7 +453,7 @@ impl InstanceSocket {
     /// directory or an unusable display name is [`InstanceError::Path`],
     /// and a live owner of the name is [`InstanceError::Duplicate`]. The
     /// bind needs no panel, so a host can call it before any surface opens.
-    pub fn bind(name: &InstanceName) -> Result<InstanceSocket, InstanceError> {
+    pub fn bind(name: &PanelName) -> Result<InstanceSocket, InstanceError> {
         let path = socket_path_from_env(name).map_err(InstanceError::Path)?;
         bind_at(&path)
     }
@@ -541,7 +479,7 @@ pub(crate) fn bind_at(path: &Path) -> Result<InstanceSocket, InstanceError> {
 
 /// [`socket_path`] from the process environment: `XDG_RUNTIME_DIR` is used as
 /// given, with no lossy conversion.
-pub fn socket_path_from_env(name: &InstanceName) -> Result<PathBuf, PathError> {
+pub fn socket_path_from_env(name: &PanelName) -> Result<PathBuf, PathError> {
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
     let display = std::env::var_os("WAYLAND_DISPLAY");
     socket_path(runtime_dir.as_deref(), display.as_deref(), name)
@@ -626,7 +564,7 @@ impl std::error::Error for SendError {
 /// ([`socket_path_from_env`]), where a missing runtime directory or an
 /// unusable display name is [`SendError::Environment`]. The call never
 /// blocks indefinitely; every wait is bounded.
-pub fn send(name: &InstanceName, request: Request) -> Result<(), SendError> {
+pub fn send(name: &PanelName, request: Request) -> Result<(), SendError> {
     let path = socket_path_from_env(name).map_err(SendError::Environment)?;
     send_to(&path, request)
 }
