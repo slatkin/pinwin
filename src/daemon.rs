@@ -21,8 +21,10 @@
 //! wakes the panel's poll loop and a bounded wait for the answer. [`registry`]
 //! maps a panel name to its handle and routes a decoded request, so one
 //! panel that does not answer never stops another or the daemon (spec "The
-//! daemon survives bad input"). The event bus and the daemon's lifetime join
-//! them in rows 5.4 and 5.5.
+//! daemon survives bad input"). [`events`] is the bus that carries a panel's
+//! events to its subscribers, and [`connection`] serves one IPC connection,
+//! including the `subscribe` stream. The daemon's lifetime joins them in row
+//! 5.5.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -42,6 +44,12 @@ pub mod panel;
 
 #[path = "daemon/registry.rs"]
 pub mod registry;
+
+#[path = "daemon/events.rs"]
+pub mod events;
+
+#[path = "daemon/connection.rs"]
+pub mod connection;
 
 /// The display the Wayland client library connects with when
 /// `WAYLAND_DISPLAY` is unset, so a daemon started without it names the

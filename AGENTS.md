@@ -29,8 +29,9 @@ and several modules wait for the rows that wire them in (D15).
 - `src/ipc.rs` — the daemon's wire format (D13): the request enum with one
   variant for each client subcommand, the reply with its error kinds and the
   status reply's panel fields (spec "Status"), the 64 KiB request line with a
-  bounded reader, and the client call with a bounded wait. No module compiles
-  it yet; `tests/ipc.rs` includes it so its unit tests run.
+  bounded reader that keeps the lines behind the one it returns, and the
+  client call with a bounded wait. No module compiles it yet; `tests/ipc.rs`
+  includes it so its unit tests run.
 - `src/daemon.rs` — the daemon's socket (D12, D15): the path
   `$XDG_RUNTIME_DIR/pinwin/<display>.sock` of spec "Daemon socket", the bind
   that creates the `pinwin` directory and the 0600 socket file, the
@@ -45,8 +46,19 @@ and several modules wait for the rows that wire them in (D15).
   decoded `ipc::Request` to the panel it names (D12): a unique name, the
   start order a status reply lists, every panel command, and the status reply
   of all panels or one. Nothing compiles the daemon yet; `tests/daemon.rs`
-  includes it so its unit tests run. The event bus and the lifetime join it
-  in rows 5.4 and 5.5.
+  includes it so its unit tests run. The event bus and the connection
+  handling join it in row 5.4; the lifetime follows in row 5.5.
+- `src/daemon/events.rs` — the daemon's event bus (spec "Event stream", D12):
+  the `Event` kinds a panel publishes (added, removed, shown, hidden and
+  geometry changed, each naming the panel), one bounded queue for each
+  subscriber, and the publish that never waits and closes a subscriber whose
+  queue is full (spec "Slow subscriber"). `tests/daemon.rs` includes it, and
+  its tests are `src/daemon/events/tests.rs`.
+- `src/daemon/connection.rs` — one IPC connection (D12, D13): the bounded
+  request read, the reply write, and the `subscribe` stream that writes one
+  event line after the success reply until the client closes it or falls
+  behind (spec "Event stream", "Silent client"). Nothing compiles the daemon
+  yet; `tests/daemon.rs` includes it so its tests run.
 - `src/name.rs` — the panel name rules (spec "Panel names"): the validated
   `PanelName` of 1..=64 characters from `[A-Za-z0-9_-]`, the default name
   taken from the command's file name, and the two name errors. `src/cli.rs`
@@ -147,7 +159,14 @@ directory and the socket file's 0600 mode in a scratch runtime directory, and
 the registry and routing (D12) with a test thread in the panel's place: the
 eventfd wake, "Unknown panel", "Duplicate name", "Name is free again",
 "Status of all panels", "Status of one panel" and a panel that does not
-answer (error kind `internal` after a short wait, not the production one).
+answer (error kind `internal` after a short wait, not the production one),
+and the event-stream tests in `src/daemon/events/tests.rs`, which cover the
+bus and `serve` over a socket pair with a stand-in panel that publishes
+events: "Toggle events" (a `hidden` then a `shown` event, and the
+subscriber's queue freed when its client closes), "Slow subscriber" (a
+client that stops reading is dropped when its bounded queue fills, while
+another request is still answered) and "Silent client" (a connection that
+sends nothing delays no other request and ends with an error reply).
 The crop harness includes `src/geometry.rs` as well, for the `Edge` the crop
 names, under a `dead_code` allow whose reason names the rows that use the
 accessors it does not. The other kept modules (`anim`, `guard`) are not

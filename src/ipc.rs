@@ -578,36 +578,65 @@ pub fn read_line(
     limit: usize,
     timeout: Duration,
 ) -> Result<Vec<u8>, LineError> {
-    stream.set_nonblocking(true).map_err(LineError::Io)?;
-    let deadline = Instant::now() + timeout;
-    let mut line = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match stream.read(&mut chunk) {
-            // The peer closed; a partial line without its newline is the
-            // caller's to judge.
-            Ok(0) => return Ok(line),
-            Ok(read) => {
-                line.extend_from_slice(&chunk[..read]);
-                if let Some(end) = line.iter().position(|byte| *byte == b'\n') {
-                    if end > limit {
-                        return Err(LineError::TooLong);
-                    }
-                    line.truncate(end + 1);
-                    return Ok(line);
-                }
-                if line.len() > limit {
+    LineReader::new().next_line(stream, limit, timeout)
+}
+
+/// A reader for a stream that carries more than one line, such as a
+/// subscriber's event stream (spec "Event stream"): the bytes of a read
+/// that followed the line it returned stay for the next call, so no event
+/// line is lost behind the line before it. [`read_line`] is one line from a
+/// fresh reader, which is all a request and its reply need.
+#[derive(Debug, Default)]
+pub struct LineReader {
+    /// Bytes read from the stream that no call has returned as a line yet.
+    pending: Vec<u8>,
+}
+
+impl LineReader {
+    /// A reader with no buffered bytes.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Read the next line, bounded like [`read_line`]. A line that ends at
+    /// the end of the stream without its newline is returned as it is, so
+    /// the caller can report the truncated stream.
+    pub fn next_line(
+        &mut self,
+        stream: &mut UnixStream,
+        limit: usize,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, LineError> {
+        stream.set_nonblocking(true).map_err(LineError::Io)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
+                if end > limit {
                     return Err(LineError::TooLong);
                 }
+                return Ok(self.pending.drain(..=end).collect());
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() || !poll_ready(stream.as_raw_fd(), libc::POLLIN, remaining) {
-                    return Err(LineError::Timeout);
+            if self.pending.len() > limit {
+                return Err(LineError::TooLong);
+            }
+            let mut chunk = [0u8; 4096];
+            match stream.read(&mut chunk) {
+                // The peer closed; a partial line without its newline is the
+                // caller's to judge.
+                Ok(0) => return Ok(std::mem::take(&mut self.pending)),
+                Ok(read) => self.pending.extend_from_slice(&chunk[..read]),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero()
+                        || !poll_ready(stream.as_raw_fd(), libc::POLLIN, remaining)
+                    {
+                        return Err(LineError::Timeout);
+                    }
                 }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(LineError::Io(error)),
             }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(LineError::Io(error)),
         }
     }
 }
