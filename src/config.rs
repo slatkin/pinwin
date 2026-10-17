@@ -448,6 +448,16 @@ impl PanelSettings {
         self.output.as_deref()
     }
 
+    /// The same settings with another output (D11): a successful
+    /// `set-output` changes the live output a panel reports in a status
+    /// reply and docks to, and leaves every other setting alone.
+    #[must_use]
+    pub fn with_output(&self, output: Option<String>) -> Self {
+        let mut settings = self.clone();
+        settings.output = output;
+        settings
+    }
+
     #[must_use]
     pub const fn hidden(&self) -> bool {
         self.hidden

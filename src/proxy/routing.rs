@@ -12,9 +12,11 @@
 //! mapping, and the layer-surface creation — is copied from wl-paper's
 //! `apps/wl-paper/src/paper.rs` in <https://github.com/mahkoh/wl-proxy>
 //! (GPL-3.0, the licence of this crate): `ClientXdgSurface::handle_get_toplevel`,
-//! `handle_ack_configure`, `ProxyZwlrLayerSurfaceV1::handle_configure` and
-//! `handle_closed` are the source. The slot test and the pass-through path
-//! are pinwin's.
+//! `handle_ack_configure` and `ProxyLayerSurface::handle_configure` are
+//! the source. The slot test and the pass-through path are pinwin's. The
+//! layer surface itself and its `closed` handling live in [`super::dock`]
+//! (D11): `closed` re-docks the panel window instead of closing the app's
+//! window.
 //!
 //! The handler parameters the proxy's own object would carry are named
 //! `_slf`, the trait's name with the unused-prefix the codebase's lints
@@ -45,23 +47,19 @@ use std::rc::{Rc, Weak};
 
 use wl_proxy::object::{Object, ObjectCoreApi, ObjectUtils};
 use wl_proxy::protocols::viewporter::wp_viewport::WpViewport;
+use wl_proxy::protocols::wayland::wl_output::WlOutput;
 use wl_proxy::protocols::wayland::wl_surface::WlSurface;
-use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_shell_v1::{
-    ZwlrLayerShellV1, ZwlrLayerShellV1Layer,
-};
-use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::{
-    ZwlrLayerSurfaceV1, ZwlrLayerSurfaceV1Handler,
-};
+use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_shell_v1::ZwlrLayerShellV1;
+use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 use wl_proxy::protocols::xdg_decoration_unstable_v1::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
 use wl_proxy::protocols::xdg_shell::xdg_popup::XdgPopup;
 use wl_proxy::protocols::xdg_shell::xdg_positioner::XdgPositioner;
 use wl_proxy::protocols::xdg_shell::xdg_surface::{XdgSurface, XdgSurfaceHandler};
-use wl_proxy::protocols::xdg_shell::xdg_toplevel::{
-    XdgToplevel, XdgToplevelHandler, XdgToplevelState,
-};
+use wl_proxy::protocols::xdg_shell::xdg_toplevel::{XdgToplevel, XdgToplevelHandler};
 use wl_proxy::protocols::xdg_shell::xdg_wm_base::XdgWmBase;
 
-use super::mapping::{anchor_of, keyboard_of, layer_of};
+use super::dock;
+use super::mapping::layer_of;
 use super::output::{Globals, PanelSurfaceWatch, placeholder_output};
 use super::popup::{ClientXdgPopup, ClientXdgPositioner, offset_anchor_rect};
 use super::reserve::Reserve;
@@ -78,11 +76,6 @@ pub(super) fn is_panel_window(toplevel: &XdgToplevel) -> bool {
     toplevel.try_get_handler_ref::<ClientXdgToplevel>().is_ok()
 }
 
-/// The layer-shell namespace of a panel surface. One namespace keeps every
-/// panel out of the special namespaces compositors reserve for their own
-/// panels.
-const NAMESPACE: &str = "pinwin";
-
 /// The routing state one panel shares between all its app connections (D4):
 /// the slot, the settings the panel's layer surface is built from, the
 /// compositor's layer-shell object once the proxy's registry found it, the
@@ -90,7 +83,14 @@ const NAMESPACE: &str = "pinwin";
 /// references and the reserve it created. One state per panel, not per
 /// connection, so a second connection sees the window the first one created.
 pub(super) struct Routing {
+    /// A weak handle to this routing itself, so handlers the routing
+    /// creates do not close a reference cycle through it (D11).
+    self_weak: Weak<Routing>,
     settings: PanelSettings,
+    /// The output the panel is pinned to, by name (D11): the settings'
+    /// value until a `set-output` changes it. `None` lets the compositor
+    /// choose.
+    output: RefCell<Option<String>>,
     slot: Cell<Slot>,
     layer_shell: RefCell<Option<Rc<ZwlrLayerShellV1>>>,
     /// The compositor's `zxdg_decoration_manager_v1`, bound by the proxy's
@@ -107,9 +107,16 @@ pub(super) struct Routing {
     panel_surface_id: Cell<Option<u64>>,
     /// The panel window's surface, kept weak so the crop can reach it.
     panel_surface: RefCell<Option<Weak<WlSurface>>>,
-    /// The panel's layer surface, kept weak so the size re-apply can reach
-    /// it when the output size arrives (D9).
-    panel_layer_surface: RefCell<Option<Weak<ZwlrLayerSurfaceV1>>>,
+    /// The panel window's `xdg_surface`, kept weak: the re-dock re-docks the
+    /// same window on a new layer surface (D11).
+    panel_xdg_surface: RefCell<Option<Weak<XdgSurface>>>,
+    /// The panel window's local toplevel, kept weak: the re-dock maps the
+    /// new layer surface's events to the same app window (D11).
+    panel_toplevel: RefCell<Option<Weak<XdgToplevel>>>,
+    /// The panel's current layer surface, kept strong: the re-dock replaces
+    /// it and the app's destroy tears it down, and nothing else keeps the
+    /// object alive across a re-dock (D11).
+    panel_layer_surface: RefCell<Option<Rc<ZwlrLayerSurfaceV1>>>,
     /// The proxy's own viewport on the panel surface, when the app gave the
     /// surface none (D8).
     proxy_viewport: RefCell<Option<Weak<WpViewport>>>,
@@ -121,6 +128,9 @@ pub(super) struct Routing {
     /// The reserve surface, created and destroyed with the panel window
     /// (D9).
     reserve: RefCell<Option<Rc<Reserve>>>,
+    /// The global name of the output the reserve is on: the creation pin,
+    /// or the output its surface entered (D11).
+    reserve_output: Cell<Option<u32>>,
     /// The held gap the reserve draws (D9): its strip from the panel's
     /// start, re-published after every validated apply.
     held_gap: RefCell<Option<HeldGap>>,
@@ -132,19 +142,25 @@ pub(super) struct Routing {
 impl Routing {
     /// The routing state for a panel with `settings`.
     pub(super) fn new(settings: PanelSettings) -> Rc<Self> {
-        Rc::new(Self {
+        let output = settings.output().map(str::to_owned);
+        Rc::new_cyclic(|self_ref| Self {
+            self_weak: Weak::clone(self_ref),
             settings,
+            output: RefCell::new(output),
             slot: Cell::new(Slot::new()),
             layer_shell: RefCell::new(None),
             decoration_manager: RefCell::new(None),
             globals: Rc::new(Globals::new()),
             panel_surface_id: Cell::new(None),
             panel_surface: RefCell::new(None),
+            panel_xdg_surface: RefCell::new(None),
+            panel_toplevel: RefCell::new(None),
             panel_layer_surface: RefCell::new(None),
             proxy_viewport: RefCell::new(None),
             has_proxy_viewport: Cell::new(false),
             panel_has_app_viewport: Cell::new(false),
             reserve: RefCell::new(None),
+            reserve_output: Cell::new(None),
             held_gap: RefCell::new(None),
             last_resolved_across: Cell::new(None),
         })
@@ -162,8 +178,74 @@ impl Routing {
     }
 
     /// The panel's settings, which its layer surface is built from.
-    fn settings(&self) -> &PanelSettings {
+    pub(super) fn settings(&self) -> &PanelSettings {
         &self.settings
+    }
+
+    /// A weak handle to this routing, so handlers it creates do not close
+    /// a reference cycle through it (D11).
+    pub(super) fn weak(&self) -> Weak<Routing> {
+        Weak::clone(&self.self_weak)
+    }
+
+    /// The output the panel is pinned to, by name (D11): `None` lets the
+    /// compositor choose.
+    pub(super) fn output(&self) -> Option<String> {
+        self.output.borrow().clone()
+    }
+
+    /// Changes the output the panel is pinned to, by name (D11).
+    pub(super) fn set_output_name(&self, output: Option<String>) {
+        *self.output.borrow_mut() = output;
+    }
+
+    /// The proxy-bound output the panel is pinned to (D11): the object to
+    /// pass to `get_layer_surface` and the global name it was bound under.
+    pub(super) fn pinned_output(&self) -> Option<(Rc<WlOutput>, u32)> {
+        let name = self.output.borrow().clone()?;
+        let global = self.globals.named_output(&name)?;
+        let output = self.globals.output_by_global(global)?;
+        Some((output, global))
+    }
+
+    /// The settings a status reply reports (spec "Status"): the panel's
+    /// settings with the live output a `set-output` may have changed (D11).
+    pub(super) fn status_settings(&self) -> PanelSettings {
+        self.settings.with_output(self.output())
+    }
+
+    /// The app-side objects of the panel window, when it holds one (D4):
+    /// the surface, its `xdg_surface` and the local toplevel (D11).
+    pub(super) fn panel_window(&self) -> Option<(Rc<WlSurface>, Rc<XdgSurface>, Rc<XdgToplevel>)> {
+        let surface = self
+            .panel_surface
+            .borrow()
+            .as_ref()
+            .and_then(Weak::upgrade)?;
+        let xdg_surface = self
+            .panel_xdg_surface
+            .borrow()
+            .as_ref()
+            .and_then(Weak::upgrade)?;
+        let toplevel = self
+            .panel_toplevel
+            .borrow()
+            .as_ref()
+            .and_then(Weak::upgrade)?;
+        Some((surface, xdg_surface, toplevel))
+    }
+
+    /// The panel window's current layer surface (D4, D11): the size
+    /// re-apply, the ack mapping and the popups target the live surface
+    /// even after a re-dock.
+    pub(super) fn panel_layer_surface(&self) -> Option<Rc<ZwlrLayerSurfaceV1>> {
+        self.panel_layer_surface.borrow().clone()
+    }
+
+    /// Takes the panel window's current layer surface out, for a re-dock's
+    /// teardown (D11).
+    pub(super) fn take_panel_layer_surface(&self) -> Option<Rc<ZwlrLayerSurfaceV1>> {
+        self.panel_layer_surface.borrow_mut().take()
     }
 
     /// Routes a new toplevel through the slot (D4).
@@ -185,7 +267,7 @@ impl Routing {
     /// it. The daemon's start check requires it (spec "Wayland layer-shell
     /// is required"); a connection that outruns the global gets a normal
     /// window instead of a panel.
-    fn layer_shell(&self) -> Option<Rc<ZwlrLayerShellV1>> {
+    pub(super) fn layer_shell(&self) -> Option<Rc<ZwlrLayerShellV1>> {
         self.layer_shell.borrow().clone()
     }
 
@@ -215,7 +297,7 @@ impl Routing {
 
     /// The output size the panel is docked to, when it is known; the
     /// placeholder otherwise (D9).
-    fn known_output(&self) -> OutputSize {
+    pub(super) fn known_output(&self) -> OutputSize {
         self.globals
             .panel_output_size()
             .unwrap_or_else(placeholder_output)
@@ -225,11 +307,17 @@ impl Routing {
     /// its edge from the settings, with a percent resolved against the
     /// panel's output size — the placeholder until the first size arrives
     /// (D4, D9).
-    fn geometry(&self) -> Geometry {
+    pub(super) fn geometry(&self) -> Geometry {
+        self.geometry_against(self.known_output())
+    }
+
+    /// The panel surface's geometry with a percent resolved against
+    /// `output` (D9, D11): a `set-output` resolves against the target
+    /// output's size, so a size that resolves differently arrives with the
+    /// new surface's configure.
+    pub(super) fn geometry_against(&self, output: OutputSize) -> Geometry {
         let settings = self.settings();
-        let across = settings
-            .size()
-            .resolve(settings.edge(), self.known_output());
+        let across = settings.size().resolve(settings.edge(), output);
         Geometry::new(
             settings.edge(),
             across,
@@ -271,30 +359,54 @@ impl Routing {
         self.panel_has_app_viewport.set(present);
     }
 
-    /// Registers the panel window: the surface and layer surface the size
-    /// re-apply and the crop write through (D4, D9).
-    fn set_panel_window(&self, surface: &Rc<WlSurface>, layer_surface: &Rc<ZwlrLayerSurfaceV1>) {
+    /// Registers the panel window: the app-side objects and the layer
+    /// surface the re-dock, the crop and the size re-apply write through
+    /// (D4, D9, D11). The layer surface is kept strong, so the routing owns
+    /// the live dock across a `set-output` or a `closed` re-dock.
+    pub(super) fn set_panel_window(
+        &self,
+        surface: &Rc<WlSurface>,
+        xdg_surface: &Rc<XdgSurface>,
+        toplevel: &Rc<XdgToplevel>,
+        layer_surface: &Rc<ZwlrLayerSurfaceV1>,
+    ) {
         self.panel_surface_id.set(Some(surface.unique_id()));
         *self.panel_surface.borrow_mut() = Some(Rc::downgrade(surface));
-        *self.panel_layer_surface.borrow_mut() = Some(Rc::downgrade(layer_surface));
+        *self.panel_xdg_surface.borrow_mut() = Some(Rc::downgrade(xdg_surface));
+        *self.panel_toplevel.borrow_mut() = Some(Rc::downgrade(toplevel));
+        *self.panel_layer_surface.borrow_mut() = Some(Rc::clone(layer_surface));
     }
 
-    /// Creates the reserve surface with the panel window (D9): it carries
-    /// the exclusive zone from the held gap the panel starts with. A missing
-    /// compositor, `wl_shm` or layer-shell global — or a failed buffer —
-    /// leaves the panel docked without a strip rather than ending it.
-    fn start_reserve(&self, geometry: &Geometry, layer: ZwlrLayerShellV1Layer) {
-        let (Some(compositor), Some(shm), Some(layer_shell)) = (
-            self.globals.compositor(),
-            self.globals.shm(),
-            self.layer_shell(),
-        ) else {
-            eprintln!("pinwin: no compositor, shm or layer-shell global: no strip is reserved");
-            return;
-        };
-        let gap = HeldGap::start(*geometry);
-        let reserve = Reserve::create(&compositor, &shm, &layer_shell, gap, layer);
-        *self.reserve.borrow_mut() = Some(Rc::clone(&reserve));
+    /// The gap the reserve currently holds, when one exists (D9, D11).
+    pub(super) fn held_gap(&self) -> Option<HeldGap> {
+        self.held_gap.borrow().as_ref().copied()
+    }
+
+    /// The global name of the output the reserve is on (D11): the creation
+    /// pin, or the output its surface entered.
+    pub(super) fn reserve_output(&self) -> Option<u32> {
+        self.reserve_output.get()
+    }
+
+    /// Records the output the reserve's surface entered (D11).
+    pub(super) fn set_reserve_output(&self, output_global: Option<u32>) {
+        self.reserve_output.set(output_global);
+    }
+
+    /// Takes the reserve out, so its owner can destroy it (D11).
+    pub(super) fn take_reserve(&self) -> Option<Rc<Reserve>> {
+        self.reserve.borrow_mut().take()
+    }
+
+    /// Registers a freshly created reserve with its gap and output (D9, D11).
+    pub(super) fn register_reserve(
+        &self,
+        reserve: Rc<Reserve>,
+        gap: HeldGap,
+        output_global: Option<u32>,
+    ) {
+        self.reserve_output.set(output_global);
+        *self.reserve.borrow_mut() = Some(reserve);
         *self.held_gap.borrow_mut() = Some(gap);
     }
 
@@ -340,13 +452,17 @@ impl Routing {
         self.reapply_geometry();
     }
 
-    /// The panel surface entered an output: record it and re-apply if a
-    /// size is already known (D9).
-    pub(super) fn on_panel_entered(&self, client_output_id: u64) {
+    /// The panel surface entered an output: record it, re-apply if a size
+    /// is already known (D9), and move the strip if it is not on the
+    /// panel's output (D11). Takes the routing through its `Rc`, so the
+    /// reserve's re-dock can hand the routing's own weak handle to the
+    /// handlers it creates.
+    pub(super) fn on_panel_entered(self: &Rc<Self>, client_output_id: u64) {
         if !self.globals.set_panel_output(client_output_id) {
             return;
         }
         self.reapply_geometry();
+        dock::follow_reserve(self);
     }
 
     /// Re-applies the geometry once the panel's output size is known (D9):
@@ -375,12 +491,7 @@ impl Routing {
         }
         self.last_resolved_across.set(Some(across));
         let (width, height) = geometry.size();
-        if let Some(layer_surface) = self
-            .panel_layer_surface
-            .borrow()
-            .as_ref()
-            .and_then(Weak::upgrade)
-        {
+        if let Some(layer_surface) = self.panel_layer_surface() {
             layer_surface.send_set_size(width, height);
         }
         let gap = match self.held_gap.borrow().as_ref() {
@@ -393,16 +504,19 @@ impl Routing {
         *self.held_gap.borrow_mut() = Some(gap);
     }
 
-    /// Ends the panel window's footprint (D4, D9): the slot empties, the
-    /// reserve is destroyed with the window it was created for and the
+    /// Ends the panel window's footprint (D4, D9, D11): the slot empties,
+    /// the reserve is destroyed with the window it was created for and the
     /// surface references clear.
     fn on_panel_window_destroyed(&self, window: u64) {
         self.release(window);
         if let Some(reserve) = self.reserve.borrow_mut().take() {
             reserve.destroy();
         }
-        *self.panel_layer_surface.borrow_mut() = None;
+        self.reserve_output.set(None);
+        self.panel_layer_surface.borrow_mut().take();
         *self.panel_surface.borrow_mut() = None;
+        *self.panel_xdg_surface.borrow_mut() = None;
+        *self.panel_toplevel.borrow_mut() = None;
         self.panel_surface_id.set(None);
         self.has_proxy_viewport.set(false);
         self.panel_has_app_viewport.set(false);
@@ -419,8 +533,6 @@ pub(super) struct ClientXdgSurface {
     wl_surface: Rc<WlSurface>,
     xdg_surface: Rc<XdgSurface>,
     xdg_wm_base: Rc<XdgWmBase>,
-    /// The layer surface while this `xdg_surface` is the panel's window.
-    layer_surface: Option<Rc<ZwlrLayerSurfaceV1>>,
     /// Whether the compositor has this `xdg_surface` as an upstream object:
     /// false while the surface is held back, true after a pass-through
     /// forward.
@@ -447,10 +559,19 @@ impl ClientXdgSurface {
             wl_surface,
             xdg_surface,
             xdg_wm_base,
-            layer_surface: None,
             has_server: false,
             geometry: None,
         }
+    }
+
+    /// The panel window's current layer surface when this surface is the
+    /// panel window (D4, D11): the routing's live reference, so popups and
+    /// acks stay on the surface that is actually docked across a re-dock.
+    fn panel_layer_surface(&self) -> Option<Rc<ZwlrLayerSurfaceV1>> {
+        if !self.routing.is_panel_surface(self.wl_surface.unique_id()) {
+            return None;
+        }
+        self.routing.panel_layer_surface()
     }
 
     /// Forwards this surface and its new toplevel to the compositor unchanged
@@ -465,32 +586,10 @@ impl ClientXdgSurface {
     /// Turns this surface into the panel's layer surface (D4: `get_toplevel`
     /// while the slot is empty). Copied from wl-paper's `paper.rs`
     /// `ClientXdgSurface::handle_get_toplevel` (GPL-3.0); the geometry comes
-    /// from pinwin's settings.
+    /// from pinwin's settings, and the layer surface's creation and handler
+    /// live in [`super::dock`] (D11).
     fn take_slot(&mut self, layer_shell: &Rc<ZwlrLayerShellV1>, id: &Rc<XdgToplevel>) {
         let geometry = self.routing.geometry();
-        let layer_surface = layer_shell.create_child::<ZwlrLayerSurfaceV1>();
-        layer_shell.send_get_layer_surface(
-            &layer_surface,
-            &self.wl_surface,
-            None,
-            layer_of(self.routing.settings().layer()),
-            NAMESPACE,
-        );
-        let (width, height) = geometry.size();
-        layer_surface.send_set_size(width, height);
-        let margins = geometry.margins();
-        layer_surface.send_set_margin(
-            margins.top(),
-            margins.right(),
-            margins.bottom(),
-            margins.left(),
-        );
-        layer_surface.send_set_anchor(anchor_of(geometry.anchors()));
-        layer_surface
-            .send_set_keyboard_interactivity(keyboard_of(self.routing.settings().keyboard()));
-        // D9: the panel surface claims no zone of its own; the reserve surface
-        // owns the strip.
-        layer_surface.send_set_exclusive_zone(-1);
         if id.version() >= XdgToplevel::MSG__WM_CAPABILITIES__SINCE {
             id.send_wm_capabilities(&[]);
         }
@@ -499,25 +598,28 @@ impl ClientXdgSurface {
         id.set_forward_to_server(false);
         id.set_handler(ClientXdgToplevel {
             routing: Rc::clone(&self.routing),
-            layer_surface: Rc::clone(&layer_surface),
             toplevel: Rc::downgrade(id),
             window: id.unique_id(),
         });
-        layer_surface.set_handler(ProxyLayerSurface {
+        let window = dock::PanelWindow {
+            surface: Rc::clone(&self.wl_surface),
             xdg_surface: Rc::clone(&self.xdg_surface),
-            xdg_toplevel: Rc::clone(id),
-            layer_surface: Rc::downgrade(&layer_surface),
-        });
-        self.layer_surface = Some(Rc::clone(&layer_surface));
-        // D9: the reserve surface is created with the panel window and owns
-        // the exclusive zone the panel surface does not claim.
-        self.routing
-            .start_reserve(&geometry, layer_of(self.routing.settings().layer()));
+            toplevel: Rc::clone(id),
+        };
+        // D11: the settings' output pins the panel when the proxy has bound
+        // it; otherwise the compositor chooses.
+        dock::dock_panel_window(&self.routing, layer_shell, &window, &geometry);
+        // D9, D11: the reserve surface is created with the panel window and
+        // owns the exclusive zone the panel surface does not claim, pinned
+        // to the panel's output when one is set.
+        dock::start_reserve(
+            &self.routing,
+            &geometry,
+            layer_of(self.routing.settings().layer()),
+            self.routing.pinned_output().as_ref(),
+        );
         // D9: the surface watch learns which output the compositor docked
-        // the panel on; the window is registered for the crop and the size
-        // re-apply.
-        self.routing
-            .set_panel_window(&self.wl_surface, &layer_surface);
+        // the panel on; the crop applies from here.
         self.wl_surface
             .set_handler(PanelSurfaceWatch::new(&self.routing, &self.wl_surface));
         // A window geometry the app set before its toplevel crops from here.
@@ -585,7 +687,7 @@ impl XdgSurfaceHandler for ClientXdgSurface {
         // shadow stay outside the panel. The values are double-buffered
         // viewport state: they apply with the app's next commit (D7 is row
         // 8.1).
-        if self.layer_surface.is_some() {
+        if self.panel_layer_surface().is_some() {
             apply_steady_crop(&self.routing, self.geometry);
         }
     }
@@ -620,9 +722,9 @@ impl XdgSurfaceHandler for ClientXdgSurface {
         let mut parent_geometry = None;
         if let Some(parent) = parent
             && let Ok(parent_handler) = parent.try_get_handler_ref::<ClientXdgSurface>()
-            && let Some(parent_layer) = &parent_handler.layer_surface
+            && let Some(parent_layer) = parent_handler.panel_layer_surface()
         {
-            layer_surface = Some(Rc::clone(parent_layer));
+            layer_surface = Some(parent_layer);
             proxy_parent = None;
             parent_geometry = parent_handler.geometry;
         }
@@ -654,9 +756,10 @@ impl XdgSurfaceHandler for ClientXdgSurface {
     }
 
     fn handle_ack_configure(&mut self, _slf: &Rc<XdgSurface>, serial: u32) {
-        if let Some(layer) = &self.layer_surface {
+        if let Some(layer) = self.panel_layer_surface() {
             // The app acks the layer surface's configure through its local
-            // xdg_surface (D4).
+            // xdg_surface (D4); after a re-dock it reaches the live surface
+            // (D11).
             layer.send_ack_configure(serial);
         } else if self.has_server {
             self.xdg_surface.send_ack_configure(serial);
@@ -669,7 +772,6 @@ impl XdgSurfaceHandler for ClientXdgSurface {
 /// the strip.
 struct ClientXdgToplevel {
     routing: Rc<Routing>,
-    layer_surface: Rc<ZwlrLayerSurfaceV1>,
     /// The toplevel this handler answers, kept weak so the handler does not
     /// keep its own object alive.
     toplevel: Weak<XdgToplevel>,
@@ -680,91 +782,19 @@ struct ClientXdgToplevel {
 
 impl XdgToplevelHandler for ClientXdgToplevel {
     fn handle_destroy(&mut self, _slf: &Rc<XdgToplevel>) {
-        // The handler holds the layer surface, whose own handler holds this
-        // toplevel: unset it here, as wl-paper's does, so the two objects
-        // cannot keep each other alive past the app's destroy.
+        // The routing holds this layer surface and its handler holds this
+        // toplevel: unset the handler here, as wl-paper's does, so the two
+        // objects cannot keep each other alive past the app's destroy.
         if let Some(toplevel) = self.toplevel.upgrade() {
             toplevel.unset_handler();
         }
-        self.layer_surface.send_destroy();
+        // D11: destroy the panel's current layer surface — a `set-output` or
+        // a `closed` may have replaced the one this window docked with.
+        if let Some(layer_surface) = self.routing.panel_layer_surface() {
+            layer_surface.send_destroy();
+        }
         // D9: the reserve surface is destroyed with the panel window it was
         // created for, which also frees the slot and the strip.
         self.routing.on_panel_window_destroyed(self.window);
     }
-}
-
-/// The proxy's layer surface (D4): the compositor's configure becomes the
-/// app's `xdg_toplevel.configure` and `xdg_surface.configure` with the same
-/// serial; `closed` becomes the app's `close`. Copied from wl-paper's
-/// `paper.rs` `ProxyZwlrLayerSurfaceV1` (GPL-3.0).
-struct ProxyLayerSurface {
-    xdg_surface: Rc<XdgSurface>,
-    xdg_toplevel: Rc<XdgToplevel>,
-    /// The layer surface this handler answers, kept weak so the handler does
-    /// not keep its own object alive.
-    layer_surface: Weak<ZwlrLayerSurfaceV1>,
-}
-
-impl ZwlrLayerSurfaceV1Handler for ProxyLayerSurface {
-    fn delete_id(&mut self, _slf: &Rc<ZwlrLayerSurfaceV1>) {
-        // Drop this handler first: it holds the app's toplevel and the
-        // panel's xdg_surface, so unsetting it breaks the handler cycle
-        // (wl-paper), and then free the app's toplevel id, which died with
-        // the layer surface the compositor destroyed.
-        if let Some(layer_surface) = self.layer_surface.upgrade() {
-            layer_surface.unset_handler();
-        }
-        self.xdg_toplevel.delete_id();
-    }
-
-    fn handle_configure(
-        &mut self,
-        _slf: &Rc<ZwlrLayerSurfaceV1>,
-        serial: u32,
-        width: u32,
-        height: u32,
-    ) {
-        let states = toplevel_states(&self.xdg_toplevel);
-        if self.xdg_toplevel.version() >= XdgToplevel::MSG__CONFIGURE_BOUNDS__SINCE {
-            self.xdg_toplevel
-                .send_configure_bounds(width.cast_signed(), height.cast_signed());
-        }
-        self.xdg_toplevel
-            .send_configure(width.cast_signed(), height.cast_signed(), &states);
-        self.xdg_surface.send_configure(serial);
-    }
-
-    fn handle_closed(&mut self, _slf: &Rc<ZwlrLayerSurfaceV1>) {
-        self.xdg_toplevel.send_close();
-    }
-}
-
-/// The tiled and constrained states the panel window is configured with (D4,
-/// copied from wl-paper): the app may lay its content out as a tiled window,
-/// and each state is only sent when its version supports it. The states are
-/// a native-endian `u32` array, as the protocol requires.
-fn toplevel_states(toplevel: &XdgToplevel) -> Vec<u8> {
-    // Eight states at four bytes each: the tiled and constrained sets.
-    let mut states = Vec::with_capacity(8 * 4);
-    if toplevel.version() >= XdgToplevel::ENM__STATE_TILED_TOP__SINCE {
-        for state in [
-            XdgToplevelState::TILED_LEFT,
-            XdgToplevelState::TILED_TOP,
-            XdgToplevelState::TILED_RIGHT,
-            XdgToplevelState::TILED_BOTTOM,
-        ] {
-            states.extend_from_slice(&state.0.to_ne_bytes());
-        }
-    }
-    if toplevel.version() >= XdgToplevel::ENM__STATE_CONSTRAINED_TOP__SINCE {
-        for state in [
-            XdgToplevelState::CONSTRAINED_LEFT,
-            XdgToplevelState::CONSTRAINED_TOP,
-            XdgToplevelState::CONSTRAINED_RIGHT,
-            XdgToplevelState::CONSTRAINED_BOTTOM,
-        ] {
-            states.extend_from_slice(&state.0.to_ne_bytes());
-        }
-    }
-    states
 }

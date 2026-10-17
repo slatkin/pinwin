@@ -107,8 +107,12 @@ and several modules wait for the rows that wire them in (D15).
   the daemon registers. Row 6.2 adds the window routing (D4) and the slot
   its status reads, row 6.3 the popups and the per-window decorations
   (D5), and row 6.4 the geometry apply (D9): the status width reports a
-  percent size once the panel's output is known. The change commands are
-  answered without effect until row 6.6 gives them one. `src/main.rs`
+  percent size once the panel's output is known. Row 6.5 adds output
+  handling (D11): the panel docks on the output its settings name, a
+  `set-output` re-docks the panel window on the chosen output, and a
+  `closed` layer surface is replaced with a new one instead of closing the
+  app's window. The other change commands are answered without effect until
+  row 6.6 gives them one. `src/main.rs`
   compiles it; its tests are `src/proxy/tests.rs`.
 - `src/proxy/slot.rs` — the panel's one window slot (D4, spec "First
   window", "Window comes back", "Dialog", "Passed-through window stays",
@@ -132,11 +136,17 @@ and several modules wait for the rows that wire them in (D15).
   the pass-through branch that forwards every later toplevel unchanged, the
   `get_popup` that routes each popup by its parent and keeps the window
   geometry `set_window_geometry` asked for, the crop of the panel window's
-  buffer to that geometry, the size re-apply when the panel's output size
-  arrives, and the configure/ack mapping and
-  `closed` forwarding copied from wl-paper's `apps/wl-paper/src/paper.rs`
-  (GPL-3.0). A percent size resolves against the panel's tracked output
+  buffer to that geometry, and the size re-apply when the panel's output
+  size arrives. A percent size resolves against the panel's tracked output
   size, with a 1920x1080 placeholder until the first size is known (D9).
+- `src/proxy/dock.rs` — the panel window's dock on one output (D11): the
+  layer surface the panel window is served by and the handler that maps its
+  configure and ack to the app's toplevel (copied from wl-paper's
+  `apps/wl-paper/src/paper.rs`, GPL-3.0), the `set-output` decision and
+  reply — a name no tracked output carries is refused with `invalid_value`
+  and the panel does not move — the re-dock on `set-output` and on a
+  `closed` layer surface (the app keeps its window), and the reserve
+  lifecycle that pins the strip to the panel's output and follows it.
 - `src/proxy/output.rs` — the proxy's own globals and output tracking (D9):
   the `wl_compositor`, `wl_shm` and `wp_viewporter` the reserve and the
   crop are built from, one tracked `wl_output` per global with its
@@ -145,13 +155,14 @@ and several modules wait for the rows that wire them in (D15).
   panel docked on, and the app-viewport registry the D8 one-viewport rule
   reads. The mode-and-scale fallback is display-free, so its four tests run
   without a compositor.
-- `src/proxy/reserve.rs` — the reserve surface (D9): the second, transparent
-  1x1-buffer layer surface created and destroyed with the panel window,
-  carrying the exclusive zone the panel surface does not claim — the
+- `src/proxy/reserve.rs` — the reserve surface (D9, D11): the second,
+  transparent 1x1-buffer layer surface created and destroyed with the panel
+  window, carrying the exclusive zone the panel surface does not claim — the
   `HeldGap`'s strip for a pushing start, nothing for a covering one — with
-  an empty input region and no keyboard. Ported from the spike's
-  `src/reserve.rs` (wl-paper structure, GPL-3.0); the strip and zone math is
-  `src/geometry.rs`.
+  an empty input region and no keyboard, pinned to the panel's output when
+  one is set and re-docked when the panel's output changes. Ported from the
+  spike's `src/reserve.rs` (wl-paper structure, GPL-3.0); the strip and zone
+  math is `src/geometry.rs`.
 - `src/proxy/popup.rs` — the popups of the panel window (D5): the recorded
   `xdg_positioner` anchor rectangle, the `offset_anchor_rect` that moves it
   by the parent window geometry at creation and on `xdg_popup.reposition`,
@@ -311,7 +322,10 @@ decision tests in
 `src/proxy/check.rs` cover the layer-shell global list ("No layer-shell"),
 the mode-and-scale tests in `src/proxy/output.rs` cover the D9 size fallback
 (a 2x-scaled 4K mode halves to 1920x1080, degenerate inputs give none, the
-`zxdg_output_v1` logical size wins over the fallback), and the viewport
+`zxdg_output_v1` logical size wins over the fallback), the `set-output`
+decision tests in `src/proxy/dock.rs` cover D11 (a known name pins the
+panel to its output, an unknown name, a nameless output and an empty output
+list are refused so the panel does not move), and the viewport
 tests in `src/proxy/viewport.rs` cover the steady-state crop (D5, D8): the
 window geometry as source and 1:1 destination, a negative CSD origin
 clamped to the buffer's origin, a collapsed geometry refused, and the

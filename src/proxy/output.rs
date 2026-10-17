@@ -128,6 +128,13 @@ impl OutputTracker {
         effective_output_size(self.logical.get(), self.mode.get(), self.scale.get())
     }
 
+    /// The compositor's name for the output, when announced — from the
+    /// `wl_output.name` event or the `zxdg_output_v1.name` event (D11): the
+    /// `set-output` flow matches panels against it.
+    fn name(&self) -> Option<String> {
+        self.output_name.borrow().clone()
+    }
+
     /// Creates the output's `zxdg_output_v1` once, when the manager is
     /// available, so `logical_size` can replace the mode-and-scale fallback.
     fn ensure_xdg_output(
@@ -245,6 +252,56 @@ impl Globals {
     /// The global name of the output the panel is docked to.
     pub(super) fn panel_output(&self) -> Option<u32> {
         self.panel_output.get()
+    }
+
+    /// The global name of the tracked output whose compositor name is
+    /// `name` (D11, spec "Unknown output"). An output that has not
+    /// announced a name yet matches nothing.
+    pub(super) fn named_output(&self, name: &str) -> Option<u32> {
+        self.outputs
+            .borrow()
+            .values()
+            .find(|tracker| tracker.name().as_deref() == Some(name))
+            .map(|tracker| tracker.global_name)
+    }
+
+    /// The proxy-bound `wl_output` of the global named `global` (D11): the
+    /// object a layer surface is pinned with.
+    pub(super) fn output_by_global(&self, global: u32) -> Option<Rc<WlOutput>> {
+        self.outputs
+            .borrow()
+            .get(&global)
+            .map(|tracker| Rc::clone(&tracker.wl_output))
+    }
+
+    /// The tracked size of the output bound under `global` (D11).
+    pub(super) fn output_size(&self, global: u32) -> Option<OutputSize> {
+        self.outputs
+            .borrow()
+            .get(&global)
+            .and_then(|tracker| tracker.size())
+    }
+
+    /// Each tracked output's global name and the compositor name it has
+    /// announced, if any (D11): the input of the `set-output` decision.
+    pub(super) fn tracked_output_names(&self) -> Vec<(u32, Option<String>)> {
+        self.outputs
+            .borrow()
+            .values()
+            .map(|tracker| (tracker.global_name, tracker.name()))
+            .collect()
+    }
+
+    /// The global name of a proxy-bound `wl_output` object (D11): the join
+    /// that turns the reserve surface's `enter` into the output the strip
+    /// sits on.
+    pub(super) fn global_of_output(&self, output: &Rc<WlOutput>) -> Option<u32> {
+        let id = output.unique_id();
+        self.outputs
+            .borrow()
+            .values()
+            .find(|tracker| tracker.wl_output.unique_id() == id)
+            .map(|tracker| tracker.global_name)
     }
 
     /// The panel output's current size, when it is known.

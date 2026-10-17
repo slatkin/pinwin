@@ -15,8 +15,12 @@
 //! route. Row 6.4 adds the geometry apply (D9): the reserve surface carries
 //! the exclusive zone, a percent size resolves against the panel's output
 //! read from `zxdg_output_v1`, and the panel window's buffer is cropped to
-//! the app's window geometry through a proxy-owned `wp_viewport`. The change
-//! commands are answered without effect until row 6.6 gives them one.
+//! the app's window geometry through a proxy-owned `wp_viewport`. Row 6.5
+//! adds output handling (D11): the panel docks on the output its settings
+//! name, a `set-output` re-docks the panel window on the chosen output, and
+//! a `closed` layer surface is replaced with a new one instead of closing
+//! the app's window. The other change commands are answered without effect
+//! until row 6.6 gives them one.
 //!
 //! The whole loop runs under the shared panic guard (D5): a panic in one
 //! panel drops that panel's state, which closes its app's Wayland
@@ -69,6 +73,12 @@ pub mod check;
 // The D4 window-routing handlers and the pure slot rule they decide with.
 #[path = "proxy/routing.rs"]
 mod routing;
+
+// The panel window's dock on one output (D11): the layer surface, its
+// handler, the `set-output` decision and the re-docks.
+#[path = "proxy/dock.rs"]
+mod dock;
+
 #[path = "proxy/slot.rs"]
 pub mod slot;
 
@@ -268,8 +278,8 @@ struct Panel {
     /// The app's open Wayland connections: the panel ends only after the app
     /// exited *and* this returned to zero (D3).
     connections: Rc<Cell<usize>>,
-    settings: PanelSettings,
-    /// The window routing and the slot its status reads (D4).
+    /// The window routing and the slot its status reads (D4): it also owns
+    /// the live settings a change command alters (D11).
     routing: Rc<Routing>,
 }
 
@@ -312,7 +322,6 @@ impl Panel {
             commands,
             pidfd,
             connections,
-            settings: settings.clone(),
             routing,
         })
     }
@@ -378,12 +387,18 @@ impl Panel {
         }
     }
 
-    /// The answer to one command. `Status` reports the settings and the view
-    /// state; every other command succeeds without effect until row 6.6
-    /// gives it one (there is no apply path to change the live panel yet).
+    /// The answer to one command (spec "Status", "Unknown output").
+    /// `Status` reports the settings and the view state, `set-output`
+    /// validates the name and re-docks the panel window on the chosen
+    /// output (D11); every other command succeeds without effect until row
+    /// 6.6 gives it one.
     fn answer(&self, request: &PanelRequest) -> PanelReply {
         match request {
             PanelRequest::Status => PanelReply::Status(self.status()),
+            PanelRequest::SetOutput(name) => match dock::answer_set_output(&self.routing, name) {
+                Ok(()) => PanelReply::Done,
+                Err(error) => PanelReply::Refused(error),
+            },
             _ => PanelReply::Done,
         }
     }
@@ -391,9 +406,10 @@ impl Panel {
     /// The panel's settings and view state (spec "Status"): `has_window` is
     /// the D4 slot's own answer, `shown` is the settings' hidden flag, which
     /// row 8.2 applies, and a percent size resolves once the panel's output
-    /// size is known (row 6.4, D9).
+    /// size is known (row 6.4, D9). The settings come from the routing, so
+    /// a `set-output` shows in the reply (D11).
     fn status(&self) -> PanelStatus {
-        let settings = self.settings.clone();
+        let settings = self.routing.status_settings();
         let shown = !settings.hidden();
         let has_window = self.routing.has_window();
         let width = self.routing.resolved_width();

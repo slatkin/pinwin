@@ -1,4 +1,4 @@
-//! The reserve surface (replace-terminal-with-app-host D9): the second,
+//! The reserve surface (replace-terminal-with-app-host D9, D11): the second,
 //! transparent layer surface that carries the panel's exclusive zone.
 //!
 //! The panel surface itself claims no zone — it sets an exclusive zone of -1
@@ -7,7 +7,11 @@
 //! a pushing panel reserves `near + across + far` from its first frame, a
 //! covering start reserves nothing until the first pushing apply moves the
 //! gap. The surface is created and destroyed with the panel window (D9), so
-//! the reservation lives and dies with the panel's own lifecycle.
+//! the reservation lives and dies with the panel's own lifecycle, and a
+//! re-dock of the panel window re-docks the strip beside it (D11): the
+//! surface is pinned to the panel's output when one is set, and a strip that
+//! entered an output the panel is not on is moved back to the panel's
+//! monitor (spec "The reservation SHALL apply only to the panel's monitor").
 //!
 //! Ported in structure from the spike's `src/reserve.rs`, which followed
 //! wl-paper's `apps/wl-paper/src/paper.rs`
@@ -20,11 +24,12 @@ use std::io::{self, Write as _};
 use std::os::fd::FromRawFd;
 use std::rc::{Rc, Weak};
 
-use wl_proxy::object::ObjectCoreApi;
+use wl_proxy::object::{Object, ObjectCoreApi};
 use wl_proxy::protocols::wayland::wl_buffer::WlBuffer;
 use wl_proxy::protocols::wayland::wl_compositor::WlCompositor;
+use wl_proxy::protocols::wayland::wl_output::WlOutput;
 use wl_proxy::protocols::wayland::wl_shm::{WlShm, WlShmFormat};
-use wl_proxy::protocols::wayland::wl_surface::WlSurface;
+use wl_proxy::protocols::wayland::wl_surface::{WlSurface, WlSurfaceHandler};
 use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_shell_v1::{
     ZwlrLayerShellV1, ZwlrLayerShellV1Layer,
 };
@@ -32,7 +37,9 @@ use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::{
     ZwlrLayerSurfaceV1, ZwlrLayerSurfaceV1Handler, ZwlrLayerSurfaceV1KeyboardInteractivity,
 };
 
+use super::dock;
 use super::mapping::anchor_of;
+use super::routing::Routing;
 use crate::geometry::HeldGap;
 
 /// The layer-shell namespace of the reserve. Compositors show it in their
@@ -67,15 +74,19 @@ impl Reserve {
     /// what the layer-shell protocol requires before the first configure.
     /// Its size, zone and anchors come from the held gap the panel starts
     /// with — a pushing panel reserves its strip from the first frame, a
-    /// covering start reserves nothing (zero size, zero zone). The buffer
-    /// attach itself waits for the first configure, where a failure only
-    /// leaves the strip unmapped.
+    /// covering start reserves nothing (zero size, zero zone) — and it is
+    /// pinned to `output` when one is given (D11). The buffer attach itself
+    /// waits for the first configure, where a failure only leaves the strip
+    /// unmapped. The handlers keep the routing weak: the routing holds this
+    /// reserve strongly, so a strong reference back would close a cycle.
     pub(super) fn create(
         compositor: &Rc<WlCompositor>,
         shm: &Rc<WlShm>,
         layer_shell: &Rc<ZwlrLayerShellV1>,
         gap: HeldGap,
         layer: ZwlrLayerShellV1Layer,
+        output: Option<&Rc<WlOutput>>,
+        routing: Weak<Routing>,
     ) -> Rc<Self> {
         let surface = compositor.new_send_create_surface();
         surface.set_forward_to_client(false);
@@ -84,7 +95,7 @@ impl Reserve {
         surface.send_set_input_region(Some(&region));
         region.send_destroy();
         let layer_surface =
-            layer_shell.new_send_get_layer_surface(&surface, None, layer, RESERVE_NAMESPACE);
+            layer_shell.new_send_get_layer_surface(&surface, output, layer, RESERVE_NAMESPACE);
         let reserve = Rc::new(Self {
             surface: Rc::clone(&surface),
             layer_surface: Rc::clone(&layer_surface),
@@ -93,8 +104,12 @@ impl Reserve {
             mapped: Cell::new(false),
         });
         layer_surface.set_handler(ProxyReserveLayerSurface {
+            routing: Weak::clone(&routing),
             reserve: Rc::downgrade(&reserve),
         });
+        // The watch learns which output the compositor gave the strip, so a
+        // strip that landed beside the panel can be moved (D11).
+        surface.set_handler(ReserveSurfaceWatch { routing });
         let (width, height) = gap.size();
         layer_surface.send_set_size(width, height);
         layer_surface.send_set_anchor(anchor_of(gap.anchors()));
@@ -119,8 +134,12 @@ impl Reserve {
     }
 
     /// Destroys the reserve with the panel window it was created for (D9):
-    /// the zone goes away with the surface.
+    /// the zone goes away with the surface. The handlers are unset first, so
+    /// a `closed` or an `enter` the compositor already had in flight cannot
+    /// reach them after the destroy (D11).
     pub(super) fn destroy(&self) {
+        self.surface.unset_handler();
+        self.layer_surface.unset_handler();
         self.layer_surface.send_destroy();
         self.surface.send_destroy();
     }
@@ -183,10 +202,11 @@ impl Reserve {
 }
 
 /// The proxy's reserve layer surface handler: it acks configures and maps
-/// the surface on the first one. `closed` is a compositor-side teardown
-/// (for example the output going away); row 6.5 owns recreating surfaces on
-/// a new output, so until then the strip is simply unreserved.
+/// the surface on the first one. `closed` is a compositor-side teardown —
+/// for example the strip's output going away (D11) — and the routing
+/// re-docks the strip beside the panel instead of leaving it unreserved.
 struct ProxyReserveLayerSurface {
+    routing: Weak<Routing>,
     /// The reserve this handler answers, kept weak so the handler does not
     /// keep its own object alive.
     reserve: Weak<Reserve>,
@@ -206,6 +226,27 @@ impl ZwlrLayerSurfaceV1Handler for ProxyReserveLayerSurface {
     }
 
     fn handle_closed(&mut self, _slf: &Rc<ZwlrLayerSurfaceV1>) {
-        eprintln!("pinwin: the compositor closed a reserve surface");
+        // D11 (spec "Monitor unplugged"): the strip's output went away. The
+        // routing destroys this reserve and re-docks the strip beside the
+        // panel.
+        if let Some(routing) = self.routing.upgrade() {
+            dock::on_reserve_closed(&routing);
+        }
+    }
+}
+
+/// The reserve surface's `wl_surface` handler (D11): it watches `enter`,
+/// which names the output the compositor gave the strip, so the routing can
+/// move a strip that landed beside the panel. The surface is proxy-owned:
+/// nothing is forwarded.
+struct ReserveSurfaceWatch {
+    routing: Weak<Routing>,
+}
+
+impl WlSurfaceHandler for ReserveSurfaceWatch {
+    fn handle_enter(&mut self, _slf: &Rc<WlSurface>, output: &Rc<WlOutput>) {
+        if let Some(routing) = self.routing.upgrade() {
+            dock::on_reserve_entered(&routing, output);
+        }
     }
 }
