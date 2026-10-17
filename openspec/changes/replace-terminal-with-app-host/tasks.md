@@ -173,7 +173,7 @@ below). Its code does not enter pinwin; only the findings do.
   check at daemon start (D12). Verify: unit test that a panic in the loop ends only that
   panel's handle; live: the user runs `pinwin daemon` on a compositor without layer-shell (or
   with `WAYLAND_DISPLAY` set to a missing socket) and sees exit 1 with a message.
-- [ ] 6.2 Add window routing (D4) with the slot state as a pure type, and the configure and
+- [x] 6.2 Add window routing (D4) with the slot state as a pure type, and the configure and
   ack mapping copied from wl-paper with a GPL-3.0 source note. Document in README.md how a
   panel picks its window, that other windows pass through, and that apps which hand a launch
   to a running copy do not enter a panel (for example Ghostty needs
