@@ -130,7 +130,7 @@ below). Its code does not enter pinwin; only the findings do.
 - [x] 4.1 Create `src/name.rs` from the name rules in `src/instance.rs`, with the default name
   from the command's file name. Verify: unit tests for "Default name" and "Invalid default
   name" pass.
-- [ ] 4.2 Create `src/config.rs` (D13): the `[daemon]`, `[panel.defaults]` and
+- [x] 4.2 Create `src/config.rs` (D13): the `[daemon]`, `[panel.defaults]` and
   `[panel.<name>]` tables, the built-in defaults and the precedence. Document the file and
   every key in README.md. Verify: unit tests for "No config file", "Invalid config file"
   (message has the line), "Per-name override", "Option wins" and "Defaults" pass, and every
