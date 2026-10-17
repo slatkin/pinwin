@@ -157,6 +157,26 @@ enum Sign {
 }
 
 impl Amount {
+    /// A growing change of `size`: the wire's positive form and the `+` of
+    /// the command line (spec "Size values").
+    #[must_use]
+    pub const fn grow(size: Size) -> Self {
+        Self {
+            sign: Sign::Grow,
+            size,
+        }
+    }
+
+    /// A shrinking change of `size`: the wire's negative form and the `-` of
+    /// the command line (spec "Size values").
+    #[must_use]
+    pub const fn shrink(size: Size) -> Self {
+        Self {
+            sign: Sign::Shrink,
+            size,
+        }
+    }
+
     /// The magnitude, in the same forms as a size.
     #[must_use]
     pub const fn size(self) -> Size {

@@ -26,6 +26,11 @@ and several modules wait for the rows that wire them in (D15).
   daemon request. It produces the command value and the `PanelOptions` of the
   config file and opens no socket. No module compiles it yet; `tests/cli.rs`
   includes it so its unit tests run.
+- `src/ipc.rs` — the daemon's wire format (D13): the request enum with one
+  variant for each client subcommand, the reply and its error kinds, the
+  64 KiB request line with a bounded reader, and the client call with a
+  bounded wait. No module compiles it yet; `tests/ipc.rs` includes it so its
+  unit tests run.
 - `src/instance.rs` + `src/instance/` — the instance socket: identity, bind,
   listener and client (`InstanceSocket`, `Request`, `instance::send`); the
   daemon socket grows from it.
@@ -117,7 +122,11 @@ README's configuration table against `config.rs`, and the tests in
 `tests/cli.rs`, which cover the `run`, `daemon` and client subcommands (spec
 "Invalid option value", "No command", "Usage error", "Invalid default
 name" and an invalid `--focus-ring`) and check every subcommand in the
-README's command table against `cli.rs`. The crop harness
+README's command table against `cli.rs`, and the tests in `tests/ipc.rs`,
+which cover the wire format (spec "Valid request", "Not JSON" and
+"Unknown command") and an invalid value's own kind, the 64 KiB line limit
+and the client's bounded wait, and check every request `cmd` against
+`cli.rs`. The crop harness
 includes `src/geometry.rs` as well, for the `Edge` the crop names, under a
 `dead_code` allow whose reason names the rows that use the accessors it does
 not. The other kept modules

@@ -22,6 +22,9 @@ libc = "0.2"
 # (replace-terminal-with-app-host D13). Row 4.2 adds these; the IPC's
 # `serde_json` arrives with row 5.1, not here.
 serde = { version = "1", features = ["derive"] }
+# The IPC's one-JSON-object-per-line wire format (replace-terminal-with-app-host
+# D13, row 5.1).
+serde_json = "1"
 toml = { version = "1.1", default-features = false, features = ["parse", "std", "serde"] }
 
 # port-to-rust D5: panics must never cross the public API, so the unwind
