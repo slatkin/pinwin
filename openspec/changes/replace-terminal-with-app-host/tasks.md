@@ -102,7 +102,7 @@ below). Its code does not enter pinwin; only the findings do.
   AGENTS.md and README.md. Verify: `cargo build`, `cargo clippy --all-targets -- -D warnings`
   and `cargo nextest run` (the moved crop tests) pass, and
   `rg -l 'ghostty|libghostty' src Cargo.toml` finds nothing.
-- [ ] 2.2 Remove the dependencies listed in design D15, drop the Zig setup from
+- [x] 2.2 Remove the dependencies listed in design D15, drop the Zig setup from
   `.github/workflows/build.yml` and AGENTS.md, change `Cargo.toml` `license` to
   `GPL-3.0-or-later`, replace `LICENSE` with the GPL-3.0 text, and update the description and
   keywords (no terminal, no niri). Verify:
