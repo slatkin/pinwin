@@ -127,7 +127,7 @@ below). Its code does not enter pinwin; only the findings do.
 
 ## 4. Names, config file and command-line parsing
 
-- [ ] 4.1 Create `src/name.rs` from the name rules in `src/instance.rs`, with the default name
+- [x] 4.1 Create `src/name.rs` from the name rules in `src/instance.rs`, with the default name
   from the command's file name. Verify: unit tests for "Default name" and "Invalid default
   name" pass.
 - [ ] 4.2 Create `src/config.rs` (D13): the `[daemon]`, `[panel.defaults]` and
