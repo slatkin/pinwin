@@ -117,7 +117,7 @@ below). Its code does not enter pinwin; only the findings do.
   old modules. Verify: unit tests for the spec scenarios "Left docking", "Right docking",
   "Top docking", "Vertical insets", "Negative gutter", "Covering layout holds the gap" and
   "Side switch moves the gap" pass.
-- [ ] 3.2 Add validation (spec "Validate a change before applying it") and percent resolution
+- [x] 3.2 Add validation (spec "Validate a change before applying it") and percent resolution
   (spec "Size values"). Verify: unit tests for "No visible length", "Too wide for the
   output", "Covering panel wider than the output", "Percent of the output", "Percent follows
   the output" and "Invalid size" pass.
