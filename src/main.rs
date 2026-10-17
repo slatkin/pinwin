@@ -30,52 +30,16 @@ use crate::daemon::lifetime::{Daemon, Lifetime, SignalFd};
 use crate::ipc::{Answer, CallError, ErrorKind, Request, Subscription};
 use crate::run::Exec;
 
-pub mod cli;
-pub mod config;
-pub mod daemon;
-
-// The geometry core is applied by the proxy from row 6.4 (D9): the apply
-// path of row 6.6 (`src/proxy/apply.rs`) reads `Margins::new` and the
-// `Geometry::across` and `Geometry::gutters` accessors, and the width
-// tween (row 10.1) runs `HeldGap::reserve`, `HeldGap::tweens_with_panel` and
-// `HeldGap::edge`. Row 12.x makes the module private again once every part
-// has a caller in the binary (D15); until then it stays public at this crate
-// root so no waiting part is reported dead, and nothing outside the binary
-// can name them.
-pub mod geometry;
-
-// The parser, the config file and the daemon are complete before the rows
-// that call every part of them (D15), so their modules are public at this
-// crate root: a private module would report the parts rows 6.x to 12.x use as
-// dead code. Nothing outside the binary can name them, and the test
-// harnesses include the same files as public modules for the same reason.
-pub mod ipc;
-
-// The proxy's panic guard (port-to-rust D5) is compiled now that the panel
-// thread uses `guard`; `guard_always` and `guard_default` wait for the rows
-// that register the trampolines they protect (the event callbacks of rows
-// 8.x and the ring of row 9.1), so the module stays public at this crate
-// root until those callers land and nothing outside the binary can name it.
-pub mod guard;
-
-// The panel proxy lands before the rows that wire it in: row 7.1 calls
-// `proxy::spawn` from the `create` request, and that row makes this module
-// private once every part of it has a caller in the binary (D15). Until then
-// a private module would report the API that row calls as dead code.
-pub mod proxy;
-
+mod cli;
+mod config;
+mod daemon;
+mod geometry;
+mod guard;
+mod ipc;
 mod name;
-
-// The tray icon (row 11.1, D14): the daemon starts it with the first panel
-// and stops it with the last. `crate::daemon::lifetime` names
-// `crate::tray::TrayService`, and the menu model's `new` has no caller in the
-// binary yet, so the module stays public at this crate root like the other
-// staged modules (D15). Nothing outside the binary can name it.
-pub mod tray;
-
-// The app `pinwin run` becomes (row 7.1, D2): the exec spec's program,
-// arguments and environment are pure, so their test needs no display.
+mod proxy;
 mod run;
+mod tray;
 
 /// The usage line a refused command line ends with.
 const USAGE: &str = "usage: pinwin <command> [options]";
@@ -98,7 +62,7 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("{error}");
             eprintln!("{USAGE}");
-            ExitCode::from(error.exit_code())
+            ExitCode::from(cli::UsageError::EXIT_CODE)
         }
     }
 }

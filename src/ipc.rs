@@ -21,11 +21,8 @@
 //! block the daemon", D12). The client [`call`] connects, writes one line
 //! and reads one reply under the [`REPLY_TIMEOUT`] deadline; it uses no
 //! async runtime. The client itself lives in `ipc/client.rs` beside the
-//! reply types.
-//!
-//! `tests/ipc.rs` compiles this module together with `src/cli.rs` and the
-//! modules their value types name, so the parsing, the line limit and the
-//! client run without a daemon.
+//! reply types. The parsing, the line limit and the client run without a
+//! daemon.
 
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -42,17 +39,12 @@ use crate::config::{Keyboard, Layer, PanelOptions};
 use crate::geometry::{Edge, ReserveMode, Size};
 use crate::name::PanelName;
 
-#[path = "ipc/client.rs"]
 mod client;
-
-#[path = "ipc/reply.rs"]
+mod options;
 mod reply;
 
-#[path = "ipc/options.rs"]
-mod options;
-
 pub use client::{Answer, CallError, Subscription, call};
-pub use reply::{ErrorKind, ErrorReply, PanelEntry, PanelStatus, Reply, StatusReply};
+pub use reply::{ErrorKind, ErrorReply, PanelEntry, PanelStatus, Reply};
 
 /// The largest request line in bytes, without its newline: a line over it
 /// gets error kind `invalid_request` and the daemon closes the connection
@@ -69,6 +61,7 @@ pub const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 /// `src/cli.rs`, which is `cli::SUBCOMMANDS` less `run` and `daemon` (spec
 /// "Command-line client"). The drift test checks the two lists against each
 /// other in both directions.
+#[cfg(test)]
 pub const REQUEST_COMMANDS: [&str; 15] = [
     "toggle",
     "show",
@@ -661,9 +654,5 @@ fn poll_ready(fd: std::os::fd::RawFd, events: libc::c_short, timeout: Duration) 
     ready > 0 && fds.revents & events != 0
 }
 
-// The path is explicit because `tests/ipc.rs` includes this file with
-// `#[path]`, and a module loaded that way searches its own children in the
-// included file's directory rather than beside it (as in `src/cli.rs`).
 #[cfg(test)]
-#[path = "ipc/tests.rs"]
 mod tests;

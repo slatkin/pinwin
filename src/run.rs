@@ -77,9 +77,5 @@ impl Exec {
     }
 }
 
-// The path is explicit because the tests include this file the way
-// `src/cli.rs` includes `cli/tests.rs`, and a module loaded that way searches
-// its children beside the included file rather than beside `src/run.rs`.
 #[cfg(test)]
-#[path = "run/tests.rs"]
 mod tests;

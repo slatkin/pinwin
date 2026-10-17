@@ -3,7 +3,7 @@
 //!
 //! The loop's own steps need a wl-proxy `State`, which needs a compositor, so
 //! these tests drive what runs after the loop: the panic guard and the end
-//! report. The panels are stand-in threads, as in `tests/daemon.rs` (D12), so
+//! report. The panels are stand-in threads, as in `src/daemon/tests.rs` (D12), so
 //! no test connects to a compositor and no test touches the user's display.
 
 use std::sync::{Arc, mpsc};

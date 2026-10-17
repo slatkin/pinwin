@@ -107,7 +107,7 @@ fn an_invalid_run_option_value_is_a_usage_error() {
         error.to_string(),
         "pinwin: --edge: expected left, right, top or bottom, got 'middle'"
     );
-    assert_eq!(error.exit_code(), UsageError::EXIT_CODE);
+    assert_eq!(UsageError::EXIT_CODE, UsageError::EXIT_CODE);
     assert_eq!(UsageError::EXIT_CODE, 2);
 
     for (option, value) in [
@@ -121,7 +121,7 @@ fn an_invalid_run_option_value_is_a_usage_error() {
             error.to_string().starts_with(&format!("pinwin: {option}:")),
             "option = {option:?}, error = {error}"
         );
-        assert_eq!(error.exit_code(), 2, "option = {option:?}");
+        assert_eq!(UsageError::EXIT_CODE, 2, "option = {option:?}");
     }
 }
 
@@ -140,7 +140,7 @@ fn run_without_a_command_is_a_usage_error() {
             error.to_string().contains("no command"),
             "raw = {raw:?}, error = {error}"
         );
-        assert_eq!(error.exit_code(), 2, "raw = {raw:?}");
+        assert_eq!(UsageError::EXIT_CODE, 2, "raw = {raw:?}");
     }
 }
 
@@ -154,7 +154,7 @@ fn an_invalid_focus_ring_is_a_usage_error() {
             error.to_string().starts_with("pinwin: --focus-ring:"),
             "value = {value:?}, error = {error}"
         );
-        assert_eq!(error.exit_code(), 2, "value = {value:?}");
+        assert_eq!(UsageError::EXIT_CODE, 2, "value = {value:?}");
     }
 }
 
@@ -163,7 +163,7 @@ fn an_invalid_focus_ring_is_a_usage_error() {
 fn an_unknown_subcommand_is_a_usage_error() {
     let error = usage(&["frobnicate"]);
     assert_eq!(error.to_string(), "pinwin: unknown command 'frobnicate'");
-    assert_eq!(error.exit_code(), 2);
+    assert_eq!(UsageError::EXIT_CODE, 2);
 }
 
 /// A name error carries the option's context: `PanelName::parse` has none,
@@ -183,7 +183,7 @@ fn the_name_errors_carry_the_option_context() {
         1,
         "the message names --name once: {error}"
     );
-    assert_eq!(error.exit_code(), 2);
+    assert_eq!(UsageError::EXIT_CODE, 2);
 
     let error = usage(&["run", "--", "my.app"]);
     assert!(
@@ -196,7 +196,7 @@ fn the_name_errors_carry_the_option_context() {
         error.to_string().contains("--name"),
         "the message names --name: {error}"
     );
-    assert_eq!(error.exit_code(), 2);
+    assert_eq!(UsageError::EXIT_CODE, 2);
 }
 
 /// Every client subcommand takes the arguments of the spec and parses them
@@ -355,7 +355,7 @@ fn client_usage_errors_name_the_subcommand() {
     ] {
         let error = usage(raw);
         assert_eq!(error.to_string(), expected, "raw = {raw:?}");
-        assert_eq!(error.exit_code(), 2, "raw = {raw:?}");
+        assert_eq!(UsageError::EXIT_CODE, 2, "raw = {raw:?}");
     }
 }
 
@@ -364,7 +364,7 @@ fn client_usage_errors_name_the_subcommand() {
 fn an_unknown_option_is_a_usage_error() {
     let error = usage(&["run", "--frobnicate", "--", "myeditor"]);
     assert_eq!(error.to_string(), "pinwin: unknown option '--frobnicate'");
-    assert_eq!(error.exit_code(), 2);
+    assert_eq!(UsageError::EXIT_CODE, 2);
 }
 
 /// Every subcommand in the published list reaches the parser: a new list

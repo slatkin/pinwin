@@ -77,126 +77,99 @@ use lifetime::{PidFd, ends, exited_without_window, pidfd_watch};
 use registry::ClientDisplay;
 use routing::Routing;
 
-// The paths are explicit because a test harness can include this file the way
-// `tests/daemon.rs` includes `src/daemon.rs`, and a module loaded that way
-// searches its children beside the included file (`src/daemon.rs` does the
-// same).
-#[path = "proxy/check.rs"]
-pub mod check;
+// The layer-shell check at daemon start (D12, spec "Wayland layer-shell is
+// required"), which `src/main.rs` calls before the socket bind.
+pub(crate) mod check;
 
 // The D4 window-routing handlers and the pure slot rule they decide with.
-#[path = "proxy/routing.rs"]
 mod routing;
 
 // The panel's lifetime (row 7.3, D3): the app's pidfd and the end rule.
-#[path = "proxy/lifetime.rs"]
 mod lifetime;
 
 // The panel window's local toplevel handler and the slot's per-connection
 // owner (row 7.3, D3, D4).
-#[path = "proxy/window.rs"]
 mod window;
 
 // The panel window's dock on one output (D11): the layer surface, its
 // handler, the `set-output` decision and the re-docks.
-#[path = "proxy/dock.rs"]
 mod dock;
 
 // The live apply of the layout commands (row 6.6): edge, size, reserve mode
 // and layer change a running panel in place, on the layer surface it already
 // docks with.
-#[path = "proxy/apply.rs"]
 mod apply;
 
-#[path = "proxy/slot.rs"]
-pub mod slot;
+mod slot;
 
 // The settings-to-protocol mappers the routing and the reserve share (D9).
-#[path = "proxy/mapping.rs"]
 mod mapping;
 
 // The proxy's own globals and the output-size tracking behind percent
 // geometry (D9).
-#[path = "proxy/output.rs"]
 mod output;
 
 // The commit coordinator (row 8.1, D7): the dirty flag the app's four
 // pending-state requests set and the queue of proxy changes that waits for
 // the app's next commit, plus the surface handler that watches both.
-#[path = "proxy/commit.rs"]
-pub mod commit;
+mod commit;
 
 // Hide and show (row 8.2, D6): the shown/hidden state, the buffer the next
 // show attaches, the releases a hidden panel owes its app and the commits
 // that carry them.
-#[path = "proxy/hide.rs"]
 mod hide;
 
 // Keyboard modes (row 8.3): `set-keyboard`, `focus` and the launch rule that
 // keeps an on-demand panel from stealing the keyboard when it opens.
-#[path = "proxy/keyboard.rs"]
 mod keyboard;
 
 // The panel's focus ring (row 9.1, D10): four desynchronized subsurfaces of
 // the panel surface, shown while the panel holds the keyboard.
-#[path = "proxy/ring.rs"]
 mod ring;
 
 // Explicit synchronization (row 8.2, D6): the acquire and release points a
 // hidden panel holds until a commit carries a buffer.
-#[path = "proxy/syncobj.rs"]
 mod syncobj;
 
 // The reserve surface: the transparent layer surface that owns the
 // exclusive zone (D9).
-#[path = "proxy/reserve.rs"]
 mod reserve;
 
 // The panel window's viewport crop: the client-side title bar and shadow
 // stay outside the panel (D5, D8).
-#[path = "proxy/viewport.rs"]
 mod viewport;
 
 // The viewport composition (row 10.1, D8): the source rectangle and
 // destination the proxy's viewport carries, composed from the visible
-// fraction, the docked edge, the app's own viewport and the buffer. The
-// tween driver (row 10.x) passes each frame's fraction, so the module stays
-// public until then.
-#[path = "proxy/compose.rs"]
-pub mod compose;
+// fraction, the docked edge, the app's own viewport and the buffer.
+mod compose;
 
 // The panel surface's buffer sizes (row 10.1, D8): the bounds the viewport
 // crop is clamped to, recorded from `wl_shm` and `zwp_linux_dmabuf_v1`.
-#[path = "proxy/buffers.rs"]
 mod buffers;
 
 // The animated width transition (row 10.1, D8): the pure grow/shrink state
 // machine and the driver that applies each frame through the commit
 // coordinator, with the one-size-per-tween configure rule, plus the easing
 // step (`src/anim.rs`) both use.
-#[path = "proxy/tween.rs"]
 mod tween;
 
 #[path = "anim.rs"]
-pub mod anim;
+mod anim;
 
 // The D5 popup handlers: the recorded anchor rectangle and the configure a
 // layer popup reports in the app's own coordinates.
-#[path = "proxy/popup.rs"]
 mod popup;
 
 // The registry layer: the proxy's own upstream registry, the app's registry
 // pass-through and the xdg_wm_base that holds surfaces back (D4, D5).
-#[path = "proxy/registry.rs"]
 mod registry;
 
 // The D5 per-window decoration routing: each decoration object is answered
 // by its toplevel's route.
-#[path = "proxy/decoration.rs"]
 mod decoration;
 
 #[cfg(test)]
-#[path = "proxy/tests.rs"]
 mod tests;
 
 /// How many `wayland-N` names the acceptor tries before it gives up: the

@@ -19,14 +19,14 @@
 //! source past it is the fatal `out_of_buffer` error; a buffer the proxy
 //! never saw created bounds nothing, and the whole buffer draws instead.
 //!
-//! Every decision is exact-rational or a whole pixel of the protocol, like
-//! the tween's crop plan ([`super::crop`]): no `f64` product joins it, so a
-//! tie at a fractional scale rounds the same way in every frame. The module
+//! Every decision is exact-rational or a whole pixel of the protocol: no
+//! `f64` product joins it, so a tie at a fractional scale rounds the same way
+//! in every frame. The module
 //! is display-free (`port-to-rust` D10), so its matrix is unit tested
 //! without a compositor.
 //!
 //! The visible fraction is [`Fraction::whole`] for a change that is not
-//! animated; the tween driver (row 10.x) passes each frame's fraction.
+//! animated; the tween driver (row 10.1) passes each frame's fraction.
 
 use wl_proxy::fixed::Fixed;
 

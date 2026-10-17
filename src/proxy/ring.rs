@@ -665,9 +665,5 @@ fn solid_buffer(shm: &Rc<WlShm>, width: u32, height: u32, color: Rgb) -> io::Res
     Ok(buffer)
 }
 
-// The path is explicit because `src/proxy.rs` includes this file with
-// `#[path]`, so a child module searches in `src/proxy/` rather than beside
-// this file (as in `src/daemon/events.rs`).
 #[cfg(test)]
-#[path = "ring/tests.rs"]
 mod tests;

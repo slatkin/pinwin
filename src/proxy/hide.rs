@@ -666,9 +666,5 @@ fn send_layer_state(routing: &Routing) {
     layer.send_set_exclusive_zone(-1);
 }
 
-// The path is explicit because `src/proxy.rs` includes this file with
-// `#[path]`, so a child module searches in `src/proxy/` rather than beside
-// this file (as in `src/daemon/events.rs`).
 #[cfg(test)]
-#[path = "hide/tests.rs"]
 mod tests;

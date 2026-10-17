@@ -1,58 +1,12 @@
-//! The harness that compiles the daemon's tests
-//! (replace-terminal-with-app-host rows 5.2 to 5.5).
+//! The daemon's tests (replace-terminal-with-app-host rows 5.2 to 5.5,
+//! spec "Daemon socket", "One daemon for each Wayland display", "Unknown
+//! panel", "Duplicate name", "Status").
 //!
-//! `src/daemon.rs` holds the one socket that serves a Wayland display's
-//! panels (spec "Daemon socket", "One daemon for each Wayland display") and,
-//! with `src/daemon/panel.rs`, `src/daemon/registry.rs`,
-//! `src/daemon/events.rs`, `src/daemon/connection.rs` and
-//! `src/daemon/lifetime.rs`, the panel handles, the routing of a request to a
-//! panel, the event bus, one IPC connection and the daemon's lifetime
-//! (D12). `src/main.rs` compiles the daemon for `pinwin daemon`, but an
-//! integration test cannot name the binary's modules; this file includes
-//! them, so `cargo nextest run` exercises the path rule, the stale-file
-//! replacement, the live-daemon refusal, the two displays, the socket
-//! file's mode, the name rules, the status reply and the routing, with a test
-//! thread in the panel's place, all without a daemon. The event-stream tests
-//! live in `src/daemon/events/tests.rs`, which `src/daemon/events.rs`
-//! includes under `cfg(test)`, and the lifetime tests in
-//! `tests/daemon/lifetime.rs`, included as a child module below.
-//!
-//! The modules are `pub` so the dead-code lint does not report the parts of
-//! the included modules these tests do not reach. `src/proxy.rs` and
-//! `src/guard.rs` are included too, because the `create` request starts a
-//! panel through the proxy (row 7.1, D2) and the proxy guards its loop.
-
-#[path = "../src/geometry.rs"]
-pub mod geometry;
-
-#[path = "../src/name.rs"]
-pub mod name;
-
-#[path = "../src/config.rs"]
-pub mod config;
-
-#[path = "../src/cli.rs"]
-pub mod cli;
-
-#[path = "../src/ipc.rs"]
-pub mod ipc;
-
-#[path = "../src/daemon.rs"]
-pub mod daemon;
-
-// The `create` request starts a panel through the proxy (row 7.1, D2), so the
-// daemon modules name `crate::proxy` and `crate::guard`.
-#[path = "../src/guard.rs"]
-pub mod guard;
-
-#[path = "../src/proxy.rs"]
-pub mod proxy;
-
-// The tray icon (row 11.1, D14) is named by the daemon's lifetime, so the
-// included modules compile it. No test enables it, so no test reaches a
-// real session bus.
-#[path = "../src/tray.rs"]
-pub mod tray;
+//! Each test binds or talks to a real socket under a scratch runtime
+//! directory and runs the daemon's routing with a stand-in panel thread, so
+//! no test needs a Wayland display or the process environment. The lifetime
+//! tests are a child module so this file stays well under the 800-line
+//! limit.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -64,13 +18,14 @@ use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use config::{Config, Keyboard, Layer, PanelOptions, PanelSettings};
-use daemon::panel::{Command, EventFd, PanelHandle, PanelReply, PanelRequest};
-use daemon::registry::Registry;
-use daemon::{PathError, SocketError, socket_path};
-use geometry::{Edge, ReserveMode, Size};
-use ipc::{ErrorKind, ErrorReply, PanelStatus, Reply, Request};
-use name::PanelName;
+use crate::config::{Config, Keyboard, Layer, PanelOptions, PanelSettings};
+use crate::daemon;
+use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply, PanelRequest};
+use crate::daemon::registry::Registry;
+use crate::daemon::{PathError, SocketError, socket_path};
+use crate::geometry::{Edge, ReserveMode, Size};
+use crate::ipc::{ErrorKind, ErrorReply, PanelStatus, Reply, Request};
+use crate::name::PanelName;
 
 /// A unique scratch directory under the system temp dir, standing in for
 /// `XDG_RUNTIME_DIR`: the tests never touch the process environment and
@@ -615,7 +570,6 @@ fn the_daemon_answers_its_own_requests() {
     );
 }
 
-// The lifetime's tests are a child module so this harness stays well under
-// the 800-line limit; `#[path]` keeps them in `tests/daemon/` beside it.
-#[path = "daemon/lifetime.rs"]
+// The lifetime tests are a child module so this file stays under the
+// 800-line limit.
 mod lifetime;

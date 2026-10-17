@@ -117,6 +117,7 @@ pub struct MenuModel {
 
 impl MenuModel {
     /// A model of `panels`, already in start order.
+    #[cfg(test)]
     #[must_use]
     pub const fn new(panels: Vec<PanelMenu>) -> Self {
         Self { panels }
@@ -376,9 +377,5 @@ fn reserve_index(reserve: ReserveMode) -> usize {
         .unwrap_or(0)
 }
 
-// The path is explicit because `tests/daemon.rs` includes this file with
-// `#[path]`, and a module loaded that way searches its own children in the
-// included file's directory rather than beside it (as in `src/ipc.rs`).
 #[cfg(test)]
-#[path = "tray/tests.rs"]
 mod tests;

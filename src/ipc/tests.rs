@@ -234,7 +234,10 @@ fn a_status_reply_carries_the_panel_fields() {
         super::PanelStatus::new(crate::config::PanelSettings::built_in(), true, false, 640);
     let reply = super::Reply::status(4242, vec![super::PanelEntry::new(notes(), 77, status)]);
     assert!(reply.is_ok());
-    assert_eq!(reply.as_status().map(super::StatusReply::pid), Some(4242));
+    assert_eq!(
+        reply.as_status().map(super::reply::StatusReply::pid),
+        Some(4242)
+    );
 
     let value: serde_json::Value = serde_json::from_str(&reply.to_line()).expect("a reply is JSON");
     assert_eq!(value["ok"], serde_json::json!(true));

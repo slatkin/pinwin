@@ -147,6 +147,7 @@ impl Bus {
 
     /// How many subscribers the bus has, so a test can check that a closed
     /// connection freed its queue.
+    #[cfg(test)]
     #[must_use]
     pub fn subscriber_count(&self) -> usize {
         locked(&self.inner).queues.len()
@@ -182,9 +183,5 @@ impl Drop for Subscription {
     }
 }
 
-// The path is explicit because `tests/daemon.rs` includes this file with
-// `#[path]`, and a module loaded that way searches its own children in the
-// included file's directory rather than beside it (as in `src/ipc.rs`).
 #[cfg(test)]
-#[path = "events/tests.rs"]
 mod tests;

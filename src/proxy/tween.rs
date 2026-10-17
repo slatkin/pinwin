@@ -42,7 +42,6 @@ use crate::geometry::{Edge, Geometry, HeldGap, Margins};
 
 use super::compose::Fraction;
 
-#[path = "tween/drive.rs"]
 mod drive;
 
 pub(super) use drive::{Slot, advance, is_running, on_app_commit, start, stop};
@@ -394,5 +393,4 @@ impl Tween {
 }
 
 #[cfg(test)]
-#[path = "tween/tests.rs"]
 mod tests;

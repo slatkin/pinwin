@@ -12,8 +12,6 @@
 //!
 //! A command line that names no usable command is a [`UsageError`]: the
 //! binary prints its message and exits 2 (spec "Command-line exit codes").
-//! `tests/cli.rs` compiles this module until `src/main.rs` dispatches the
-//! subcommands, so its unit tests run without a binary.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -27,6 +25,7 @@ use crate::name::PanelName;
 /// Every subcommand the parser accepts, in README order (spec
 /// "Command-line client"). The README's command table is checked against
 /// this list in both directions, as the configuration keys are.
+#[cfg(test)]
 pub const SUBCOMMANDS: [&str; 17] = [
     "run",
     "daemon",
@@ -225,15 +224,10 @@ impl UsageError {
     }
 
     /// The message the binary prints, without a trailing newline.
+    #[cfg(test)]
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
-    }
-
-    /// The text: the message.
-    #[must_use]
-    pub fn exit_code(&self) -> u8 {
-        Self::EXIT_CODE
     }
 }
 
@@ -529,9 +523,5 @@ fn no_args(subcommand: &str, args: &[OsString]) -> Result<(), UsageError> {
     }
 }
 
-// The path is explicit because `tests/cli.rs` includes this file with
-// `#[path]`, and a module loaded that way searches its own children in the
-// included file's directory rather than beside it (as in `src/config.rs`).
 #[cfg(test)]
-#[path = "cli/tests.rs"]
 mod tests;

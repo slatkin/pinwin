@@ -32,8 +32,8 @@
 //! the new edge, and every plan validates the geometry they take part in.
 //!
 //! The commit that applies the re-sent state is the app's own (D7): the proxy
-//! sends no commit of its own on the app's surface until row 8.1's commit
-//! coordinator, exactly as the crop's steady state already does.
+//! sends no separate commit on the app's surface, exactly as the crop's
+//! steady state does.
 
 use std::rc::Rc;
 
@@ -382,5 +382,4 @@ fn publish_gap(routing: &Routing, geometry: &Geometry) {
 }
 
 #[cfg(test)]
-#[path = "apply/tests.rs"]
 mod tests;

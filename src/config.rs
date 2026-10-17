@@ -14,9 +14,8 @@
 //!
 //! The merge is pure: [`Config::panel`] resolves the options a `pinwin run`
 //! call carries, the panel's own table, `[panel.defaults]` and, last, the
-//! built-in default. `src/cli.rs` fills the options from the command line;
-//! `tests/config.rs` includes this file so its unit tests run until the
-//! daemon owns it.
+//! built-in default. `src/cli.rs` fills the options from the command line
+//! and `src/main.rs` reads the file.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -47,6 +46,7 @@ const CONFIG_FILE: &str = "config.toml";
 /// [`PanelTable`], whose serde field names it mirrors: the README test
 /// compares the two so a documented key cannot be missing from the file and
 /// a parsed key cannot be undocumented.
+#[cfg(test)]
 pub const PANEL_KEYS: [&str; 13] = [
     "edge",
     "size",
@@ -65,6 +65,7 @@ pub const PANEL_KEYS: [&str; 13] = [
 
 /// The keys the `[daemon]` table accepts (spec "Daemon lifetime
 /// preference"), in README order.
+#[cfg(test)]
 pub const DAEMON_KEYS: [&str; 1] = ["exit_when_idle"];
 
 /// The layer-shell layer a panel draws in (spec "Run options").
@@ -412,6 +413,7 @@ pub struct PanelSettings {
 impl PanelSettings {
     /// The built-in defaults (spec "Built-in defaults"): they are the merge
     /// of two empty tables and no options, so there is one definition.
+    #[cfg(test)]
     #[must_use]
     pub fn built_in() -> Self {
         resolve(&PanelTable::default(), None, &PanelOptions::default())
@@ -512,6 +514,7 @@ impl PanelSettings {
     /// panel is laid out with, as the apply path re-resolves a geometry from
     /// a changed settings merge.
     #[must_use]
+    #[cfg(test)]
     pub fn with_gutters(&self, gutters: Gutters) -> Self {
         let mut settings = self.clone();
         settings.gutters = gutters;
@@ -771,10 +774,5 @@ fn resolve(
     }
 }
 
-// The path is explicit because `tests/config.rs` includes this file with
-// `#[path]`, and a module loaded that way searches its own children in the
-// included file's directory rather than beside it (row 4.2, as in
-// `src/geometry.rs`).
 #[cfg(test)]
-#[path = "config/tests.rs"]
 mod tests;

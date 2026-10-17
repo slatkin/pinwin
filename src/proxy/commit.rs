@@ -25,9 +25,7 @@
 //! handler does.
 //!
 //! Hide, show and the keyboard mode changes request a change (rows 8.2 and
-//! 8.3); the tween is row 10.x. The module stays public until row 12.x, as
-//! [`super::slot`] does, so the API those rows call does not report as dead
-//! code meanwhile.
+//! 8.3), and so does the width tween (row 10.1).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -70,6 +68,7 @@ impl CommitCoordinator {
 
     /// Whether the app's surface has pending state the proxy must not
     /// commit (D7).
+    #[cfg(test)]
     #[must_use]
     pub fn is_dirty(&self) -> bool {
         self.dirty.get()

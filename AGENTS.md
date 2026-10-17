@@ -33,14 +33,14 @@ and several modules wait for the rows that wire them in (D15).
   options of spec "Run options", `daemon`, and one client subcommand for each
   daemon request. It produces the command value and the `PanelOptions` of the
   config file and opens no socket. `src/main.rs` compiles it and dispatches
-  its commands; `tests/cli.rs` includes it so its unit tests run.
+  its commands; its unit tests are `src/cli/tests.rs`.
 - `src/ipc.rs` — the daemon's wire format (D13): the request enum with one
   variant for each client subcommand and the `create` request `pinwin run`
   sends (D2), the reply with its error kinds, its display for a new panel and
   its status reply's panel fields (spec "Status", "Run an app in a panel"),
   the 64 KiB request line with a bounded reader that keeps the lines behind
-  the one it returns, and the wire types. `src/main.rs` compiles it;
-  `tests/ipc.rs` includes it so its unit tests run.
+  the one it returns, and the wire types. `src/main.rs` compiles it; its
+  unit tests are `src/ipc/tests.rs`.
 - `src/ipc/options.rs` — the wire text of a setting value (row 7.1, D13,
   spec "Run options"): the `create` request's run options in the config
   file's grammar, and the one `Serialize` place for the types a request
@@ -65,8 +65,8 @@ and several modules wait for the rows that wire them in (D15).
   decoded `ipc::Request` to the panel it names (D12): a unique name, the
   start order a status reply lists, every panel command, the status reply
   of all panels or one, and the removal that frees a name or clears every
-  panel for `quit`. `src/main.rs` compiles it; `tests/daemon.rs` includes it
-  so its unit tests run.
+  panel for `quit`. `src/main.rs` compiles it; its tests with a stand-in
+  panel thread are in `src/daemon/tests.rs`.
 - `src/daemon/spawn.rs` — the daemon `pinwin run` starts when none answers
   (row 7.2, D12, spec "Run starts the daemon"): the double fork that leaves
   the `pinwin daemon` process in a new session with its three standard
@@ -79,15 +79,15 @@ and several modules wait for the rows that wire them in (D15).
   the `Event` kinds a panel publishes (added, removed, shown, hidden and
   geometry changed, each naming the panel), one bounded queue for each
   subscriber, and the publish that never waits and closes a subscriber whose
-  queue is full (spec "Slow subscriber"). `tests/daemon.rs` includes it, and
-  its tests are `src/daemon/events/tests.rs`.
+  queue is full (spec "Slow subscriber"). Its tests are
+  `src/daemon/events/tests.rs`.
 - `src/daemon/connection.rs` — one IPC connection (D12, D13): the bounded
   request read, the reply write, the `subscribe` stream that writes one
   event line after the success reply until the client closes it or falls
   behind (spec "Event stream", "Silent client"), and the daemon-owned
   `create`, `quit` and `reload` requests, whose replies it writes before the
   new panel, the end of the daemon or the config change. `src/main.rs`
-  compiles it; `tests/daemon.rs` includes it so its tests run.
+  compiles it.
 - `src/daemon/create.rs` — the daemon's `create` request (row 7.1, D2, spec
   "Run an app in a panel"): it resolves the new panel's settings from the run
   options, the config file and the built-in defaults, starts the panel thread
@@ -103,8 +103,8 @@ and several modules wait for the rows that wire them in (D15).
   the daemon, `reload` that keeps the previous config when the file is
   invalid, and the panel-end report that exits with the last panel when
   `exit_when_idle` is true. The socket file is removed by the
-  `DaemonSocket` drop when the loop returns. `tests/daemon.rs` includes it,
-  and its tests are `tests/daemon/lifetime.rs`.
+  `DaemonSocket` drop when the loop returns. Its tests are
+  `src/daemon/tests/lifetime.rs`.
 - `src/tray.rs` — the tray icon (row 11.1, D14, spec "One tray icon while
   panels exist", "No tray is not an error", "Menu for each panel", "Quit
   from the menu" and "Icon click opens nothing new"): the ksni
@@ -123,16 +123,15 @@ and several modules wait for the rows that wire them in (D15).
 - `src/name.rs` — the panel name rules (spec "Panel names"): the validated
   `PanelName` of 1..=64 characters from `[A-Za-z0-9_-]`, the default name
   taken from the command's file name, and the two name errors. `src/cli.rs`
-  uses it; `tests/name.rs` and `tests/cli.rs` include it so its unit tests
-  run.
+  uses it; its unit tests are inline in the module.
 - `src/config.rs` — the config file (spec "Config file" and "Panel settings
   and precedence", D13): the `[daemon]`, `[panel.defaults]` and
   `[panel.<name>]` tables, the setting grammar the run options share, the
   built-in defaults and the precedence of the options over the file, plus
   the path rule of `$XDG_CONFIG_HOME/pinwin/config.toml` (default
   `~/.config/pinwin/config.toml`). `src/cli.rs` parses the run options with
-  the same grammar and `src/main.rs` reads the file; `tests/config.rs` and
-  `tests/cli.rs` include it so its unit tests run.
+  the same grammar and `src/main.rs` reads the file; its unit tests are
+  `src/config/tests.rs`.
 - `src/geometry.rs` — the display-free geometry core: `Edge`, `Size` (pixels
   or percent), `Gutters`, `ReserveMode`, the layer-surface anchors, margins
   and size, the reserved strip and the held gap (D9). `src/main.rs` compiles
@@ -252,10 +251,6 @@ and several modules wait for the rows that wire them in (D15).
   their names, so a compositor that lacks `zwlr_layer_shell_v1` exits 1
   before any panel exists. `src/main.rs` calls it in the daemon start path,
   before the socket bind.
-- `src/proxy/crop.rs` — the width tween's crop plan (replace-terminal-with-app-host
-  D8): the exact-rational scale rounding, the tween crop and the viewport
-  source rectangle. No module compiles it yet; `tests/tween_crop.rs` includes
-  it so its unit tests run.
 - `src/proxy/tween.rs` — the animated width transition (row 10.1, D8): the
   pure grow/shrink state machine (`Phase`, `Step`, `Frame`) that holds a grow
   at its current width until the app commits a buffer whose reported size
@@ -286,9 +281,8 @@ and several modules wait for the rows that wire them in (D15).
   and without one the mapping is one to one. The source stays in the
   viewporter's post-buffer-scale coordinates, is clamped to the buffer, and
   is unset when the buffer size is unknown. Every decision is exact-rational
-  in whole pixels. The tween driver (row 10.x) passes each frame's fraction,
-  so the module stays public until then. Display-free, so its thirteen tests
-  run without a compositor.
+  in whole pixels. The tween driver (row 10.1) passes each frame's fraction.
+  Display-free, so its thirteen tests run without a compositor.
 - `src/proxy/viewport.rs` — the panel window's viewport (D5, D8): the
   proxy-owned `wp_viewport` the composed crop is written through, the state
   its inputs come from (the app's own viewport values per surface, the
@@ -313,9 +307,9 @@ and several modules wait for the rows that wire them in (D15).
   before it is forwarded. `PanelSurfaceCommits` is the `wl_surface` handler
   the routing installs on the panel surface: it watches those requests and
   the app's commit on top of the D9 output watch and forwards each request
-  as the generated default handler does. Hide and show (row 8.2) request
-  their commits through it; the tween is row 10.x. The module stays public
-  until row 12.x. Display-free, so its five tests run without a compositor.
+  as the generated default handler does. Hide and show (row 8.2) and the
+  width tween (row 10.1) request their commits through it. Display-free, so
+  its five tests run without a compositor.
 - `src/proxy/hide.rs` — hide and show (row 8.2, D6, spec "Hide", "Show a
   shown panel", "Hide releases the reservation", "Size untouched" and
   "Change while hidden"): the shown/hidden state the routing keeps across a
@@ -421,22 +415,20 @@ from (an archived change, or the design of the change that added the code:
 
 ## Testing Guidelines
 
-Run `cargo nextest run` after any change; it runs the geometry core's unit
-tests in `src/geometry/tests.rs` — the spec's docking, gutter, reserve,
-held-gap, validation and size scenarios — the three tests in
-`tests/tween_crop.rs`, which cover the size tween's crop plan
-(`src/proxy/crop.rs`) on all four edges until the proxy owns it, and the
-three tests in `tests/name.rs`, which cover the name rules (spec "Default
-name", "Invalid default name") until the option parser and the daemon use
-`src/name.rs`, and the nine tests in `tests/config.rs`, which cover the
-config file's tables, the setting grammar, the built-in defaults and the
-precedence (spec "No config file", "Invalid config file", "Per-name
-override", "Option wins" and "Defaults") and check every key in the
-README's configuration table against `config.rs`, and the tests in
-`tests/cli.rs`, which cover the `run`, `daemon` and client subcommands (spec
-"Invalid option value", "No command", "Usage error", "Invalid default
+Run `cargo nextest run` after any change. The binary crate compiles every
+module, so `cargo nextest run --bin pinwin` runs the module tests in place:
+the geometry core's unit tests in `src/geometry/tests.rs` — the spec's
+docking, gutter, reserve, held-gap, validation and size scenarios — the
+three tests in `src/name.rs`, which cover the name rules (spec "Default
+name", "Invalid default name"), the tests in `src/config/tests.rs`, which
+cover the config file's tables, the setting grammar, the built-in defaults
+and the precedence (spec "No config file", "Invalid config file",
+"Per-name override", "Option wins" and "Defaults") and check every key in
+the README's configuration table against `config.rs`, the tests in
+`src/cli/tests.rs`, which cover the `run`, `daemon` and client subcommands
+(spec "Invalid option value", "No command", "Usage error", "Invalid default
 name" and an invalid `--focus-ring`) and check every subcommand in the
-README's command table against `cli.rs`, and the tests in `tests/ipc.rs`,
+README's command table against `cli.rs`, and the tests in `src/ipc/tests.rs`,
 which cover the wire format (spec "Valid request", "Not JSON" and
 "Unknown command") and an invalid value's own kind, the 64 KiB line limit,
 the client's bounded wait and the reply line it keeps for `status`, the
@@ -448,9 +440,9 @@ which run the real binary against a daemon in a scratch runtime directory
 only) and cover "No daemon" (exit 1), "Unknown panel" (the daemon's
 message, exit 1), "Usage error" (exit 2), `status`'s JSON on stdout (exit
 0), `quit` ending the daemon and removing its socket (exit 0) and an invalid
-config file (exit 2, with the file and line, and no socket), and the tests in `tests/daemon.rs`, which cover the daemon socket (spec "Daemon
-socket",
-"One daemon for each Wayland display"): the path rule, the stale-file
+config file (exit 2, with the file and line, and no socket), and the daemon
+tests in `src/daemon/tests.rs`, which cover the daemon socket (spec "Daemon
+socket", "One daemon for each Wayland display"): the path rule, the stale-file
 replacement, the live-daemon refusal, two displays under one runtime
 directory and the socket file's 0600 mode in a scratch runtime directory, and
 the registry and routing (D12) with a test thread in the panel's place: the
@@ -464,7 +456,7 @@ subscriber's queue freed when its client closes), "Slow subscriber" (a
 client that stops reading is dropped when its bounded queue fills, while
 another request is still answered) and "Silent client" (a connection that
 sends nothing delays no other request and ends with an error reply), and the
-lifetime tests in `tests/daemon/lifetime.rs`, which run a real daemon socket
+lifetime tests in `src/daemon/tests/lifetime.rs`, which run a real daemon socket
 in a scratch runtime directory and cover "Exit with the last panel" (the
 idle daemon stays before its first panel and exits and removes its socket
 when the last ends), "Stay resident" (an `exit_when_idle` false daemon
@@ -521,16 +513,8 @@ panel's display, and the working folder inherited, so no test replaces the
 test process with an app. The tests in `tests/command_line_ipc.rs` run a
 stand-in compositor on the made-up display: it announces `zwlr_layer_shell_v1` and answers the
 roundtrip, so the daemon's start check passes without the user's compositor.
-The crop harness includes `src/geometry.rs` as well, for the `Edge` the crop
-names, under a `dead_code` allow whose reason names the rows that use the
-accessors it does not. `src/anim.rs` is compiled by the proxy's tween machine
-(row 10.1), so its five tests run. The parts of `src/geometry.rs` that wait
-for later rows stay unreported as dead code because `src/main.rs` keeps the
-module public until row 12.x: `Margins::new` and the `Geometry::across` and
-`Geometry::gutters` accessors have their row 6.6 callers in
-`src/proxy/apply.rs`, and `HeldGap::reserve`, `HeldGap::tweens_with_panel`
-and `HeldGap::edge` wait for the row 10.x tween. Keep the pure parts
-display-free
+`src/anim.rs` is compiled by the proxy's tween machine (row 10.1), so its
+five tests run. Keep the pure parts display-free
 (`port-to-rust` D10): take the fd and the outputs of the environment as
 parameters, so the tests run without a display. Tests that need a real
 compositor are `#[ignore]`d and run explicitly. Once the proxy lands, exercise

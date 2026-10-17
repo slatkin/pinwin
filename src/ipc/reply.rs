@@ -244,6 +244,7 @@ pub struct StatusReply {
 
 impl StatusReply {
     /// The daemon's process ID.
+    #[cfg(test)]
     #[must_use]
     pub const fn pid(&self) -> u32 {
         self.pid
@@ -303,6 +304,7 @@ impl PanelEntry {
     }
 
     /// The app's process ID.
+    #[cfg(test)]
     #[must_use]
     pub const fn pid(&self) -> u32 {
         self.pid
@@ -314,6 +316,7 @@ impl PanelEntry {
     }
 
     /// Whether the panel's window is in it.
+    #[cfg(test)]
     #[must_use]
     pub const fn has_window(&self) -> bool {
         self.has_window
@@ -324,12 +327,14 @@ impl PanelEntry {
         self.edge
     }
 
+    #[cfg(test)]
     #[must_use]
     pub const fn size(&self) -> Size {
         self.size
     }
 
     /// The size across the edge, resolved to pixels on the panel's output.
+    #[cfg(test)]
     #[must_use]
     pub const fn width(&self) -> u32 {
         self.width
@@ -340,17 +345,20 @@ impl PanelEntry {
         self.reserve
     }
 
+    #[cfg(test)]
     #[must_use]
     pub const fn layer(&self) -> Layer {
         self.layer
     }
 
+    #[cfg(test)]
     #[must_use]
     pub const fn keyboard(&self) -> Keyboard {
         self.keyboard
     }
 
     /// The output the panel is pinned to; `None` lets the compositor choose.
+    #[cfg(test)]
     #[must_use]
     pub fn output(&self) -> Option<&str> {
         self.output.as_deref()
@@ -379,28 +387,6 @@ impl PanelStatus {
             has_window,
             width,
         }
-    }
-
-    /// The panel's current settings.
-    #[must_use]
-    pub const fn settings(&self) -> &PanelSettings {
-        &self.settings
-    }
-
-    #[must_use]
-    pub const fn shown(&self) -> bool {
-        self.shown
-    }
-
-    #[must_use]
-    pub const fn has_window(&self) -> bool {
-        self.has_window
-    }
-
-    /// The size across the edge, resolved to pixels on the panel's output.
-    #[must_use]
-    pub const fn width(&self) -> u32 {
-        self.width
     }
 }
 

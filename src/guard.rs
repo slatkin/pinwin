@@ -5,7 +5,7 @@
 //! here unwinds out of the guarded body only; letting one cross a foreign C
 //! frame — a Wayland or calloop callback — instead is undefined behaviour and
 //! aborts. Every module that registers `extern "C"` trampolines or
-//! event-loop callbacks runs its bodies through [`guard`] or [`guard_default`]
+//! event-loop callbacks runs its bodies through [`guard`]
 //! with one shared [`Poisoned`] flag, so a single panic stops that panel's
 //! glue code instead of killing the host.
 //!
@@ -32,8 +32,8 @@ impl Poisoned {
         Self(Arc::new(AtomicBool::new(false)))
     }
 
-    /// A flag that is already latched (for tests and callers seeding a
-    /// shutdown).
+    /// A flag that is already latched, for tests.
+    #[cfg(test)]
     #[must_use]
     pub fn latched() -> Self {
         let flag = Self::new();
@@ -84,13 +84,6 @@ pub fn guard_always<T>(poisoned: &Poisoned, body: impl FnOnce() -> T) -> Result<
             Err(poisoned.clone())
         }
     }
-}
-
-/// The `extern "C"` trampoline variant of [`guard`] (D5): return `default`
-/// when the flag is already latched or `body` panicked, so a trampoline never
-/// unwinds into C and always hands back a value the caller defined.
-pub fn guard_default<T>(poisoned: &Poisoned, default: T, body: impl FnOnce() -> T) -> T {
-    guard(poisoned, body).unwrap_or(default)
 }
 
 /// Describe a caught panic payload on stderr (D5). The payload is
@@ -157,10 +150,9 @@ mod tests {
         assert!(!fresh.is_poisoned());
     }
 
-    /// Once latched, later guarded calls short-circuit: the body never runs
-    /// and the trampoline variant hands back the caller's default.
+    /// Once latched, later guarded calls short-circuit: the body never runs.
     #[test]
-    fn later_guarded_calls_short_circuit_with_the_default() {
+    fn later_guarded_calls_short_circuit() {
         let poisoned = Poisoned::latched();
         let ran = Cell::new(false);
         let _ = guard(&poisoned, || {
@@ -169,8 +161,6 @@ mod tests {
         })
         .unwrap_err();
         assert!(!ran.get(), "a poisoned guard does not run the body");
-        assert!(!guard_default(&poisoned, false, || true));
-        assert_eq!(guard_default(&poisoned, "fallback", || "real"), "fallback");
     }
 
     /// The caught panic payload is described on stderr (D5). The raw

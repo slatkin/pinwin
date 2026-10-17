@@ -7,8 +7,7 @@
 //! The rules are pure (`port-to-rust` D10), and the newtype is the only
 //! way a name reaches a socket path, a registry key or a reply
 //! (`port-to-rust` D6), so every decision here is unit tested with no
-//! daemon (`src/cli.rs` uses the module; `tests/name.rs` and `tests/cli.rs`
-//! compile it until `src/main.rs` does).
+//! daemon; `src/cli.rs` is its first user.
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -23,8 +22,7 @@ const RULES: &str = "1..=64 characters from [A-Za-z0-9_-]";
 /// `[A-Za-z0-9_-]`. Fields are private, so only [`PanelName::parse`] and
 /// [`PanelName::from_command`] build a value: no caller holds an unchecked
 /// name, and the character set keeps a name usable as a registry key, a
-/// message and, until row 5.2 replaces the socket, a socket-path
-/// component (`port-to-rust` D6).
+/// message and a socket-path component (`port-to-rust` D6).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PanelName(String);
 

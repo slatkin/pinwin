@@ -39,29 +39,16 @@ use std::os::unix::net;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-// The paths are explicit because `tests/daemon.rs` includes this file with
-// `#[path]`, and a module loaded that way searches its own children in the
-// included file's directory rather than beside it (as in `src/ipc.rs`).
-#[path = "daemon/panel.rs"]
-pub mod panel;
-
-#[path = "daemon/registry.rs"]
-pub mod registry;
-
-#[path = "daemon/events.rs"]
-pub mod events;
-
-#[path = "daemon/connection.rs"]
 pub mod connection;
-
-#[path = "daemon/create.rs"]
 pub mod create;
-
-#[path = "daemon/lifetime.rs"]
+pub mod events;
 pub mod lifetime;
-
-#[path = "daemon/spawn.rs"]
+pub mod panel;
+pub mod registry;
 pub mod spawn;
+
+#[cfg(test)]
+mod tests;
 
 /// The display the Wayland client library connects with when
 /// `WAYLAND_DISPLAY` is unset, so a daemon started without it names the
@@ -220,7 +207,7 @@ pub fn bind(path: &Path) -> Result<DaemonSocket, SocketError> {
     };
     let socket = DaemonSocket {
         listener,
-        file: SocketFile(path.to_owned()),
+        _file: SocketFile(path.to_owned()),
     };
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(SocketError::Io)?;
     Ok(socket)
@@ -257,7 +244,7 @@ fn probe_and_replace(path: &Path) -> Result<net::UnixListener, SocketError> {
 pub struct DaemonSocket {
     listener: net::UnixListener,
     /// The socket file the bind created; its drop removes the path.
-    file: SocketFile,
+    _file: SocketFile,
 }
 
 impl DaemonSocket {
@@ -276,12 +263,6 @@ impl DaemonSocket {
     pub fn listener(&self) -> &net::UnixListener {
         &self.listener
     }
-
-    /// The socket file's path, for the daemon's messages.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        self.file.path()
-    }
 }
 
 /// The daemon's socket file; dropping it removes the file, so every exit path
@@ -289,12 +270,6 @@ impl DaemonSocket {
 /// SHALL remove its socket file").
 #[derive(Debug)]
 struct SocketFile(PathBuf);
-
-impl SocketFile {
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
 
 impl Drop for SocketFile {
     fn drop(&mut self) {
