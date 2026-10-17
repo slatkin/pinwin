@@ -112,7 +112,7 @@ below). Its code does not enter pinwin; only the findings do.
 
 ## 3. Geometry for four edges and pixel sizes
 
-- [ ] 3.1 Create `src/geometry.rs` from `src/layout.rs` and `src/surfaces/gap.rs` (D9): `Edge`
+- [x] 3.1 Create `src/geometry.rs` from `src/layout.rs` and `src/surfaces/gap.rs` (D9): `Edge`
   with four values, size as pixels or percent, four gutters, reserve mode, held gap. Delete the
   old modules. Verify: unit tests for the spec scenarios "Left docking", "Right docking",
   "Top docking", "Vertical insets", "Negative gutter", "Covering layout holds the gap" and
