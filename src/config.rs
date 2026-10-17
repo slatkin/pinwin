@@ -498,6 +498,16 @@ impl PanelSettings {
         settings
     }
 
+    /// The same settings with another keyboard mode (row 8.3): a successful
+    /// `set-keyboard` changes the interactivity of the live layer surface and
+    /// leaves every other setting alone.
+    #[must_use]
+    pub fn with_keyboard(&self, keyboard: Keyboard) -> Self {
+        let mut settings = self.clone();
+        settings.keyboard = keyboard;
+        settings
+    }
+
     /// The same settings with other gutters (row 6.6): the gutters a live
     /// panel is laid out with, as the apply path re-resolves a geometry from
     /// a changed settings merge.

@@ -542,8 +542,11 @@ fn hide(routing: &Rc<Routing>, panel: &PanelName, bus: &Bus) -> PanelReply {
 /// Shows a hidden panel (spec "Show a hidden panel", "Size untouched"): the
 /// layer surface's state goes again so the compositor sends a configure, the
 /// proxy commits with no buffer, and the reserve gets its zone back in the
-/// same frame. A shown panel is unchanged (spec "Show a shown panel").
-fn show(routing: &Rc<Routing>, panel: &PanelName, bus: &Bus) -> PanelReply {
+/// same frame. The re-sent state carries the settings' keyboard mode, so an
+/// `on-demand` or `exclusive` panel takes the keyboard when the show maps it
+/// and a `none` panel does not (spec "Show takes focus", "Show in none
+/// mode"). A shown panel is unchanged (spec "Show a shown panel").
+pub(super) fn show(routing: &Rc<Routing>, panel: &PanelName, bus: &Bus) -> PanelReply {
     if !routing.hidden.is_hidden() {
         return PanelReply::Done;
     }
@@ -551,6 +554,9 @@ fn show(routing: &Rc<Routing>, panel: &PanelName, bus: &Bus) -> PanelReply {
     if let Some((surface, _, _)) = routing.panel_window()
         && let Ok(commits) = surface.try_get_handler_ref::<PanelSurfaceCommits>()
     {
+        // The show sends the keyboard mode itself before the map, so the
+        // launch deferral (row 8.3) must not send it again.
+        commits.clear_keyboard_deferral();
         let routing = Rc::clone(routing);
         commits.request(Box::new(move || {
             send_layer_state(&routing);

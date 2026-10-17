@@ -8,7 +8,8 @@
 //! double-buffered surface state — `attach`, `damage`, `damage_buffer` and
 //! `set_buffer_scale` — which [`PanelSurfaceCommits`] records. While the
 //! surface is dirty, a proxy change (the tween's frame step, the focus
-//! ring's position, hide and show) waits in a FIFO queue, and
+//! ring's position, hide and show, a keyboard mode change) waits in a FIFO
+//! queue, and
 //! [`CommitCoordinator::on_app_commit`] applies the queue in order just
 //! before the app's commit is forwarded: the piggyback. On a clean surface
 //! the change is applied at once and the proxy sends its own commit: the
@@ -23,8 +24,8 @@
 //! app's commit, and forwards each one exactly as the generated default
 //! handler does.
 //!
-//! No consumer requests a change yet: hide and show are row 8.2 and the
-//! tween is row 10.x. The module stays public until row 12.x, as
+//! Hide, show and the keyboard mode changes request a change (rows 8.2 and
+//! 8.3); the tween is row 10.x. The module stays public until row 12.x, as
 //! [`super::slot`] does, so the API those rows call does not report as dead
 //! code meanwhile.
 
@@ -38,6 +39,8 @@ use wl_proxy::protocols::wayland::wl_output::WlOutput;
 use wl_proxy::protocols::wayland::wl_surface::{WlSurface, WlSurfaceHandler};
 
 use super::hide::{Attach, BufferRelease};
+use super::keyboard;
+use super::mapping::keyboard_of;
 use super::output::PanelSurfaceWatch;
 use super::routing::Routing;
 
@@ -126,6 +129,14 @@ pub struct PanelSurfaceCommits {
     /// handler that dropped it would lose the panel's output.
     watch: PanelSurfaceWatch,
     coordinator: CommitCoordinator,
+    /// Whether the launch withholds the on-demand keyboard until the first
+    /// buffer maps the surface (row 8.3, spec "No focus steal on launch").
+    /// A show or a `set-keyboard` clears it, because each sends the mode
+    /// itself.
+    defer_keyboard: Cell<bool>,
+    /// Whether the current commit carries a buffer the proxy forwarded: the
+    /// first such commit maps the launch's layer surface.
+    forwarded_buffer: bool,
 }
 
 impl PanelSurfaceCommits {
@@ -136,7 +147,41 @@ impl PanelSurfaceCommits {
             routing: Rc::clone(routing),
             watch: PanelSurfaceWatch::new(routing, surface),
             coordinator: CommitCoordinator::new(),
+            defer_keyboard: Cell::new(keyboard::deferred_until_map(routing.settings().keyboard())),
+            forwarded_buffer: false,
         }
+    }
+
+    /// Clears the launch deferral (row 8.3): a show or a `set-keyboard` sends
+    /// the mode itself, so the first map must not send it again.
+    pub(super) fn clear_keyboard_deferral(&self) {
+        self.defer_keyboard.set(false);
+    }
+
+    /// Applies a deferred on-demand mode after the first forwarded buffer
+    /// has mapped the surface (row 8.3, spec "No focus steal on launch",
+    /// "Click to type"): the map itself carried `none`, so it took no focus,
+    /// and the proxy's own commit that follows sets the mode the clicks need.
+    fn apply_launch_keyboard(&mut self, surface: &Rc<WlSurface>) {
+        if !self.defer_keyboard.replace(false) {
+            return;
+        }
+        let keyboard = self.routing.settings().keyboard();
+        if !keyboard::takes_keyboard_when_mapped(keyboard) {
+            return;
+        }
+        let Some(layer_surface) = self.routing.panel_layer_surface() else {
+            return;
+        };
+        self.coordinator.request(
+            Box::new(move || {
+                layer_surface.send_set_keyboard_interactivity(keyboard_of(keyboard));
+            }),
+            {
+                let surface = Rc::clone(surface);
+                move || surface.send_commit()
+            },
+        );
     }
 
     /// Places `change` on the panel surface (D7): the `commit` is the proxy's
@@ -188,6 +233,7 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
         // D6: a hidden panel forwards no attach and returns every buffer it
         // removed to the app, so the app does not run out of buffers.
         let decision = self.routing.hidden.on_app_attach(buffer);
+        self.forwarded_buffer = buffer.is_some() && decision == Attach::Forward;
         if let Some(buffer) = buffer {
             // D6 amendment 3: a release for a proxy-made attach is swallowed.
             buffer.set_handler(BufferRelease::new(&self.routing, buffer));
@@ -244,6 +290,9 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
                 buffer.send_release();
             }
         });
+        if std::mem::take(&mut self.forwarded_buffer) {
+            self.apply_launch_keyboard(&surface);
+        }
     }
 }
 

@@ -22,9 +22,11 @@
 //! a `closed` layer surface is replaced with a new one instead of closing
 //! the app's window. Row 6.6 gives the layout commands their live apply
 //! ([`apply`]): edge, size, reserve mode and layer change a running panel in
-//! place, on the layer surface it already docks with. The other change
-//! commands are answered without effect until their rows give them one
-//! (hide and show are row 8.2, the keyboard modes row 8.3).
+//! place, on the layer surface it already docks with. Row 8.2 adds hide and
+//! show ([`hide`]), and row 8.3 the keyboard modes ([`keyboard`]):
+//! `set-keyboard` changes the live interactivity, `focus` shows a hidden
+//! panel so its map gives the keyboard, and an on-demand launch withholds
+//! the mode until after its first buffer so it steals no focus.
 //!
 //! The whole loop runs under the shared panic guard (D5): a panic in one
 //! panel drops that panel's state, which closes its app's Wayland
@@ -127,6 +129,11 @@ pub mod commit;
 // that carry them.
 #[path = "proxy/hide.rs"]
 mod hide;
+
+// Keyboard modes (row 8.3): `set-keyboard`, `focus` and the launch rule that
+// keeps an on-demand panel from stealing the keyboard when it opens.
+#[path = "proxy/keyboard.rs"]
+mod keyboard;
 
 // Explicit synchronization (row 8.2, D6): the acquire and release points a
 // hidden panel holds until a commit carries a buffer.
@@ -539,10 +546,10 @@ impl Panel {
     /// The answer to one command (spec "Status", "Unknown output", row
     /// 6.6). `Status` reports the settings and the view state, `set-output`
     /// validates the name and re-docks the panel window on the chosen
-    /// output (D11), the layout commands are the live apply of row 6.6, and
-    /// `toggle`, `show` and `hide` are row 8.2's state changes (D6); every
-    /// other command succeeds without effect until its row gives it one
-    /// (the keyboard modes are row 8.3).
+    /// output (D11), the layout commands are the live apply of row 6.6,
+    /// `toggle`, `show` and `hide` are row 8.2's state changes (D6), and
+    /// `set-keyboard` and `focus` are row 8.3's keyboard modes; every other
+    /// command succeeds without effect until its row gives it one.
     fn answer(&self, request: &PanelRequest) -> PanelReply {
         match request {
             PanelRequest::Status => PanelReply::Status(self.status()),
@@ -553,6 +560,7 @@ impl Panel {
                 }
             }
             other => hide::answer(&self.routing, other, &self.name, &self.bus)
+                .or_else(|| keyboard::answer(&self.routing, other, &self.name, &self.bus))
                 .or_else(|| apply::answer(&self.routing, other, &self.name, &self.bus))
                 .unwrap_or(PanelReply::Done),
         }

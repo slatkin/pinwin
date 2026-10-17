@@ -43,6 +43,7 @@ use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::{
 use wl_proxy::protocols::xdg_shell::xdg_surface::XdgSurface;
 use wl_proxy::protocols::xdg_shell::xdg_toplevel::{XdgToplevel, XdgToplevelState};
 
+use super::keyboard;
 use super::mapping::{anchor_of, keyboard_of, layer_of};
 use super::reserve::Reserve;
 use super::routing::Routing;
@@ -99,12 +100,18 @@ pub(super) struct PanelWindow {
 /// geometry's anchors, margins and size, pinned to `output` when one is
 /// given — `None` lets the compositor choose (D11). The panel surface
 /// claims no zone of its own; the reserve surface owns the strip (D9).
+///
+/// `launch` is the window's first dock (row 8.3): an `on-demand` launch maps
+/// without the keyboard and gets the mode after its first buffer, so it
+/// steals no focus (spec "No focus steal on launch", see
+/// [`super::keyboard`]). A re-dock sends the mode the app already runs with.
 fn create_layer_surface(
     layer_shell: &Rc<ZwlrLayerShellV1>,
     surface: &Rc<WlSurface>,
     output: Option<&Rc<WlOutput>>,
     settings: &PanelSettings,
     geometry: &Geometry,
+    launch: bool,
 ) -> Rc<ZwlrLayerSurfaceV1> {
     let layer_surface = layer_shell.new_send_get_layer_surface(
         surface,
@@ -122,7 +129,12 @@ fn create_layer_surface(
         margins.left(),
     );
     layer_surface.send_set_anchor(anchor_of(geometry.anchors()));
-    layer_surface.send_set_keyboard_interactivity(keyboard_of(settings.keyboard()));
+    let keyboard = if launch {
+        keyboard::launch_interactivity(settings.keyboard())
+    } else {
+        keyboard_of(settings.keyboard())
+    };
+    layer_surface.send_set_keyboard_interactivity(keyboard);
     // D9: the panel surface claims no zone of its own; the reserve surface
     // owns the strip.
     layer_surface.send_set_exclusive_zone(-1);
@@ -139,6 +151,7 @@ fn dock_window(
     window: &PanelWindow,
     geometry: &Geometry,
     output_global: Option<u32>,
+    launch: bool,
 ) {
     let output = output_global.and_then(|global| routing.globals().output_by_global(global));
     let settings = routing.settings();
@@ -148,6 +161,7 @@ fn dock_window(
         output.as_ref(),
         &settings,
         geometry,
+        launch,
     );
     layer_surface.set_handler(ProxyLayerSurface {
         routing: Rc::downgrade(routing),
@@ -179,6 +193,7 @@ pub(super) fn dock_panel_window(
         window,
         geometry,
         pin.as_ref().map(|(_, global)| *global),
+        true,
     );
 }
 
@@ -210,7 +225,14 @@ pub(super) fn redock(routing: &Rc<Routing>, output_global: Option<u32>) {
         xdg_surface,
         toplevel,
     };
-    dock_window(routing, &layer_shell, &window, &geometry, output_global);
+    dock_window(
+        routing,
+        &layer_shell,
+        &window,
+        &geometry,
+        output_global,
+        false,
+    );
     // The strip follows the panel (D9, D11): re-created with the gap it
     // already holds, on the same output.
     recreate_reserve(routing, output_global);

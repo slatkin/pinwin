@@ -274,6 +274,19 @@ and several modules wait for the rows that wire them in (D15).
   `src/proxy/reserve.rs` carries the released zone a hide applies. Its state
   machine is display-free, so its twelve tests run without a compositor
   (`src/proxy/hide/tests.rs`).
+- `src/proxy/keyboard.rs` — the panel's keyboard modes (row 8.3, spec
+  "Keyboard focus by clicking", "Show takes focus", "Show in none mode"):
+  the one-shot launch rule that maps an `on-demand` panel without the
+  keyboard and applies the mode after its first buffer, so the launch steals
+  no focus, the `set-keyboard` live apply that stores the mode for every
+  later re-dock and re-sends the interactivity on the layer surface the
+  window already docks with (no re-dock, no new size and no event), and
+  `focus`, which shows a hidden panel so the map gives it the keyboard in
+  `on-demand` and `exclusive` modes and not in `none`. `src/proxy.rs`
+  dispatches `set-keyboard` and `focus` to it, `src/proxy/dock.rs` builds a
+  launch's layer surface with it, and `src/proxy/commit.rs` applies the
+  deferred mode after the first forwarded buffer. Its launch and mode
+  mapping is display-free, so its six tests run without a compositor.
 - `src/proxy/syncobj.rs` — explicit synchronization for the panel surface
   (row 8.2, D6): the handler on the app's
   `wp_linux_drm_syncobj_manager_v1` bind and on each syncobj surface it
