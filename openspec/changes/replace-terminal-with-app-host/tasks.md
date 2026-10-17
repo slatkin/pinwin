@@ -266,7 +266,7 @@ below). Its code does not enter pinwin; only the findings do.
 - [x] 8.2 Add hide and show (D6) with buffer release while hidden, and `--hidden`. Verify:
   live, the user confirms "Hide", "Show a shown panel", "Hide releases the reservation",
   "Size untouched", "Change while hidden" and "Start hidden".
-- [ ] 8.3 Add keyboard modes, `set-keyboard` and `focus`. Verify: live, the user confirms
+- [x] 8.3 Add keyboard modes, `set-keyboard` and `focus`. Verify: live, the user confirms
   "Click to type", "Click away", "No focus steal on launch", "Opt-in keyboard focus",
   "Change mode at run time", "Show takes focus", "Show in none mode" and "Focus".
 
