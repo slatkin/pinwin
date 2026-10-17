@@ -8,13 +8,34 @@ without one icon for each panel and without an icon when no panel exists.
 ## ADDED Requirements
 
 ### Requirement: One tray icon while panels exist
-The daemon SHALL show one StatusNotifierItem tray icon on the session bus while at least one
-panel exists. The item's icon SHALL be the icon-theme name `pinwin`. When no panel exists, no
-pinwin icon SHALL show. The number of panels SHALL NOT change the number of icons.
+The daemon SHALL show one StatusNotifierItem tray icon while at least one panel exists. Its icon
+SHALL be the icon-theme name that is the `app_id` of the oldest running panel's app, and
+`pinwin` when that app has set no valid `app_id`. When that panel ends the icon SHALL follow the
+next oldest panel. Without a panel, no icon SHALL show. The panel count SHALL NOT change the
+icon count.
+
+A valid `app_id` SHALL be 1 to 128 characters from letters, digits, `.`, `_` and `-`, not
+starting with `.`.
 
 #### Scenario: Icon with panels
 - **WHEN** a tray host runs and the user starts two panels
-- **THEN** the tray shows one item with the icon named `pinwin`
+- **THEN** the tray shows one item, with the icon of the oldest panel's app
+
+#### Scenario: Icon of the hosted app
+- **WHEN** the `notes` panel hosts an app with app id `org.example.Notes`
+- **THEN** the item shows the icon named `org.example.Notes`
+
+#### Scenario: Icon follows the oldest panel
+- **WHEN** panels `notes` (oldest) and `chat` exist and `notes` ends
+- **THEN** the icon becomes the one of `chat`'s app
+
+#### Scenario: Icon before the app names itself
+- **WHEN** the oldest panel's app has not set an app id
+- **THEN** the icon is `pinwin`
+
+#### Scenario: Unusable app id
+- **WHEN** the app id contains a path separator
+- **THEN** the icon is `pinwin`
 
 #### Scenario: No icon without panels
 - **WHEN** `exit_when_idle` is false and the last panel ends
@@ -22,7 +43,7 @@ pinwin icon SHALL show. The number of panels SHALL NOT change the number of icon
 
 #### Scenario: Icon comes back
 - **WHEN** no panel exists and the user starts a panel
-- **THEN** the pinwin icon shows again
+- **THEN** the tray item shows again
 
 ### Requirement: No tray is not an error
 When the session has no D-Bus session bus or no tray host, the daemon SHALL run without an
@@ -35,7 +56,7 @@ show on it while panels exist.
 
 #### Scenario: Tray host starts later
 - **WHEN** a panel exists and a tray host starts
-- **THEN** the pinwin icon shows on it
+- **THEN** the tray item shows on it
 
 ### Requirement: Menu for each panel
 The icon's menu SHALL have one submenu for each panel, labelled with the panel name, in the
@@ -68,5 +89,5 @@ Activating the icon (a primary click) SHALL NOT start, end, show or hide any pan
 the only way the tray changes a panel.
 
 #### Scenario: Primary click
-- **WHEN** the user clicks the pinwin icon with the primary button
+- **WHEN** the user clicks the tray icon with the primary button
 - **THEN** no panel changes

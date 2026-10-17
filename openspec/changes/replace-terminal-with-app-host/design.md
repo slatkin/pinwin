@@ -328,8 +328,11 @@ The tray uses `ksni` with the `blocking` feature and `async-io` instead of tokio
 starts the tray service when the first panel appears and shuts it down when the last panel
 ends, so no icon shows without panels. ksni re-registers when a tray host appears later, and
 a missing session bus is logged and ignored. Menu actions call the same command functions as
-the IPC. The item uses the theme icon name `pinwin`; pinwin installs no icon file, the tray
-host takes the icon from the user's theme.
+the IPC. The item uses the theme icon named by the `app_id` of the oldest running panel's app,
+with `pinwin` as the fallback; pinwin installs no icon file, the tray host takes the icon from
+the user's theme. The proxy learns the `app_id` from the panel window's
+`xdg_toplevel.set_app_id`. The id is checked before use because a host may treat a theme name
+that looks like a path as a file.
 
 ### D15. Crate layout after the change
 
