@@ -30,6 +30,12 @@ and several modules wait for the rows that wire them in (D15).
   `PanelName` of 1..=64 characters from `[A-Za-z0-9_-]`, the default name
   taken from the command's file name, and the two name errors. No module
   compiles it yet; `tests/name.rs` includes it so its unit tests run.
+- `src/config.rs` — the config file (spec "Config file" and "Panel settings
+  and precedence", D13): the `[daemon]`, `[panel.defaults]` and
+  `[panel.<name>]` tables, the setting grammar the run options share, the
+  built-in defaults and the precedence of the options over the file. No
+  module compiles it yet; `tests/config.rs` includes it so its unit tests
+  run.
 - `src/geometry.rs` — the display-free geometry core: `Edge`, `Size` (pixels
   or percent), `Gutters`, `ReserveMode`, the layer-surface anchors, margins
   and size, the reserved strip and the held gap (D9). `src/main.rs` compiles
@@ -98,7 +104,11 @@ held-gap, validation and size scenarios — the three tests in
 (`src/proxy/crop.rs`) on all four edges until the proxy owns it, and the
 three tests in `tests/name.rs`, which cover the name rules (spec "Default
 name", "Invalid default name") until the option parser and the daemon use
-`src/name.rs`. The crop harness
+`src/name.rs`, and the nine tests in `tests/config.rs`, which cover the
+config file's tables, the setting grammar, the built-in defaults and the
+precedence (spec "No config file", "Invalid config file", "Per-name
+override", "Option wins" and "Defaults") and check every key in the
+README's configuration table against `config.rs`. The crop harness
 includes `src/geometry.rs` as well, for the `Edge` the crop names, under a
 `dead_code` allow whose reason names the rows that use the accessors it does
 not. The other kept modules

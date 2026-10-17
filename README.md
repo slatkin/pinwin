@@ -54,6 +54,47 @@ Environment:
 An invalid value exits 2 with a message on stderr before any surface opens.
 Only the binary reads these; the library reads no pinwin-owned configuration.
 
+## Configuration
+
+The daemon reads `$XDG_CONFIG_HOME/pinwin/config.toml` (default
+`~/.config/pinwin/config.toml`) when it starts, and `pinwin reload` reads it
+again. A missing file means the built-in defaults. An invalid file, including
+an unknown key, makes the daemon print the file and the line and exit 2.
+
+The file has a `[daemon]` table, a `[panel.defaults]` table that applies to
+every panel and one `[panel.<name>]` table for the panel with that name. For
+each setting the `pinwin run` option wins over `[panel.<name>]`, which wins
+over `[panel.defaults]`, which wins over the built-in default.
+
+```toml
+[daemon]
+exit_when_idle = true
+
+[panel.defaults]
+edge = "left"
+size = "25%"
+
+[panel.chat]
+edge = "right"
+```
+
+| Table | Key | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `[daemon]` | `exit_when_idle` | boolean | `true` | Exit after the last panel ends; `false` keeps the daemon running with no panels. |
+| `[panel.*]` | `edge` | string: `left`, `right`, `top`, `bottom` | `"left"` | The output edge the panel docks to. |
+| `[panel.*]` | `size` | string: pixels as `640px` or a percent as `30%` | `"25%"` | The size across the docking edge; a percent is of the output's width on a side edge and of its height on a top or bottom edge. |
+| `[panel.*]` | `reserve` | string: `push`, `cover` | `"push"` | `push` reserves the panel's strip so tiled windows start beside it; `cover` draws over the tiled windows. |
+| `[panel.*]` | `layer` | string: `background`, `bottom`, `top`, `overlay` | `"overlay"` | The layer-shell layer the panel draws in. |
+| `[panel.*]` | `keyboard` | string: `none`, `on-demand`, `exclusive` | `"on-demand"` | The keyboard interactivity of the panel's layer surface. |
+| `[panel.*]` | `output` | string: an output name | none, the compositor chooses | The output the panel opens on. |
+| `[panel.*]` | `hidden` | boolean | `false` | Start hidden instead of shown. |
+| `[panel.*]` | `focus_ring` | string: `off`, `#RRGGBB` or `#RRGGBB:<width>` | `"#dabc7f"` | The focus ring the panel draws while it has the keyboard, or `off`; `<width>` is in pixels, at least 1, and defaults to 1. |
+| `[panel.*]` | `tween_ms` | integer | `200` | The size animation duration in milliseconds; `0` changes the size in one step. |
+| `[panel.*]` | `gutter_left` | integer | `0` | Pixels between the panel and the output's left edge; may be negative. |
+| `[panel.*]` | `gutter_right` | integer | `0` | Pixels between the panel and the output's right edge; may be negative. |
+| `[panel.*]` | `gutter_top` | integer | `0` | Pixels between the panel and the output's top edge; may be negative. |
+| `[panel.*]` | `gutter_bottom` | integer | `0` | Pixels between the panel and the output's bottom edge; may be negative. |
+
 ## Toggle request
 
 Every instance reads `PINWIN_NAME`. The default name is `default`. A name has
