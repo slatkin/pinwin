@@ -168,7 +168,7 @@ below). Its code does not enter pinwin; only the findings do.
 
 ## 6. Proxy core: one panel thread per panel
 
-- [ ] 6.1 Create `src/proxy.rs` (D1): one `State` with an acceptor, poll on `poll_fd`, the
+- [x] 6.1 Create `src/proxy.rs` (D1): one `State` with an acceptor, poll on `poll_fd`, the
   command eventfd and the pidfd, the whole loop under the panic guard. Add the layer-shell
   check at daemon start (D12). Verify: unit test that a panic in the loop ends only that
   panel's handle; live: the user runs `pinwin daemon` on a compositor without layer-shell (or
