@@ -310,9 +310,34 @@ below). Its code does not enter pinwin; only the findings do.
   `cargo clippy --all-targets -- -D warnings`, `cargo audit`, `cargo nextest run`,
   `make check-code-file-lines` and `ldd target/release/pinwin`. Verify: all gates pass, and
   `ldd` lists no GTK, GDK, GLib, GObject, GIO, Pango, Cairo, gdk-pixbuf or HarfBuzz library.
-- [ ] 12.2 Live end-to-end check by the user: two panels (a terminal on the left, a GTK app on
+- [x] 12.2 Live end-to-end check by the user: two panels (a terminal on the left, a GTK app on
   the top), toggles from a key binding, the tray menu, a size animation and `pinwin quit`.
   Record the answer here.
+
+  Recorded answer (2026-10-17, the user's words, word for word):
+
+  - Left panel with a terminal: "yes to all" (docks left at 640 px, tiles move right, other
+    monitors unaffected, accent line follows focus). Hide: "disappeared yep". Show: "1-3 yes, 4
+    no". Size animation 640 to 900 px over 600 ms, seen twice: "all yes to these. good". Edge
+    change left to right: "pyes ao all". Tray: "yes, i assume. it is a terminal." Tray menu
+    "Quit pinwin": clicked by the user; the panel and the daemon ended.
+  - Checked by the orchestrator over IPC and D-Bus (not by eye): the tray icon name was the
+    oldest panel's app id; the menu listed the submenu, "Shown", the edge and reserve groups and
+    "Quit pinwin"; a menu click on "Shown" hid and showed the panel with `hidden` and `shown`
+    events; keyboard modes, an unknown output (exit 1), `focus` on a shown and a hidden panel;
+    retarget and snap-interrupt ended at exactly 300 px and 500 px; `set-layer` top and overlay
+    replied OK.
+  - NOT run, marked done at the user's instruction ("mark the rest of the tests done."): top
+    panel with a GTK app (title bar crop, context menu, dialog, covering a top bar), second
+    window of an app, layer change by eye, "Stop mid-animation", monitor unplug and output
+    choice, the tray's primary click, "No icon without panels" and "Icon comes back", and an end
+    to end run with a key binding.
+  - OPEN DEFECT, reported by the user during this phase (top panel with galculator and a left
+    panel with paw, then the animation, hide/show, keyboard and layer commands): "something you
+    did in the testing broke wayland display on my monitor, causing massive flickering." and
+    "i had to reboot." The cause is not found. The last commands before the report were
+    `set-layer top top`, `set-layer top overlay` and the animation commands on the left panel.
+    This needs an investigation before the change is archived.
 
 ## Workflow follow-up
 
