@@ -197,8 +197,32 @@ impl Lifetime {
             if self.exits_when_idle() {
                 self.shutdown.trigger();
             }
+        } else {
+            // The oldest panel may have ended, so the icon now names the
+            // next panel's app (spec "Icon follows the oldest panel").
+            self.update_tray();
         }
         true
+    }
+
+    /// A panel's app reported its `app_id` (row 11.1, D14): the tray icon
+    /// names the oldest panel's app, so ask the running tray to re-read it.
+    pub fn app_id_changed(&self) {
+        self.update_tray();
+    }
+
+    /// Ask the running tray to re-read its item, without holding the tray
+    /// lock across the tray thread's work (D14). A tray that is off, gone or
+    /// unavailable has no icon to update.
+    fn update_tray(&self) {
+        let handle = {
+            let tray = locked(&self.tray);
+            match &*tray {
+                TrayState::Running(service) => service.handle(),
+                TrayState::Off | TrayState::Unavailable => return,
+            }
+        };
+        let _ = handle.update(|_| ());
     }
 
     /// End every panel and then the daemon (spec "Quit"): clearing the

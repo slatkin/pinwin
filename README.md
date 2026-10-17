@@ -80,9 +80,12 @@ foreground. The other subcommands send one request to the daemon and exit:
 The daemon adds one StatusNotifierItem to a running tray host while at least
 one panel exists, and removes it when the last panel ends. The number of
 panels never changes the number of icons. The item uses the `pinwin` title
-and the theme icon named `pinwin`, which the tray host shows from the user's
-icon theme. pinwin does not install an icon file itself, so if the theme has
-no icon with that name the host shows its own placeholder.
+and the theme icon named by the oldest running panel's app: the `app_id` the
+app sets on its window's `xdg_toplevel`. When that app has set no valid
+`app_id`, the icon is the theme icon named `pinwin`; when the oldest panel
+ends, the icon follows the next oldest panel. pinwin does not install an icon
+file itself, so if the theme has no icon with that name the host shows its
+own placeholder.
 
 Its menu has one submenu for each panel, labelled with the panel name, in the
 order the panels started. A panel submenu has a `Shown` check item that hides

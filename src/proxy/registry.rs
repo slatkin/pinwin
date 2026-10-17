@@ -36,6 +36,7 @@ use super::ring::ClientWlSeat;
 use super::routing::{ClientXdgSurface, Routing};
 use super::syncobj::ClientSyncobjManager;
 use super::viewport::{ClientFractionalScaleManager, ClientWpViewporter};
+use crate::daemon::panel::AppId;
 
 /// The global name the proxy's synthetic decoration manager is announced
 /// under (D5): a compositor's global names start at 1, so the app's bind of
@@ -58,15 +59,19 @@ pub(super) struct ClientDisplay {
     /// Whether the proxy's own registry has been created. The app may call
     /// `get_registry` more than once; one proxy registry serves the panel.
     init: bool,
+    /// The hosted app's `app_id`, which every surface handler carries to the
+    /// panel window's toplevel (row 11.1, D14).
+    app_id: AppId,
 }
 
 impl ClientDisplay {
     /// The display handler of one app connection, whose display is `display`.
-    pub(super) fn new(routing: Rc<Routing>, display: &Rc<WlDisplay>) -> Self {
+    pub(super) fn new(routing: Rc<Routing>, display: &Rc<WlDisplay>, app_id: AppId) -> Self {
         Self {
             routing,
             display: Rc::downgrade(display),
             init: false,
+            app_id,
         }
     }
 }
@@ -94,6 +99,7 @@ impl WlDisplayHandler for ClientDisplay {
             routing: Rc::clone(&self.routing),
             registry: Rc::downgrade(registry),
             announced_synthetic_manager: false,
+            app_id: self.app_id.clone(),
         });
     }
 }
@@ -112,6 +118,9 @@ struct ClientRegistry {
     /// manager (D5): one announcement per registry, and only while the
     /// compositor has no real one.
     announced_synthetic_manager: bool,
+    /// The hosted app's `app_id`, passed on to every wm-base handler (row
+    /// 11.1, D14).
+    app_id: AppId,
 }
 
 impl WlRegistryHandler for ClientRegistry {
@@ -162,6 +171,7 @@ impl WlRegistryHandler for ClientRegistry {
             xdg_wm_base.set_handler(ClientXdgWmBase {
                 routing: Rc::clone(&self.routing),
                 xdg_wm_base: Rc::downgrade(&xdg_wm_base),
+                app_id: self.app_id.clone(),
             });
         }
         if id.interface() == ObjectInterface::ZxdgDecorationManagerV1 {
@@ -235,6 +245,9 @@ struct ClientXdgWmBase {
     /// The wm-base object this handler answers, kept weak so the handler
     /// does not keep its own object alive.
     xdg_wm_base: Weak<XdgWmBase>,
+    /// The hosted app's `app_id`, passed on to every held-back surface (row
+    /// 11.1, D14).
+    app_id: AppId,
 }
 
 impl XdgWmBaseHandler for ClientXdgWmBase {
@@ -262,6 +275,7 @@ impl XdgWmBaseHandler for ClientXdgWmBase {
             Rc::clone(surface),
             Rc::clone(id),
             xdg_wm_base,
+            self.app_id.clone(),
         ));
     }
 }

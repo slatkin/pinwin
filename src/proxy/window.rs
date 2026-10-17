@@ -17,6 +17,7 @@ use wl_proxy::protocols::xdg_shell::xdg_toplevel::{XdgToplevel, XdgToplevelHandl
 
 use super::ring;
 use super::routing::Routing;
+use crate::daemon::panel::AppId;
 
 /// Whether `toplevel` is the panel's window (D5): only the slot's toplevel
 /// carries a handler, a passed-through window uses the default forward path,
@@ -37,21 +38,36 @@ pub(super) struct ClientXdgToplevel {
     /// The panel window's unique id, which empties the slot when the app
     /// destroys it.
     window: u64,
+    /// The hosted app's `app_id`, which the app's `set_app_id` records for the
+    /// tray icon (row 11.1, D14).
+    app_id: AppId,
 }
 
 impl ClientXdgToplevel {
     /// The handler of the toplevel `toplevel` of the panel named by `window`,
-    /// whose routing state is `routing`.
-    pub(super) fn new(routing: Rc<Routing>, toplevel: &Rc<XdgToplevel>, window: u64) -> Self {
+    /// whose routing state is `routing`, recording the app's id in `app_id`.
+    pub(super) fn new(
+        routing: Rc<Routing>,
+        toplevel: &Rc<XdgToplevel>,
+        window: u64,
+        app_id: AppId,
+    ) -> Self {
         Self {
             routing,
             toplevel: Rc::downgrade(toplevel),
             window,
+            app_id,
         }
     }
 }
 
 impl XdgToplevelHandler for ClientXdgToplevel {
+    /// The app names itself (row 11.1, D14): the panel window stays local, so
+    /// this request reaches no compositor, but the tray names the oldest
+    /// panel's app. A later id replaces the earlier one.
+    fn handle_set_app_id(&mut self, _slf: &Rc<XdgToplevel>, app_id: &str) {
+        self.app_id.set(app_id);
+    }
     fn handle_destroy(&mut self, _slf: &Rc<XdgToplevel>) {
         // The routing holds this layer surface and its handler holds this
         // toplevel: unset the handler here, as wl-paper's does, so the two

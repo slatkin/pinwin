@@ -12,35 +12,27 @@
 //! mapping, and the layer-surface creation — is copied from wl-paper's
 //! `apps/wl-paper/src/paper.rs` in <https://github.com/mahkoh/wl-proxy>
 //! (GPL-3.0, the licence of this crate): `ClientXdgSurface::handle_get_toplevel`,
-//! `handle_ack_configure` and `ProxyLayerSurface::handle_configure` are
-//! the source. The slot test and the pass-through path are pinwin's. The
-//! layer surface itself and its `closed` handling live in [`super::dock`]
-//! (D11): `closed` re-docks the panel window instead of closing the app's
-//! window.
+//! `handle_ack_configure` and `ProxyLayerSurface::handle_configure`. The slot
+//! test and the pass-through path are pinwin's; the layer surface and its
+//! `closed` handling live in [`super::dock`] (D11).
 //!
-//! The handler parameters the proxy's own object would carry are named
-//! `_slf`, the trait's name with the unused-prefix the codebase's lints
-//! require, and a handler that needs its own object reaches it through a
-//! `Weak` field instead of the parameter: a handler that held its own object
-//! in an `Rc` would close a reference cycle, so the display, registry,
-//! wm-base, toplevel and layer-surface handlers keep their own object weak
-//! and keep the other objects they act on.
+//! `_slf` names the handler parameters the proxy's own object would carry; a
+//! handler that needs its own object keeps it in a `Weak` field, so the
+//! display, registry, wm-base, toplevel and layer-surface handlers close no
+//! reference cycle.
 //!
-//! The layer surface here is the minimal one rows 6.2 to 6.4 run with:
-//! anchors, size, margins, layer and keyboard mode from [`PanelSettings`],
-//! an exclusive zone of -1 (D9: the reserve surface owns the strip), and a
+//! The layer surface is the minimal one rows 6.2 to 6.4 run with: anchors,
+//! size, margins, layer and keyboard mode from [`PanelSettings`], an
+//! exclusive zone of -1 (D9: the reserve surface owns the strip), and a
 //! percent size resolved against the panel's output size, tracked from
-//! `zxdg_output_v1` — the mode-and-scale fallback and a
-//! 1920x1080 placeholder cover the window before that size is known
-//! ([`super::output`]). The reserve itself is created and destroyed with the
-//! panel window ([`super::reserve`]), and the panel window's buffer is
-//! cropped to the app's window geometry through a proxy-owned `wp_viewport`
-//! ([`super::viewport`]). Popups and decorations are row 6.3 (D5): a popup
-//! of the panel window becomes a popup of its layer surface with the anchor
-//! rectangle moved by the window geometry ([`super::popup`]), and each
-//! decoration object is routed by its toplevel — answered server-side for
-//! the panel window, forwarded to the compositor's real manager or answered
-//! client-side for a passed-through window ([`super::decoration`]).
+//! `zxdg_output_v1` — the mode-and-scale fallback and a 1920x1080 placeholder
+//! cover the window before that size is known ([`super::output`]). The reserve
+//! is created and destroyed with the panel window ([`super::reserve`]), and the
+//! panel window's buffer is cropped through a proxy-owned `wp_viewport`
+//! ([`super::viewport`]). A popup of the panel window becomes a popup of its
+//! layer surface with the anchor rectangle moved by the window geometry
+//! ([`super::popup`]), and each decoration object is routed by its toplevel
+//! ([`super::decoration`], D5).
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -70,6 +62,7 @@ use super::slot::{Route, Slot};
 use super::viewport::{StaticCrop, apply_steady_crop, settle_forwarded, write_crop};
 use super::window::ClientXdgToplevel;
 use crate::config::PanelSettings;
+use crate::daemon::panel::AppId;
 use crate::geometry::{Geometry, HeldGap, OutputSize, Size};
 
 /// The routing state one panel shares between all its app connections (D4):
@@ -564,6 +557,9 @@ pub(super) struct ClientXdgSurface {
     /// cropped to it through a proxy-owned viewport (D8). A surface the app
     /// set none on keeps `None`.
     geometry: Option<[i32; 4]>,
+    /// The hosted app's `app_id`, recorded when this surface becomes the
+    /// panel window (row 11.1, D14).
+    app_id: AppId,
 }
 
 impl ClientXdgSurface {
@@ -574,6 +570,7 @@ impl ClientXdgSurface {
         wl_surface: Rc<WlSurface>,
         xdg_surface: Rc<XdgSurface>,
         xdg_wm_base: Rc<XdgWmBase>,
+        app_id: AppId,
     ) -> Self {
         Self {
             routing,
@@ -582,6 +579,7 @@ impl ClientXdgSurface {
             xdg_wm_base,
             has_server: false,
             geometry: None,
+            app_id,
         }
     }
 
@@ -624,6 +622,7 @@ impl ClientXdgSurface {
             Rc::clone(&self.routing),
             id,
             id.unique_id(),
+            self.app_id.clone(),
         ));
         let window = dock::PanelWindow {
             surface: Rc::clone(&self.wl_surface),

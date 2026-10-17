@@ -129,6 +129,63 @@ impl std::error::Error for CommandError {
     }
 }
 
+/// The hosted app's `app_id` (row 11.1, D14), shared by the panel thread that
+/// reads it from the panel window's `xdg_toplevel.set_app_id` and the daemon's
+/// tray, which names the oldest panel's app. The value is kept as the app sent
+/// it: the tray checks it before using it as a theme icon name.
+#[derive(Clone, Debug, Default)]
+pub struct AppId(Arc<Mutex<AppIdState>>);
+
+/// The [`AppId`] under its lock: the current value and the callback the panel
+/// thread runs after a change, so the tray can re-read the icon. The callback
+/// is shared and runs without the lock held.
+#[derive(Default)]
+struct AppIdState {
+    value: Option<String>,
+    changed: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl fmt::Debug for AppIdState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AppIdState")
+            .field("value", &self.value)
+            .field("has_changed", &self.changed.is_some())
+            .finish()
+    }
+}
+
+impl AppId {
+    /// Record `app_id` and return whether it differs from the current value.
+    /// The change callback runs without the lock, so a reader never waits for
+    /// it.
+    pub fn set(&self, app_id: &str) -> bool {
+        let changed = {
+            let mut state = locked(&self.0);
+            if state.value.as_deref() == Some(app_id) {
+                return false;
+            }
+            state.value = Some(app_id.to_owned());
+            state.changed.clone()
+        };
+        if let Some(changed) = changed {
+            changed();
+        }
+        true
+    }
+
+    /// The app id the panel window last set, or `None` before it sets one.
+    #[must_use]
+    pub fn get(&self) -> Option<String> {
+        locked(&self.0).value.clone()
+    }
+
+    /// Call `changed` after every later change, so the daemon can refresh the
+    /// tray icon when the app names itself or renames itself.
+    pub fn on_change(&self, changed: impl Fn() + Send + Sync + 'static) {
+        locked(&self.0).changed = Some(Arc::new(changed));
+    }
+}
+
 /// The daemon's handle on one panel thread (D12): the command channel and
 /// the eventfd the panel's poll loop watches. The handle is shared by the
 /// daemon's connection threads, so the registry holds it in an [`Arc`]. The
@@ -141,17 +198,32 @@ pub struct PanelHandle {
     pid: u32,
     commands: Mutex<Sender<Command>>,
     wake: Arc<EventFd>,
+    app_id: AppId,
 }
 
 impl PanelHandle {
     /// The handle of the panel whose app has process ID `pid`, with the
     /// channel the panel thread reads and the eventfd it polls.
+    #[cfg(test)]
     #[must_use]
     pub fn new(pid: u32, commands: Sender<Command>, wake: Arc<EventFd>) -> Self {
+        Self::with_app_id(pid, commands, wake, AppId::default())
+    }
+
+    /// [`PanelHandle::new`] for a panel thread that also records its app's id
+    /// in `app_id`, so the registry and the tray read the same value.
+    #[must_use]
+    pub fn with_app_id(
+        pid: u32,
+        commands: Sender<Command>,
+        wake: Arc<EventFd>,
+        app_id: AppId,
+    ) -> Self {
         Self {
             pid,
             commands: Mutex::new(commands),
             wake,
+            app_id,
         }
     }
 
@@ -160,6 +232,12 @@ impl PanelHandle {
     #[must_use]
     pub const fn pid(&self) -> u32 {
         self.pid
+    }
+
+    /// The hosted app's `app_id` as its panel window last set it (row 11.1).
+    #[must_use]
+    pub fn app_id(&self) -> Option<String> {
+        self.app_id.get()
     }
 
     /// Ask the panel to carry `request` out and wait at most `wait` for its
@@ -256,5 +334,38 @@ impl EventFd {
 impl AsRawFd for EventFd {
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::AppId;
+
+    /// The panel window's `set_app_id` replaces the earlier id, reports a
+    /// change only when the value differs, and runs the tray's callback after
+    /// each real change (row 11.1, D14).
+    #[test]
+    fn a_later_app_id_replaces_the_earlier_one() {
+        let app_id = AppId::default();
+        let changes = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&changes);
+        app_id.on_change(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(app_id.get(), None, "the app has not named itself yet");
+        assert!(app_id.set("org.example.Notes"), "the first id is a change");
+        assert_eq!(app_id.get().as_deref(), Some("org.example.Notes"));
+        assert_eq!(changes.load(Ordering::SeqCst), 1);
+
+        assert!(!app_id.set("org.example.Notes"), "the same id is no change");
+        assert_eq!(changes.load(Ordering::SeqCst), 1);
+
+        assert!(app_id.set("org.example.Chat"), "a new id is a change");
+        assert_eq!(app_id.get().as_deref(), Some("org.example.Chat"));
+        assert_eq!(changes.load(Ordering::SeqCst), 2);
     }
 }

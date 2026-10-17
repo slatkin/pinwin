@@ -11,7 +11,7 @@ use ksni::menu::MenuItem;
 
 use super::{
     EDGES, ICON_NAME, MenuModel, PanelMenu, PinwinTray, QUIT_LABEL, RESERVES, SHOWN_LABEL,
-    edge_index, reserve_index,
+    edge_index, icon_for, reserve_index, theme_name,
 };
 use crate::config::PanelSettings;
 use crate::daemon::lifetime::Lifetime;
@@ -154,8 +154,84 @@ fn the_menu_has_a_submenu_for_each_panel_and_then_quit() {
     assert_eq!(QUIT_LABEL, "Quit pinwin");
 }
 
-/// The icon is the theme's `pinwin` (D14: a themed icon name) and the item
-/// has one identity.
+/// The icon names the oldest panel's app id, and `pinwin` when the oldest
+/// panel's app has not named itself yet (spec "Icon with panels", "Icon of
+/// the hosted app", "Icon follows the oldest panel" and "Icon before the app
+/// names itself"): a later panel's app id does not stand in for the oldest
+/// one, which decides the icon.
+#[test]
+fn the_icon_follows_the_oldest_panels_app_id() {
+    assert_eq!(icon_for(&[]), ICON_NAME, "no panel, so no app id");
+    assert_eq!(
+        icon_for(&[None, Some("chat".to_owned())]),
+        ICON_NAME,
+        "the oldest panel has not named itself yet"
+    );
+    assert_eq!(
+        icon_for(&[Some("org.example.Notes".to_owned())]),
+        "org.example.Notes"
+    );
+    assert_eq!(
+        icon_for(&[Some("notes".to_owned()), Some("chat".to_owned())]),
+        "notes",
+        "the oldest panel's app id wins"
+    );
+}
+
+/// An app id that is not a plain theme icon name is unusable, so the icon
+/// falls back to `pinwin` (spec "Unusable app id"): 1 to 128 characters from
+/// letters, digits, `.`, `_` and `-`, not starting with `.`, and no path
+/// separator.
+#[test]
+fn an_unusable_app_id_gives_the_fallback_icon() {
+    let longest = "x".repeat(128);
+    for app_id in [
+        String::new(),
+        ".hidden".to_owned(),
+        "a/b".to_owned(),
+        "/absolute".to_owned(),
+        "with space".to_owned(),
+        "ümlaut".to_owned(),
+        "x".repeat(129),
+    ] {
+        assert_eq!(
+            icon_for(&[Some(app_id.clone())]),
+            ICON_NAME,
+            "'{app_id}' is not a theme icon name"
+        );
+    }
+    assert_eq!(icon_for(&[Some(longest)]), "x".repeat(128));
+}
+
+/// The sanitizer accepts only a plain theme icon name and keeps the value it
+/// was given.
+#[test]
+fn the_theme_name_accepts_only_a_plain_icon_name() {
+    assert_eq!(
+        theme_name("org.example.Notes-1_2"),
+        Some("org.example.Notes-1_2")
+    );
+    assert_eq!(theme_name(""), None, "an empty name names no icon");
+    assert_eq!(
+        theme_name(".hidden"),
+        None,
+        "a leading dot looks like a file"
+    );
+    assert_eq!(theme_name("a/b"), None, "a separator looks like a path");
+    assert_eq!(theme_name("a b"), None, "a space is not in the grammar");
+    assert_eq!(
+        theme_name("\u{fc}mlaut"),
+        None,
+        "only ASCII letters are allowed"
+    );
+    let longest = "x".repeat(128);
+    assert_eq!(theme_name(&longest), Some(longest.as_str()));
+    let too_long = "x".repeat(129);
+    assert_eq!(theme_name(&too_long), None, "129 characters is too long");
+}
+
+/// Without a daemon behind it the item keeps the fallback `pinwin` icon and
+/// its one identity (D14: a themed icon name).
 #[test]
 fn the_item_has_the_pinwin_icon_and_identity() {
     let item = tray(MenuModel::default());

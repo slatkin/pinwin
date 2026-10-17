@@ -19,8 +19,10 @@
 //! the `quit` request does.
 //!
 //! A primary click does nothing (spec "Icon click opens nothing new"): the
-//! menu is the only way the tray changes a panel. The item's icon is the
-//! theme's [`ICON_NAME`]; `ksni` re-registers when a tray host appears.
+//! menu is the only way the tray changes a panel. The item's icon names the
+//! oldest running panel's app: its `app_id`, or the theme's [`ICON_NAME`] as
+//! the fallback; `ksni` re-registers and re-reads the icon when a tray host
+//! appears or an app names itself.
 
 use std::fmt;
 use std::sync::Weak;
@@ -34,10 +36,40 @@ use crate::geometry::{Edge, ReserveMode};
 use crate::ipc::{PanelEntry, Reply, Request};
 use crate::name::PanelName;
 
-/// The theme icon the tray shows (D14: a themed icon name is enough for the
-/// first release). The tray host renders it from the user's icon theme;
-/// pinwin installs no icon file of its own.
+/// The theme icon the tray shows when the oldest panel's app has set no valid
+/// `app_id` (D14: a themed icon name is enough for the first release). The
+/// tray host renders it from the user's icon theme; pinwin installs no icon
+/// file of its own.
 pub const ICON_NAME: &str = "pinwin";
+
+/// The theme icon name the item shows (row 11.1, D14, spec "Icon of the
+/// hosted app", "Icon follows the oldest panel", "Icon before the app names
+/// itself" and "Unusable app id"): the oldest panel's `app_id` when it is a
+/// valid theme icon name, and [`ICON_NAME`] otherwise. `panels` holds each
+/// panel's app id in start order, `None` before its app names itself; the
+/// oldest panel decides, so a later panel's app id does not stand in while
+/// the oldest one has none.
+#[must_use]
+pub fn icon_for(panels: &[Option<String>]) -> String {
+    panels
+        .first()
+        .and_then(|app_id| app_id.as_deref())
+        .and_then(theme_name)
+        .map_or_else(|| ICON_NAME.to_owned(), str::to_owned)
+}
+
+/// The theme icon name `app_id` may be used as, or `None` when it is not valid
+/// (row 11.1, D14, spec "One tray icon while panels exist"): 1 to 128
+/// characters from letters, digits, `.`, `_` and `-`, not starting with `.`.
+/// A host may take a theme name that looks like a path as a file, so a
+/// separator fails the character rule too.
+fn theme_name(app_id: &str) -> Option<&str> {
+    let allowed = app_id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+    let valid = (1..=128).contains(&app_id.chars().count()) && !app_id.starts_with('.') && allowed;
+    valid.then_some(app_id)
+}
 
 /// The check item that shows or hides a panel (spec "Menu for each panel").
 const SHOWN_LABEL: &str = "Shown";
@@ -204,12 +236,19 @@ impl TrayService {
     pub fn stop(self) {
         drop(self.handle.shutdown());
     }
+
+    /// A clone of the `ksni` handle, so a caller can ask the tray to re-read
+    /// its item (the icon names the oldest panel's app id, row 11.1, D14)
+    /// without holding the daemon's tray lock across the tray thread's work.
+    pub(crate) fn handle(&self) -> Handle<PinwinTray> {
+        self.handle.clone()
+    }
 }
 
 /// The `StatusNotifierItem` (spec "One tray icon while panels exist"): its one
 /// menu lists the panels and ends the daemon.
 #[derive(Debug)]
-struct PinwinTray {
+pub(crate) struct PinwinTray {
     /// The daemon whose registry the menu reads and acts on. Weak, so the
     /// service cannot keep the daemon alive and no cycle outlives it.
     lifetime: Weak<Lifetime>,
@@ -328,8 +367,16 @@ impl ksni::Tray for PinwinTray {
         "pinwin".to_owned()
     }
 
+    /// The icon names the oldest running panel's app id, with [`ICON_NAME`]
+    /// as the fallback (row 11.1, D14, spec "Icon of the hosted app", "Icon
+    /// before the app names itself", "Unusable app id"). The daemon asks
+    /// `ksni` to re-read it when an app names itself or the oldest panel
+    /// ends.
     fn icon_name(&self) -> String {
-        ICON_NAME.to_owned()
+        let Some(lifetime) = self.lifetime.upgrade() else {
+            return ICON_NAME.to_owned();
+        };
+        icon_for(&lifetime.registry().app_ids())
     }
 
     /// A primary click changes nothing (spec "Icon click opens nothing

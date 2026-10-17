@@ -69,7 +69,7 @@ use wl_proxy::state::{Destructor, State, StateError, StateHandler};
 use crate::config::PanelSettings;
 use crate::daemon::events::Bus;
 use crate::daemon::lifetime::Lifetime;
-use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply, PanelRequest};
+use crate::daemon::panel::{AppId, Command, EventFd, PanelHandle, PanelReply, PanelRequest};
 use crate::guard::{Poisoned, guard};
 use crate::ipc::{ErrorReply, PanelStatus};
 use crate::name::PanelName;
@@ -241,11 +241,23 @@ pub fn spawn(
 ) -> Result<Started, StartError> {
     let (commands, incoming) = mpsc::channel::<Command>();
     let wake = Arc::new(EventFd::new().map_err(StartError::Io)?);
+    let app_id = AppId::default();
+    // The tray names the oldest panel's app, so it re-reads its icon when this
+    // app names itself. The callback holds the daemon weakly: the registry
+    // holds the handle, which holds the id, so a strong reference would keep
+    // the daemon alive through its own panel.
+    let changed_lifetime = Arc::downgrade(lifetime);
+    app_id.on_change(move || {
+        if let Some(lifetime) = changed_lifetime.upgrade() {
+            lifetime.app_id_changed();
+        }
+    });
     let (ready, waited) = mpsc::sync_channel(1);
     let (registered, start) = mpsc::sync_channel(1);
     let thread_wake = Arc::clone(&wake);
     let thread_lifetime = Arc::clone(lifetime);
     let thread_name = name.clone();
+    let thread_app_id = app_id.clone();
     thread::Builder::new()
         .name(format!("pinwin panel {name}"))
         .spawn(move || {
@@ -259,6 +271,7 @@ pub fn spawn(
                 wake: thread_wake,
                 ready,
                 start,
+                app_id: thread_app_id,
             });
         })
         .map_err(StartError::Io)?;
@@ -270,7 +283,7 @@ pub fn spawn(
     // refused name ends the thread without its end report: that report
     // removes the registry entry of the name, which belongs to the panel
     // that keeps running (spec "Duplicate name").
-    let handle = PanelHandle::new(pid, commands, wake);
+    let handle = PanelHandle::with_app_id(pid, commands, wake, app_id);
     match lifetime.add_panel(name, handle) {
         Ok(()) => {
             let _ = registered.send(true);
@@ -300,6 +313,8 @@ struct PanelThread {
     /// its end report belongs to a panel of the registry (spec "Duplicate
     /// name").
     start: Receiver<bool>,
+    /// The hosted app's `app_id`, shared with the panel's handle (row 11.1).
+    app_id: AppId,
 }
 
 /// The panel thread: build the panel, hand its display back to [`spawn`] and
@@ -315,6 +330,7 @@ fn panel_thread(thread: PanelThread) {
         wake,
         ready,
         start,
+        app_id,
     } = thread;
     let panel = match Panel::open(
         &settings,
@@ -324,6 +340,7 @@ fn panel_thread(thread: PanelThread) {
         pid,
         wake,
         commands,
+        app_id,
     ) {
         Ok(panel) => panel,
         Err(error) => {
@@ -437,6 +454,7 @@ impl Panel {
         pid: u32,
         wake: Arc<EventFd>,
         commands: Receiver<Command>,
+        app_id: AppId,
     ) -> io::Result<Self> {
         let state = State::builder(Baseline::V6)
             .build()
@@ -449,6 +467,7 @@ impl Panel {
             connections: Rc::clone(&connections),
             ever_connected: Rc::clone(&ever_connected),
             routing: Rc::clone(&routing),
+            app_id,
         });
         // `create_acceptor` registers the socket in the state's own poll set
         // and accepts on `dispatch`, so this loop watches only the state's
@@ -646,6 +665,9 @@ struct PanelState {
     /// connected (row 7.4, D3).
     ever_connected: Rc<Cell<bool>>,
     routing: Rc<Routing>,
+    /// The hosted app's `app_id`, which the panel window's toplevel handler
+    /// records (row 11.1, D14).
+    app_id: AppId,
 }
 
 impl StateHandler for PanelState {
@@ -658,7 +680,11 @@ impl StateHandler for PanelState {
             client: Rc::downgrade(client),
         });
         let display = client.display();
-        display.set_handler(ClientDisplay::new(Rc::clone(&self.routing), display));
+        display.set_handler(ClientDisplay::new(
+            Rc::clone(&self.routing),
+            display,
+            self.app_id.clone(),
+        ));
     }
 
     fn display_error(

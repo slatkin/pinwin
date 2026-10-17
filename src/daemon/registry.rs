@@ -98,6 +98,21 @@ impl Registry {
         locked(&self.inner).panels.is_empty()
     }
 
+    /// The hosted app's `app_id` for every panel, in start order (row 11.1,
+    /// D14): the tray icon names the first app that set one. A panel whose
+    /// app has not named itself yet contributes `None`.
+    #[must_use]
+    pub fn app_ids(&self) -> Vec<Option<String>> {
+        let panels = locked(&self.inner);
+        let mut started: Vec<(u64, Option<String>)> = panels
+            .panels
+            .values()
+            .map(|panel| (panel.start, panel.handle.app_id()))
+            .collect();
+        started.sort_by_key(|(start, _)| *start);
+        started.into_iter().map(|(_, app_id)| app_id).collect()
+    }
+
     /// Route one decoded request (D12). `None` means the daemon answers it
     /// itself: `create` (a new panel, D2), `subscribe` (the event bus),
     /// `quit` (the lifetime) and `reload` (the config file) name no panel.
