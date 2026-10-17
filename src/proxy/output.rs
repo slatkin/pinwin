@@ -231,6 +231,25 @@ impl Globals {
         self.outputs.borrow_mut().insert(global_name, tracker);
     }
 
+    /// Forgets the output bound under `global`, when one is tracked (D11):
+    /// the compositor removed the global, so the object is dead and its name
+    /// must stop answering `set-output` (spec "Unknown output") and must
+    /// stop pinning new panels. The app `wl_output` binds that named the
+    /// global are dropped with it, so a stale `enter` no longer claims a
+    /// size the proxy does not track, and the panel's output reverts to the
+    /// compositor's choice. Returns the dead `wl_output`, for the caller to
+    /// release.
+    fn remove_output(&self, global: u32) -> Option<Rc<WlOutput>> {
+        let tracker = self.outputs.borrow_mut().remove(&global)?;
+        self.client_output_names
+            .borrow_mut()
+            .retain(|_, bound| *bound != global);
+        if self.panel_output.get() == Some(global) {
+            self.panel_output.set(None);
+        }
+        Some(Rc::clone(&tracker.wl_output))
+    }
+
     /// Records which global name an app `wl_output` bind came from.
     pub(super) fn record_client_output(&self, global_name: u32, client_id: u64) {
         self.client_output_names
@@ -256,7 +275,8 @@ impl Globals {
 
     /// The global name of the tracked output whose compositor name is
     /// `name` (D11, spec "Unknown output"). An output that has not
-    /// announced a name yet matches nothing.
+    /// announced a name yet matches nothing, and neither does one the
+    /// compositor has removed ([`Globals::remove_output`]).
     pub(super) fn named_output(&self, name: &str) -> Option<u32> {
         self.outputs
             .borrow()
@@ -439,6 +459,25 @@ impl WlRegistryHandler for ProxyRegistry {
             }
         }
     }
+
+    fn handle_global_remove(&mut self, _slf: &Rc<WlRegistry>, name: u32) {
+        // Only the outputs carry state that outlives the announcement (D11):
+        // a removed output must stop answering `set-output` and stop pinning
+        // new panels (spec "Unknown output"). The globals without
+        // bookkeeping — the layer shell among them — keep their objects
+        // until the connection ends, and the removals the app hears about
+        // are answered by its own registry's handler, which forwards them.
+        let Some(wl_output) = self.globals.remove_output(name) else {
+            return;
+        };
+        // The client destroys the object its bind created (the contract of
+        // `wl_registry.global_remove`); `release` is `wl_output`'s
+        // destructor since version 3, and the version the proxy bound is
+        // the object's.
+        if wl_output.version() >= WlOutput::MSG__RELEASE__SINCE {
+            wl_output.send_release();
+        }
+    }
 }
 
 /// The proxy's handler for one bound `wl_output` (D9): it records the
@@ -557,8 +596,17 @@ impl WlSurfaceHandler for PanelSurfaceWatch {
 
 #[cfg(test)]
 mod tests {
-    use super::{effective_output_size, logical_from_mode, placeholder_output};
+    use std::rc::Rc;
+
+    use super::{
+        Globals, OUTPUT_VERSION, OutputTracker, effective_output_size, logical_from_mode,
+        placeholder_output,
+    };
     use crate::geometry::OutputSize;
+    use crate::proxy::dock::{SetOutputDecision, set_output_decision};
+    use wl_proxy::baseline::Baseline;
+    use wl_proxy::protocols::wayland::wl_output::WlOutput;
+    use wl_proxy::state::State;
 
     /// The fallback divides the current mode by the integer scale (D9):
     /// a 2x-scaled 4K output is 1920x1080 logical.
@@ -606,5 +654,88 @@ mod tests {
     fn the_placeholder_resolves_the_built_in_default() {
         let output = placeholder_output();
         assert_eq!(output.across(crate::geometry::Edge::Left), 1920);
+    }
+
+    /// A proxy-bound output with its compositor name pre-announced, for the
+    /// removal tests: the object is minted in a client-side state and never
+    /// sent anywhere, so the tests run without a compositor (`port-to-rust`
+    /// D10).
+    fn tracked_output(state: &Rc<State>, global: u32, name: Option<&str>) -> Rc<OutputTracker> {
+        let wl_output = state.create_object::<WlOutput>(OUTPUT_VERSION);
+        let tracker = Rc::new(OutputTracker::new(global, Rc::clone(&wl_output)));
+        if let Some(name) = name {
+            *tracker.output_name.borrow_mut() = Some(name.to_owned());
+        }
+        tracker
+    }
+
+    /// A client-side state the removal tests mint their objects in: no
+    /// server is attached, so nothing is sent and no compositor is needed.
+    fn object_state() -> Rc<State> {
+        State::builder(Baseline::V6)
+            .without_server()
+            .build()
+            .expect("a client-side state needs no compositor")
+    }
+
+    /// A removed output is refused like an unknown one (spec "Unknown
+    /// output"): once the `global_remove` has dropped its tracker, its name
+    /// answers neither a `set-output`'s decision nor a new panel's pin
+    /// (D11), while the still-tracked outputs answer as before.
+    #[test]
+    fn a_removed_output_is_refused_like_an_unknown_one() {
+        let state = object_state();
+        let globals = Globals::new();
+        for (global, name) in [(10, Some("DP-1")), (11, Some("DP-2"))] {
+            globals.add_output(global, tracked_output(&state, global, name));
+        }
+        assert_eq!(
+            set_output_decision("DP-2", &globals.tracked_output_names()),
+            SetOutputDecision::Pin(11),
+            "the test starts with the output tracked, so the removal is what changes it"
+        );
+
+        globals.remove_output(11);
+
+        assert_eq!(
+            set_output_decision("DP-2", &globals.tracked_output_names()),
+            SetOutputDecision::Unknown,
+            "a removed output is refused like an unknown name"
+        );
+        assert_eq!(globals.named_output("DP-2"), None);
+        assert!(
+            globals.output_by_global(11).is_none(),
+            "a removed output pins no layer surface"
+        );
+        assert_eq!(
+            set_output_decision("DP-1", &globals.tracked_output_names()),
+            SetOutputDecision::Pin(10),
+            "the still-tracked outputs answer as before"
+        );
+    }
+
+    /// A removed output leaves no stale panel state (D11): the panel's
+    /// output reverts to the compositor's choice and an app `wl_output`
+    /// bind of the dead global no longer claims a size the proxy tracks.
+    #[test]
+    fn a_removed_output_leaves_no_stale_panel_state() {
+        let state = object_state();
+        let globals = Globals::new();
+        globals.add_output(11, tracked_output(&state, 11, Some("DP-2")));
+        globals.record_client_output(11, 99);
+        assert!(globals.set_panel_output(99));
+        assert_eq!(globals.panel_output(), Some(11));
+
+        globals.remove_output(11);
+
+        assert_eq!(
+            globals.panel_output(),
+            None,
+            "the panel is no longer pinned to the dead output"
+        );
+        assert!(
+            !globals.set_panel_output(99),
+            "a stale app bind names no size the proxy tracks"
+        );
     }
 }
