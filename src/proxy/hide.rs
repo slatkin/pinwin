@@ -13,8 +13,9 @@
 //! zone, keyboard mode), commits with no buffer so the compositor configures
 //! the surface again, and attaches the kept buffer once the app acks that
 //! configure (D6 amendments 1 and 2). A release the compositor sends for that
-//! proxy-made attach is swallowed, because the app already received the
-//! release for the attach the proxy dropped (D6 amendment 3).
+//! proxy-made attach is swallowed when the app already received the release
+//! for its own attach of the buffer, and forwarded when the proxy held that
+//! attach without releasing it (D6 amendment 3).
 //!
 //! Every change to the panel's surface goes through the commit coordinator
 //! ([`super::commit`], D7): hide and show inject their commit on a clean
@@ -67,7 +68,8 @@ pub(super) struct Hidden {
     /// committed with: the last buffer the proxy forwarded upstream, or —
     /// for a panel that started hidden — the first buffer the app drew.
     show_buffer: RefCell<Option<Kept>>,
-    /// The app's attach request in the current commit.
+    /// The app's attach request in the current commit, with whether the proxy
+    /// forwarded it: only a forwarded attach gives the commit a buffer (D6).
     attach: RefCell<PendingAttach>,
     /// The syncobj points the app set for the current commit (D6): held
     /// until a commit that carries a buffer emits them.
@@ -92,6 +94,10 @@ pub(super) struct Hidden {
 struct Kept {
     buffer: Rc<WlBuffer>,
     points: Points,
+    /// Whether the app's last attach of this buffer was held while hidden and
+    /// never released: the compositor's release for the proxy's own attach is
+    /// then the app's release, not a duplicate (D6 amendment 3).
+    owed_release: bool,
 }
 
 /// The app's attach request in the current commit (D6): no request, a null
@@ -104,7 +110,14 @@ enum PendingAttach {
     /// The app attached a null buffer, which unmaps the surface.
     Null,
     /// The app attached a buffer the proxy may forward, hold or drop.
-    Buffer(Rc<WlBuffer>),
+    Buffer {
+        buffer: Rc<WlBuffer>,
+        /// Whether the proxy forwarded the attach upstream. A hidden attach
+        /// never reaches the compositor, so the commit that follows carries
+        /// no buffer even if the panel shows in between (D6): the held
+        /// syncobj points must not go out with it (`no_buffer`).
+        forwarded: bool,
+    },
 }
 
 /// What the proxy does with the app's attach (D6): while shown it forwards
@@ -173,34 +186,51 @@ impl Hidden {
     /// The app's attach (D6): forward it while shown, hold the kept buffer
     /// and drop the others while hidden.
     pub(super) fn on_app_attach(&self, buffer: Option<&Rc<WlBuffer>>) -> Attach {
+        let decision = self.attach_decision(buffer);
         *self.attach.borrow_mut() = match buffer {
-            Some(buffer) => PendingAttach::Buffer(Rc::clone(buffer)),
+            Some(buffer) => PendingAttach::Buffer {
+                buffer: Rc::clone(buffer),
+                forwarded: decision == Attach::Forward,
+            },
             None => PendingAttach::Null,
         };
-        if !self.state.get() {
-            if let Some(buffer) = buffer {
+        let Some(buffer) = buffer else {
+            return decision;
+        };
+        match decision {
+            Attach::Forward => {
                 // The app reuses the buffer, so the release the compositor
                 // sends is the app's own and must be forwarded.
                 self.forget_proxy_attach(buffer.unique_id());
+                self.clear_owed_release(buffer.unique_id());
             }
+            Attach::Hold => self.mark_owed_release(buffer.unique_id()),
+            Attach::Drop => self.dropped.borrow_mut().push(Rc::clone(buffer)),
+        }
+        decision
+    }
+
+    /// What the proxy does with the app's attach (D6), before it is recorded.
+    fn attach_decision(&self, buffer: Option<&Rc<WlBuffer>>) -> Attach {
+        if !self.state.get() {
             return Attach::Forward;
         }
         let Some(buffer) = buffer else {
             return Attach::Hold;
         };
-        let kept = self
-            .show_buffer
-            .borrow()
-            .as_ref()
-            .map(|kept| kept.buffer.unique_id());
-        match kept {
+        match self.kept_id() {
             None => Attach::Hold,
             Some(id) if id == buffer.unique_id() => Attach::Hold,
-            Some(_) => {
-                self.dropped.borrow_mut().push(Rc::clone(buffer));
-                Attach::Drop
-            }
+            Some(_) => Attach::Drop,
         }
+    }
+
+    /// The buffer the next show attaches, if one is already kept.
+    fn kept_id(&self) -> Option<u64> {
+        self.show_buffer
+            .borrow()
+            .as_ref()
+            .map(|kept| kept.buffer.unique_id())
     }
 
     /// The plan of one commit (D6): the points a buffer-carrying commit
@@ -213,20 +243,28 @@ impl Hidden {
             points: None,
             release,
         };
-        let PendingAttach::Buffer(buffer) = attach else {
+        let PendingAttach::Buffer { buffer, forwarded } = attach else {
             return plan;
         };
-        if self.state.get() {
-            let kept = self
-                .show_buffer
-                .borrow()
-                .as_ref()
-                .map(|kept| kept.buffer.unique_id());
+        if !forwarded {
+            // The attach never reached the compositor, whatever the panel's
+            // state is now: this commit carries no buffer, so the held points
+            // must not go out (the protocol's `no_buffer`).
+            let kept = self.kept_id();
             match kept {
+                None => {
+                    let points = std::mem::take(&mut *self.points.borrow_mut());
+                    *self.show_buffer.borrow_mut() = Some(Kept {
+                        buffer,
+                        points,
+                        owed_release: true,
+                    });
+                }
                 Some(id) if id == buffer.unique_id() => {
                     let points = std::mem::take(&mut *self.points.borrow_mut());
                     if let Some(kept) = self.show_buffer.borrow_mut().as_mut() {
                         kept.points = points;
+                        kept.owed_release = true;
                     }
                 }
                 Some(_) => {
@@ -234,18 +272,25 @@ impl Hidden {
                     // back to the app without ever reaching the compositor.
                     std::mem::take(&mut *self.points.borrow_mut());
                 }
-                None => {
-                    let points = std::mem::take(&mut *self.points.borrow_mut());
-                    *self.show_buffer.borrow_mut() = Some(Kept { buffer, points });
-                }
             }
             return plan;
         }
-        // A visible buffer commit: the compositor can take the points now,
+        // A forwarded buffer commit: the compositor can take the points now,
         // and the buffer becomes the one the next show attaches.
         let points = std::mem::take(&mut *self.points.borrow_mut());
         plan.points = Some(points.clone());
-        *self.show_buffer.borrow_mut() = Some(Kept { buffer, points });
+        let previous = self.show_buffer.borrow_mut().replace(Kept {
+            buffer,
+            points,
+            owed_release: false,
+        });
+        if let Some(previous) = previous
+            && previous.owed_release
+        {
+            // A held buffer the show no longer attaches: the app gets its
+            // release now, because the compositor never saw that attach.
+            plan.release.push(previous.buffer);
+        }
         self.awaiting_map.set(false);
         plan
     }
@@ -295,19 +340,20 @@ impl Hidden {
     /// never reaches the compositor.
     pub(super) fn release_pending_attach(&self) {
         let attach = std::mem::take(&mut *self.attach.borrow_mut());
-        if let PendingAttach::Buffer(buffer) = attach {
+        if let PendingAttach::Buffer { buffer, .. } = attach {
             self.dropped.borrow_mut().push(buffer);
         }
     }
 
-    /// Records an attach the proxy made itself, whose compositor release it
-    /// must swallow (D6 amendment 3).
+    /// Records an attach the proxy made itself (D6 amendments 2 and 3): the
+    /// compositor's release for it is swallowed, unless the app's held attach
+    /// of the same buffer is still owed one.
     pub(super) fn on_proxy_attach(&self, buffer: &Rc<WlBuffer>) {
-        *self
-            .proxy_attached
-            .borrow_mut()
-            .entry(buffer.unique_id())
-            .or_insert(0) += 1;
+        let id = buffer.unique_id();
+        if self.kept_owes_release(id) {
+            return;
+        }
+        *self.proxy_attached.borrow_mut().entry(id).or_insert(0) += 1;
     }
 
     /// Clears a proxy-made attach's release debt: the app attached the
@@ -317,18 +363,45 @@ impl Hidden {
     }
 
     /// Whether a compositor release for `buffer` belongs to a proxy-made
-    /// attach and must be swallowed (D6 amendment 3).
+    /// attach and must be swallowed (D6 amendment 3). A release that reaches
+    /// the app settles the kept buffer's held attach, so a later show
+    /// swallows instead.
     pub(super) fn swallow_release(&self, buffer: u64) -> bool {
         let mut attached = self.proxy_attached.borrow_mut();
-        match attached.get_mut(&buffer) {
-            Some(count) if *count > 0 => {
-                *count -= 1;
-                if *count == 0 {
-                    attached.remove(&buffer);
-                }
-                true
+        if let Some(count) = attached.get_mut(&buffer) {
+            *count -= 1;
+            if *count == 0 {
+                attached.remove(&buffer);
             }
-            Some(_) | None => false,
+            return true;
+        }
+        self.clear_owed_release(buffer);
+        false
+    }
+
+    /// Whether the kept buffer's held attach still owes the app a release.
+    fn kept_owes_release(&self, buffer: u64) -> bool {
+        self.show_buffer
+            .borrow()
+            .as_ref()
+            .is_some_and(|kept| kept.buffer.unique_id() == buffer && kept.owed_release)
+    }
+
+    /// Marks the kept buffer's held attach as owed a release (D6 amendment 3).
+    fn mark_owed_release(&self, buffer: u64) {
+        if let Some(kept) = self.show_buffer.borrow_mut().as_mut()
+            && kept.buffer.unique_id() == buffer
+        {
+            kept.owed_release = true;
+        }
+    }
+
+    /// Clears the kept buffer's owed release: the app got its release.
+    fn clear_owed_release(&self, buffer: u64) {
+        if let Some(kept) = self.show_buffer.borrow_mut().as_mut()
+            && kept.buffer.unique_id() == buffer
+        {
+            kept.owed_release = false;
         }
     }
 
@@ -547,216 +620,9 @@ fn send_layer_state(routing: &Routing) {
     layer.send_set_exclusive_zone(-1);
 }
 
+// The path is explicit because `src/proxy.rs` includes this file with
+// `#[path]`, so a child module searches in `src/proxy/` rather than beside
+// this file (as in `src/daemon/events.rs`).
 #[cfg(test)]
-mod tests {
-    use std::rc::Rc;
-    use std::time::Duration;
-
-    use wl_proxy::baseline::Baseline;
-    use wl_proxy::object::ObjectCoreApi;
-    use wl_proxy::protocols::linux_drm_syncobj_v1::wp_linux_drm_syncobj_timeline_v1::WpLinuxDrmSyncobjTimelineV1;
-    use wl_proxy::protocols::wayland::wl_buffer::WlBuffer;
-    use wl_proxy::state::State;
-
-    use super::{Attach, Hidden};
-    use crate::config::PanelSettings;
-    use crate::daemon::events::{Bus, Event};
-    use crate::daemon::panel::{PanelReply, PanelRequest};
-    use crate::name::PanelName;
-    use crate::proxy::routing::Routing;
-
-    /// A display-free state: the test mints proxy objects without a
-    /// compositor (`port-to-rust` D10).
-    fn state() -> Rc<State> {
-        State::builder(Baseline::V6)
-            .without_server()
-            .build()
-            .expect("a client-side state needs no compositor")
-    }
-
-    /// One `wl_buffer` object the app could attach.
-    fn buffer(state: &Rc<State>) -> Rc<WlBuffer> {
-        state.create_object::<WlBuffer>(1)
-    }
-
-    /// One imported timeline, which a held point names.
-    fn timeline(state: &Rc<State>) -> Rc<WpLinuxDrmSyncobjTimelineV1> {
-        state.create_object::<WpLinuxDrmSyncobjTimelineV1>(1)
-    }
-
-    /// The panel's routing with the built-in settings.
-    fn routing() -> Rc<Routing> {
-        Routing::new(PanelSettings::built_in())
-    }
-
-    /// A panel name the events name.
-    fn notes() -> PanelName {
-        PanelName::parse("notes").expect("a panel name")
-    }
-
-    /// A toggle hides a shown panel and shows a hidden one, each real change
-    /// publishing one event (spec "Hide", "Show a hidden panel").
-    #[test]
-    fn a_toggle_hides_then_shows_with_one_event_each() {
-        let bus = Bus::new();
-        let events = bus.subscribe();
-        let routing = routing();
-        let panel = notes();
-        assert_eq!(
-            super::answer(&routing, &PanelRequest::Toggle, &panel, &bus),
-            Some(PanelReply::Done)
-        );
-        assert!(routing.hidden.is_hidden());
-        assert_eq!(
-            events.next(Duration::from_millis(100)),
-            Ok(Event::Hidden {
-                panel: panel.clone()
-            })
-        );
-        assert_eq!(
-            super::answer(&routing, &PanelRequest::Toggle, &panel, &bus),
-            Some(PanelReply::Done)
-        );
-        assert!(!routing.hidden.is_hidden());
-        assert_eq!(
-            events.next(Duration::from_millis(100)),
-            Ok(Event::Shown {
-                panel: panel.clone()
-            })
-        );
-        assert_eq!(
-            events.next(Duration::from_millis(50)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-        );
-    }
-
-    /// Showing a shown panel and hiding a hidden one change nothing and
-    /// publish nothing (spec "Show a shown panel").
-    #[test]
-    fn showing_a_shown_panel_and_hiding_a_hidden_one_are_no_ops() {
-        let bus = Bus::new();
-        let events = bus.subscribe();
-        let routing = routing();
-        let panel = notes();
-        assert_eq!(
-            super::answer(&routing, &PanelRequest::Show, &panel, &bus),
-            Some(PanelReply::Done)
-        );
-        assert_eq!(
-            events.next(Duration::from_millis(50)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-        );
-        assert_eq!(
-            super::answer(&routing, &PanelRequest::Hide, &panel, &bus),
-            Some(PanelReply::Done)
-        );
-        assert_eq!(
-            events.next(Duration::from_millis(100)),
-            Ok(Event::Hidden {
-                panel: panel.clone()
-            })
-        );
-        assert_eq!(
-            super::answer(&routing, &PanelRequest::Hide, &panel, &bus),
-            Some(PanelReply::Done)
-        );
-        assert_eq!(
-            events.next(Duration::from_millis(50)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-        );
-    }
-
-    /// A visible commit forwards its attach and becomes the buffer the next
-    /// show attaches; showing is a forward, not a drop (D6 amendments 2, 3).
-    #[test]
-    fn a_visible_buffer_becomes_the_one_show_attaches() {
-        let state = state();
-        let hidden = Hidden::new(false);
-        let first = buffer(&state);
-        assert_eq!(hidden.on_app_attach(Some(&first)), Attach::Forward);
-        let plan = hidden.commit_plan();
-        assert!(plan.release.is_empty(), "a visible attach is not released");
-        let (kept, _points) = hidden
-            .show_buffer()
-            .expect("a visible commit keeps its buffer");
-        assert_eq!(kept.unique_id(), first.unique_id());
-    }
-
-    /// While hidden the first buffer is kept for show and each later one is
-    /// dropped and released after the commit (D6, "Hide releases the
-    /// reservation").
-    #[test]
-    fn a_hidden_panel_keeps_the_first_buffer_and_releases_the_next() {
-        let state = state();
-        let hidden = Hidden::new(true);
-        let first = buffer(&state);
-        assert_eq!(hidden.on_app_attach(Some(&first)), Attach::Hold);
-        let plan = hidden.commit_plan();
-        assert!(plan.release.is_empty(), "the kept buffer is not released");
-        let (kept, _points) = hidden.show_buffer().expect("the first buffer is kept");
-        assert_eq!(kept.unique_id(), first.unique_id());
-
-        let second = buffer(&state);
-        assert_eq!(hidden.on_app_attach(Some(&second)), Attach::Drop);
-        let plan = hidden.commit_plan();
-        assert_eq!(plan.release.len(), 1, "the dropped attach owes one release");
-        assert_eq!(plan.release[0].unique_id(), second.unique_id());
-        let (kept, _points) = hidden.show_buffer().expect("the kept buffer stays");
-        assert_eq!(kept.unique_id(), first.unique_id());
-    }
-
-    /// Reattaching the kept buffer while hidden neither drops nor releases
-    /// it: the proxy holds it for show (D6 amendment 2).
-    #[test]
-    fn a_hidden_reattach_of_the_kept_buffer_is_held() {
-        let state = state();
-        let hidden = Hidden::new(true);
-        let first = buffer(&state);
-        assert_eq!(hidden.on_app_attach(Some(&first)), Attach::Hold);
-        let _ = hidden.commit_plan();
-        assert_eq!(hidden.on_app_attach(Some(&first)), Attach::Hold);
-        let plan = hidden.commit_plan();
-        assert!(plan.release.is_empty());
-    }
-
-    /// The app gets exactly one release per proxy-made attach, and the next
-    /// release goes through again (D6 amendment 3).
-    #[test]
-    fn a_proxy_attach_owns_one_swallowed_release() {
-        let state = state();
-        let hidden = Hidden::new(false);
-        let buffer = buffer(&state);
-        hidden.on_proxy_attach(&buffer);
-        assert!(hidden.swallow_release(buffer.unique_id()));
-        assert!(
-            !hidden.swallow_release(buffer.unique_id()),
-            "the second release belongs to the app"
-        );
-    }
-
-    /// Holding points across a hidden commit keeps them for the next
-    /// buffer-carrying commit; a visible buffer commit emits them (D6). A
-    /// hidden commit carries no buffer because the proxy dropped the attach.
-    #[test]
-    fn held_points_wait_for_a_buffer_carrying_commit() {
-        let state = state();
-        let hidden = Hidden::new(true);
-        let timeline = timeline(&state);
-        hidden.remember_acquire(&timeline, 0, 1);
-        hidden.remember_release(&timeline, 0, 2);
-        let plan = hidden.commit_plan();
-        assert!(
-            plan.points.is_none(),
-            "a commit without a buffer emits no points"
-        );
-
-        let buffer = buffer(&state);
-        hidden.set_hidden(false);
-        assert_eq!(hidden.on_app_attach(Some(&buffer)), Attach::Forward);
-        let plan = hidden.commit_plan();
-        let points = plan.points.expect("a buffer-carrying commit emits points");
-        assert!(!points.is_empty());
-        let (_kept, kept_points) = hidden.show_buffer().expect("the buffer is kept");
-        assert!(!kept_points.is_empty(), "the kept buffer keeps its points");
-    }
-}
+#[path = "hide/tests.rs"]
+mod tests;

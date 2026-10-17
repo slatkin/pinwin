@@ -272,7 +272,8 @@ and several modules wait for the rows that wire them in (D15).
   change. `src/proxy.rs` dispatches `toggle`, `show` and `hide` to it,
   `src/proxy/commit.rs` reads the state on every app attach and commit, and
   `src/proxy/reserve.rs` carries the released zone a hide applies. Its state
-  machine is display-free, so its six tests run without a compositor.
+  machine is display-free, so its twelve tests run without a compositor
+  (`src/proxy/hide/tests.rs`).
 - `src/proxy/syncobj.rs` — explicit synchronization for the panel surface
   (row 8.2, D6): the handler on the app's
   `wp_linux_drm_syncobj_manager_v1` bind and on each syncobj surface it
