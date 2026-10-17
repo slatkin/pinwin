@@ -33,7 +33,7 @@ below). Its code does not enter pinwin; only the findings do.
   menu; the user did not report a menu test for galculator), and the second-window check
   ran only with paw, a terminal, not with a GUI app. The user did not report these two
   checks.
-- [ ] 1.2 Add hide and show by unmap with a null buffer, with commits stripped of `attach` and
+- [x] 1.2 Add hide and show by unmap with a null buffer, with commits stripped of `attach` and
   fake `wl_buffer.release` while hidden (D6). The user toggles 20 times with the app drawing,
   and checks: no protocol error, no wrong-size frame, the app redraws on show. Record the
   answer here.
