@@ -58,7 +58,7 @@ impl PanelBuffers {
     /// Records the pixel size of a buffer the app just created (D8). A size
     /// the protocol does not allow is not a buffer, so it is not recorded:
     /// the composition then draws the whole buffer.
-    fn record(&self, buffer: &Rc<WlBuffer>, width: i32, height: i32) {
+    pub(super) fn record(&self, buffer: &Rc<WlBuffer>, width: i32, height: i32) {
         let (Ok(width), Ok(height)) = (u32::try_from(width), u32::try_from(height)) else {
             return;
         };
@@ -71,8 +71,10 @@ impl PanelBuffers {
     }
 
     /// Forgets a buffer the app destroyed, so a long-lived app's buffer churn
-    /// does not grow the map.
-    fn forget(&self, buffer: u64) {
+    /// does not grow the map. A buffer the panel surface attached calls this
+    /// through the release handler too: that attach replaces the tracked
+    /// handler (D6 amendment 3), and its entry must still leave (D8).
+    pub(super) fn forget(&self, buffer: u64) {
         self.sizes.borrow_mut().remove(&buffer);
     }
 
@@ -276,8 +278,9 @@ impl ClientDmabufParams {
 }
 
 /// One app `wl_buffer` the proxy knows the size of (D8): its destroy frees
-/// the entry. The panel surface's own buffers take the commit
-/// coordinator's release handler instead, and keep their entry.
+/// the entry. A buffer the panel surface attaches takes the release handler
+/// instead ([`super::hide::BufferRelease`]), which frees the entry the same
+/// way.
 struct TrackedBuffer {
     /// The buffer this handler answers, kept weak so the handler does not
     /// keep its own object alive.
@@ -291,8 +294,15 @@ impl WlBufferHandler for TrackedBuffer {
             return;
         };
         self.globals.viewport().buffers().forget(buffer.unique_id());
-        ForwardBuffer.handle_destroy(&buffer);
+        forward_destroy(&buffer);
     }
+}
+
+/// Forwards a `wl_buffer.destroy` exactly as the generated default handler
+/// does (D8): every proxy buffer handler forwards it after its own
+/// bookkeeping.
+pub(super) fn forward_destroy(buffer: &Rc<WlBuffer>) {
+    ForwardBuffer.handle_destroy(buffer);
 }
 
 /// The `wl_buffer` requests without the size bookkeeping: what the proxy

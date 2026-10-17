@@ -34,7 +34,6 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::rc::{Rc, Weak};
 
-use wl_proxy::object::ObjectCoreApi;
 use wl_proxy::protocols::wayland::wl_buffer::WlBuffer;
 use wl_proxy::protocols::wayland::wl_output::WlOutput;
 use wl_proxy::protocols::wayland::wl_surface::{WlSurface, WlSurfaceHandler};
@@ -240,13 +239,6 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
         let Some(surface) = self.surface() else {
             return;
         };
-        // D8: the crop is clamped to the buffer the app attaches, and its
-        // size is known from the request that created it.
-        self.routing
-            .globals()
-            .viewport()
-            .buffers()
-            .set_panel_buffer(buffer.map(|buffer| buffer.unique_id()));
         // D6: a hidden panel forwards no attach and returns every buffer it
         // removed to the app, so the app does not run out of buffers.
         let decision = self.routing.hidden.on_app_attach(buffer);
@@ -306,6 +298,15 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
         };
         self.coordinator.on_app_commit(|| {
             let plan = self.routing.hidden.commit_plan();
+            // D8: the crop is clamped to the buffer the compositor holds
+            // after this commit, whose size the proxy knows from the request
+            // that created it. While hidden that is the buffer show attaches,
+            // not the app's attach, which never reaches the compositor (D6).
+            self.routing
+                .globals()
+                .viewport()
+                .buffers()
+                .set_panel_buffer(self.routing.hidden.compositor_buffer());
             if let Some(points) = plan.points {
                 self.routing.hidden.emit_points(&points);
             }
@@ -339,15 +340,21 @@ mod tests {
     use std::rc::Rc;
 
     use wl_proxy::baseline::Baseline;
+    use wl_proxy::object::{ObjectCoreApi, ObjectUtils};
+    use wl_proxy::protocols::wayland::wl_buffer::{WlBuffer, WlBufferHandler};
     use wl_proxy::protocols::wayland::wl_surface::{WlSurface, WlSurfaceHandler};
     use wl_proxy::state::State;
 
     use super::{Change, CommitCoordinator, PanelSurfaceCommits};
     use crate::config::PanelSettings;
+    use crate::proxy::hide::BufferRelease;
     use crate::proxy::routing::Routing;
 
     /// The `wl_surface` version a test mints its object with.
     const SURFACE_VERSION: u32 = 6;
+
+    /// The `wl_buffer` version a test mints its object with.
+    const BUFFER_VERSION: u32 = 1;
 
     /// The order in which changes and commits happen (D7).
     fn recorder() -> Rc<RefCell<Vec<&'static str>>> {
@@ -367,10 +374,11 @@ mod tests {
         move || log.borrow_mut().push("commit")
     }
 
-    /// The commits handler on a minted `wl_surface` and that surface: the
-    /// state has no server, so nothing is sent anywhere and no compositor is
-    /// needed (`port-to-rust` D10).
-    fn commits() -> (Rc<WlSurface>, PanelSurfaceCommits) {
+    /// The commits handler on a minted `wl_surface` and that surface, from a
+    /// state the test can mint more objects in: the state has no server, so
+    /// nothing is sent anywhere and no compositor is needed
+    /// (`port-to-rust` D10).
+    fn commits() -> (Rc<State>, Rc<WlSurface>, PanelSurfaceCommits) {
         let state = State::builder(Baseline::V6)
             .without_server()
             .build()
@@ -378,7 +386,7 @@ mod tests {
         let surface = state.create_object::<WlSurface>(SURFACE_VERSION);
         let routing = Routing::new(PanelSettings::built_in());
         let handler = PanelSurfaceCommits::new(&routing, &surface);
-        (surface, handler)
+        (state, surface, handler)
     }
 
     /// A clean surface injects: the change applies at once and the proxy
@@ -455,7 +463,7 @@ mod tests {
             }),
         ];
         for (name, request) in requests {
-            let (surface, mut handler) = commits();
+            let (_state, surface, mut handler) = commits();
             assert!(!handler.coordinator.is_dirty(), "a fresh surface is clean");
             request(&mut handler, &surface);
             assert!(
@@ -463,5 +471,64 @@ mod tests {
                 "wl_surface.{name} leaves pending state"
             );
         }
+    }
+
+    /// A buffer the panel surface attached still frees its size entry when
+    /// the app destroys it (D8, D6 amendment 3): the attach swaps in the
+    /// release handler, and a handler that dropped the destroy bookkeeping
+    /// would keep an entry for every buffer the app ever drew into the panel.
+    #[test]
+    fn a_panel_buffer_leaves_the_size_map_when_it_is_destroyed() {
+        let (state, surface, mut handler) = commits();
+        let buffer = state.create_object::<WlBuffer>(BUFFER_VERSION);
+        let globals = handler.routing.globals();
+        let buffers = globals.viewport().buffers();
+        buffers.record(&buffer, 640, 480);
+        buffers.set_panel_buffer(Some(buffer.unique_id()));
+
+        handler.handle_attach(&surface, Some(&buffer), 0, 0);
+        assert_eq!(buffers.panel_size(), Some((640, 480)));
+
+        let mut release = buffer
+            .try_get_handler_mut::<BufferRelease>()
+            .expect("the panel attach installs the release handler");
+        WlBufferHandler::handle_destroy(&mut *release, &buffer);
+        assert_eq!(
+            buffers.panel_size(),
+            None,
+            "a destroyed panel buffer leaves the size map"
+        );
+    }
+
+    /// While hidden the crop is bounded by the buffer show attaches, not the
+    /// one the app attached and the proxy dropped (D6, D8): the compositor
+    /// never received that attach, and a source past the buffer it holds is
+    /// the fatal `out_of_buffer`.
+    #[test]
+    fn a_hidden_commit_bounds_the_crop_by_the_kept_buffer() {
+        let (state, surface, mut handler) = commits();
+        handler.routing.hidden.set_hidden(true);
+        let globals = handler.routing.globals();
+        let buffers = globals.viewport().buffers();
+        let kept = state.create_object::<WlBuffer>(BUFFER_VERSION);
+        let dropped = state.create_object::<WlBuffer>(BUFFER_VERSION);
+        buffers.record(&kept, 640, 480);
+        buffers.record(&dropped, 800, 600);
+
+        handler.handle_attach(&surface, Some(&kept), 0, 0);
+        handler.handle_commit(&surface);
+        assert_eq!(
+            buffers.panel_size(),
+            Some((640, 480)),
+            "the buffer show attaches bounds the crop"
+        );
+
+        handler.handle_attach(&surface, Some(&dropped), 0, 0);
+        handler.handle_commit(&surface);
+        assert_eq!(
+            buffers.panel_size(),
+            Some((640, 480)),
+            "a dropped hidden attach never reaches the compositor"
+        );
     }
 }

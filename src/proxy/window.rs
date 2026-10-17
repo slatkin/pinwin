@@ -12,11 +12,19 @@
 use std::rc::{Rc, Weak};
 
 use wl_proxy::client::Client;
-use wl_proxy::object::Object;
+use wl_proxy::object::{Object, ObjectUtils};
 use wl_proxy::protocols::xdg_shell::xdg_toplevel::{XdgToplevel, XdgToplevelHandler};
 
 use super::ring;
 use super::routing::Routing;
+
+/// Whether `toplevel` is the panel's window (D5): only the slot's toplevel
+/// carries a handler, a passed-through window uses the default forward path,
+/// and a toplevel whose panel window ended has its handler unset. This is
+/// what routes a decoration object at the time of each request.
+pub(super) fn is_panel_window(toplevel: &XdgToplevel) -> bool {
+    toplevel.try_get_handler_ref::<ClientXdgToplevel>().is_ok()
+}
 
 /// The panel's local `xdg_toplevel` handler (D4): the app destroying the
 /// panel window destroys the layer surface, empties the slot and releases

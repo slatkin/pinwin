@@ -45,6 +45,7 @@ use wl_proxy::protocols::wayland::wl_surface::WlSurface;
 
 use super::buffers::PanelBuffers;
 use super::compose::{AppViewport, Compose, Composition, Fraction, UNSET_FIXED, compose};
+use super::output::Globals;
 use super::routing::Routing;
 
 /// The viewport values the proxy puts on the panel surface (D5, D8): the
@@ -298,8 +299,9 @@ impl ViewportState {
     /// The viewports still waiting for the panel surface, with the values
     /// they already set (D8).
     fn deferred(&self) -> Vec<(u64, Rc<WpViewport>, Rc<WlSurface>, AppViewport)> {
-        let app = self.app.borrow();
-        let mut waiting: Vec<u64> = app
+        let mut waiting: Vec<u64> = self
+            .app
+            .borrow()
             .iter()
             .filter(|(_, entry)| entry.kept == Kept::Deferred)
             .map(|(surface_id, _)| *surface_id)
@@ -308,15 +310,28 @@ impl ViewportState {
         waiting
             .into_iter()
             .filter_map(|surface_id| {
-                let entry = app.get(&surface_id)?;
-                Some((
-                    surface_id,
-                    entry.viewport.upgrade()?,
-                    entry.surface.upgrade()?,
-                    entry.values,
-                ))
+                let (viewport, surface, values) = self.deferred_entry(surface_id)?;
+                Some((surface_id, viewport, surface, values))
             })
             .collect()
+    }
+
+    /// One viewport still waiting for the panel surface, with the values it
+    /// already set (D8).
+    fn deferred_entry(
+        &self,
+        surface_id: u64,
+    ) -> Option<(Rc<WpViewport>, Rc<WlSurface>, AppViewport)> {
+        let app = self.app.borrow();
+        let entry = app.get(&surface_id)?;
+        if entry.kept != Kept::Deferred {
+            return None;
+        }
+        Some((
+            entry.viewport.upgrade()?,
+            entry.surface.upgrade()?,
+            entry.values,
+        ))
     }
 
     /// Records that the surface's viewport is the proxy's to compose (D8).
@@ -376,11 +391,53 @@ fn settle_app_viewports(routing: &Routing) {
         let Some(viewporter) = globals.viewporter() else {
             continue;
         };
-        viewporter.send_get_viewport(&viewport, &surface);
-        globals.add_app_viewport(surface_id);
-        globals.viewport().mirror(surface_id);
-        write_app_values(&viewport, values);
+        mirror_deferred(
+            &globals,
+            &viewporter,
+            surface_id,
+            &viewport,
+            &surface,
+            values,
+        );
     }
+}
+
+/// Settles the deferred app viewport of a surface that was forwarded instead
+/// of docked (D8): a passed-through window is not the panel's, so the
+/// viewport it created before the window mapping is mirrored now, rather
+/// than waiting for a slot the app may never take.
+pub(super) fn settle_forwarded(routing: &Routing, surface_id: u64) {
+    let globals = routing.globals();
+    let Some(viewporter) = globals.viewporter() else {
+        return;
+    };
+    let Some((viewport, surface, values)) = globals.viewport().deferred_entry(surface_id) else {
+        return;
+    };
+    mirror_deferred(
+        &globals,
+        &viewporter,
+        surface_id,
+        &viewport,
+        &surface,
+        values,
+    );
+}
+
+/// Mirrors one waiting app viewport upstream (D8): the viewport object the
+/// app created on its own surface, with the values it already set.
+fn mirror_deferred(
+    globals: &Rc<Globals>,
+    viewporter: &Rc<WpViewporter>,
+    surface_id: u64,
+    viewport: &Rc<WpViewport>,
+    surface: &Rc<WlSurface>,
+    values: AppViewport,
+) {
+    viewporter.send_get_viewport(viewport, surface);
+    globals.add_app_viewport(surface_id);
+    globals.viewport().mirror(surface_id);
+    write_app_values(viewport, values);
 }
 
 /// Mirrors the app's own values onto its upstream viewport (D8).
@@ -632,3 +689,74 @@ fn unset_source(viewport: &WpViewport) {
 // The panel surface the crop writes through is reached through
 // [`super::routing::Routing`]; the values it carries are composed in
 // [`super::compose`] and bounded by [`super::buffers`].
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use wl_proxy::baseline::Baseline;
+    use wl_proxy::object::ObjectCoreApi;
+    use wl_proxy::protocols::viewporter::wp_viewport::WpViewport;
+    use wl_proxy::protocols::viewporter::wp_viewporter::{WpViewporter, WpViewporterHandler};
+    use wl_proxy::protocols::wayland::wl_surface::WlSurface;
+    use wl_proxy::state::State;
+
+    use super::{AppViewport, ClientWpViewporter, Kept, mirror_deferred};
+    use crate::config::PanelSettings;
+    use crate::proxy::routing::Routing;
+
+    /// A display-free state: the test mints proxy objects without a
+    /// compositor (`port-to-rust` D10).
+    fn state() -> Rc<State> {
+        State::builder(Baseline::V6)
+            .without_server()
+            .build()
+            .expect("a client-side state needs no compositor")
+    }
+
+    /// A viewport the app created before its window was mapped is settled
+    /// when the surface passes through instead of docking (D8): it would
+    /// otherwise wait for a panel slot the window can never take, and a
+    /// fractional-scale app would draw at the wrong size.
+    #[test]
+    fn a_forwarded_surfaces_waiting_viewport_is_mirrored() {
+        let state = state();
+        let routing = Routing::new(PanelSettings::built_in());
+        let viewporter = state.create_object::<WpViewporter>(1);
+        let viewport = state.create_object::<WpViewport>(1);
+        let surface = state.create_object::<WlSurface>(6);
+        let surface_id = surface.unique_id();
+
+        let mut app_viewporter = ClientWpViewporter::new(&viewporter, &routing);
+        WpViewporterHandler::handle_get_viewport(
+            &mut app_viewporter,
+            &viewporter,
+            &viewport,
+            &surface,
+        );
+        assert_eq!(
+            routing.globals().viewport().kept(surface_id),
+            Some(Kept::Deferred),
+            "a viewport made before the window mapping waits"
+        );
+
+        let globals = routing.globals();
+        mirror_deferred(
+            &globals,
+            &viewporter,
+            surface_id,
+            &viewport,
+            &surface,
+            AppViewport::none(),
+        );
+        assert_eq!(
+            routing.globals().viewport().kept(surface_id),
+            Some(Kept::Mirrored),
+            "a forwarded surface's viewport is no longer the panel's"
+        );
+        assert!(
+            routing.globals().has_app_viewport(surface_id),
+            "the proxy's own viewport keeps off that surface (D8)"
+        );
+    }
+}

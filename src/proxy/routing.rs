@@ -67,18 +67,10 @@ use super::output::{Globals, placeholder_output};
 use super::popup::{ClientXdgPopup, ClientXdgPositioner, offset_anchor_rect};
 use super::reserve::Reserve;
 use super::slot::{Route, Slot};
-use super::viewport::{StaticCrop, apply_steady_crop, write_crop};
+use super::viewport::{StaticCrop, apply_steady_crop, settle_forwarded, write_crop};
 use super::window::ClientXdgToplevel;
 use crate::config::PanelSettings;
 use crate::geometry::{Geometry, HeldGap, OutputSize, Size};
-
-/// Whether `toplevel` is the panel's window (D5): only the slot's toplevel
-/// carries a handler, a passed-through window uses the default forward path,
-/// and a toplevel whose panel window ended has its handler unset. This is
-/// what routes a decoration object at the time of each request.
-pub(super) fn is_panel_window(toplevel: &XdgToplevel) -> bool {
-    toplevel.try_get_handler_ref::<ClientXdgToplevel>().is_ok()
-}
 
 /// The routing state one panel shares between all its app connections (D4):
 /// the slot, the settings the panel's layer surface is built from, the
@@ -603,12 +595,15 @@ impl ClientXdgSurface {
     }
 
     /// Forwards this surface and its new toplevel to the compositor unchanged
-    /// (D4: `get_toplevel` while the slot is full).
+    /// (D4: `get_toplevel` while the slot is full). This surface can no
+    /// longer be the panel's, so an app viewport it created before the
+    /// window mapping settles now instead of waiting for the slot (D8).
     fn forward(&mut self, id: &Rc<XdgToplevel>) {
         self.xdg_wm_base
             .send_get_xdg_surface(&self.xdg_surface, &self.wl_surface);
         self.has_server = true;
         self.xdg_surface.send_get_toplevel(id);
+        settle_forwarded(&self.routing, self.wl_surface.unique_id());
     }
 
     /// Turns this surface into the panel's layer surface (D4: `get_toplevel`

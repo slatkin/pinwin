@@ -32,7 +32,7 @@ use wl_proxy::protocols::xdg_decoration_unstable_v1::zxdg_toplevel_decoration_v1
 use wl_proxy::protocols::xdg_shell::xdg_toplevel::XdgToplevel;
 
 use super::routing::Routing;
-use super::routing::is_panel_window;
+use super::window::is_panel_window;
 
 /// What a decoration object becomes (D5): answered by the proxy with
 /// server-side mode, forwarded to the compositor's manager, or answered by

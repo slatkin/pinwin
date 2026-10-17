@@ -318,6 +318,41 @@ fn a_show_before_the_commit_emits_no_points_for_a_dropped_attach() {
     assert_eq!(buffer.unique_id(), kept.unique_id());
 }
 
+/// The buffer a crop must stay inside is the one the compositor has after
+/// the commit (D6, D8): while hidden the app's attach never reaches it, so
+/// the kept buffer — the one show attaches — bounds the crop, not the
+/// buffer the proxy just dropped.
+#[test]
+fn a_hidden_commit_names_the_kept_buffer_as_the_compositors_own() {
+    let state = state();
+    let hidden = Hidden::new(true);
+    assert_eq!(hidden.compositor_buffer(), None, "nothing is kept yet");
+
+    let first = buffer(&state);
+    assert_eq!(hidden.on_app_attach(Some(&first)), Attach::Hold);
+    let _ = hidden.commit_plan();
+    assert_eq!(hidden.compositor_buffer(), Some(first.unique_id()));
+
+    let dropped = buffer(&state);
+    assert_eq!(hidden.on_app_attach(Some(&dropped)), Attach::Drop);
+    let _ = hidden.commit_plan();
+    assert_eq!(
+        hidden.compositor_buffer(),
+        Some(first.unique_id()),
+        "a dropped hidden attach never reaches the compositor"
+    );
+
+    let forwarded = buffer(&state);
+    hidden.set_hidden(false);
+    assert_eq!(hidden.on_app_attach(Some(&forwarded)), Attach::Forward);
+    let _ = hidden.commit_plan();
+    assert_eq!(
+        hidden.compositor_buffer(),
+        Some(forwarded.unique_id()),
+        "a shown commit forwards the buffer it attached"
+    );
+}
+
 /// A show that lands before the app commits a held hidden attach keeps
 /// its points with the kept buffer, which waits for the configure ack
 /// (D6 amendment 2).

@@ -50,6 +50,7 @@ use wl_proxy::protocols::linux_drm_syncobj_v1::wp_linux_drm_syncobj_timeline_v1:
 use wl_proxy::protocols::wayland::wl_buffer::{WlBuffer, WlBufferHandler};
 use wl_proxy::protocols::wayland::wl_surface::WlSurface;
 
+use super::buffers::forward_destroy;
 use super::commit::PanelSurfaceCommits;
 use super::mapping::{anchor_of, keyboard_of};
 use super::ring;
@@ -232,6 +233,16 @@ impl Hidden {
             .borrow()
             .as_ref()
             .map(|kept| kept.buffer.unique_id())
+    }
+
+    /// The buffer any crop of the panel surface must stay inside after this
+    /// commit (D6, D8): the kept buffer. While hidden the compositor never
+    /// receives the app's attaches, so the buffer it sees at the next show is
+    /// the kept one; while shown the kept buffer is the last forwarded
+    /// attach. A commit's crop is composed against it, because a source past
+    /// the buffer the compositor holds is the fatal `out_of_buffer`.
+    pub(super) fn compositor_buffer(&self) -> Option<u64> {
+        self.kept_id()
     }
 
     /// The plan of one commit (D6): the points a buffer-carrying commit
@@ -446,7 +457,9 @@ impl fmt::Debug for Hidden {
 
 /// The panel surface buffer handler (D6 amendment 3): a compositor release
 /// for a buffer the proxy attached itself is swallowed; every other release
-/// reaches the app as the default handler forwards it.
+/// reaches the app as the default handler forwards it. The handler also
+/// frees the buffer's size entry when the app destroys it (D8): the attach
+/// it replaced is the one that recorded the size.
 pub(super) struct BufferRelease {
     routing: Weak<Routing>,
     /// The buffer this handler was installed on, kept weak so the handler
@@ -476,6 +489,24 @@ impl WlBufferHandler for BufferRelease {
         if !swallow {
             buffer.send_release();
         }
+    }
+
+    fn handle_destroy(&mut self, _slf: &Rc<WlBuffer>) {
+        let Some(buffer) = self.buffer.upgrade() else {
+            return;
+        };
+        // D8: the panel's attach replaced the tracked handler, so the size
+        // entry must leave here. Without this, every buffer the panel ever
+        // attached — including each one the app draws with while hidden —
+        // would keep its entry for the life of the daemon.
+        if let Some(routing) = self.routing.upgrade() {
+            routing
+                .globals()
+                .viewport()
+                .buffers()
+                .forget(buffer.unique_id());
+        }
+        forward_destroy(&buffer);
     }
 }
 
