@@ -235,7 +235,7 @@ below). Its code does not enter pinwin; only the findings do.
 
 ## 10. Size animation
 
-- [ ] 10.1 Add the tween (D8): grow waits for the app's buffer (500 ms bound), shrink crops the
+- [x] 10.1 Add the tween (D8): grow waits for the app's buffer (500 ms bound), shrink crops the
   old buffer, intermediate configures acked by the proxy, viewport composed with the app's
   own. Verify: unit tests for the viewport composition and the "one size per tween" rule;
   live, the user confirms "Animate on request", "Covering expand holds tiles still", "One new
