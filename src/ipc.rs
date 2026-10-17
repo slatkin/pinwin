@@ -227,68 +227,139 @@ impl Request {
     /// Turn the checked-shape line into the typed request: the panel name
     /// and every setting value are parsed with the config file's grammar.
     fn from_raw(raw: RawRequest) -> Result<Self, RequestError> {
-        Ok(match raw {
-            RawRequest::Toggle { panel } => Self::Toggle {
-                panel: panel_name(&panel)?,
-            },
-            RawRequest::Show { panel } => Self::Show {
-                panel: panel_name(&panel)?,
-            },
-            RawRequest::Hide { panel } => Self::Hide {
-                panel: panel_name(&panel)?,
-            },
-            RawRequest::Focus { panel } => Self::Focus {
-                panel: panel_name(&panel)?,
-            },
-            RawRequest::SetEdge { panel, edge } => Self::SetEdge {
-                panel: panel_name(&panel)?,
-                edge: setting("edge", &edge)?,
-            },
-            RawRequest::SetSize { panel, size, ms } => Self::SetSize {
-                panel: panel_name(&panel)?,
-                size: wire_size(size)?,
-                ms: millis(ms)?,
-            },
-            RawRequest::Resize { panel, by, ms } => Self::Resize {
-                panel: panel_name(&panel)?,
-                by: amount(by)?,
-                ms: millis(ms)?,
-            },
-            RawRequest::SetOutput { panel, output } => Self::SetOutput {
-                panel: panel_name(&panel)?,
-                output,
-            },
-            RawRequest::SetLayer { panel, layer } => Self::SetLayer {
-                panel: panel_name(&panel)?,
-                layer: setting("layer", &layer)?,
-            },
-            RawRequest::SetReserve { panel, reserve } => Self::SetReserve {
-                panel: panel_name(&panel)?,
-                reserve: setting("reserve", &reserve)?,
-            },
-            RawRequest::SetKeyboard { panel, keyboard } => Self::SetKeyboard {
-                panel: panel_name(&panel)?,
-                keyboard: setting("keyboard", &keyboard)?,
-            },
-            RawRequest::Status { panel } => Self::Status {
-                panel: panel.as_deref().map(panel_name).transpose()?,
-            },
+        match raw {
+            RawRequest::Toggle { panel } => toggle_request(&panel),
+            RawRequest::Show { panel } => show_request(&panel),
+            RawRequest::Hide { panel } => hide_request(&panel),
+            RawRequest::Focus { panel } => focus_request(&panel),
+            RawRequest::SetEdge { panel, edge } => set_edge_request(&panel, &edge),
+            RawRequest::SetSize { panel, size, ms } => size_request(&panel, size, ms),
+            RawRequest::Resize { panel, by, ms } => resize_request(&panel, by, ms),
+            RawRequest::SetOutput { panel, output } => output_request(&panel, output),
+            RawRequest::SetLayer { panel, layer } => set_layer_request(&panel, &layer),
+            RawRequest::SetReserve { panel, reserve } => set_reserve_request(&panel, &reserve),
+            RawRequest::SetKeyboard { panel, keyboard } => set_keyboard_request(&panel, &keyboard),
+            RawRequest::Status { panel } => status_request(panel.as_deref()),
             RawRequest::Create {
                 panel,
                 pid,
                 app,
                 options,
-            } => Self::Create {
-                panel: panel_name(&panel)?,
-                pid,
-                app,
-                options: options::parse(options)?,
-            },
-            RawRequest::Subscribe => Self::Subscribe,
-            RawRequest::Quit => Self::Quit,
-            RawRequest::Reload => Self::Reload,
-        })
+            } => create_request(&panel, pid, app, options),
+            RawRequest::Subscribe => Ok(Self::Subscribe),
+            RawRequest::Quit => Ok(Self::Quit),
+            RawRequest::Reload => Ok(Self::Reload),
+        }
     }
+}
+
+/// The `toggle` request.
+fn toggle_request(panel: &str) -> Result<Request, RequestError> {
+    Ok(Request::Toggle {
+        panel: panel_name(panel)?,
+    })
+}
+
+/// The `show` request.
+fn show_request(panel: &str) -> Result<Request, RequestError> {
+    Ok(Request::Show {
+        panel: panel_name(panel)?,
+    })
+}
+
+/// The `hide` request.
+fn hide_request(panel: &str) -> Result<Request, RequestError> {
+    Ok(Request::Hide {
+        panel: panel_name(panel)?,
+    })
+}
+
+/// The `focus` request.
+fn focus_request(panel: &str) -> Result<Request, RequestError> {
+    Ok(Request::Focus {
+        panel: panel_name(panel)?,
+    })
+}
+
+/// The `set-edge` request.
+fn set_edge_request(panel: &str, edge: &str) -> Result<Request, RequestError> {
+    Ok(Request::SetEdge {
+        panel: panel_name(panel)?,
+        edge: setting("edge", edge)?,
+    })
+}
+
+/// The `set-layer` request.
+fn set_layer_request(panel: &str, layer: &str) -> Result<Request, RequestError> {
+    Ok(Request::SetLayer {
+        panel: panel_name(panel)?,
+        layer: setting("layer", layer)?,
+    })
+}
+
+/// The `set-reserve` request.
+fn set_reserve_request(panel: &str, reserve: &str) -> Result<Request, RequestError> {
+    Ok(Request::SetReserve {
+        panel: panel_name(panel)?,
+        reserve: setting("reserve", reserve)?,
+    })
+}
+
+/// The `set-keyboard` request.
+fn set_keyboard_request(panel: &str, keyboard: &str) -> Result<Request, RequestError> {
+    Ok(Request::SetKeyboard {
+        panel: panel_name(panel)?,
+        keyboard: setting("keyboard", keyboard)?,
+    })
+}
+
+/// The `set-size` request: a wire size and the optional `ms`.
+fn size_request(panel: &str, size: RawSize, ms: Option<Number>) -> Result<Request, RequestError> {
+    Ok(Request::SetSize {
+        panel: panel_name(panel)?,
+        size: wire_size(size)?,
+        ms: millis(ms)?,
+    })
+}
+
+/// The `resize` request: a wire amount and the optional `ms`.
+fn resize_request(panel: &str, by: RawAmount, ms: Option<Number>) -> Result<Request, RequestError> {
+    Ok(Request::Resize {
+        panel: panel_name(panel)?,
+        by: amount(by)?,
+        ms: millis(ms)?,
+    })
+}
+
+/// The `set-output` request: the output name is free text.
+fn output_request(panel: &str, output: String) -> Result<Request, RequestError> {
+    Ok(Request::SetOutput {
+        panel: panel_name(panel)?,
+        output,
+    })
+}
+
+/// The `status` request: all panels or one named panel.
+fn status_request(panel: Option<&str>) -> Result<Request, RequestError> {
+    Ok(Request::Status {
+        panel: panel.map(panel_name).transpose()?,
+    })
+}
+
+/// The `create` request: the run options are parsed with the config file's
+/// grammar by `options`.
+fn create_request(
+    panel: &str,
+    pid: u32,
+    app: String,
+    options: options::WireOptions,
+) -> Result<Request, RequestError> {
+    Ok(Request::Create {
+        panel: panel_name(panel)?,
+        pid,
+        app,
+        options: options::parse(options)?,
+    })
 }
 
 impl From<ClientCommand> for Request {

@@ -260,56 +260,24 @@ pub fn parse_args(args: &[OsString]) -> Result<Command, UsageError> {
     }
 }
 
+/// One option of a `pinwin run` command line, with its value already
+/// resolved (spec "Run options").
+enum RunOption {
+    Name(PanelName),
+    Edge(Edge),
+    Size(Size),
+    Reserve(ReserveMode),
+    Layer(Layer),
+    Keyboard(Keyboard),
+    Output(String),
+    Hidden,
+    FocusRing(FocusRing),
+}
+
 /// Parse the `run` options and the command after the first non-option or
 /// `--` (spec "Run options").
 fn parse_run(args: &[OsString]) -> Result<Command, UsageError> {
-    let mut name = None;
-    let mut options = PanelOptions::default();
-    let mut index = 0;
-    let mut command = None;
-    while let Some(argument) = args.get(index) {
-        let bytes = argument.as_os_str().as_bytes();
-        if bytes == b"--" {
-            command = Some(args[index + 1..].to_vec());
-            break;
-        }
-        if !bytes.starts_with(b"--") {
-            command = Some(args[index..].to_vec());
-            break;
-        }
-        let option = text("option", argument)?;
-        match option {
-            "--name" => name = Some(panel("--name", next_value(args, &mut index, option)?)?),
-            "--edge" => {
-                options.edge = Some(setting(option, next_value(args, &mut index, option)?)?);
-            }
-            "--size" => {
-                options.size = Some(setting(option, next_value(args, &mut index, option)?)?);
-            }
-            "--reserve" => {
-                options.reserve = Some(setting(option, next_value(args, &mut index, option)?)?);
-            }
-            "--layer" => {
-                options.layer = Some(setting(option, next_value(args, &mut index, option)?)?);
-            }
-            "--keyboard" => {
-                options.keyboard = Some(setting(option, next_value(args, &mut index, option)?)?);
-            }
-            "--output" => {
-                let raw = next_value(args, &mut index, option)?;
-                options.output = Some(text(option, raw)?.to_owned());
-            }
-            "--hidden" => options.hidden = Some(true),
-            "--focus-ring" => {
-                let value: FocusRing = setting(option, next_value(args, &mut index, option)?)?;
-                options.focus_ring = Some(value);
-            }
-            other => return Err(UsageError::new(format!("unknown option '{other}'"))),
-        }
-        index += 1;
-    }
-
-    let command = command.unwrap_or_default();
+    let (name, options, command) = run_arguments(args)?;
     let Some(first) = command.first() else {
         return Err(UsageError::new(
             "run: no command; pass -- <command> [args...]",
@@ -328,88 +296,208 @@ fn parse_run(args: &[OsString]) -> Result<Command, UsageError> {
     }))
 }
 
+/// Walk the arguments before the command, collecting the options; the
+/// command is everything after the first argument that is not an option, or
+/// after `--` (spec "Run options").
+fn run_arguments(
+    args: &[OsString],
+) -> Result<(Option<PanelName>, PanelOptions, Vec<OsString>), UsageError> {
+    let mut name = None;
+    let mut options = PanelOptions::default();
+    let mut index = 0;
+    while let Some(argument) = args.get(index) {
+        let bytes = argument.as_os_str().as_bytes();
+        if bytes == b"--" {
+            return Ok((name, options, args[index + 1..].to_vec()));
+        }
+        if !bytes.starts_with(b"--") {
+            return Ok((name, options, args[index..].to_vec()));
+        }
+        match run_option(args, &mut index, argument)? {
+            RunOption::Name(value) => name = Some(value),
+            RunOption::Edge(value) => options.edge = Some(value),
+            RunOption::Size(value) => options.size = Some(value),
+            RunOption::Reserve(value) => options.reserve = Some(value),
+            RunOption::Layer(value) => options.layer = Some(value),
+            RunOption::Keyboard(value) => options.keyboard = Some(value),
+            RunOption::Output(value) => options.output = Some(value),
+            RunOption::Hidden => options.hidden = Some(true),
+            RunOption::FocusRing(value) => options.focus_ring = Some(value),
+        }
+        index += 1;
+    }
+    Ok((name, options, Vec::new()))
+}
+
+/// One `--option` of `run`, whose value is the next argument.
+fn run_option(
+    args: &[OsString],
+    index: &mut usize,
+    argument: &OsStr,
+) -> Result<RunOption, UsageError> {
+    let option = text("option", argument)?;
+    match option {
+        "--name" => {
+            let raw = next_value(args, index, option)?;
+            Ok(RunOption::Name(panel(option, raw)?))
+        }
+        "--output" => {
+            let raw = next_value(args, index, option)?;
+            Ok(RunOption::Output(text(option, raw)?.to_owned()))
+        }
+        "--hidden" => Ok(RunOption::Hidden),
+        "--edge" => setting_option(args, index, option, RunOption::Edge),
+        "--size" => setting_option(args, index, option, RunOption::Size),
+        "--reserve" => setting_option(args, index, option, RunOption::Reserve),
+        "--layer" => setting_option(args, index, option, RunOption::Layer),
+        "--keyboard" => setting_option(args, index, option, RunOption::Keyboard),
+        "--focus-ring" => setting_option(args, index, option, RunOption::FocusRing),
+        other => Err(UsageError::new(format!("unknown option '{other}'"))),
+    }
+}
+
+/// A `run` option whose value parses with the config file's grammar.
+fn setting_option<T>(
+    args: &[OsString],
+    index: &mut usize,
+    option: &str,
+    build: fn(T) -> RunOption,
+) -> Result<RunOption, UsageError>
+where
+    T: FromStr,
+    T::Err: fmt::Display,
+{
+    let raw = next_value(args, index, option)?;
+    Ok(build(setting(option, raw)?))
+}
+
 /// Parse one client subcommand (spec "Command-line client").
 fn parse_client(subcommand: &str, args: &[OsString]) -> Result<Command, UsageError> {
-    let command = match subcommand {
-        "toggle" => ClientCommand::Toggle(one_panel(subcommand, args)?),
-        "show" => ClientCommand::Show(one_panel(subcommand, args)?),
-        "hide" => ClientCommand::Hide(one_panel(subcommand, args)?),
-        "focus" => ClientCommand::Focus(one_panel(subcommand, args)?),
-        "set-edge" => {
-            let (panel, raw) = panel_and_value(subcommand, args, "an edge")?;
-            ClientCommand::SetEdge {
-                panel,
-                edge: setting(subcommand, raw)?,
-            }
+    Ok(Command::Client(client_command(subcommand, args)?))
+}
+
+/// The command one client subcommand asks for; each helper owns its own
+/// arguments and its own usage message.
+fn client_command(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+    match subcommand {
+        "toggle" => panel_command(ClientCommand::Toggle, subcommand, args),
+        "show" => panel_command(ClientCommand::Show, subcommand, args),
+        "hide" => panel_command(ClientCommand::Hide, subcommand, args),
+        "focus" => panel_command(ClientCommand::Focus, subcommand, args),
+        "set-edge" => set_edge(subcommand, args),
+        "set-size" => set_size(subcommand, args),
+        "resize" => resize(subcommand, args),
+        "set-output" => set_output(subcommand, args),
+        "set-layer" => set_layer(subcommand, args),
+        "set-reserve" => set_reserve(subcommand, args),
+        "set-keyboard" => set_keyboard(subcommand, args),
+        "status" => status_command(subcommand, args),
+        "subscribe" => no_arg_command(ClientCommand::Subscribe, subcommand, args),
+        "quit" => no_arg_command(ClientCommand::Quit, subcommand, args),
+        "reload" => no_arg_command(ClientCommand::Reload, subcommand, args),
+        other => Err(unknown_command(other)),
+    }
+}
+
+/// A client command that names one panel and nothing else.
+fn panel_command(
+    build: fn(PanelName) -> ClientCommand,
+    subcommand: &str,
+    args: &[OsString],
+) -> Result<ClientCommand, UsageError> {
+    Ok(build(one_panel(subcommand, args)?))
+}
+
+/// A client command that takes no arguments.
+fn no_arg_command(
+    command: ClientCommand,
+    subcommand: &str,
+    args: &[OsString],
+) -> Result<ClientCommand, UsageError> {
+    no_args(subcommand, args)?;
+    Ok(command)
+}
+
+/// `set-edge <name> <edge>`.
+fn set_edge(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+    let (panel, raw) = panel_and_value(subcommand, args, "an edge")?;
+    Ok(ClientCommand::SetEdge {
+        panel,
+        edge: setting(subcommand, raw)?,
+    })
+}
+
+/// `set-size <name> <size> [--ms N]`.
+fn set_size(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+    let (panel, raw, ms) = panel_value_ms(subcommand, args, "a size")?;
+    Ok(ClientCommand::SetSize {
+        panel,
+        size: setting(subcommand, &raw)?,
+        ms,
+    })
+}
+
+/// `resize <name> <amount> [--ms N]`.
+fn resize(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+    let (panel, raw, ms) = panel_value_ms(subcommand, args, "an amount")?;
+    Ok(ClientCommand::Resize {
+        panel,
+        amount: setting(subcommand, &raw)?,
+        ms,
+    })
+}
+
+/// `set-output <name> <output>`.
+fn set_output(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+    let (panel, raw) = panel_and_value(subcommand, args, "an output name")?;
+    Ok(ClientCommand::SetOutput {
+        panel,
+        output: text(subcommand, raw)?.to_owned(),
+    })
+}
+
+/// `set-layer <name> <layer>`.
+fn set_layer(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+    let (panel, raw) = panel_and_value(subcommand, args, "a layer")?;
+    Ok(ClientCommand::SetLayer {
+        panel,
+        layer: setting(subcommand, raw)?,
+    })
+}
+
+/// `set-reserve <name> <reserve>`.
+fn set_reserve(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+    let (panel, raw) = panel_and_value(subcommand, args, "a reserve mode")?;
+    Ok(ClientCommand::SetReserve {
+        panel,
+        reserve: setting(subcommand, raw)?,
+    })
+}
+
+/// `set-keyboard <name> <keyboard>`.
+fn set_keyboard(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+    let (panel, raw) = panel_and_value(subcommand, args, "a keyboard mode")?;
+    Ok(ClientCommand::SetKeyboard {
+        panel,
+        keyboard: setting(subcommand, raw)?,
+    })
+}
+
+/// `status [<name>]` (spec "Status").
+fn status_command(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+    let panel = match args {
+        [] => None,
+        [raw] => Some(panel(subcommand, raw)?),
+        _ => {
+            return Err(UsageError::new("status: expected at most one panel name"));
         }
-        "set-size" => {
-            let (panel, raw, ms) = panel_value_ms(subcommand, args, "a size")?;
-            ClientCommand::SetSize {
-                panel,
-                size: setting(subcommand, &raw)?,
-                ms,
-            }
-        }
-        "resize" => {
-            let (panel, raw, ms) = panel_value_ms(subcommand, args, "an amount")?;
-            ClientCommand::Resize {
-                panel,
-                amount: setting(subcommand, &raw)?,
-                ms,
-            }
-        }
-        "set-output" => {
-            let (panel, raw) = panel_and_value(subcommand, args, "an output name")?;
-            ClientCommand::SetOutput {
-                panel,
-                output: text(subcommand, raw)?.to_owned(),
-            }
-        }
-        "set-layer" => {
-            let (panel, raw) = panel_and_value(subcommand, args, "a layer")?;
-            ClientCommand::SetLayer {
-                panel,
-                layer: setting(subcommand, raw)?,
-            }
-        }
-        "set-reserve" => {
-            let (panel, raw) = panel_and_value(subcommand, args, "a reserve mode")?;
-            ClientCommand::SetReserve {
-                panel,
-                reserve: setting(subcommand, raw)?,
-            }
-        }
-        "set-keyboard" => {
-            let (panel, raw) = panel_and_value(subcommand, args, "a keyboard mode")?;
-            ClientCommand::SetKeyboard {
-                panel,
-                keyboard: setting(subcommand, raw)?,
-            }
-        }
-        "status" => ClientCommand::Status {
-            panel: match args {
-                [] => None,
-                [raw] => Some(panel(subcommand, raw)?),
-                _ => {
-                    return Err(UsageError::new("status: expected at most one panel name"));
-                }
-            },
-        },
-        "subscribe" => {
-            no_args(subcommand, args)?;
-            ClientCommand::Subscribe
-        }
-        "quit" => {
-            no_args(subcommand, args)?;
-            ClientCommand::Quit
-        }
-        "reload" => {
-            no_args(subcommand, args)?;
-            ClientCommand::Reload
-        }
-        other => return Err(UsageError::new(format!("unknown command '{other}'"))),
     };
-    Ok(Command::Client(command))
+    Ok(ClientCommand::Status { panel })
+}
+
+/// The message of a subcommand the parser does not know.
+fn unknown_command(subcommand: &str) -> UsageError {
+    UsageError::new(format!("unknown command '{subcommand}'"))
 }
 
 /// The next argument as an option's value; the index moves onto it.
