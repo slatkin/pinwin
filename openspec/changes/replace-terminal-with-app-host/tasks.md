@@ -203,7 +203,7 @@ below). Its code does not enter pinwin; only the findings do.
 - [x] 7.2 Add the daemon spawn with `setsid` and the bounded wait (D12). Verify: test that two
   `pinwin run` calls at once against a temp runtime directory leave one daemon ("Two first
   runs"); live, the user confirms "First run" (closing the terminal keeps the daemon).
-- [ ] 7.3 Add panel lifetime from the pidfd and the connection count (D3). Verify: unit test
+- [x] 7.3 Add panel lifetime from the pidfd and the connection count (D3). Verify: unit test
   of the end rule (exited and no connection); live, the user confirms "App exits", "App never
   connects", "App hands off to a running copy" and "Launcher process forks".
 
