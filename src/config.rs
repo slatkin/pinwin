@@ -14,8 +14,9 @@
 //!
 //! The merge is pure: [`Config::panel`] resolves the options a `pinwin run`
 //! call carries, the panel's own table, `[panel.defaults]` and, last, the
-//! built-in default. No module compiles this file yet; `tests/config.rs`
-//! includes it so its unit tests run until row 4.3 uses it.
+//! built-in default. `src/cli.rs` fills the options from the command line;
+//! `tests/config.rs` includes this file so its unit tests run until the
+//! daemon owns it.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -206,7 +207,7 @@ pub struct InvalidValue {
 }
 
 impl InvalidValue {
-    fn new(value: &str, expected: &'static str) -> Self {
+    pub(crate) fn new(value: &str, expected: &'static str) -> Self {
         Self {
             value: value.to_owned(),
             expected,
@@ -365,11 +366,11 @@ impl Default for DaemonSettings {
 }
 
 /// The `pinwin run` options that override the file, one `Option` for each
-/// setting (spec "Run options"). Row 4.3 fills it from the command line; an
-/// absent field leaves the file's value in place. The fields are public
-/// because this is a plain set of overrides: the invariant lives in each
-/// field's type, not in a constructor (`port-to-rust` D6).
-#[derive(Clone, Debug, Default)]
+/// setting (spec "Run options"). `src/cli.rs` fills it from the command
+/// line; an absent field leaves the file's value in place. The fields are
+/// public because this is a plain set of overrides: the invariant lives in
+/// each field's type, not in a constructor (`port-to-rust` D6).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PanelOptions {
     pub edge: Option<Edge>,
     pub size: Option<Size>,

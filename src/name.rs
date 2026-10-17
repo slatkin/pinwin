@@ -7,8 +7,8 @@
 //! The rules are pure (`port-to-rust` D10), and the newtype is the only
 //! way a name reaches a socket path, a registry key or a reply
 //! (`port-to-rust` D6), so every decision here is unit tested with no
-//! daemon (`tests/name.rs` compiles the module until rows 4.3 and 5.2 use
-//! it).
+//! daemon (`src/cli.rs` uses the module; `tests/name.rs` and `tests/cli.rs`
+//! compile it until row 5.2 does).
 
 use std::ffi::OsStr;
 use std::fmt;

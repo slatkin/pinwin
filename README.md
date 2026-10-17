@@ -54,6 +54,77 @@ Environment:
 An invalid value exits 2 with a message on stderr before any surface opens.
 Only the binary reads these; the library reads no pinwin-owned configuration.
 
+## Commands
+
+`pinwin run` starts an app in a new panel and starts the daemon first when no
+daemon answers for the display. `pinwin daemon` starts the daemon in the
+foreground. The other subcommands send one request to the daemon and exit:
+0 on success, 1 when the daemon does not answer or replies with an error, and
+2 for an unknown subcommand, a missing argument or an invalid argument.
+
+| Command | Meaning |
+| --- | --- |
+| `run` | Start an app in a new panel, with the run options below. |
+| `daemon` | Start the daemon for the display in the foreground. |
+| `toggle` | Hide a shown panel or show a hidden one. |
+| `show` | Show a hidden panel and leave a shown one unchanged. |
+| `hide` | Hide a shown panel. |
+| `focus` | Show a hidden panel and give it the keyboard. |
+| `set-edge` | Move a panel to another edge. |
+| `set-size` | Set a panel's size, optionally with `--ms <N>`. |
+| `resize` | Change a panel's size by a signed amount, optionally with `--ms <N>`. |
+| `set-output` | Move a panel to another output. |
+| `set-layer` | Change the layer-shell layer of a panel. |
+| `set-reserve` | Change whether a panel pushes or covers tiled windows. |
+| `set-keyboard` | Change the keyboard interactivity of a panel. |
+| `status` | Print the daemon's reply as JSON, for all panels or one name. |
+| `subscribe` | Print one JSON line for each event until the connection closes. |
+| `quit` | End every panel and then the daemon. |
+| `reload` | Read the config file again. |
+
+## Run options
+
+`pinwin run [options] -- <command> [args...]` starts the command in a panel.
+`--` ends the options, so a command argument that starts with `--` stays an
+argument. The first word that is not an option also starts the command. The
+panel name is `--name`, else the file name of the command.
+
+| Option | Value | Default | Meaning |
+| --- | --- | --- | --- |
+| `--name` | 1..=64 characters from `[A-Za-z0-9_-]` | the command's file name | The panel name. |
+| `--edge` | `left`, `right`, `top`, `bottom` | `left` | The output edge the panel docks to. |
+| `--size` | pixels as `640px` or a percent as `30%` | `25%` | The size across the docking edge. |
+| `--reserve` | `push`, `cover` | `push` | `push` reserves the panel's strip; `cover` draws over tiled windows. |
+| `--layer` | `background`, `bottom`, `top`, `overlay` | `overlay` | The layer-shell layer. |
+| `--keyboard` | `none`, `on-demand`, `exclusive` | `on-demand` | The keyboard interactivity. |
+| `--output` | an output name | the compositor chooses | The output the panel opens on. |
+| `--hidden` | none (a flag) | shown | Start hidden. |
+| `--focus-ring` | `off`, `#RRGGBB` or `#RRGGBB:<width>` | `#dabc7f`, 1 pixel | The ring the panel draws while it has the keyboard; `<width>` is in pixels and at least 1. |
+
+The options win over the config file for the values they set: the option wins
+over `[panel.<name>]`, which wins over `[panel.defaults]`, which wins over the
+built-in default.
+
+## Migrating to 0.4.0
+
+Version 0.4.0 replaces the terminal and its environment variables with a
+daemon, `pinwin run` and the client subcommands. A command line that used the
+old form changes as follows.
+
+| Before | After |
+| --- | --- |
+| `pinwin cmd` | `pinwin run -- ghostty -e cmd` |
+| `pinwin -- cmd` | `pinwin run -- cmd` |
+| `COLS` | `--size`, for example `--size 640px` |
+| `GUTTER` | the `gutter_*` settings in the config file |
+| `PINWIN_KEYBOARD` | `--keyboard` |
+| `PINWIN_ZONE` | `--reserve` |
+| `PINWIN_ACCENT*` | `--focus-ring` |
+| `PINWIN_NAME` | `--name` |
+| `pinwin --toggle name` | `pinwin toggle name` |
+| `pinwin --show name` | `pinwin show name` |
+| `pinwin --focus name` | `pinwin focus name` |
+
 ## Configuration
 
 The daemon reads `$XDG_CONFIG_HOME/pinwin/config.toml` (default
@@ -239,8 +310,9 @@ host type:
 
 `src/main.rs` is the `pinwin` binary; the daemon, the IPC client and the
 option parser arrive with the panel-control rows, so it prints the usage and
-exits 2 until then. `src/cli.rs` is the hand-written argument parser, still
-written against the removed library API; `src/instance.rs` and
+exits 2 until then. `src/cli.rs` is the hand-written parser for `run`,
+`daemon` and the client subcommands, compiled by `tests/cli.rs` until the
+binary dispatches them; `src/instance.rs` and
 `src/instance/` hold the instance socket (identity, bind, listener and
 client); `src/geometry.rs` is the display-free geometry core (edges, sizes,
 gutters, the reserved strip and the held gap), compiled from `src/main.rs`;

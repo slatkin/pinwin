@@ -21,21 +21,26 @@ and several modules wait for the rows that wire them in (D15).
 - `src/main.rs` — the `pinwin` binary. Until the panel-control rows add the
   daemon, the IPC client and the option parser, it prints the usage and
   exits 2.
-- `src/cli.rs` — the hand-written argument parser. It still calls the
-  removed library API and is rewritten by the panel-control rows.
+- `src/cli.rs` — the hand-written command line (row 4.3): `run` with the
+  options of spec "Run options", `daemon`, and one client subcommand for each
+  daemon request. It produces the command value and the `PanelOptions` of the
+  config file and opens no socket. No module compiles it yet; `tests/cli.rs`
+  includes it so its unit tests run.
 - `src/instance.rs` + `src/instance/` — the instance socket: identity, bind,
   listener and client (`InstanceSocket`, `Request`, `instance::send`); the
   daemon socket grows from it.
 - `src/name.rs` — the panel name rules (spec "Panel names"): the validated
   `PanelName` of 1..=64 characters from `[A-Za-z0-9_-]`, the default name
-  taken from the command's file name, and the two name errors. No module
-  compiles it yet; `tests/name.rs` includes it so its unit tests run.
+  taken from the command's file name, and the two name errors. `src/cli.rs`
+  uses it; `tests/name.rs` and `tests/cli.rs` include it so its unit tests
+  run until the daemon owns it.
 - `src/config.rs` — the config file (spec "Config file" and "Panel settings
   and precedence", D13): the `[daemon]`, `[panel.defaults]` and
   `[panel.<name>]` tables, the setting grammar the run options share, the
-  built-in defaults and the precedence of the options over the file. No
-  module compiles it yet; `tests/config.rs` includes it so its unit tests
-  run.
+  built-in defaults and the precedence of the options over the file.
+  `src/cli.rs` parses the run options with the same grammar; `tests/config.rs`
+  and `tests/cli.rs` include it so its unit tests run until the daemon owns
+  it.
 - `src/geometry.rs` — the display-free geometry core: `Edge`, `Size` (pixels
   or percent), `Gutters`, `ReserveMode`, the layer-surface anchors, margins
   and size, the reserved strip and the held gap (D9). `src/main.rs` compiles
@@ -108,12 +113,16 @@ name", "Invalid default name") until the option parser and the daemon use
 config file's tables, the setting grammar, the built-in defaults and the
 precedence (spec "No config file", "Invalid config file", "Per-name
 override", "Option wins" and "Defaults") and check every key in the
-README's configuration table against `config.rs`. The crop harness
+README's configuration table against `config.rs`, and the tests in
+`tests/cli.rs`, which cover the `run`, `daemon` and client subcommands (spec
+"Invalid option value", "No command", "Usage error", "Invalid default
+name" and an invalid `--focus-ring`) and check every subcommand in the
+README's command table against `cli.rs`. The crop harness
 includes `src/geometry.rs` as well, for the `Edge` the crop names, under a
 `dead_code` allow whose reason names the rows that use the accessors it does
 not. The other kept modules
-(`anim`, `guard`, `instance`, `cli`) are not
-compiled until rows 4.3, 5.2 and 6.1 wire them in, so they have no tests
+(`anim`, `guard`, `instance`) are not
+compiled until rows 5.2 and 6.1 wire them in, so they have no tests
 yet. Keep the pure parts display-free
 (`port-to-rust` D10): take the fd and the outputs of the environment as
 parameters, so the tests run without a display. Tests that need a real

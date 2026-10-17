@@ -194,7 +194,8 @@ SHALL get error kind `invalid_layout`. Neither error SHALL change the panel.
 ### Requirement: Size values
 A size SHALL be a whole number of logical pixels (`640px`, or a JSON number) or a percent of
 the output (`30%`) from 1 to 100. A percent SHALL be of the output's width for a left or right
-panel and of its height for a top or bottom panel. A `resize` amount SHALL use the same forms
+panel and of its height for a top or bottom panel. A percent that is not a whole number of pixels
+SHALL round down, with a minimum of 1 pixel. A `resize` amount SHALL use the same forms
 with a sign. The daemon SHALL resolve a percent again when the panel's output or edge changes.
 
 #### Scenario: Percent of the output
