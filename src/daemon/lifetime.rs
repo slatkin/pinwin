@@ -36,7 +36,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::connection;
-use super::events::Bus;
+use super::events::{Bus, Event};
 use super::panel::{EventFd, PanelHandle};
 use super::registry::Registry;
 use super::{DaemonSocket, locked};
@@ -121,25 +121,33 @@ impl Lifetime {
     }
 
     /// Register a new panel under `name` (spec "Panel names", "Duplicate
-    /// name"): the name must be free, and a registered panel makes the
-    /// daemon eligible to exit with its last panel.
+    /// name", "Event stream"): the name must be free, a registered panel
+    /// makes the daemon eligible to exit with its last panel, and every
+    /// subscriber hears `added`.
     pub fn add_panel(&self, name: PanelName, handle: PanelHandle) -> Result<(), ErrorReply> {
-        self.registry.add(name, handle)?;
+        self.registry.add(name.clone(), handle)?;
         self.had_panel.store(true, Ordering::SeqCst);
+        self.bus.publish(&Event::Added { panel: name });
         Ok(())
     }
 
     /// Drop the panel named `name` when its app ends (spec "Name is free
-    /// again"). When it was the last panel and `exit_when_idle` is true,
-    /// the daemon exits (spec "Exit with the last panel"); otherwise it
-    /// stays resident (spec "Stay resident"). False when no panel had the
-    /// name.
+    /// again", "Event stream"): every subscriber hears `removed`. When it
+    /// was the last panel and `exit_when_idle` is true, the daemon exits
+    /// (spec "Exit with the last panel"); otherwise it stays resident (spec
+    /// "Stay resident"). False when no panel had the name.
     pub fn panel_ended(&self, name: &PanelName) -> bool {
         let removed = self.registry.remove(name);
-        if removed && self.registry.is_empty() && self.exits_when_idle() {
+        if !removed {
+            return false;
+        }
+        self.bus.publish(&Event::Removed {
+            panel: name.clone(),
+        });
+        if self.registry.is_empty() && self.exits_when_idle() {
             self.shutdown.trigger();
         }
-        removed
+        true
     }
 
     /// End every panel and then the daemon (spec "Quit"): clearing the

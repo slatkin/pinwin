@@ -30,7 +30,10 @@
 //! connections, and ends only that panel's handle (spec "Panic in one
 //! panel"). A panel also ends when the app has exited and no connection is
 //! left (D3, spec "Panel lifetime follows the app") and when the daemon drops
-//! its handle, which is what `quit` does (D12, spec "Quit").
+//! its handle, which is what `quit` does (D12, spec "Quit"). Row 7.3 gives
+//! the end rule and the pidfd their own module ([`lifetime`]) and frees a
+//! slot whose connection went away without destroying its window
+//! ([`window`]).
 //!
 //! [`spawn`] is the API rows 7.1 to 7.3 call: it starts the thread, waits for
 //! the panel's socket and returns the `WAYLAND_DISPLAY` to give the app (D2)
@@ -44,8 +47,8 @@
 use std::cell::Cell;
 use std::fmt;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::rc::Rc;
+use std::os::fd::AsRawFd;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread;
@@ -65,6 +68,7 @@ use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply, PanelReque
 use crate::guard::{Poisoned, guard};
 use crate::ipc::{ErrorReply, PanelStatus};
 use crate::name::PanelName;
+use lifetime::{PidFd, ends};
 use registry::ClientDisplay;
 use routing::Routing;
 
@@ -78,6 +82,15 @@ pub mod check;
 // The D4 window-routing handlers and the pure slot rule they decide with.
 #[path = "proxy/routing.rs"]
 mod routing;
+
+// The panel's lifetime (row 7.3, D3): the app's pidfd and the end rule.
+#[path = "proxy/lifetime.rs"]
+mod lifetime;
+
+// The panel window's local toplevel handler and the slot's per-connection
+// owner (row 7.3, D3, D4).
+#[path = "proxy/window.rs"]
+mod window;
 
 // The panel window's dock on one output (D11): the layer surface, its
 // handler, the `set-output` decision and the re-docks.
@@ -447,7 +460,7 @@ impl Panel {
         if self.state.is_destroyed() {
             return Ok(true);
         }
-        Ok(*app_exited && self.connections.get() == 0)
+        Ok(ends(*app_exited, self.connections.get()))
     }
 
     /// Take every command the daemon sent and answer it (row 5.3's channel
@@ -547,9 +560,10 @@ impl Panel {
 }
 
 /// The proxy state's handler (D1, D4, D12): it counts the app's connections,
-/// which the end rule needs (D3), installs the window routing of each new
-/// connection (D4), and logs the compositor's protocol error, which ends this
-/// panel's connection (spec "App protocol error").
+/// which the end rule needs (D3), installs the window routing and the slot
+/// owner of each new connection (D4, row 7.3), and logs the compositor's
+/// protocol error, which ends this panel's connection (spec "App protocol
+/// error").
 struct PanelState {
     connections: Rc<Cell<usize>>,
     routing: Rc<Routing>,
@@ -560,6 +574,8 @@ impl StateHandler for PanelState {
         self.connections.set(self.connections.get() + 1);
         client.set_handler(PanelClient {
             connections: Rc::clone(&self.connections),
+            routing: Rc::clone(&self.routing),
+            client: Rc::downgrade(client),
         });
         let display = client.display();
         display.set_handler(ClientDisplay::new(Rc::clone(&self.routing), display));
@@ -582,46 +598,22 @@ impl StateHandler for PanelState {
     }
 }
 
-/// One app connection's handler (D3): the panel's connection count falls
-/// when the app closes it.
+/// One app connection's handler (D3, row 7.3): the panel's connection count
+/// falls when the app closes it, and a slot this connection owned is freed
+/// even though a dying client never destroys its toplevel.
 struct PanelClient {
     connections: Rc<Cell<usize>>,
+    routing: Rc<Routing>,
+    /// The connection this handler belongs to, kept weak so the handler does
+    /// not keep its client alive.
+    client: Weak<Client>,
 }
 
 impl ClientHandler for PanelClient {
     fn disconnected(self: Box<Self>) {
         self.connections
             .set(self.connections.get().saturating_sub(1));
-    }
-}
-
-/// The app's pidfd (D3): readable when the process exits, so the panel ends
-/// without parenting the app. `pidfd_open` needs Linux 5.3 or later.
-struct PidFd(OwnedFd);
-
-impl PidFd {
-    /// Open the pidfd of the app's process.
-    fn open(pid: u32) -> io::Result<Self> {
-        // SAFETY: `pidfd_open` takes the process ID and no flags and reads no
-        // pointer; a failure is a negative return, not a panic.
-        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let Ok(fd) = RawFd::try_from(fd) else {
-            return Err(io::Error::other(
-                "pidfd_open returned a descriptor that does not fit a RawFd",
-            ));
-        };
-        // SAFETY: `fd` is a fresh descriptor the call above returned and
-        // nothing else owns, so this `OwnedFd` is its only owner.
-        Ok(Self(unsafe { OwnedFd::from_raw_fd(fd) }))
-    }
-}
-
-impl AsRawFd for PidFd {
-    fn as_raw_fd(&self) -> RawFd {
-        self.0.as_raw_fd()
+        window::client_disconnected(&self.routing, &self.client);
     }
 }
 

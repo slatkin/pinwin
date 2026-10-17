@@ -13,7 +13,8 @@
 //! `pinwin run` asks the daemon for a new panel, sets the display the reply
 //! names and replaces itself with the app (D2). When no daemon answers, it
 //! starts one in the background and waits a bounded time for it (row 7.2,
-//! spec "Run starts the daemon"); row 7.3 adds the pidfd lifetime.
+//! spec "Run starts the daemon"); row 7.3 adds the panel lifetime from the
+//! app's pidfd and its connection count.
 
 use std::ffi::OsString;
 use std::io::{self, Write as _};

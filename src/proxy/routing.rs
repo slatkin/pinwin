@@ -45,6 +45,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
+use wl_proxy::client::Client;
 use wl_proxy::object::{Object, ObjectCoreApi, ObjectUtils};
 use wl_proxy::protocols::viewporter::wp_viewport::WpViewport;
 use wl_proxy::protocols::wayland::wl_output::WlOutput;
@@ -55,7 +56,7 @@ use wl_proxy::protocols::xdg_decoration_unstable_v1::zxdg_decoration_manager_v1:
 use wl_proxy::protocols::xdg_shell::xdg_popup::XdgPopup;
 use wl_proxy::protocols::xdg_shell::xdg_positioner::XdgPositioner;
 use wl_proxy::protocols::xdg_shell::xdg_surface::{XdgSurface, XdgSurfaceHandler};
-use wl_proxy::protocols::xdg_shell::xdg_toplevel::{XdgToplevel, XdgToplevelHandler};
+use wl_proxy::protocols::xdg_shell::xdg_toplevel::XdgToplevel;
 use wl_proxy::protocols::xdg_shell::xdg_wm_base::XdgWmBase;
 
 use super::apply;
@@ -66,6 +67,7 @@ use super::popup::{ClientXdgPopup, ClientXdgPositioner, offset_anchor_rect};
 use super::reserve::Reserve;
 use super::slot::{Route, Slot};
 use super::viewport::{StaticCrop, apply_steady_crop, write_crop};
+use super::window::ClientXdgToplevel;
 use crate::config::PanelSettings;
 use crate::geometry::{Geometry, HeldGap, OutputSize, Size};
 
@@ -96,6 +98,10 @@ pub(super) struct Routing {
     /// choose.
     output: RefCell<Option<String>>,
     slot: Cell<Slot>,
+    /// The connection whose window holds the slot (row 7.3, D3): a client
+    /// that disconnects without destroying its toplevel frees only the slot
+    /// it took.
+    slot_owner: RefCell<Option<Weak<Client>>>,
     layer_shell: RefCell<Option<Rc<ZwlrLayerShellV1>>>,
     /// The compositor's `zxdg_decoration_manager_v1`, bound by the proxy's
     /// own registry (D5): a passed-through window's decoration object is
@@ -152,6 +158,7 @@ impl Routing {
             settings: RefCell::new(settings),
             output: RefCell::new(output),
             slot: Cell::new(Slot::new()),
+            slot_owner: RefCell::new(None),
             layer_shell: RefCell::new(None),
             decoration_manager: RefCell::new(None),
             globals: Rc::new(Globals::new()),
@@ -259,10 +266,14 @@ impl Routing {
         self.panel_layer_surface.borrow_mut().take()
     }
 
-    /// Routes a new toplevel through the slot (D4).
-    fn route(&self, window: u64) -> Route {
+    /// Routes a new toplevel through the slot (D4) and records the
+    /// connection that took it, so a disconnect can free the slot.
+    fn route(&self, window: u64, owner: Option<&Rc<Client>>) -> Route {
         let mut slot = self.slot.get();
         let route = slot.route(window);
+        if route == Route::Panel {
+            *self.slot_owner.borrow_mut() = owner.map(Rc::downgrade);
+        }
         self.slot.set(slot);
         route
     }
@@ -270,8 +281,24 @@ impl Routing {
     /// Empties the slot when `window` is its own (D4).
     fn release(&self, window: u64) {
         let mut slot = self.slot.get();
-        slot.release(window);
+        if slot.release(window) {
+            self.slot_owner.borrow_mut().take();
+        }
         self.slot.set(slot);
+    }
+
+    /// The window the slot holds for `client`, when that connection took it
+    /// (row 7.3, D3, D4).
+    pub(super) fn client_window(&self, client: &Weak<Client>) -> Option<u64> {
+        let owned = self
+            .slot_owner
+            .borrow()
+            .as_ref()
+            .is_some_and(|owner| Weak::ptr_eq(owner, client));
+        if !owned {
+            return None;
+        }
+        self.slot.get().window()
     }
 
     /// The layer-shell object the proxy bound, once the registry announced
@@ -502,8 +529,9 @@ impl Routing {
     /// Ends the panel window's footprint (D4, D9, D11): the slot empties,
     /// the reserve is destroyed with the window it was created for and the
     /// surface references clear.
-    fn on_panel_window_destroyed(&self, window: u64) {
+    pub(super) fn on_panel_window_destroyed(&self, window: u64) {
         self.release(window);
+        self.slot_owner.borrow_mut().take();
         if let Some(reserve) = self.reserve.borrow_mut().take() {
             reserve.destroy();
         }
@@ -591,11 +619,11 @@ impl ClientXdgSurface {
         // The toplevel stays local: the app sees a normal window, but every
         // request on this role is answered by the proxy (D4).
         id.set_forward_to_server(false);
-        id.set_handler(ClientXdgToplevel {
-            routing: Rc::clone(&self.routing),
-            toplevel: Rc::downgrade(id),
-            window: id.unique_id(),
-        });
+        id.set_handler(ClientXdgToplevel::new(
+            Rc::clone(&self.routing),
+            id,
+            id.unique_id(),
+        ));
         let window = dock::PanelWindow {
             surface: Rc::clone(&self.wl_surface),
             xdg_surface: Rc::clone(&self.xdg_surface),
@@ -638,7 +666,8 @@ impl XdgSurfaceHandler for ClientXdgSurface {
             self.forward(id);
             return;
         };
-        if self.routing.route(id.unique_id()) == Route::PassedThrough {
+        let owner = id.core().client();
+        if self.routing.route(id.unique_id(), owner.as_ref()) == Route::PassedThrough {
             self.forward(id);
             return;
         }
@@ -759,37 +788,5 @@ impl XdgSurfaceHandler for ClientXdgSurface {
         } else if self.has_server {
             self.xdg_surface.send_ack_configure(serial);
         }
-    }
-}
-
-/// The panel's local `xdg_toplevel` handler (D4): the app destroying the
-/// panel window destroys the layer surface, empties the slot and releases
-/// the strip.
-struct ClientXdgToplevel {
-    routing: Rc<Routing>,
-    /// The toplevel this handler answers, kept weak so the handler does not
-    /// keep its own object alive.
-    toplevel: Weak<XdgToplevel>,
-    /// The panel window's unique id, which empties the slot when the app
-    /// destroys it.
-    window: u64,
-}
-
-impl XdgToplevelHandler for ClientXdgToplevel {
-    fn handle_destroy(&mut self, _slf: &Rc<XdgToplevel>) {
-        // The routing holds this layer surface and its handler holds this
-        // toplevel: unset the handler here, as wl-paper's does, so the two
-        // objects cannot keep each other alive past the app's destroy.
-        if let Some(toplevel) = self.toplevel.upgrade() {
-            toplevel.unset_handler();
-        }
-        // D11: destroy the panel's current layer surface — a `set-output` or
-        // a `closed` may have replaced the one this window docked with.
-        if let Some(layer_surface) = self.routing.panel_layer_surface() {
-            layer_surface.send_destroy();
-        }
-        // D9: the reserve surface is destroyed with the panel window it was
-        // created for, which also frees the slot and the strip.
-        self.routing.on_panel_window_destroyed(self.window);
     }
 }

@@ -138,8 +138,22 @@ and several modules wait for the rows that wire them in (D15).
   `set-output` re-docks the panel window on the chosen output, and a
   `closed` layer surface is replaced with a new one instead of closing the
   app's window. Row 6.6 adds the live apply of the layout commands, which
-  `src/proxy/apply.rs` owns. `src/main.rs`
+  `src/proxy/apply.rs` owns. Row 7.3 gives the panel lifetime its own module
+  (`src/proxy/lifetime.rs`) and frees a slot whose connection went away
+  (`src/proxy/window.rs`). `src/main.rs`
   compiles it; its tests are `src/proxy/tests.rs`.
+- `src/proxy/lifetime.rs` — the panel's lifetime (row 7.3, D3, spec "Panel
+  lifetime follows the app"): the pure end rule (the app's process exited
+  and no Wayland connection is left), which covers an app that exits, one
+  that never connects, a hand-off to a running copy and a launcher whose
+  forked child keeps the connection, plus the app's pidfd and its test with
+  a short-lived child process. Display-free, so its tests run without a
+  compositor.
+- `src/proxy/window.rs` — the panel window's local `xdg_toplevel` handler
+  (D4) and the slot's per-connection owner (row 7.3): the app destroying the
+  panel window destroys the layer surface and the reserve, and a client that
+  disconnects without destroying its toplevel frees only the slot it took,
+  so another connection's window stays the panel.
 - `src/proxy/apply.rs` — the live apply of a layout change (row 6.6, spec
   "Apply layout without restarting the app", "Validate a change before
   applying it"): the plan that resolves a change's settings against the
@@ -353,7 +367,13 @@ loop reads a shutdown trigger, and only the SIGINT/SIGTERM mapping
 The proxy tests in `src/proxy/tests.rs` cover "Panic in one panel": a body
 that panics under the guard ends only that panel's handle — its name leaves
 the registry, the other panel still answers and the daemon stays up — with
-stand-in panel threads and no compositor, and the pure slot tests in
+stand-in panel threads and no compositor, the panel-lifetime tests in
+`src/proxy/lifetime.rs` cover the end rule's spec scenarios ("App exits",
+"App never connects", "App hands off to a running copy" and "Launcher
+process forks") and the pidfd's exit report from a short-lived child
+process; `a_panel_announces_its_add_and_end` in
+`src/daemon/events/tests.rs` covers the added and removed events that row
+7.3 wires; and the pure slot tests in
 `src/proxy/slot.rs` cover the D4 rule: "First window", "Window comes back",
 "Dialog", "Passed-through window stays" and "Empty panel shows nothing", the
 pure popup-offset tests in `src/proxy/popup.rs` cover the anchor rectangle a

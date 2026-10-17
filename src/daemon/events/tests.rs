@@ -296,3 +296,35 @@ fn a_silent_client_does_not_block_another_request() {
     drop(lifetime);
     panel.join().expect("the panel thread ends");
 }
+
+/// A panel that starts and then ends publishes `added` and `removed` (spec
+/// "Event stream"; row 7.3 wires the two events at registration and end).
+#[test]
+fn a_panel_announces_its_add_and_end() {
+    let bus = Bus::new();
+    let lifetime = test_lifetime(bus.clone());
+    let events = bus.subscribe();
+    let (name, handle, panel) = panel_thread(|_| PanelReply::Done);
+
+    lifetime
+        .add_panel(name.clone(), handle)
+        .expect("notes is free");
+    assert_eq!(
+        events.next(WAIT).expect("the added event arrives"),
+        Event::Added {
+            panel: name.clone()
+        }
+    );
+
+    assert!(lifetime.panel_ended(&name), "notes ended");
+    assert_eq!(
+        events.next(WAIT).expect("the removed event arrives"),
+        Event::Removed {
+            panel: name.clone()
+        }
+    );
+    assert_eq!(bus.subscriber_count(), 1, "the subscriber stays");
+
+    drop(lifetime);
+    panel.join().expect("the panel thread ends");
+}
