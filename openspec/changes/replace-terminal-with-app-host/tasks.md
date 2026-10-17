@@ -52,7 +52,7 @@ below). Its code does not enter pinwin; only the findings do.
   - code: "nothing." (no window appeared; the cause was not found; parked for row 1.3).
 
   Kitty was not reported after the viewport fix.
-- [ ] 1.3 Add one grow and one shrink tween with the viewport crop and the piggyback-or-inject
+- [x] 1.3 Add one grow and one shrink tween with the viewport crop and the piggyback-or-inject
   commit rule (D7, D8), with and without an app that sets its own viewport (a browser). The
   user checks: smooth width change, content stays at the docked edge, the app gets one size.
   Record the answer here, and update design.md where a finding changes a decision.
