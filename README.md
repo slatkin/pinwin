@@ -125,9 +125,10 @@ its window. A popup of another window behaves as it would without pinwin.
 The panel's window carries no title bar and no frame: the app is told that
 the compositor draws the decorations, and the compositor draws none on a
 panel. Another window of the app gets the same decorations as without
-pinwin, whether the compositor or the app draws them. An app that ignores
-the decoration protocol and paints a title bar of its own keeps painting it
-for now.
+pinwin, whether the compositor or the app draws them. The panel's window is
+also cropped to the window geometry the app reports, so a client-side title
+bar and drop shadow stay outside the panel; an app that manages its own
+surface scaling through a viewport keeps that mapping and is not cropped.
 
 An app that hands a launch to a running copy opens no window of its own, so it
 puts nothing in the panel; the running copy keeps its own window. Start such

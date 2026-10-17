@@ -31,10 +31,9 @@ pub mod cli;
 pub mod config;
 pub mod daemon;
 
-// The geometry core lands before the rows that apply it: the reserve surface
-// (row 6.4) is its first user, and row 6.4 removes this allow once the
-// binary uses it (D15).
-#[allow(dead_code, reason = "row 6.4 wires geometry in; row 6.4 removes this")]
+// The geometry core is applied by the proxy from row 6.4 (D9); the held-gap
+// pieces the tween calls wait for row 10.x and carry their own allows in
+// `src/geometry.rs` (D15).
 mod geometry;
 
 // The parser, the config file and the daemon are complete before the rows

@@ -162,6 +162,10 @@ pub struct Margins {
 }
 
 impl Margins {
+    // Row 6.6's apply path rebuilds the margins from a changed settings
+    // merge; until then the struct literal in [`Geometry::margins`] is the
+    // only construction.
+    #[allow(dead_code, reason = "row 6.6 rebuilds margins from changed settings")]
     #[must_use]
     pub const fn new(top: i32, right: i32, bottom: i32, left: i32) -> Self {
         Self {
@@ -398,11 +402,17 @@ impl Geometry {
 
     /// The size across the panel's edge, in logical pixels: its width on a
     /// side edge and its height on a top or bottom edge.
+    // Read back by row 6.6's apply path, which diffs the live geometry
+    // against the requested one before it re-applies.
+    #[allow(dead_code, reason = "row 6.6 diffs the live geometry on an apply")]
     #[must_use]
     pub const fn across(self) -> u32 {
         self.across
     }
 
+    // Read back by row 6.6's apply path, which diffs the live geometry
+    // against the requested one before it re-applies.
+    #[allow(dead_code, reason = "row 6.6 diffs the live geometry on an apply")]
     #[must_use]
     pub const fn gutters(self) -> Gutters {
         self.gutters
@@ -575,6 +585,8 @@ impl HeldGap {
     /// flagged the gap as tweening — the one case where a pushing target's
     /// strip differs from the strip the gap rests at — the gap tweens with the
     /// panel; otherwise it holds the strip the last apply left.
+    // Called per frame by the width tween's frame step (row 10.x, D8).
+    #[allow(dead_code, reason = "row 10.x's tween frame step calls this per frame")]
     #[must_use]
     pub fn reserve(self, gap_tweening: bool, geometry: Geometry, across_px: u32) -> Self {
         if gap_tweening
@@ -593,6 +605,8 @@ impl HeldGap {
     /// target whose strip differs from the strip the gap rests at right now.
     /// The caller reads that strip before the apply moves the held gap, so a
     /// covering excursion's shrink-back holds the gap still.
+    // Called by the width tween's start rule (row 10.x, D8).
+    #[allow(dead_code, reason = "row 10.x's tween start rule calls this")]
     #[must_use]
     pub fn tweens_with_panel(
         gap_rests_at: i32,
@@ -608,6 +622,9 @@ impl HeldGap {
     }
 
     /// The edge the reserve surface anchors to.
+    // Read by the tween's per-frame apply, which re-anchors the reserve as
+    // the gap moves (row 10.x, D8).
+    #[allow(dead_code, reason = "row 10.x's frame apply reads the gap's edge")]
     #[must_use]
     pub const fn edge(self) -> Edge {
         self.edge

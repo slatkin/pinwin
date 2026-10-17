@@ -1,14 +1,16 @@
 //! The popups of the panel window (replace-terminal-with-app-host D5): the
-//! recorded anchor rectangle of a positioner and the configure a layer popup
-//! reports in the app's own coordinates.
+//! recorded anchor rectangle of a positioner, the configure a layer popup
+//! reports in the app's own coordinates, and the same offset applied when
+//! the app repositions a popup.
 //!
 //! A popup whose parent is the panel window becomes a popup of the panel's
 //! layer surface, and the compositor positions it against that surface, whose
 //! origin is the panel's whole surface. The app asked for a position relative
 //! to its window geometry, so the proxy moves the positioner's anchor
-//! rectangle by that geometry when the popup is created and moves the popup's
-//! configure back before the app sees it. Popups of passed-through windows
-//! take none of this: they are forwarded unchanged.
+//! rectangle by that geometry when the popup is created — and again on every
+//! `xdg_popup.reposition`, which carries a fresh positioner — and moves the
+//! popup's configure back before the app sees it. Popups of passed-through
+//! windows take none of this: they are forwarded unchanged.
 //!
 //! The positioner recording and the configure translation are copied from
 //! wl-paper's `apps/wl-paper/src/paper.rs` `ClientXdgPositioner` and
@@ -22,6 +24,7 @@
 
 use std::rc::{Rc, Weak};
 
+use wl_proxy::object::ObjectUtils;
 use wl_proxy::protocols::xdg_shell::xdg_popup::{XdgPopup, XdgPopupHandler};
 use wl_proxy::protocols::xdg_shell::xdg_positioner::{XdgPositioner, XdgPositionerHandler};
 
@@ -44,6 +47,20 @@ pub(super) fn offset_anchor_rect(anchor: [i32; 4], parent_geometry: Option<[i32;
 pub(super) fn translate_configure(x: i32, y: i32, parent_geometry: [i32; 4]) -> (i32, i32) {
     let [gx, gy, ..] = parent_geometry;
     (x.saturating_sub(gx), y.saturating_sub(gy))
+}
+
+/// The anchor rectangle a repositioned layer popup gets upstream (D5): the
+/// same parent-geometry offset [`offset_anchor_rect`] applies at creation,
+/// because the compositor positions the repositioned popup against the
+/// panel surface too. `None` when the app's positioner set no anchor
+/// rectangle — there is nothing to rewrite and the reposition forwards
+/// unchanged.
+pub(super) fn reposition_offset(
+    anchor: Option<[i32; 4]>,
+    parent_geometry: [i32; 4],
+) -> Option<[i32; 4]> {
+    let anchor = anchor?;
+    Some(offset_anchor_rect(anchor, Some(parent_geometry)))
 }
 
 /// The app's `xdg_positioner` (D5): it records the anchor rectangle the app
@@ -121,11 +138,41 @@ impl XdgPopupHandler for ClientXdgPopup {
             popup.send_configure(x, y, width, height);
         }
     }
+
+    fn handle_reposition(
+        &mut self,
+        _slf: &Rc<XdgPopup>,
+        positioner: &Rc<XdgPositioner>,
+        token: u32,
+    ) {
+        // A repositioned layer popup places against the panel surface, so
+        // its fresh positioner gets the same parent-geometry offset the
+        // popup's creation got (D5) — and the upstream positioner keeps the
+        // app's rectangle afterwards, as at creation.
+        let anchor = positioner
+            .try_get_handler_ref::<ClientXdgPositioner>()
+            .ok()
+            .and_then(|handler| handler.anchor_rect());
+        let Some(offset) = reposition_offset(anchor, self.parent_geometry) else {
+            if let Some(popup) = self.popup.upgrade() {
+                popup.send_reposition(positioner, token);
+            }
+            return;
+        };
+        let [x, y, width, height] = offset;
+        positioner.send_set_anchor_rect(x, y, width, height);
+        if let Some(popup) = self.popup.upgrade() {
+            popup.send_reposition(positioner, token);
+        }
+        if let Some([ax, ay, aw, ah]) = anchor {
+            positioner.send_set_anchor_rect(ax, ay, aw, ah);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{offset_anchor_rect, translate_configure};
+    use super::{offset_anchor_rect, reposition_offset, translate_configure};
 
     /// A geometry the app never set leaves the anchor rectangle alone, so the
     /// popup is created where the app asked relative to the whole surface.
@@ -184,5 +231,26 @@ mod tests {
             translate_configure(i32::MAX, i32::MIN, [5, -5, 1, 1]),
             (i32::MAX - 5, i32::MIN + 5)
         );
+    }
+
+    /// A repositioned layer popup offsets its fresh positioner by the same
+    /// parent geometry the creation offset used (D5), so a re-opened menu
+    /// tracks the pointer against the window, not the surface.
+    #[test]
+    fn the_reposition_offset_matches_the_creation_offset() {
+        let geometry = [5, 7, 640, 480];
+        let anchor = [13, 29, 300, 40];
+        assert_eq!(
+            reposition_offset(Some(anchor), geometry),
+            Some(offset_anchor_rect(anchor, Some(geometry))),
+            "reposition and creation move the rectangle identically"
+        );
+    }
+
+    /// A positioner whose anchor rectangle the app never set forwards its
+    /// reposition unchanged — nothing to rewrite (D5).
+    #[test]
+    fn a_reposition_without_an_anchor_rectangle_is_not_rewritten() {
+        assert_eq!(reposition_offset(None, [5, 7, 640, 480]), None);
     }
 }

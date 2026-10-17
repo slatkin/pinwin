@@ -12,8 +12,11 @@
 //! `has_window` reflect that slot. Row 6.3 adds popups and the per-window
 //! decorations (D5): a popup of the panel window opens as a popup of its
 //! layer surface, and each decoration object is answered by its toplevel's
-//! route. The change commands are answered without effect until rows 6.4 and
-//! 6.6 give them one.
+//! route. Row 6.4 adds the geometry apply (D9): the reserve surface carries
+//! the exclusive zone, a percent size resolves against the panel's output
+//! read from `zxdg_output_v1`, and the panel window's buffer is cropped to
+//! the app's window geometry through a proxy-owned `wp_viewport`. The change
+//! commands are answered without effect until row 6.6 gives them one.
 //!
 //! The whole loop runs under the shared panic guard (D5): a panic in one
 //! panel drops that panel's state, which closes its app's Wayland
@@ -50,11 +53,11 @@ use wl_proxy::state::{Destructor, State, StateError, StateHandler};
 use crate::config::PanelSettings;
 use crate::daemon::lifetime::Lifetime;
 use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply, PanelRequest};
-use crate::geometry::Size;
 use crate::guard::{Poisoned, guard};
 use crate::ipc::PanelStatus;
 use crate::name::PanelName;
-use routing::{ClientDisplay, Routing};
+use registry::ClientDisplay;
+use routing::Routing;
 
 // The paths are explicit because a test harness can include this file the way
 // `tests/daemon.rs` includes `src/daemon.rs`, and a module loaded that way
@@ -69,10 +72,34 @@ mod routing;
 #[path = "proxy/slot.rs"]
 pub mod slot;
 
+// The settings-to-protocol mappers the routing and the reserve share (D9).
+#[path = "proxy/mapping.rs"]
+mod mapping;
+
+// The proxy's own globals and the output-size tracking behind percent
+// geometry (D9).
+#[path = "proxy/output.rs"]
+mod output;
+
+// The reserve surface: the transparent layer surface that owns the
+// exclusive zone (D9).
+#[path = "proxy/reserve.rs"]
+mod reserve;
+
+// The panel window's viewport crop: the client-side title bar and shadow
+// stay outside the panel (D5, D8).
+#[path = "proxy/viewport.rs"]
+mod viewport;
+
 // The D5 popup handlers: the recorded anchor rectangle and the configure a
 // layer popup reports in the app's own coordinates.
 #[path = "proxy/popup.rs"]
 mod popup;
+
+// The registry layer: the proxy's own upstream registry, the app's registry
+// pass-through and the xdg_wm_base that holds surfaces back (D4, D5).
+#[path = "proxy/registry.rs"]
+mod registry;
 
 // The D5 per-window decoration routing: each decoration object is answered
 // by its toplevel's route.
@@ -352,8 +379,8 @@ impl Panel {
     }
 
     /// The answer to one command. `Status` reports the settings and the view
-    /// state; every other command succeeds without effect until rows 6.4 and
-    /// 6.6 give it one (there is no layer surface to change yet).
+    /// state; every other command succeeds without effect until row 6.6
+    /// gives it one (there is no apply path to change the live panel yet).
     fn answer(&self, request: &PanelRequest) -> PanelReply {
         match request {
             PanelRequest::Status => PanelReply::Status(self.status()),
@@ -363,16 +390,13 @@ impl Panel {
 
     /// The panel's settings and view state (spec "Status"): `has_window` is
     /// the D4 slot's own answer, `shown` is the settings' hidden flag, which
-    /// row 8.2 applies, and a percent size has no pixel width until row 6.4
-    /// reads the output's length.
+    /// row 8.2 applies, and a percent size resolves once the panel's output
+    /// size is known (row 6.4, D9).
     fn status(&self) -> PanelStatus {
         let settings = self.settings.clone();
         let shown = !settings.hidden();
         let has_window = self.routing.has_window();
-        let width = match settings.size() {
-            Size::Pixels(px) => px.get(),
-            Size::Percent(_) => 0,
-        };
+        let width = self.routing.resolved_width();
         PanelStatus::new(settings, shown, has_window, width)
     }
 

@@ -105,36 +105,61 @@ and several modules wait for the rows that wire them in (D15).
   left, or the daemon dropped the handle), and `spawn`, which rows 7.1 to
   7.3 call for the display the app sets in `WAYLAND_DISPLAY` and the handle
   the daemon registers. Row 6.2 adds the window routing (D4) and the slot
-  its status reads, and row 6.3 the popups and the per-window decorations
-  (D5); the change commands are answered without effect until rows 6.4 and
-  6.6 give them one. `src/main.rs` compiles it; its tests are
-  `src/proxy/tests.rs`.
+  its status reads, row 6.3 the popups and the per-window decorations
+  (D5), and row 6.4 the geometry apply (D9): the status width reports a
+  percent size once the panel's output is known. The change commands are
+  answered without effect until row 6.6 gives them one. `src/main.rs`
+  compiles it; its tests are `src/proxy/tests.rs`.
 - `src/proxy/slot.rs` — the panel's one window slot (D4, spec "First
   window", "Window comes back", "Dialog", "Passed-through window stays",
   "Empty panel shows nothing"): the pure `Slot` of no window or one held
   toplevel id and the `Route` a new toplevel gets; a passed-through window is
   never stored or promoted. Display-free, so its five tests run without a
   compositor.
+- `src/proxy/registry.rs` — the registry layer between the app's connections
+  and the proxy (D4, D5): the display handler that stands the proxy's own
+  upstream registry up, the app's registry handler that forwards the
+  compositor's globals and announces the proxy's synthetic decoration
+  manager (global name 0) when the compositor has none, and the
+  `xdg_wm_base` handler that holds every `xdg_surface` back and records the
+  anchor rectangle of each positioner.
 - `src/proxy/routing.rs` — the xdg-shell to layer-surface window routing (D4):
-  the client display and registry handlers that bind `zwlr_layer_shell_v1`
-  and the compositor's real `zxdg_decoration_manager_v1`, hold every
-  `xdg_surface` back, announce the proxy's synthetic decoration manager
-  (global name 0) when the compositor has none, the slot branch that makes the panel's
-  first toplevel a `zwlr_layer_surface_v1` with the settings' anchors, size,
-  margins, layer and keyboard mode, the pass-through branch that forwards
-  every later toplevel unchanged, the `get_popup` that routes each popup by
-  its parent and keeps the window geometry `set_window_geometry` asked for,
-  and the configure/ack mapping and
+  the routing state one panel shares, the slot branch that makes the
+  panel's first toplevel a `zwlr_layer_surface_v1` with the settings'
+  anchors, size, margins, layer and keyboard mode and an exclusive zone of
+  -1 (D9), the validation that refuses a geometry the output cannot hold
+  before the window docks (spec "Validate a change before applying it"),
+  the pass-through branch that forwards every later toplevel unchanged, the
+  `get_popup` that routes each popup by its parent and keeps the window
+  geometry `set_window_geometry` asked for, the crop of the panel window's
+  buffer to that geometry, the size re-apply when the panel's output size
+  arrives, and the configure/ack mapping and
   `closed` forwarding copied from wl-paper's `apps/wl-paper/src/paper.rs`
-  (GPL-3.0). A percent size resolves against a placeholder 1920x1080 output
-  until row 6.4 reads the real one.
+  (GPL-3.0). A percent size resolves against the panel's tracked output
+  size, with a 1920x1080 placeholder until the first size is known (D9).
+- `src/proxy/output.rs` — the proxy's own globals and output tracking (D9):
+  the `wl_compositor`, `wl_shm` and `wp_viewporter` the reserve and the
+  crop are built from, one tracked `wl_output` per global with its
+  `zxdg_output_v1` logical size (or the `wl_output` mode-and-scale
+  fallback), the `wl_surface.enter` watch that learns which output the
+  panel docked on, and the app-viewport registry the D8 one-viewport rule
+  reads. The mode-and-scale fallback is display-free, so its four tests run
+  without a compositor.
+- `src/proxy/reserve.rs` — the reserve surface (D9): the second, transparent
+  1x1-buffer layer surface created and destroyed with the panel window,
+  carrying the exclusive zone the panel surface does not claim — the
+  `HeldGap`'s strip for a pushing start, nothing for a covering one — with
+  an empty input region and no keyboard. Ported from the spike's
+  `src/reserve.rs` (wl-paper structure, GPL-3.0); the strip and zone math is
+  `src/geometry.rs`.
 - `src/proxy/popup.rs` — the popups of the panel window (D5): the recorded
   `xdg_positioner` anchor rectangle, the `offset_anchor_rect` that moves it
-  by the parent window geometry, the `translate_configure` that moves a
-  layer popup's configure back into the app's coordinates, and the
-  positioner and popup handlers copied from wl-paper's
-  `apps/wl-paper/src/paper.rs` (GPL-3.0). The helpers are display-free
-  (`port-to-rust` D10), so their six tests run without a compositor.
+  by the parent window geometry at creation and on `xdg_popup.reposition`,
+  the `translate_configure` that moves a layer popup's configure back into
+  the app's coordinates, and the positioner and popup handlers copied from
+  wl-paper's `apps/wl-paper/src/paper.rs` (GPL-3.0). The helpers are
+  display-free (`port-to-rust` D10), so their eight tests run without a
+  compositor.
 - `src/proxy/decoration.rs` — the per-window decoration routing (D5): the
   `route_decoration` decision — server-side for the panel window, forwarded
   to the compositor's real manager or answered client-side for a
@@ -152,6 +177,15 @@ and several modules wait for the rows that wire them in (D15).
   D8): the exact-rational scale rounding, the tween crop and the viewport
   source rectangle. No module compiles it yet; `tests/tween_crop.rs` includes
   it so its unit tests run.
+- `src/proxy/viewport.rs` — the panel window's viewport crop (D5, D8): the
+  pure `static_crop` that turns the app's window geometry into the proxy
+  viewport's source and 1:1 destination (a negative CSD origin clamps to
+  the buffer's origin, a collapsed geometry gives no crop), the decision
+  that defers to an app viewport the proxy must not second (D8's
+  one-viewport rule), and the mirror handlers that pass an app's own
+  viewport values upstream unchanged — composed cropping of app viewports
+  waits for row 10.x. Display-free, so its four tests run without a
+  compositor.
 - `src/anim.rs` — the animated width transition's pure tween step.
 - `src/guard.rs` — the shared panic guard. `src/main.rs` compiles it now
   that the panel thread guards its loop under it.
@@ -268,19 +302,31 @@ stand-in panel threads and no compositor, and the pure slot tests in
 "Dialog", "Passed-through window stays" and "Empty panel shows nothing", the
 pure popup-offset tests in `src/proxy/popup.rs` cover the anchor rectangle a
 panel window's popup is created with (no geometry set, a negative CSD
-origin, saturation past `i32` and the configure moved back), and the pure
+origin, saturation past `i32` and the configure moved back) and the same
+offset a repositioned popup gets, and the pure
 decoration-routing tests in `src/proxy/decoration.rs` cover the D5 matrix:
 server-side for the panel window, forwarded to a real manager or answered
 client-side without one, read from the slot at the time of each request. The
 decision tests in
-`src/proxy/check.rs` cover the layer-shell global list ("No layer-shell").
+`src/proxy/check.rs` cover the layer-shell global list ("No layer-shell"),
+the mode-and-scale tests in `src/proxy/output.rs` cover the D9 size fallback
+(a 2x-scaled 4K mode halves to 1920x1080, degenerate inputs give none, the
+`zxdg_output_v1` logical size wins over the fallback), and the viewport
+tests in `src/proxy/viewport.rs` cover the steady-state crop (D5, D8): the
+window geometry as source and 1:1 destination, a negative CSD origin
+clamped to the buffer's origin, a collapsed geometry refused, and the
+decision matrix that defers to an app viewport.
 The tests in `tests/command_line_ipc.rs` run a stand-in compositor on the
 made-up display: it announces `zwlr_layer_shell_v1` and answers the
 roundtrip, so the daemon's start check passes without the user's compositor.
 The crop harness includes `src/geometry.rs` as well, for the `Edge` the crop
 names, under a `dead_code` allow whose reason names the rows that use the
 accessors it does not. `src/anim.rs` is not compiled until the tween rows
-wire it in, so it has no tests yet. Keep the pure parts display-free
+wire it in, so it has no tests yet. The dead-code staging in
+`src/geometry.rs` is per-item now: `Margins::new` and the `Geometry::across`
+and `Geometry::gutters` accessors wait for row 6.6's apply path, and
+`HeldGap::reserve`, `HeldGap::tweens_with_panel` and `HeldGap::edge` for the
+row 10.x tween. Keep the pure parts display-free
 (`port-to-rust` D10): take the fd and the outputs of the environment as
 parameters, so the tests run without a display. Tests that need a real
 compositor are `#[ignore]`d and run explicitly. Once the proxy lands, exercise
