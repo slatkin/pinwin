@@ -641,5 +641,9 @@ impl HeldGap {
     }
 }
 
+// The path is explicit because `tests/tween_crop.rs` includes this file with
+// `#[path]`, and a module loaded that way searches its own children in the
+// included file's directory rather than beside it (row 3.3).
 #[cfg(test)]
+#[path = "geometry/tests.rs"]
 mod tests;
