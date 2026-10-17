@@ -1,5 +1,5 @@
-//! The rules of a panel name (spec "Panel names"), moved out of
-//! `instance.rs` by replace-terminal-with-app-host row 4.1: a name is
+//! The rules of a panel name (spec "Panel names"), moved out of the old
+//! instance socket module by replace-terminal-with-app-host row 4.1: a name is
 //! 1..=64 characters from `[A-Za-z0-9_-]`, it comes from `--name` or from
 //! the file name of the command, and the error of an unusable default
 //! names `--name`, the option that replaces it.
@@ -8,7 +8,7 @@
 //! way a name reaches a socket path, a registry key or a reply
 //! (`port-to-rust` D6), so every decision here is unit tested with no
 //! daemon (`src/cli.rs` uses the module; `tests/name.rs` and `tests/cli.rs`
-//! compile it until row 5.2 does).
+//! compile it until `src/main.rs` does).
 
 use std::ffi::OsStr;
 use std::fmt;

@@ -31,9 +31,13 @@ and several modules wait for the rows that wire them in (D15).
   64 KiB request line with a bounded reader, and the client call with a
   bounded wait. No module compiles it yet; `tests/ipc.rs` includes it so its
   unit tests run.
-- `src/instance.rs` + `src/instance/` — the instance socket: identity, bind,
-  listener and client (`InstanceSocket`, `Request`, `instance::send`); the
-  daemon socket grows from it.
+- `src/daemon.rs` — the daemon's socket (D12, D15): the path
+  `$XDG_RUNTIME_DIR/pinwin/<display>.sock` of spec "Daemon socket", the bind
+  that creates the `pinwin` directory and the 0600 socket file, the
+  stale-file replacement and the live-daemon refusal (spec "One daemon for
+  each Wayland display"), and the file's removal when the socket drops. No
+  module compiles it yet; `tests/daemon.rs` includes it so its unit tests
+  run. The registry, event bus and lifetime join it in rows 5.3 to 5.5.
 - `src/name.rs` — the panel name rules (spec "Panel names"): the validated
   `PanelName` of 1..=64 characters from `[A-Za-z0-9_-]`, the default name
   taken from the command's file name, and the two name errors. `src/cli.rs`
@@ -126,12 +130,16 @@ README's command table against `cli.rs`, and the tests in `tests/ipc.rs`,
 which cover the wire format (spec "Valid request", "Not JSON" and
 "Unknown command") and an invalid value's own kind, the 64 KiB line limit
 and the client's bounded wait, and check every request `cmd` against
-`cli.rs`. The crop harness
+`cli.rs`, and the tests in `tests/daemon.rs`,
+which cover the daemon socket (spec "Daemon socket", "One daemon for each
+Wayland display"): the path rule, the stale-file replacement, the
+live-daemon refusal, two displays under one runtime directory and the
+socket file's 0600 mode in a scratch runtime directory. The crop harness
 includes `src/geometry.rs` as well, for the `Edge` the crop names, under a
 `dead_code` allow whose reason names the rows that use the accessors it does
 not. The other kept modules
-(`anim`, `guard`, `instance`) are not
-compiled until rows 5.2 and 6.1 wire them in, so they have no tests
+(`anim`, `guard`) are not
+compiled until the daemon and the proxy wire them in, so they have no tests
 yet. Keep the pure parts display-free
 (`port-to-rust` D10): take the fd and the outputs of the environment as
 parameters, so the tests run without a display. Tests that need a real
