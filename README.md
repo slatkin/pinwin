@@ -105,6 +105,24 @@ The options win over the config file for the values they set: the option wins
 over `[panel.<name>]`, which wins over `[panel.defaults]`, which wins over the
 built-in default.
 
+## Window picking
+
+A panel holds one window of its app. The first top-level window the app opens
+becomes the panel's window, docked at the panel's edge with the panel's
+settings. The panel takes a new window the same way after its window closes,
+so an app that closes its window and opens another one later gets the panel
+again with the panel's current settings.
+
+While the panel holds a window, every other top-level window of the app opens
+as a normal compositor window, as it would without pinwin. A window that
+opened this way stays a normal window when the panel's window closes: the
+panel does not take it over.
+
+An app that hands a launch to a running copy opens no window of its own, so it
+puts nothing in the panel; the running copy keeps its own window. Start such
+an app so that it opens a window in this process; Ghostty, for example, needs
+`--gtk-single-instance=false`.
+
 ## Migrating to 0.4.0
 
 Version 0.4.0 replaces the terminal and its environment variables with a

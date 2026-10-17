@@ -18,7 +18,7 @@ use std::fs;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -40,6 +40,11 @@ const DISPLAY: &str = "wayland-test";
 /// How long a test waits for the daemon's socket to answer, and for the
 /// daemon to end after `quit`.
 const DAEMON_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a test waits for one `pinwin` client command to exit: longer than
+/// the client's own two-second reply bound, and short enough that a wedged
+/// client fails its test instead of blocking the suite.
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A unique scratch directory under the system temp dir, standing in for
 /// `XDG_RUNTIME_DIR` and the config home: the tests never touch the process
@@ -68,6 +73,28 @@ fn pinwin(dir: &Path, args: &[&str]) -> Command {
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .args(args);
     command
+}
+
+/// Run one `pinwin` client to exit with a bounded wait and collect its
+/// output. A child that outlives the bound is killed and the test fails, so a
+/// wedged client cannot block the suite.
+fn client_output(mut command: Command) -> Output {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run pinwin");
+    let deadline = Instant::now() + CLIENT_TIMEOUT;
+    loop {
+        if child.try_wait().expect("the client's status").is_some() {
+            return child.wait_with_output().expect("the client's output");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "pinwin did not exit within {CLIENT_TIMEOUT:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// The daemon socket of the scratch directory (spec "Daemon socket").
@@ -229,9 +256,7 @@ impl ClientHandler for FakeClient {
 #[test]
 fn a_client_with_no_daemon_exits_1() {
     let dir = temp_dir("no-daemon");
-    let output = pinwin(&dir, &["toggle", "notes"])
-        .output()
-        .expect("run pinwin toggle");
+    let output = client_output(pinwin(&dir, &["toggle", "notes"]));
     assert_eq!(output.status.code(), Some(1), "no daemon, status");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -248,9 +273,7 @@ fn a_client_with_no_daemon_exits_1() {
 fn an_unknown_panel_exits_1() {
     let dir = temp_dir("unknown-panel");
     let daemon = Daemon::start(&dir);
-    let output = pinwin(&dir, &["show", "nope"])
-        .output()
-        .expect("run pinwin show");
+    let output = client_output(pinwin(&dir, &["show", "nope"]));
     assert_eq!(output.status.code(), Some(1), "unknown panel, status");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -266,9 +289,7 @@ fn an_unknown_panel_exits_1() {
 #[test]
 fn a_usage_error_exits_2() {
     let dir = temp_dir("usage-error");
-    let output = pinwin(&dir, &["frobnicate"])
-        .output()
-        .expect("run pinwin frobnicate");
+    let output = client_output(pinwin(&dir, &["frobnicate"]));
     assert_eq!(output.status.code(), Some(2), "usage error, status");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -285,9 +306,7 @@ fn a_usage_error_exits_2() {
 fn status_prints_the_reply_json() {
     let dir = temp_dir("status");
     let daemon = Daemon::start(&dir);
-    let output = pinwin(&dir, &["status"])
-        .output()
-        .expect("run pinwin status");
+    let output = client_output(pinwin(&dir, &["status"]));
     assert_eq!(output.status.code(), Some(0), "status, status");
     let reply: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("the reply is one JSON object");
@@ -311,7 +330,7 @@ fn status_prints_the_reply_json() {
 fn quit_ends_the_daemon_and_removes_its_socket() {
     let dir = temp_dir("quit");
     let mut daemon = Daemon::start(&dir);
-    let output = pinwin(&dir, &["quit"]).output().expect("run pinwin quit");
+    let output = client_output(pinwin(&dir, &["quit"]));
     assert_eq!(output.status.code(), Some(0), "quit, status");
     let status = daemon.wait();
     assert_eq!(status.code(), Some(0), "the daemon exits 0 after quit");
@@ -332,9 +351,7 @@ fn an_invalid_config_file_exits_2() {
     fs::create_dir_all(config.parent().expect("a config directory"))
         .expect("create the config dir");
     fs::write(&config, "[panel.defaults]\nedge = \"middle\"\n").expect("write the broken file");
-    let output = pinwin(&dir, &["daemon"])
-        .output()
-        .expect("run pinwin daemon");
+    let output = client_output(pinwin(&dir, &["daemon"]));
     assert_eq!(output.status.code(), Some(2), "invalid config, status");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

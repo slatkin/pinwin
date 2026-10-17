@@ -6,10 +6,12 @@
 //! compositor, one acceptor (the socket the app connects to) and every client
 //! connection of the app (D1). The thread polls that state's `poll_fd`, the
 //! daemon's command eventfd and the app's pidfd, so a command never waits for
-//! Wayland traffic and the app's exit needs no `waitpid` (D3, D12). Row 6.1
-//! is the skeleton: every client request passes through unchanged, the panel
-//! has no layer surface yet, and the change commands are answered without
-//! effect until rows 6.2 to 6.6 add routing, popups, geometry and outputs.
+//! Wayland traffic and the app's exit needs no `waitpid` (D3, D12). Row 6.2
+//! adds window routing (D4): the app's first toplevel becomes the panel's
+//! layer surface, every later one passes through, and the panel's `shown` and
+//! `has_window` reflect that slot. The change commands are answered without
+//! effect until rows 6.4 and 6.6 give them one, and popups and decorations
+//! arrive with row 6.3.
 //!
 //! The whole loop runs under the shared panic guard (D5): a panic in one
 //! panel drops that panel's state, which closes its app's Wayland
@@ -50,6 +52,7 @@ use crate::geometry::Size;
 use crate::guard::{Poisoned, guard};
 use crate::ipc::PanelStatus;
 use crate::name::PanelName;
+use routing::{ClientDisplay, Routing};
 
 // The paths are explicit because a test harness can include this file the way
 // `tests/daemon.rs` includes `src/daemon.rs`, and a module loaded that way
@@ -57,6 +60,12 @@ use crate::name::PanelName;
 // same).
 #[path = "proxy/check.rs"]
 pub mod check;
+
+// The D4 window-routing handlers and the pure slot rule they decide with.
+#[path = "proxy/routing.rs"]
+mod routing;
+#[path = "proxy/slot.rs"]
+pub mod slot;
 
 #[cfg(test)]
 #[path = "proxy/tests.rs"]
@@ -221,6 +230,8 @@ struct Panel {
     /// exited *and* this returned to zero (D3).
     connections: Rc<Cell<usize>>,
     settings: PanelSettings,
+    /// The window routing and the slot its status reads (D4).
+    routing: Rc<Routing>,
 }
 
 impl Panel {
@@ -239,8 +250,10 @@ impl Panel {
             .map_err(|error| state_error(&error))?;
         let destructor = state.create_destructor();
         let connections = Rc::new(Cell::new(0));
+        let routing = Routing::new(settings.clone());
         state.set_handler(PanelState {
             connections: Rc::clone(&connections),
+            routing: Rc::clone(&routing),
         });
         // `create_acceptor` registers the socket in the state's own poll set
         // and accepts on `dispatch`, so this loop watches only the state's
@@ -261,6 +274,7 @@ impl Panel {
             pidfd,
             connections,
             settings: settings.clone(),
+            routing,
         })
     }
 
@@ -335,18 +349,19 @@ impl Panel {
         }
     }
 
-    /// The panel's settings and view state (spec "Status"). Row 6.1 has no
-    /// window and no layer surface, so `has_window` is false; `shown` is the
-    /// settings' own hidden flag, which row 8.2 applies; and a percent size
-    /// has no pixel width until row 6.4 reads the output's length.
+    /// The panel's settings and view state (spec "Status"): `has_window` is
+    /// the D4 slot's own answer, `shown` is the settings' hidden flag, which
+    /// row 8.2 applies, and a percent size has no pixel width until row 6.4
+    /// reads the output's length.
     fn status(&self) -> PanelStatus {
         let settings = self.settings.clone();
         let shown = !settings.hidden();
+        let has_window = self.routing.has_window();
         let width = match settings.size() {
             Size::Pixels(px) => px.get(),
             Size::Percent(_) => 0,
         };
-        PanelStatus::new(settings, shown, false, width)
+        PanelStatus::new(settings, shown, has_window, width)
     }
 
     /// Wait for the state's poll fd, the command eventfd or the app's pidfd,
@@ -397,11 +412,13 @@ impl Panel {
     }
 }
 
-/// The proxy state's handler (D1, D12): it counts the app's connections,
-/// which the end rule needs (D3), and it logs the compositor's protocol
-/// error, which ends this panel's connection (spec "App protocol error").
+/// The proxy state's handler (D1, D4, D12): it counts the app's connections,
+/// which the end rule needs (D3), installs the window routing of each new
+/// connection (D4), and logs the compositor's protocol error, which ends this
+/// panel's connection (spec "App protocol error").
 struct PanelState {
     connections: Rc<Cell<usize>>,
+    routing: Rc<Routing>,
 }
 
 impl StateHandler for PanelState {
@@ -410,6 +427,8 @@ impl StateHandler for PanelState {
         client.set_handler(PanelClient {
             connections: Rc::clone(&self.connections),
         });
+        let display = client.display();
+        display.set_handler(ClientDisplay::new(Rc::clone(&self.routing), display));
     }
 
     fn display_error(

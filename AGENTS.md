@@ -104,10 +104,25 @@ and several modules wait for the rows that wire them in (D15).
   shared panic guard, the end rule (the app exited and no connection is
   left, or the daemon dropped the handle), and `spawn`, which rows 7.1 to
   7.3 call for the display the app sets in `WAYLAND_DISPLAY` and the handle
-  the daemon registers. Row 6.1 is the skeleton: the change commands are
-  answered without effect until rows 6.2 to 6.6 add routing, popups,
-  geometry, outputs and live layout changes. `src/main.rs` compiles it; its
-  tests are `src/proxy/tests.rs`.
+  the daemon registers. Row 6.2 adds the window routing (D4) and the slot
+  its status reads; the change commands are answered without effect until
+  rows 6.4 and 6.6 give them one, and popups and decorations arrive with
+  row 6.3. `src/main.rs` compiles it; its tests are `src/proxy/tests.rs`.
+- `src/proxy/slot.rs` — the panel's one window slot (D4, spec "First
+  window", "Window comes back", "Dialog", "Passed-through window stays",
+  "Empty panel shows nothing"): the pure `Slot` of no window or one held
+  toplevel id and the `Route` a new toplevel gets; a passed-through window is
+  never stored or promoted. Display-free, so its five tests run without a
+  compositor.
+- `src/proxy/routing.rs` — the xdg-shell to layer-surface window routing (D4):
+  the client display and registry handlers that bind `zwlr_layer_shell_v1`
+  and hold every `xdg_surface` back, the slot branch that makes the panel's
+  first toplevel a `zwlr_layer_surface_v1` with the settings' anchors, size,
+  margins, layer and keyboard mode, the pass-through branch that forwards
+  every later toplevel unchanged, and the configure/ack mapping and
+  `closed` forwarding copied from wl-paper's `apps/wl-paper/src/paper.rs`
+  (GPL-3.0). A percent size resolves against a placeholder 1920x1080 output
+  until row 6.4 reads the real one.
 - `src/proxy/check.rs` — the layer-shell check at daemon start (D12, spec
   "Wayland layer-shell is required"): a throwaway `State` reads the
   compositor's globals in one roundtrip and `has_layer_shell` decides over
@@ -229,7 +244,10 @@ loop reads a shutdown trigger, and only the SIGINT/SIGTERM mapping
 The proxy tests in `src/proxy/tests.rs` cover "Panic in one panel": a body
 that panics under the guard ends only that panel's handle — its name leaves
 the registry, the other panel still answers and the daemon stays up — with
-stand-in panel threads and no compositor, and the decision tests in
+stand-in panel threads and no compositor, and the pure slot tests in
+`src/proxy/slot.rs` cover the D4 rule: "First window", "Window comes back",
+"Dialog", "Passed-through window stays" and "Empty panel shows nothing". The
+decision tests in
 `src/proxy/check.rs` cover the layer-shell global list ("No layer-shell").
 The tests in `tests/command_line_ipc.rs` run a stand-in compositor on the
 made-up display: it announces `zwlr_layer_shell_v1` and answers the
