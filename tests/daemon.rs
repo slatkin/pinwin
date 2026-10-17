@@ -48,6 +48,12 @@ pub mod guard;
 #[path = "../src/proxy.rs"]
 pub mod proxy;
 
+// The tray icon (row 11.1, D14) is named by the daemon's lifetime, so the
+// included modules compile it. No test enables it, so no test reaches a
+// real session bus.
+#[path = "../src/tray.rs"]
+pub mod tray;
+
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

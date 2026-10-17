@@ -82,6 +82,29 @@ foreground. The other subcommands send one request to the daemon and exit:
 | `quit` | End every panel and then the daemon. |
 | `reload` | Read the config file again. |
 
+## Tray
+
+The daemon adds one StatusNotifierItem to a running tray host while at least
+one panel exists, and removes it when the last panel ends. The number of
+panels never changes the number of icons. The item uses the `pinwin` title
+and the `utilities-terminal` theme icon.
+
+Its menu has one submenu for each panel, labelled with the panel name, in the
+order the panels started. A panel submenu has a `Shown` check item that hides
+or shows that panel, an edge choice of `left`, `right`, `top` and `bottom`,
+and a reserve choice of `push` and `cover`; each item shows the panel's
+current state. `Quit pinwin` follows the panel submenus and does the same as
+the `quit` command. The menu is also a client of the daemon's IPC: a change
+made by `pinwin`, a key binding or a script shows in the menu the next time
+it opens, and the menu's own choices use the same commands.
+
+A primary click on the icon changes nothing; the menu is the only way the
+tray changes a panel.
+
+A session with no D-Bus session bus or no tray host is not an error: the
+daemon still runs, the panels work and the IPC answers. The daemon reports
+the missing tray once and adds the icon when a tray host starts later.
+
 ## Run options
 
 `pinwin run [options] -- <command> [args...]` starts the command in a panel.

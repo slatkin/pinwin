@@ -66,6 +66,13 @@ pub mod proxy;
 
 mod name;
 
+// The tray icon (row 11.1, D14): the daemon starts it with the first panel
+// and stops it with the last. `crate::daemon::lifetime` names
+// `crate::tray::TrayService`, and the menu model's `new` has no caller in the
+// binary yet, so the module stays public at this crate root like the other
+// staged modules (D15). Nothing outside the binary can name it.
+pub mod tray;
+
 // The app `pinwin run` becomes (row 7.1, D2): the exec spec's program,
 // arguments and environment are pure, so their test needs no display.
 mod run;
@@ -222,9 +229,13 @@ fn daemon() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The tray icon shows only while panels exist (row 11.1, D14), so the
+    // daemon enables it before any panel can start.
+    let lifetime = Arc::new(lifetime);
+    lifetime.enable_tray();
     // The socket file is removed by the socket's drop when the loop returns
     // (spec "Daemon socket").
-    match Daemon::new(socket, Arc::new(lifetime)).run(Some(&signals)) {
+    match Daemon::new(socket, lifetime).run(Some(&signals)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("pinwin: the daemon ended: {error}");

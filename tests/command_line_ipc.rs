@@ -62,15 +62,24 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
+/// The address of a session bus that does not exist, so no test reaches the
+/// user's session bus and the daemon's tray start fails the way the spec's
+/// "No tray host" scenario describes (D14).
+fn missing_session_bus(dir: &Path) -> String {
+    format!("unix:path={}", dir.join("no-session-bus").display())
+}
+
 /// A `pinwin` command in the display-free environment: the scratch runtime
 /// directory, the made-up display and a config home inside the scratch
-/// directory, so the daemon reads no user config file.
+/// directory, so the daemon reads no user config file. The session bus is a
+/// missing socket, so the daemon's tray never reaches the user's session.
 fn pinwin(dir: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pinwin"));
     command
         .env("XDG_RUNTIME_DIR", dir)
         .env("WAYLAND_DISPLAY", DISPLAY)
         .env("XDG_CONFIG_HOME", dir.join("config"))
+        .env("DBUS_SESSION_BUS_ADDRESS", missing_session_bus(dir))
         .args(args);
     command
 }
@@ -515,6 +524,48 @@ fn two_first_runs_leave_one_daemon() {
         !socket_path(&dir).exists(),
         "the daemon removed its socket file"
     );
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// With a session bus that does not exist, a panel still starts, the daemon
+/// keeps running and the IPC answers, with no tray icon and one reported
+/// line (spec "No tray is not an error": "No tray host", D14).
+#[test]
+fn a_daemon_without_a_session_bus_still_answers() {
+    let dir = temp_dir("no-tray-host");
+    let config = dir.join("config").join("pinwin").join("config.toml");
+    fs::create_dir_all(config.parent().expect("a config directory"))
+        .expect("create the config dir");
+    fs::write(&config, "[daemon]\nexit_when_idle = false\n").expect("write the config file");
+    let daemon = Daemon::start(&dir);
+
+    // `true` exits at once, so this is a panel that starts (and asks the
+    // tray service to start) and then ends, while `exit_when_idle` false
+    // keeps the daemon.
+    let output = client_output(pinwin(&dir, &["run", "--name", "notes", "--", "true"]));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the panel's app ran: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = client_output(pinwin(&dir, &["status"]));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the daemon answers without a tray: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reply: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the reply is one JSON object");
+    assert_eq!(reply["ok"], true, "no tray is not an error: {reply}");
+    assert!(
+        reply["pid"].as_u64().is_some(),
+        "the same daemon still runs: {reply}"
+    );
+
+    drop(daemon);
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 

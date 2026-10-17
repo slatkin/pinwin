@@ -105,6 +105,21 @@ and several modules wait for the rows that wire them in (D15).
   `exit_when_idle` is true. The socket file is removed by the
   `DaemonSocket` drop when the loop returns. `tests/daemon.rs` includes it,
   and its tests are `tests/daemon/lifetime.rs`.
+- `src/tray.rs` — the tray icon (row 11.1, D14, spec "One tray icon while
+  panels exist", "No tray is not an error", "Menu for each panel", "Quit
+  from the menu" and "Icon click opens nothing new"): the ksni
+  StatusNotifierItem whose service the daemon starts with its first panel and
+  stops with its last, so no icon shows without panels, and whose missing
+  session bus is reported once and otherwise ignored; the pure `MenuModel`
+  that lists the panels in start order with their shown state, edge and
+  reserve, built from the registry's status reply when the menu opens and
+  after each action; and the menu actions that send the same `ipc::Request`
+  through the registry the IPC routes to and call `Lifetime::quit` for "Quit
+  pinwin". `src/main.rs` compiles it. A lifetime a test builds never enables
+  the tray, so its stand-in panels cannot reach a real session bus; the
+  no-session-bus path runs through the real binary in
+  `tests/command_line_ipc.rs`, and the menu model's tests are
+  `src/tray/tests.rs`.
 - `src/name.rs` — the panel name rules (spec "Panel names"): the validated
   `PanelName` of 1..=64 characters from `[A-Za-z0-9_-]`, the default name
   taken from the command's file name, and the two name errors. `src/cli.rs`

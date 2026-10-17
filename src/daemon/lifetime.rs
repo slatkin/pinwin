@@ -31,7 +31,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::Duration;
 
@@ -43,6 +43,7 @@ use super::{DaemonSocket, locked};
 use crate::config::{Config, DaemonSettings, PanelOptions, PanelSettings};
 use crate::ipc::{ErrorKind, ErrorReply, Reply};
 use crate::name::PanelName;
+use crate::tray::TrayService;
 
 /// The daemon's shared lifetime (D12): what a connection thread needs to
 /// answer a request, plus the state that decides when the accept loop ends.
@@ -67,6 +68,28 @@ pub struct Lifetime {
     /// The bound of every wait for a panel, so a test uses a short one
     /// (spec "The daemon survives bad input", `port-to-rust` D10).
     wait: Duration,
+    /// The tray icon and its lifecycle (D14, spec "One tray icon while
+    /// panels exist").
+    tray: Mutex<TrayState>,
+    /// The daemon as the tray sees it, set once by [`Lifetime::enable_tray`].
+    /// A lifetime a test builds never enables the tray, so its stand-in
+    /// panels cannot register an icon on a real session bus.
+    tray_daemon: OnceLock<Weak<Self>>,
+}
+
+/// The tray service's lifecycle (D14): no icon while no panel exists, one
+/// icon while at least one does.
+#[derive(Debug, Default)]
+enum TrayState {
+    /// The tray is off: no caller enabled it, or the last panel ended.
+    #[default]
+    Off,
+    /// The tray service runs and shows one icon.
+    Running(TrayService),
+    /// The session bus was unreachable on the first panel, so the daemon
+    /// runs without an icon and does not retry (spec "No tray is not an
+    /// error").
+    Unavailable,
 }
 
 impl Lifetime {
@@ -92,6 +115,8 @@ impl Lifetime {
             shutdown: Shutdown::new()?,
             had_panel: AtomicBool::new(false),
             wait,
+            tray: Mutex::new(TrayState::Off),
+            tray_daemon: OnceLock::new(),
         })
     }
 
@@ -113,6 +138,13 @@ impl Lifetime {
         self.wait
     }
 
+    /// Let the daemon show a tray icon while panels exist (D14). The daemon
+    /// calls this once at start; a test lifetime never does, so its
+    /// stand-in panels cannot reach a real session bus.
+    pub fn enable_tray(self: &Arc<Self>) {
+        let _ = self.tray_daemon.set(Arc::downgrade(self));
+    }
+
     /// Whether the accept loop should end (spec "Daemon lifetime
     /// preference", "Quit").
     #[must_use]
@@ -128,6 +160,9 @@ impl Lifetime {
         self.registry.add(name.clone(), handle)?;
         self.had_panel.store(true, Ordering::SeqCst);
         self.bus.publish(&Event::Added { panel: name });
+        // The first panel brings the tray icon (D14, spec "Icon with
+        // panels"); later panels keep the one icon.
+        self.show_tray();
         Ok(())
     }
 
@@ -154,8 +189,14 @@ impl Lifetime {
         self.bus.publish(&Event::Removed {
             panel: name.clone(),
         });
-        if self.registry.is_empty() && self.exits_when_idle() {
-            self.shutdown.trigger();
+        if self.registry.is_empty() {
+            // No panel is left, so the pinwin icon goes away while a
+            // resident daemon keeps running (spec "No icon without
+            // panels").
+            self.hide_tray();
+            if self.exits_when_idle() {
+                self.shutdown.trigger();
+            }
         }
         true
     }
@@ -163,9 +204,35 @@ impl Lifetime {
     /// End every panel and then the daemon (spec "Quit"): clearing the
     /// registry drops each panel's handle, which closes its command channel
     /// and so ends the panel thread, and the trigger wakes the accept loop.
+    /// The tray is not stopped here: the daemon ends with the process, and
+    /// the menu's own "Quit pinwin" runs on the tray thread, which must not
+    /// wait for itself.
     pub fn quit(&self) {
         self.registry.clear();
         self.shutdown.trigger();
+    }
+
+    /// Start the tray service for the first panel (D14). The tray is off
+    /// until [`Lifetime::enable_tray`] ran; a session bus that cannot be
+    /// reached is reported once by [`TrayService::start`] and not retried.
+    fn show_tray(&self) {
+        let Some(lifetime) = self.tray_daemon.get() else {
+            return;
+        };
+        let mut tray = locked(&self.tray);
+        if matches!(*tray, TrayState::Off) {
+            *tray = TrayService::start(Weak::clone(lifetime), self.wait)
+                .map_or(TrayState::Unavailable, TrayState::Running);
+        }
+    }
+
+    /// Stop the tray service when the last panel ends, so no icon shows
+    /// without a panel (spec "No icon without panels").
+    fn hide_tray(&self) {
+        let previous = std::mem::take(&mut *locked(&self.tray));
+        if let TrayState::Running(service) = previous {
+            service.stop();
+        }
     }
 
     /// Read the config file again (spec "Reload"): a valid file replaces the
