@@ -11,7 +11,7 @@ Each task that adds or removes a module also updates the module list in AGENTS.m
 The spike is a throwaway crate outside this repository (a copy of `wl-paper` changed as
 below). Its code does not enter pinwin; only the findings do.
 
-- [ ] 1.1 Change the spike to anchor one edge plus both ends, set a width, set exclusive zone
+- [x] 1.1 Change the spike to anchor one edge plus both ends, set a width, set exclusive zone
   -1, and add a second transparent layer surface with the exclusive zone (design D4, D9). The
   user runs it with a GTK app and a terminal app, and checks: the window docks, tiled windows
   move beside it, right-click menus open at the pointer, a second window opens as a normal
