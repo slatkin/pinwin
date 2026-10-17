@@ -157,7 +157,7 @@ below). Its code does not enter pinwin; only the findings do.
   "Status of one panel" and a panel that does not answer (error `internal`).
 - [x] 5.4 Add the event bus and `subscribe` (spec "Event stream"). Verify: tests for "Toggle
   events", "Slow subscriber" and "Silent client" pass.
-- [ ] 5.5 Add daemon lifetime: `exit_when_idle`, `quit`, SIGINT and SIGTERM, socket removal,
+- [x] 5.5 Add daemon lifetime: `exit_when_idle`, `quit`, SIGINT and SIGTERM, socket removal,
   and `reload` (spec "Reload", "Runtime changes stay in memory"). Verify: tests for "Exit with
   the last panel", "Stay resident", "Quit with panels", "Reload a valid file" and "Reload an
   invalid file" pass.
