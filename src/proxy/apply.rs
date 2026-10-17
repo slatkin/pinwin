@@ -12,7 +12,8 @@
 //! panel's settings, window and reservation stay unchanged (spec "Validate a
 //! change before applying it"). The applied part is thin: it stores the
 //! settings, re-sends the layer surface's size, anchors and margins, and
-//! publishes the held gap to the reserve surface (D9).
+//! publishes the held gap to the reserve surface (D9). A successful apply
+//! publishes `Event::GeometryChanged` for the panel (spec "Event stream").
 //!
 //! Two rules come from the spec:
 //!
@@ -41,9 +42,11 @@ use super::mapping::anchor_of;
 use super::routing::Routing;
 use crate::cli::Amount;
 use crate::config::PanelSettings;
+use crate::daemon::events::Bus;
 use crate::daemon::panel::{PanelReply, PanelRequest};
 use crate::geometry::{Geometry, HeldGap, OutputSize, Size};
 use crate::ipc::{ErrorKind, ErrorReply};
+use crate::name::PanelName;
 
 /// What a validated change does to the panel (row 6.6). Built only by
 /// [`plan_change`] (`port-to-rust` D6).
@@ -70,13 +73,18 @@ struct Plan {
 /// validated plan applied to the live panel, or the refusal the client gets.
 /// `None` for a request this row does not apply, which the caller answers
 /// without effect.
-pub(super) fn answer(routing: &Rc<Routing>, request: &PanelRequest) -> Option<PanelReply> {
+pub(super) fn answer(
+    routing: &Rc<Routing>,
+    request: &PanelRequest,
+    panel: &PanelName,
+    bus: &Bus,
+) -> Option<PanelReply> {
     let plan = match plan_change(&routing.settings(), request, routing.known_output()) {
         Ok(Some(plan)) => plan,
         Ok(None) => return None,
         Err(error) => return Some(PanelReply::Refused(error)),
     };
-    apply_plan(routing, plan);
+    apply_plan(routing, plan, panel, bus);
     Some(PanelReply::Done)
 }
 
@@ -208,12 +216,13 @@ fn needs_new_app_size(current: Geometry, next: Geometry, output: OutputSize) -> 
 /// stored first, so a status reply already reports them, and then the
 /// compositor hears what changed. A `set-layer` re-docks the window; every
 /// other change re-sends state on the layer surface the window docks with.
-fn apply_plan(routing: &Rc<Routing>, plan: Plan) {
+fn apply_plan(routing: &Rc<Routing>, plan: Plan, panel: &PanelName, bus: &Bus) {
     routing.set_settings(plan.settings);
     if plan.redock {
         // D11: the panel stays where it is pinned, in the layer it now asks
         // for; the re-dock sends the whole geometry and re-creates the strip.
         dock::redock(routing, routing.pinned_output().map(|(_, global)| global));
+        bus.publish_geometry_changed(panel);
         return;
     }
     if !plan.layout_changed {
@@ -234,6 +243,7 @@ fn apply_plan(routing: &Rc<Routing>, plan: Plan) {
         layer_surface.send_set_anchor(anchor_of(plan.geometry.anchors()));
     }
     publish_gap(routing, &plan.geometry);
+    bus.publish_geometry_changed(panel);
 }
 
 /// The re-apply the panel's output state triggers (D9): a percent size
@@ -283,12 +293,17 @@ fn publish_gap(routing: &Routing, geometry: &Geometry) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Plan, app_size, needs_new_app_size, plan_change, resize_size};
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Duration;
+
+    use super::{Plan, Routing, app_size, needs_new_app_size, plan_change, resize_size};
     use crate::cli::Amount;
     use crate::config::{Layer, PanelSettings};
-    use crate::daemon::panel::PanelRequest;
+    use crate::daemon::events::{Bus, Event};
+    use crate::daemon::panel::{PanelReply, PanelRequest};
     use crate::geometry::{Edge, Gutters, OutputSize, ReserveMode, Size};
     use crate::ipc::ErrorKind;
+    use crate::name::PanelName;
 
     /// An output of `width` by `height` logical pixels.
     fn output(width: u32, height: u32) -> OutputSize {
@@ -556,6 +571,46 @@ mod tests {
         assert_eq!(
             refused(&current, &request, output(1920, 1080)),
             ErrorKind::InvalidLayout
+        );
+    }
+
+    /// A successful apply publishes the panel's geometry change (spec "Event
+    /// stream"): an edge move changes the geometry and names the panel.
+    #[test]
+    fn a_successful_apply_publishes_the_geometry_change() {
+        let bus = Bus::new();
+        let events = bus.subscribe();
+        let routing = Routing::new(settings());
+        let panel = PanelName::parse("notes").expect("a panel name");
+        let reply = super::answer(&routing, &PanelRequest::SetEdge(Edge::Right), &panel, &bus);
+        assert_eq!(reply, Some(PanelReply::Done));
+        assert_eq!(
+            events.next(Duration::from_millis(100)),
+            Ok(Event::GeometryChanged { panel })
+        );
+    }
+
+    /// A refused change applies nothing and publishes nothing (spec
+    /// "Validate a change before applying it").
+    #[test]
+    fn a_refused_apply_publishes_no_geometry_change() {
+        let bus = Bus::new();
+        let events = bus.subscribe();
+        let routing = Routing::new(settings());
+        let panel = PanelName::parse("notes").expect("a panel name");
+        let reply = super::answer(
+            &routing,
+            &PanelRequest::SetSize {
+                size: pixels(10_000),
+                ms: None,
+            },
+            &panel,
+            &bus,
+        );
+        assert!(matches!(reply, Some(PanelReply::Refused(_))));
+        assert_eq!(
+            events.next(Duration::from_millis(50)),
+            Err(RecvTimeoutError::Timeout)
         );
     }
 

@@ -58,6 +58,7 @@ use wl_proxy::object::{Object, ObjectCoreApi};
 use wl_proxy::state::{Destructor, State, StateError, StateHandler};
 
 use crate::config::PanelSettings;
+use crate::daemon::events::Bus;
 use crate::daemon::lifetime::Lifetime;
 use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply, PanelRequest};
 use crate::guard::{Poisoned, guard};
@@ -223,7 +224,14 @@ fn panel_thread(thread: PanelThread) {
         wake,
         ready,
     } = thread;
-    let panel = match Panel::open(&settings, pid, wake, commands) {
+    let panel = match Panel::open(
+        &settings,
+        name.clone(),
+        lifetime.bus().clone(),
+        pid,
+        wake,
+        commands,
+    ) {
         Ok(panel) => panel,
         Err(error) => {
             let _ = ready.send(Err(error));
@@ -290,6 +298,11 @@ struct Panel {
     /// The window routing and the slot its status reads (D4): it also owns
     /// the live settings a change command alters (D11).
     routing: Rc<Routing>,
+    /// The panel's name, which its events name (spec "Event stream").
+    name: PanelName,
+    /// The daemon's event bus, which a successful live apply publishes to
+    /// (spec "Event stream").
+    bus: Bus,
 }
 
 impl Panel {
@@ -299,6 +312,8 @@ impl Panel {
     /// (D3).
     fn open(
         settings: &PanelSettings,
+        name: PanelName,
+        bus: Bus,
         pid: u32,
         wake: Arc<EventFd>,
         commands: Receiver<Command>,
@@ -332,6 +347,8 @@ impl Panel {
             pidfd,
             connections,
             routing,
+            name,
+            bus,
         })
     }
 
@@ -405,11 +422,14 @@ impl Panel {
     fn answer(&self, request: &PanelRequest) -> PanelReply {
         match request {
             PanelRequest::Status => PanelReply::Status(self.status()),
-            PanelRequest::SetOutput(name) => match dock::answer_set_output(&self.routing, name) {
-                Ok(()) => PanelReply::Done,
-                Err(error) => PanelReply::Refused(error),
-            },
-            other => apply::answer(&self.routing, other).unwrap_or(PanelReply::Done),
+            PanelRequest::SetOutput(name) => {
+                match dock::answer_set_output(&self.routing, name, &self.name, &self.bus) {
+                    Ok(()) => PanelReply::Done,
+                    Err(error) => PanelReply::Refused(error),
+                }
+            }
+            other => apply::answer(&self.routing, other, &self.name, &self.bus)
+                .unwrap_or(PanelReply::Done),
         }
     }
 

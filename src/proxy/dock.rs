@@ -47,8 +47,10 @@ use super::mapping::{anchor_of, keyboard_of, layer_of};
 use super::reserve::Reserve;
 use super::routing::Routing;
 use crate::config::PanelSettings;
+use crate::daemon::events::Bus;
 use crate::geometry::{Geometry, HeldGap};
 use crate::ipc::{ErrorKind, ErrorReply};
+use crate::name::PanelName;
 
 /// The layer-shell namespace of a panel surface. One namespace keeps every
 /// panel out of the special namespaces compositors reserve for their own
@@ -335,8 +337,14 @@ pub(super) fn follow_reserve(routing: &Rc<Routing>) {
 /// output carries pins the panel to it and re-docks the window; any other
 /// name is refused with `invalid_value` and the panel does not move. A
 /// geometry the target output cannot hold is refused with `invalid_layout`
-/// and the panel stays where it is (spec "Panel commands").
-pub(super) fn answer_set_output(routing: &Rc<Routing>, requested: &str) -> Result<(), ErrorReply> {
+/// and the panel stays where it is (spec "Panel commands"). A successful
+/// re-dock publishes the panel's geometry change (spec "Event stream").
+pub(super) fn answer_set_output(
+    routing: &Rc<Routing>,
+    requested: &str,
+    panel: &PanelName,
+    bus: &Bus,
+) -> Result<(), ErrorReply> {
     let tracked = routing.globals().tracked_output_names();
     let global = match set_output_decision(requested, &tracked) {
         SetOutputDecision::Pin(global) => global,
@@ -354,6 +362,7 @@ pub(super) fn answer_set_output(routing: &Rc<Routing>, requested: &str) -> Resul
     }
     routing.set_output_name(Some(requested.to_owned()));
     redock(routing, Some(global));
+    bus.publish_geometry_changed(panel);
     Ok(())
 }
 

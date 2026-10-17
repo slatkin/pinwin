@@ -120,8 +120,9 @@ and several modules wait for the rows that wire them in (D15).
   panel's output and validates them, the app-size rule (a pure edge move
   sends no new size, a size change exactly one), the re-send of the layer
   surface's size, anchors and margins on the surface the window already
-  docks with, the `set-layer` re-dock, the resize arithmetic and the gap
-  publish, plus the output-driven re-apply the routing calls. Its pure part
+  docks with, the `set-layer` re-dock, the resize arithmetic, the gap
+  publish and the `Event::GeometryChanged` a successful apply sends, plus
+  the output-driven re-apply the routing calls. Its pure part
   is display-free, so its tests run without a compositor.
 - `src/proxy/slot.rs` — the panel's one window slot (D4, spec "First
   window", "Window comes back", "Dialog", "Passed-through window stays",
@@ -154,8 +155,10 @@ and several modules wait for the rows that wire them in (D15).
   `apps/wl-paper/src/paper.rs`, GPL-3.0), the `set-output` decision and
   reply — a name no tracked output carries is refused with `invalid_value`
   and the panel does not move — the re-dock on `set-output` and on a
-  `closed` layer surface (the app keeps its window), and the reserve
-  lifecycle that pins the strip to the panel's output and follows it.
+  `closed` layer surface (the app keeps its window), the
+  `Event::GeometryChanged` a successful `set-output` sends, and the
+  reserve lifecycle that pins the strip to the panel's output and follows
+  it.
 - `src/proxy/output.rs` — the proxy's own globals and output tracking (D9):
   the `wl_compositor`, `wl_shm` and `wp_viewporter` the reserve and the
   crop are built from, one tracked `wl_output` per global with its

@@ -131,6 +131,14 @@ impl Bus {
         }
     }
 
+    /// Publish that `panel`'s geometry changed (spec "Event stream"): a live
+    /// apply calls this after it changed the panel.
+    pub fn publish_geometry_changed(&self, panel: &PanelName) {
+        self.publish(&Event::GeometryChanged {
+            panel: panel.clone(),
+        });
+    }
+
     /// How many subscribers the bus has, so a test can check that a closed
     /// connection freed its queue.
     #[must_use]
