@@ -42,6 +42,7 @@
 //! the compositor does not answer or lacks it.
 
 use std::cell::Cell;
+use std::fmt;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::rc::Rc;
@@ -62,7 +63,7 @@ use crate::daemon::events::Bus;
 use crate::daemon::lifetime::Lifetime;
 use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply, PanelRequest};
 use crate::guard::{Poisoned, guard};
-use crate::ipc::PanelStatus;
+use crate::ipc::{ErrorReply, PanelStatus};
 use crate::name::PanelName;
 use registry::ClientDisplay;
 use routing::Routing;
@@ -142,11 +143,39 @@ const ACCEPTOR_TRIES: u32 = 1000;
 /// pass (D12, spec "Quit").
 const TICK: Duration = Duration::from_millis(100);
 
-/// One panel's socket and the handle the daemon registers (D2, D12).
+/// Why a panel did not start (D2): its name is taken, or its socket or
+/// thread could not start.
+#[derive(Debug)]
+pub enum StartError {
+    /// A panel of that name exists already, which a `run` reports and
+    /// leaves alone (spec "Duplicate name").
+    Refused(ErrorReply),
+    /// The panel's `State`, acceptor or thread failed.
+    Io(io::Error),
+}
+
+impl fmt::Display for StartError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused(error) => f.write_str(error.message()),
+            Self::Io(error) => fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl std::error::Error for StartError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Refused(_) => None,
+            Self::Io(error) => Some(error),
+        }
+    }
+}
+
+/// One panel's socket (D2).
 #[derive(Debug)]
 pub struct Started {
     display: String,
-    handle: PanelHandle,
 }
 
 impl Started {
@@ -156,47 +185,59 @@ impl Started {
     pub fn display(&self) -> &str {
         &self.display
     }
-
-    /// The handle the daemon registers under the panel's name (D12). A
-    /// refused name drops the handle, which ends the panel thread.
-    #[must_use]
-    pub fn into_handle(self) -> PanelHandle {
-        self.handle
-    }
 }
 
 /// Start one panel's thread (D1, D2): its `State`, acceptor, command eventfd
 /// and the app's pidfd, all served under the panic guard. Returns once the
-/// panel's socket exists, so the caller can hand `WAYLAND_DISPLAY` to the
-/// app.
+/// panel's socket exists and the daemon registered its handle, so the caller
+/// can hand `WAYLAND_DISPLAY` to the app.
 pub fn spawn(
     name: PanelName,
     settings: PanelSettings,
     pid: u32,
-    lifetime: Arc<Lifetime>,
-) -> io::Result<Started> {
+    lifetime: &Arc<Lifetime>,
+) -> Result<Started, StartError> {
     let (commands, incoming) = mpsc::channel::<Command>();
-    let wake = Arc::new(EventFd::new()?);
+    let wake = Arc::new(EventFd::new().map_err(StartError::Io)?);
     let (ready, waited) = mpsc::sync_channel(1);
+    let (registered, start) = mpsc::sync_channel(1);
     let thread_wake = Arc::clone(&wake);
+    let thread_lifetime = Arc::clone(lifetime);
+    let thread_name = name.clone();
     thread::Builder::new()
         .name(format!("pinwin panel {name}"))
         .spawn(move || {
             panel_thread(PanelThread {
-                name,
+                name: thread_name,
                 settings,
                 pid,
-                lifetime,
+                lifetime: thread_lifetime,
                 commands: incoming,
                 wake: thread_wake,
                 ready,
+                start,
             });
-        })?;
-    let display = waited.recv().map_err(io::Error::other)??;
-    Ok(Started {
-        display,
-        handle: PanelHandle::new(pid, commands, wake),
-    })
+        })
+        .map_err(StartError::Io)?;
+    let display = waited
+        .recv()
+        .map_err(|error| StartError::Io(io::Error::other(error)))?
+        .map_err(StartError::Io)?;
+    // The handle is registered before the panel serves anything, so a
+    // refused name ends the thread without its end report: that report
+    // removes the registry entry of the name, which belongs to the panel
+    // that keeps running (spec "Duplicate name").
+    let handle = PanelHandle::new(pid, commands, wake);
+    match lifetime.add_panel(name, handle) {
+        Ok(()) => {
+            let _ = registered.send(true);
+            Ok(Started { display })
+        }
+        Err(error) => {
+            let _ = registered.send(false);
+            Err(StartError::Refused(error))
+        }
+    }
 }
 
 /// Everything one panel's thread takes: the panel's name and settings, the
@@ -210,6 +251,10 @@ struct PanelThread {
     commands: Receiver<Command>,
     wake: Arc<EventFd>,
     ready: SyncSender<io::Result<String>>,
+    /// Whether the daemon registered the panel's handle, so the thread knows
+    /// its end report belongs to a panel of the registry (spec "Duplicate
+    /// name").
+    start: Receiver<bool>,
 }
 
 /// The panel thread: build the panel, hand its display back to [`spawn`] and
@@ -223,6 +268,7 @@ fn panel_thread(thread: PanelThread) {
         commands,
         wake,
         ready,
+        start,
     } = thread;
     let panel = match Panel::open(
         &settings,
@@ -243,6 +289,12 @@ fn panel_thread(thread: PanelThread) {
         // The daemon stopped waiting for the panel, so it also dropped the
         // handle: there is nobody to serve and the socket closes with this
         // thread.
+        return;
+    }
+    if !matches!(start.recv(), Ok(true)) {
+        // The daemon refused the name, so no registry entry belongs to this
+        // panel and its end report would remove the panel that has the name
+        // (spec "Duplicate name"). Dropping the panel closes its socket.
         return;
     }
     guarded(&lifetime, &name, move || panel.run());

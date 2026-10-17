@@ -99,13 +99,15 @@ impl Registry {
     }
 
     /// Route one decoded request (D12). `None` means the daemon answers it
-    /// itself: `subscribe` (the event bus), `quit` (the lifetime) and
-    /// `reload` (the config file) name no panel.
+    /// itself: `create` (a new panel, D2), `subscribe` (the event bus),
+    /// `quit` (the lifetime) and `reload` (the config file) name no panel.
     #[must_use]
     pub fn route(&self, request: &Request, wait: Duration) -> Option<Reply> {
         Some(match request {
             Request::Status { panel } => self.status(panel.as_ref(), wait),
-            Request::Subscribe | Request::Quit | Request::Reload => return None,
+            Request::Create { .. } | Request::Subscribe | Request::Quit | Request::Reload => {
+                return None;
+            }
             Request::Toggle { panel } => self.command(panel, PanelRequest::Toggle, wait),
             Request::Show { panel } => self.command(panel, PanelRequest::Show, wait),
             Request::Hide { panel } => self.command(panel, PanelRequest::Hide, wait),

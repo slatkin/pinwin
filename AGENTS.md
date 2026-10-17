@@ -24,18 +24,27 @@ and several modules wait for the rows that wire them in (D15).
   the client subcommands send one request, print the reply (`status` its JSON
   and `subscribe` each event line), and exit 0 on success, 1 on a daemon error
   or no daemon and 2 on a usage error (spec "Command-line exit codes").
-  `pinwin run` reports that rows 7.1 to 7.3 add it and exits 1.
+  `pinwin run` resolves the panel's options, asks the daemon for a new panel,
+  sets `WAYLAND_DISPLAY` from the reply and replaces itself with the app, and
+  exits 127 when the command cannot run (spec "Run an app in a panel",
+  "Command not found"); rows 7.2 and 7.3 add the daemon spawn and the pidfd
+  lifetime.
 - `src/cli.rs` — the hand-written command line (row 4.3): `run` with the
   options of spec "Run options", `daemon`, and one client subcommand for each
   daemon request. It produces the command value and the `PanelOptions` of the
   config file and opens no socket. `src/main.rs` compiles it and dispatches
   its commands; `tests/cli.rs` includes it so its unit tests run.
 - `src/ipc.rs` — the daemon's wire format (D13): the request enum with one
-  variant for each client subcommand, the reply with its error kinds and the
-  status reply's panel fields (spec "Status"), the 64 KiB request line with a
-  bounded reader that keeps the lines behind the one it returns, and the
-  wire types. `src/main.rs` compiles it; `tests/ipc.rs` includes it so its
-  unit tests run.
+  variant for each client subcommand and the `create` request `pinwin run`
+  sends (D2), the reply with its error kinds, its display for a new panel and
+  its status reply's panel fields (spec "Status", "Run an app in a panel"),
+  the 64 KiB request line with a bounded reader that keeps the lines behind
+  the one it returns, and the wire types. `src/main.rs` compiles it;
+  `tests/ipc.rs` includes it so its unit tests run.
+- `src/ipc/options.rs` — the wire text of a setting value (row 7.1, D13,
+  spec "Run options"): the `create` request's run options in the config
+  file's grammar, and the one `Serialize` place for the types a request
+  carries, so the options and the panel commands cannot drift apart.
 - `src/ipc/client.rs` — the daemon's client (row 5.6, spec "Command-line exit
   codes"): the connect, the one request line and reply line with a bounded
   wait, the `Answer` that keeps the reply line for `pinwin status`, and the
@@ -68,9 +77,16 @@ and several modules wait for the rows that wire them in (D15).
   request read, the reply write, the `subscribe` stream that writes one
   event line after the success reply until the client closes it or falls
   behind (spec "Event stream", "Silent client"), and the daemon-owned
-  `quit` and `reload` requests, whose replies it writes before the daemon or
-  the config changes. `src/main.rs` compiles it; `tests/daemon.rs` includes
-  it so its tests run.
+  `create`, `quit` and `reload` requests, whose replies it writes before the
+  new panel, the end of the daemon or the config change. `src/main.rs`
+  compiles it; `tests/daemon.rs` includes it so its tests run.
+- `src/daemon/create.rs` — the daemon's `create` request (row 7.1, D2, spec
+  "Run an app in a panel"): it resolves the new panel's settings from the run
+  options, the config file and the built-in defaults, starts the panel thread
+  for the caller's process ID and answers with the display the app connects
+  with, through `Lifetime::add_panel`, so the registry and the
+  `exit_when_idle` rule see the panel. A name another panel uses is refused
+  and the existing panel stays (spec "Duplicate name").
 - `src/daemon/lifetime.rs` — the daemon's lifetime (spec "Daemon lifetime
   preference", "Quit", "Reload", D12): the shared state of the daemon (the
   registry, the event bus, the config it holds and the shutdown trigger),
@@ -102,9 +118,11 @@ and several modules wait for the rows that wire them in (D15).
   `State` with its acceptor, the loop that polls the state's `poll_fd`, the
   command eventfd and the app's pidfd, the pass-through dispatch under the
   shared panic guard, the end rule (the app exited and no connection is
-  left, or the daemon dropped the handle), and `spawn`, which rows 7.1 to
-  7.3 call for the display the app sets in `WAYLAND_DISPLAY` and the handle
-  the daemon registers. Row 6.2 adds the window routing (D4) and the slot
+  left, or the daemon dropped the handle), and `spawn`, which row 7.1 calls
+  for the display the app sets in `WAYLAND_DISPLAY`; it registers the panel's
+  handle under its name before the thread serves anything, so a refused
+  duplicate name ends the new thread without touching the existing panel.
+  Row 6.2 adds the window routing (D4) and the slot
   its status reads, row 6.3 the popups and the per-window decorations
   (D5), and row 6.4 the geometry apply (D9): the status width reports a
   percent size once the panel's output is known. Row 6.5 adds output
@@ -209,6 +227,12 @@ and several modules wait for the rows that wire them in (D15).
   viewport values upstream unchanged — composed cropping of app viewports
   waits for row 10.x. Display-free, so its four tests run without a
   compositor.
+- `src/run.rs` — the app `pinwin run` becomes (row 7.1, D2, spec "Run an app
+  in a panel"): the pure exec spec of the program, its arguments and the
+  environment the app inherits, with `WAYLAND_DISPLAY` set to the new panel's
+  display, and the `exec` that keeps the process ID the daemon watches. Its
+  test checks the hand-over without replacing the test process
+  (`src/run/tests.rs`).
 - `src/anim.rs` — the animated width transition's pure tween step.
 - `src/guard.rs` — the shared panic guard. `src/main.rs` compiles it now
   that the panel thread guards its loop under it.
@@ -281,7 +305,8 @@ name" and an invalid `--focus-ring`) and check every subcommand in the
 README's command table against `cli.rs`, and the tests in `tests/ipc.rs`,
 which cover the wire format (spec "Valid request", "Not JSON" and
 "Unknown command") and an invalid value's own kind, the 64 KiB line limit,
-the client's bounded wait and the reply line it keeps for `status`, and
+the client's bounded wait and the reply line it keeps for `status`, the
+`create` request's run options and its reply's display (row 7.1, D2), and
 check every request `cmd` against `cli.rs` including the status reply's
 fields (spec "Status"), and the tests in `tests/command_line_ipc.rs`,
 which run the real binary against a daemon in a scratch runtime directory
@@ -342,8 +367,11 @@ tests in `src/proxy/viewport.rs` cover the steady-state crop (D5, D8): the
 window geometry as source and 1:1 destination, a negative CSD origin
 clamped to the buffer's origin, a collapsed geometry refused, and the
 decision matrix that defers to an app viewport.
-The tests in `tests/command_line_ipc.rs` run a stand-in compositor on the
-made-up display: it announces `zwlr_layer_shell_v1` and answers the
+The tests in `src/run/tests.rs` cover the exec spec's hand-over (row 7.1):
+the program and its arguments unchanged, `WAYLAND_DISPLAY` set to the
+panel's display, and the working folder inherited, so no test replaces the
+test process with an app. The tests in `tests/command_line_ipc.rs` run a
+stand-in compositor on the made-up display: it announces `zwlr_layer_shell_v1` and answers the
 roundtrip, so the daemon's start check passes without the user's compositor.
 The crop harness includes `src/geometry.rs` as well, for the `Edge` the crop
 names, under a `dead_code` allow whose reason names the rows that use the

@@ -10,10 +10,11 @@
 //! the parser refuses exits 2 (spec "Command-line exit codes"). `subscribe`
 //! stays connected and prints each event line (spec "Command-line client").
 //!
-//! `pinwin run` is the last flow to arrive: it resolves the panel's options,
-//! asks the daemon for a new panel and replaces itself with the app (D2).
-//! Until rows 7.1 to 7.3 add it, a `run` command reports that and exits 1
-//! instead of pretending to run the app.
+//! `pinwin run` asks the daemon for a new panel, sets the display the reply
+//! names and replaces itself with the app (D2). Rows 7.2 and 7.3 add the
+//! daemon spawn the spec's "Run starts the daemon" asks for and the pidfd
+//! lifetime; until then `run` talks to a daemon that is already running and
+//! reports the usual no-daemon error when none is.
 
 use std::ffi::OsString;
 use std::io::{self, Write as _};
@@ -25,7 +26,8 @@ use crate::config::Config;
 use crate::daemon::DaemonSocket;
 use crate::daemon::SocketError;
 use crate::daemon::lifetime::{Daemon, Lifetime, SignalFd};
-use crate::ipc::{Request, Subscription};
+use crate::ipc::{ErrorKind, Request, Subscription};
+use crate::run::Exec;
 
 pub mod cli;
 pub mod config;
@@ -63,6 +65,10 @@ pub mod proxy;
 
 mod name;
 
+// The app `pinwin run` becomes (row 7.1, D2): the exec spec's program,
+// arguments and environment are pure, so their test needs no display.
+mod run;
+
 /// The usage line a refused command line ends with.
 const USAGE: &str = "usage: pinwin <command> [options]";
 
@@ -70,10 +76,15 @@ const USAGE: &str = "usage: pinwin <command> [options]";
 /// prints a message that names the file and line, and exits 2).
 const INVALID_CONFIG: u8 = 2;
 
+/// The exit code of a `pinwin run` whose command cannot be executed (spec
+/// "Command not found": pinwin prints a message, exits 127, and the panel
+/// ends).
+const COMMAND_NOT_FOUND: u8 = 127;
+
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     match cli::parse_args(&args) {
-        Ok(Command::Run(_run)) => run_not_implemented(),
+        Ok(Command::Run(run)) => run_app(&run),
         Ok(Command::Daemon) => daemon(),
         Ok(Command::Client(command)) => client(command),
         Err(error) => {
@@ -84,17 +95,56 @@ fn main() -> ExitCode {
     }
 }
 
-/// `pinwin run` (spec "Run an app in a panel") arrives with rows 7.1 to 7.3:
-/// option resolution, the daemon's `create` request, the daemon spawn and
-/// the `exec`. The command line is valid, so this is not a usage error: it
-/// is the failure exit the spec's table gives a request that cannot be
-/// carried out.
-fn run_not_implemented() -> ExitCode {
-    eprintln!(
-        "pinwin: run is not implemented yet; replace-terminal-with-app-host \
-         rows 7.1 to 7.3 add it"
-    );
-    ExitCode::FAILURE
+/// `pinwin run` (spec "Run an app in a panel", D2): ask the daemon for a new
+/// panel, then replace this process with the app on the display the reply
+/// names. No daemon exits 1 like any other client; a name another panel uses
+/// exits 2 without running the command (spec "Panel names"); a command that
+/// cannot be executed prints the error and exits 127 (spec "Command not
+/// found").
+fn run_app(run: &cli::Run) -> ExitCode {
+    let path = match daemon::socket_path_from_env() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("pinwin: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let request = Request::Create {
+        panel: run.name().clone(),
+        pid: std::process::id(),
+        options: run.options().clone(),
+    };
+    let answer = match ipc::call(&path, &request) {
+        Ok(answer) => answer,
+        Err(error) => {
+            eprintln!("pinwin: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Some(error) = answer.reply().as_error() {
+        // A duplicate name is the caller's to fix, as an invalid name is, so
+        // it exits 2 like the parser's own refusal (spec "Panel names").
+        eprintln!("pinwin: {}", error.message());
+        return ExitCode::from(match error.kind() {
+            ErrorKind::DuplicateName => cli::UsageError::EXIT_CODE,
+            _ => 1,
+        });
+    }
+    let Some(display) = answer.reply().display() else {
+        eprintln!("pinwin: the daemon's reply named no display for the new panel");
+        return ExitCode::FAILURE;
+    };
+    let exec = match Exec::new(run.command(), display) {
+        Ok(exec) => exec,
+        Err(error) => {
+            eprintln!("pinwin: {error}");
+            return ExitCode::from(COMMAND_NOT_FOUND);
+        }
+    };
+    let program = run.command()[0].to_string_lossy();
+    let error = exec.exec();
+    eprintln!("pinwin: could not run '{program}': {error}");
+    ExitCode::from(COMMAND_NOT_FOUND)
 }
 
 /// Run the daemon in the foreground (spec "One daemon for each Wayland

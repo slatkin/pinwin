@@ -466,3 +466,59 @@ fn every_client_subcommand_has_one_request_variant() {
         );
     }
 }
+
+/// A `create` request carries the panel's name, the caller's process ID and
+/// the run options in their setting grammar, and its reply names the display
+/// the app connects with (spec "Run an app in a panel", D2, row 7.1).
+#[test]
+fn a_create_request_carries_the_run_options_and_its_reply_names_the_display() {
+    let options = crate::config::PanelOptions {
+        edge: Some(crate::geometry::Edge::Right),
+        size: crate::geometry::Size::percent(30),
+        reserve: Some(crate::geometry::ReserveMode::Cover),
+        layer: Some(crate::config::Layer::Top),
+        keyboard: Some(crate::config::Keyboard::Exclusive),
+        output: Some("eDP-1".to_owned()),
+        hidden: Some(true),
+        focus_ring: Some(crate::config::FocusRing::On {
+            color: crate::config::Rgb::new(0xda, 0xbc, 0x7f),
+            width: std::num::NonZeroU32::MIN,
+        }),
+        ..crate::config::PanelOptions::default()
+    };
+    let request = Request::Create {
+        panel: notes(),
+        pid: 4242,
+        options,
+    };
+    let line = request.to_line();
+    let value: serde_json::Value = serde_json::from_str(&line).expect("a request is JSON");
+    assert_eq!(value["cmd"], serde_json::json!("create"));
+    assert_eq!(value["panel"], serde_json::json!("notes"));
+    assert_eq!(value["pid"], serde_json::json!(4242));
+    assert_eq!(value["options"]["edge"], serde_json::json!("right"));
+    assert_eq!(value["options"]["size"], serde_json::json!("30%"));
+    assert_eq!(value["options"]["reserve"], serde_json::json!("cover"));
+    assert_eq!(value["options"]["keyboard"], serde_json::json!("exclusive"));
+    assert_eq!(
+        value["options"]["focus_ring"],
+        serde_json::json!("#dabc7f:1")
+    );
+    assert_eq!(
+        Request::parse(line.as_bytes()).expect("the request round-trips"),
+        request
+    );
+
+    // The reply carries the panel's `WAYLAND_DISPLAY` (D2), and a create
+    // reply's bad value is the known value error, not an unknown command.
+    let reply = Reply::created("wayland-1");
+    assert!(reply.is_ok());
+    assert_eq!(reply.display(), Some("wayland-1"));
+    let line = reply.to_line();
+    assert_eq!(line, "{\"ok\":true,\"display\":\"wayland-1\"}\n");
+    assert_eq!(Reply::parse(line.as_bytes()), Ok(reply));
+    let error =
+        Request::parse(br#"{"cmd":"create","panel":"notes","pid":1,"options":{"edge":"middle"}}"#)
+            .expect_err("an invalid option value");
+    assert_eq!(error.kind(), ErrorKind::InvalidValue);
+}

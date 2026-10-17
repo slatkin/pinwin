@@ -18,7 +18,9 @@
 //! `tests/daemon/lifetime.rs`, included as a child module below.
 //!
 //! The modules are `pub` so the dead-code lint does not report the parts of
-//! the included modules these tests do not reach.
+//! the included modules these tests do not reach. `src/proxy.rs` and
+//! `src/guard.rs` are included too, because the `create` request starts a
+//! panel through the proxy (row 7.1, D2) and the proxy guards its loop.
 
 #[path = "../src/geometry.rs"]
 pub mod geometry;
@@ -37,6 +39,14 @@ pub mod ipc;
 
 #[path = "../src/daemon.rs"]
 pub mod daemon;
+
+// The `create` request starts a panel through the proxy (row 7.1, D2), so the
+// daemon modules name `crate::proxy` and `crate::guard`.
+#[path = "../src/guard.rs"]
+pub mod guard;
+
+#[path = "../src/proxy.rs"]
+pub mod proxy;
 
 use std::ffi::OsStr;
 use std::fs;

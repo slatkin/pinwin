@@ -2,9 +2,11 @@
 //! object per line over the daemon's Unix socket.
 //!
 //! A client sends a [`Request`] — the tagged `cmd` enum with one variant for
-//! each client subcommand of `src/cli.rs` — and the daemon answers one
-//! [`Reply`]: `{"ok":true}`, the same with the daemon's process ID and its
-//! panels for a carried-out `status` ([`StatusReply`], spec "Status"), or
+//! each client subcommand of `src/cli.rs` and the `create` request only
+//! `pinwin run` sends (D2) — and the daemon answers one [`Reply`]:
+//! `{"ok":true}`, the same with the new panel's display for a carried-out
+//! `create`, the daemon's process ID and its panels for a carried-out
+//! `status` ([`StatusReply`], spec "Status"), or
 //! `{"ok":false,"error":{"kind","message"}}` with the seven error kinds D13
 //! names. A line that is not a request is a
 //! [`RequestError::InvalidRequest`], while a known command whose setting
@@ -32,11 +34,11 @@ use std::os::unix::net::UnixStream;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::Number;
 
 use crate::cli::{Amount, ClientCommand};
-use crate::config::{Keyboard, Layer};
+use crate::config::{Keyboard, Layer, PanelOptions};
 use crate::geometry::{Edge, ReserveMode, Size};
 use crate::name::PanelName;
 
@@ -45,6 +47,9 @@ mod client;
 
 #[path = "ipc/reply.rs"]
 mod reply;
+
+#[path = "ipc/options.rs"]
+mod options;
 
 pub use client::{Answer, CallError, Subscription, call};
 pub use reply::{ErrorKind, ErrorReply, PanelEntry, PanelStatus, Reply, StatusReply};
@@ -178,6 +183,17 @@ pub enum Request {
         #[serde(skip_serializing_if = "Option::is_none")]
         panel: Option<PanelName>,
     },
+    /// Start a new panel and report the display its app connects with
+    /// (spec "Run an app in a panel", D2). Only `pinwin run` sends this
+    /// request; scripts use the client subcommands.
+    Create {
+        panel: PanelName,
+        /// The process ID `pinwin run` reports; after `exec` it is the
+        /// app's process, which the daemon's pidfd watches (D2, D3).
+        pid: u32,
+        #[serde(serialize_with = "options::serialize")]
+        options: PanelOptions,
+    },
     /// Receive one line for each event.
     Subscribe,
     /// End the daemon and its panels.
@@ -259,6 +275,15 @@ impl Request {
             },
             RawRequest::Status { panel } => Self::Status {
                 panel: panel.as_deref().map(panel_name).transpose()?,
+            },
+            RawRequest::Create {
+                panel,
+                pid,
+                options,
+            } => Self::Create {
+                panel: panel_name(&panel)?,
+                pid,
+                options: options::parse(options)?,
             },
             RawRequest::Subscribe => Self::Subscribe,
             RawRequest::Quit => Self::Quit,
@@ -346,6 +371,12 @@ enum RawRequest {
     Status {
         #[serde(default)]
         panel: Option<String>,
+    },
+    Create {
+        panel: String,
+        pid: u32,
+        #[serde(default)]
+        options: options::WireOptions,
     },
     Subscribe,
     Quit,
@@ -451,75 +482,6 @@ fn millis(raw: Option<Number>) -> Result<Option<u32>, RequestError> {
                 "ms: expected a whole number of milliseconds from 0, got {number}"
             ))
         })
-}
-
-/// The wire text of a size: `640px` or `30%`.
-fn size_text(size: Size) -> String {
-    match size {
-        Size::Pixels(px) => format!("{}px", px.get()),
-        Size::Percent(percent) => format!("{}%", percent.get()),
-    }
-}
-
-impl Serialize for PanelName {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl Serialize for Size {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&size_text(*self))
-    }
-}
-
-impl Serialize for Amount {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let sign = if self.shrinks() { '-' } else { '+' };
-        let size = size_text(self.size());
-        serializer.serialize_str(&format!("{sign}{size}"))
-    }
-}
-
-impl Serialize for Edge {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(match self {
-            Self::Left => "left",
-            Self::Right => "right",
-            Self::Top => "top",
-            Self::Bottom => "bottom",
-        })
-    }
-}
-
-impl Serialize for ReserveMode {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(match self {
-            Self::Push => "push",
-            Self::Cover => "cover",
-        })
-    }
-}
-
-impl Serialize for Layer {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(match self {
-            Self::Background => "background",
-            Self::Bottom => "bottom",
-            Self::Top => "top",
-            Self::Overlay => "overlay",
-        })
-    }
-}
-
-impl Serialize for Keyboard {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(match self {
-            Self::None => "none",
-            Self::OnDemand => "on-demand",
-            Self::Exclusive => "exclusive",
-        })
-    }
 }
 
 /// Why one line could not be read from a stream.

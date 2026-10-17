@@ -23,9 +23,11 @@
 //! panel that does not answer never stops another or the daemon (spec "The
 //! daemon survives bad input"). [`events`] is the bus that carries a panel's
 //! events to its subscribers, [`connection`] serves one IPC connection,
-//! including the `subscribe` stream, and [`lifetime`] holds the accept loop,
-//! the shutdown trigger, `quit`, `reload` and the SIGINT and SIGTERM
-//! handling (spec "Daemon lifetime preference", "Quit", "Reload").
+//! including the `subscribe` stream, [`create`] starts the panel a
+//! `pinwin run` asks for (spec "Run an app in a panel", D2), and
+//! [`lifetime`] holds the accept loop, the shutdown trigger, `quit`,
+//! `reload` and the SIGINT and SIGTERM handling (spec "Daemon lifetime
+//! preference", "Quit", "Reload").
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -51,6 +53,9 @@ pub mod events;
 
 #[path = "daemon/connection.rs"]
 pub mod connection;
+
+#[path = "daemon/create.rs"]
+pub mod create;
 
 #[path = "daemon/lifetime.rs"]
 pub mod lifetime;

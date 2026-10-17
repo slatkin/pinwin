@@ -10,15 +10,19 @@
 //! thread that accepts connections never handles a client's bytes itself.
 //!
 //! A panel request goes through the registry, while the requests the daemon
-//! owns go through its [`Lifetime`]: `quit` writes its success reply and
-//! then ends every panel and the daemon (spec "Quit"), and `reload` answers
-//! with the reloaded config or the file's error (spec "Reload").
+//! owns go through its [`Lifetime`]: `create` starts the panel a `pinwin run`
+//! asks for and answers with its display (spec "Run an app in a panel"),
+//! `quit` writes its success reply and then ends every panel and the daemon
+//! (spec "Quit"), and `reload` answers with the reloaded config or the
+//! file's error (spec "Reload").
 
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
+use super::create;
 use super::events::Bus;
 use super::lifetime::Lifetime;
 use crate::ipc::{self, MAX_LINE, Reply, Request};
@@ -33,7 +37,7 @@ use crate::ipc::{self, MAX_LINE, Reply, Request};
 /// `reload` reply is the file's success or its `invalid_config` error.
 pub fn serve(
     mut stream: UnixStream,
-    lifetime: &Lifetime,
+    lifetime: &Arc<Lifetime>,
     timeout: Duration,
 ) -> Result<(), ipc::LineError> {
     let line = match ipc::read_line(&mut stream, MAX_LINE, timeout) {
@@ -55,6 +59,14 @@ pub fn serve(
         Err(error) => return answer(&mut stream, &Reply::from(error), timeout),
     };
     match request {
+        Request::Create {
+            panel,
+            pid,
+            options,
+        } => {
+            let reply = create::panel(lifetime, panel, &options, pid);
+            answer(&mut stream, &reply, timeout)
+        }
         Request::Subscribe => subscribe(&mut stream, lifetime.bus(), timeout),
         // The reply goes out first, so the client gets its success even
         // though the daemon and its panels end right after (spec "Quit").
