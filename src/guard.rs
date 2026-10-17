@@ -2,18 +2,16 @@
 //! boundary that must not unwind, with a shared poisoned latch.
 //!
 //! `Cargo.toml` sets `panic = "unwind"` in every profile, so a panic caught
-//! here unwinds out of the guarded body only; letting one cross a foreign
-//! C frame — libghostty's FFI or a Wayland or calloop callback —
-//! instead is undefined behaviour and aborts. Every
-//! module that registers `extern "C"` trampolines or event-loop callbacks
-//! runs its
-//! bodies through [`guard`] or [`guard_default`] with one shared
-//! [`Poisoned`] flag, so a single panic stops that panel's glue code instead
-//! of killing the host.
+//! here unwinds out of the guarded body only; letting one cross a foreign C
+//! frame — a Wayland or calloop callback — instead is undefined behaviour and
+//! aborts. Every module that registers `extern "C"` trampolines or
+//! event-loop callbacks runs its bodies through [`guard`] or [`guard_default`]
+//! with one shared [`Poisoned`] flag, so a single panic stops that panel's
+//! glue code instead of killing the host.
 //!
-//! The helper is deliberately `PinwinError`-agnostic: the library's
-//! `Panel` maps the `Err` case onto its own `Internal` error (port-to-rust
-//! D5); nothing here needs to know about it.
+//! The helper is deliberately error-type-agnostic: the daemon maps the `Err`
+//! case onto its own internal error (port-to-rust D5); nothing here needs to
+//! know about it.
 
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};

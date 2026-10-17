@@ -5,22 +5,14 @@ running any command to a screen edge as a layer surface, reserves space from
 tiled windows via a transparent reservation surface, and animates its width
 between layouts. Built for niri, on a direct Wayland client with no toolkit.
 
-pinwin is a single Rust crate: `src/main.rs` is the `pinwin` binary and
-`src/lib.rs` is a library you can depend on. The pre-port C and Zig sources
-are removed with the port.
+pinwin is a single Rust crate: `src/main.rs` is the `pinwin` binary. The
+pre-port C and Zig sources are removed with the port.
 
 ## Install
 
-Building needs Zig 0.16 on PATH: the `libghostty-vt` crate's build script fetches
-its pinned ghostty commit and builds ghostty's own static VT library with `zig build` (a cold
-cache also needs `git` and network access). The system needs libxkbcommon
-and fontconfig, and running needs a Wayland compositor with wlr-layer-shell.
-Fractional output scale comes from the fractional-scale protocol; without it
-the panel uses the integer buffer scale. A width tween crops its cached
-buffer through viewporter, and copies the crop into a fresh buffer when the
-compositor lacks it. Set
-`GHOSTTY_SOURCE_DIR=<dir>`
-to build against an existing ghostty checkout instead of fetching.
+Building needs the Rust toolchain pinned in `rust-toolchain.toml`. The system
+needs libxkbcommon and fontconfig, and running needs a Wayland compositor with
+wlr-layer-shell.
 
 ```sh
 cargo install --path .          # installs the `pinwin` binary
@@ -28,37 +20,7 @@ cargo build --release           # or run target/release/pinwin
 cargo test                      # unit tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
-cargo build --examples          # build the dev-only demo example
 ```
-
-`cargo run --example demo` builds and runs the demo, a dev-only driver that
-creates its own pty pair and never gets installed. Its keys, typed in the
-terminal that launched the demo:
-
-- `<enter>` toggles the side and width and applies live (resize/re-dock)
-- `e` animated width toggle 40 <-> 120 columns, same side (200 ms); press it
-  again mid-tween to interrupt the animation
-- `p` the same toggle through the plain snap apply
-- `c` animated cover toggle: pushing 40 columns vs covering 120 on the same
-  side, so the reservation holds and the tiles stay put through the
-  excursion
-- `t` the `Panel::toggle` hide/show: hiding unmaps the panel and releases
-  the reservation, showing draws the grid again; any layout key applied
-  while hidden is stored and comes back at the show
-- `i` vertical-inset toggle: top and bottom gutters 0 <-> 40 px
-- `g` right-gutter toggle: 12 <-> -24 px, so the panel's edge moves past
-  the output edge
-- `b` applies a rejected layout and expects `InvalidLayout`
-- `q` stops the panel and exits
-
-`DEMO_KEYBOARD=on-demand|exclusive|none` fixes the keyboard mode at start
-(default `on-demand`, so the launching terminal keeps its stdin; `t` toggles
-in every mode); `DEMO_ZONE=reserve|overlay` mirrors `PINWIN_ZONE`, the
-push/cover class the start applies; `DEMO_ACCENT=on|off` mirrors
-`PINWIN_ACCENT`; `DEMO_DENSE=1` swaps the shell child for a dense stand-in
-with a full grid, kitty images and resize traffic to test animation against.
-The environment reaches the library as it does for the host, so
-`PINWIN_FRAMELOG=1` records one summary line per tween.
 
 ## Use as a Cargo dependency
 
@@ -349,28 +311,15 @@ host type:
 
 ## Architecture
 
-`src/lib.rs` re-exports the public `Panel` API. `src/panel.rs` and
-`src/panel/` own the public handle, the start handshake and the apply
-replies, and `src/panel/wayland_side/` runs the panel thread: one
-smithay-client-toolkit connection with a calloop event loop per start, the
-two layer-shell surfaces, the shared-memory buffers, the seat, the width
-tween and the frame present step. `src/layout.rs` is the display-free
-geometry core; `src/term.rs` and `src/term/` wrap the pinned libghostty-vt
-terminal and its cells, keys and input encoders; `src/render/` is the
-toolkit-free CPU painter — tiny-skia fills the canvas, swash shapes and
-rasterizes the text, fontconfig resolves the fonts, and the kitty image pass
-decodes PNGs; `src/surfaces.rs` and `src/surfaces/` hold the pure
-layout-validation and held-gap rules that the panel thread applies against
-its own Wayland surfaces; `src/anim.rs` eases the width; `src/pty.rs` and
-`src/pty/` drive the host-supplied fd as a calloop source;
-`src/fontconfig.rs` reads the Ghostty font and theme; `src/nerd_font.rs`
-is a generated glyph table; `src/guard.rs`
-is the panic guard. The `pinwin` host program
-`src/main.rs` owns the pty and the child's process, and binds the instance
-socket that the panel serves; its pure parts are `src/cli.rs` (arguments,
-`--toggle`, `--show`) and `src/settings.rs` (the environment contract). The
-socket itself (identity, bind, listener and client) lives in the library, in
-`src/instance.rs`.
+`src/main.rs` is the `pinwin` binary; the daemon, the IPC client and the
+option parser arrive with the panel-control rows, so it prints the usage and
+exits 2 until then. `src/cli.rs` is the hand-written argument parser, still
+written against the removed library API; `src/instance.rs` and
+`src/instance/` hold the instance socket (identity, bind, listener and
+client); `src/layout.rs` is the display-free geometry core; `src/surfaces.rs`
+and `src/surfaces/` hold the pure held-gap rules; `src/proxy/crop.rs` is the
+width tween's crop plan, compiled by `tests/tween_crop.rs` until the proxy
+owns it; `src/anim.rs` eases the width; `src/guard.rs` is the panic guard.
 
 The behaviour spec lives in `openspec/specs/pinwin-panel/spec.md`; the
 archived design decisions code comments cite as D-numbers are under
@@ -391,7 +340,3 @@ archived design decisions code comments cite as D-numbers are under
 - `panic = "unwind"` is fixed in every Cargo profile. Setting `panic = "abort"`
   would let a panic abort the host instead of being caught at the API
   boundary.
-- Building needs Zig 0.16 and, on a cold cache, `git` and network access.
-  pinwin uses the `libghostty-vt` crate, which pins one ghostty commit; bumping
-  it is a deliberate change of the crate's `rev` in `Cargo.toml`, checked by
-  the golden test.

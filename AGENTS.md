@@ -13,52 +13,33 @@ authorize changes here.
 
 ## Project Structure & Module Organization
 
-pinwin is one Rust crate that is both the product library and the `pinwin`
-binary; the build is Cargo only. The pre-port C and Zig sources (`src/*.c`,
-`src/*.h`, `src/*.zig`, `build.zig`, `build.zig.zon`) are removed by row 7.1 of
-`openspec/changes/port-to-rust/`, so this file describes the Rust layout:
+pinwin is one Rust crate that builds the `pinwin` binary; the build is
+Cargo only. The pre-port C and Zig sources (`src/*.c`, `src/*.h`,
+`src/*.zig`, `build.zig`, `build.zig.zon`) are removed by row 7.1 of
+`openspec/changes/port-to-rust/`, so this file describes the Rust layout.
+`openspec/changes/replace-terminal-with-app-host/` removes the terminal, the
+renderer and the library API, so the crate is binary-only now and several
+modules wait for the rows that wire them in (D15).
 
-- `src/lib.rs` — the crate root: the module tree and the `Panel`/`PinwinError`
-  re-exports.
-- `src/panel.rs` + `src/panel/` — the public API and the panel-thread lifecycle
-  (`error.rs`, `handshake.rs`, `startup.rs`): the `Panel` handle, `Startup`,
-  the start handshake and the apply replies. `src/panel/wayland_side/` runs the
-  panel thread: one `smithay-client-toolkit` connection and calloop loop per
-  start, the two layer-shell surfaces, the shared-memory buffers, the seat,
-  the width tween and the frame present step (`state/`, `surfaces.rs`,
-  `buffers.rs`, `sizing.rs`, `apply.rs`, `commands.rs`, `tween.rs`, `crop.rs`,
-  `present.rs`, `renderer.rs`, `seat/`). The thread ends when the handle drops.
+- `src/main.rs` — the `pinwin` binary. Until the panel-control rows add the
+  daemon, the IPC client and the option parser, it prints the usage and
+  exits 2.
+- `src/cli.rs` — the hand-written argument parser. It still calls the
+  removed library API and is rewritten by the panel-control rows.
+- `src/instance.rs` + `src/instance/` — the instance socket: identity, bind,
+  listener and client (`InstanceSocket`, `Request`, `instance::send`); the
+  daemon socket grows from it.
 - `src/layout.rs` — the display-free layout core: `Layout`/`Side`, `CellSize`,
   `OutputSize`, `Accent`, `Keyboard`, checked geometry validation and the pty
   yield decision.
-- `src/term.rs` + `src/term/` — the pinned libghostty-vt terminal wrapper and
-  its parts: `cells/`, `keys.rs`, `input.rs`, `callbacks.rs`.
-- `src/render.rs` + `src/render/` — the toolkit-free CPU painter: the
-  tiny-skia canvas (`canvas.rs`), the font, glyph and shaper modules
-  (`font.rs`, `glyph.rs`, `shape.rs`), the text and kitty image passes
-  (`text_pass.rs`, `image_pass.rs`), the grid painter (`painter.rs`), the
-  device-pixel snapping (`snap.rs`) and the frame gate (`frame_gate.rs`).
-- `src/surfaces.rs` + `src/surfaces/` — the pure layout-validation gate, the
-  publish verdict and the held-gap rules (`gap.rs`, `publish.rs`); the former
-  GTK layer-shell surfaces now live in the panel thread
-  (`src/panel/wayland_side/`).
+- `src/surfaces.rs` + `src/surfaces/` — the pure held-gap rules the panel
+  applies before it touches its layer surfaces (`gap.rs`).
+- `src/proxy/crop.rs` — the width tween's crop plan (replace-terminal-with-app-host
+  D8): the exact-rational scale rounding, the tween crop and the viewport
+  source rectangle. No module compiles it yet; `tests/tween_crop.rs` includes
+  it so its unit tests run.
 - `src/anim.rs` — the animated width transition's pure tween step.
-- `src/pty.rs` + `src/pty/` — the host-supplied pty fd, winsize and `SIGWINCH`,
-  plus the calloop read source (`calloop.rs`).
-- `src/fontconfig.rs` + `src/fontconfig/` — the Ghostty font and theme reader.
-- `src/nerd_font.rs` — the generated glyph-constraint table.
 - `src/guard.rs` — the shared panic guard.
-- `src/main.rs` — the `pinwin` host program: runs a command in a panel over
-  the library API, owning the pty and the child's process (the panel serves
-  the instance socket); its pure parts live in `src/cli.rs` (arguments,
-  `--toggle`, `--show`) and `src/settings.rs` (the environment contract).
-- `src/instance.rs` — the library's instance socket: identity, bind, listener
-  and client (`InstanceSocket`, `Request`, `instance::send`).
-- `examples/demo/` — the dev-only demo example, never installed; it drives,
-  through the `Panel` API, the live niri checks: hide/show toggle `t`,
-  cover/inset/gutter toggles, `DEMO_ZONE`, `DEMO_KEYBOARD` and `DEMO_DENSE`.
-- `.cargo/config.toml` — the Zig optimise mode and CPU floor the `libghostty-vt`
-  crate's build script reads.
 
 `openspec/specs/pinwin-panel/spec.md` is the behaviour spec.
 `openspec/changes/archive/` holds the archived design decisions code comments
@@ -67,13 +48,12 @@ reference as D-numbers; the port's own decisions are
 `port-to-rust D<n>`. The Wayland rewrite's decisions are in
 `openspec/changes/replace-gtk-with-wayland/design.md` (D1–D11), cited as
 `replace-gtk-with-wayland D<n>`. `pinwin.sh` is the legacy pre-library bash
-script, kept for reference only. `README.md` documents installation, library
-use, behaviour, architecture and known caveats.
+script, kept for reference only. `README.md` documents installation, use,
+behaviour, architecture and known caveats.
 
 ## Build, Test, and Development Commands
 
-`cargo build` builds the library and the `pinwin` binary; `cargo build
---examples` builds the dev-only demo. The gates, same as mbv: `cargo fmt
+`cargo build` builds the `pinwin` binary. The gates, same as mbv: `cargo fmt
 --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo
 audit`, `cargo nextest run` (prefer nextest locally; plain `cargo test` also
 works) and `make check-code-file-lines`. CI (`.github/workflows/build.yml`)
@@ -85,13 +65,7 @@ attribute in any form, no loosening `[lints]`, never edit `clippy.toml`
 unless explicitly asked. Fix the cause instead (params struct, delete dead
 code and its tests, drop the unused import). Run `cargo fmt` for each Rust
 change (stock edition-2024 defaults) and accept all reflow. Run `make
-check-code-file-lines` just before pushing; `src/nerd_font.rs` is the only
-exception (generated table). The build needs Zig 0.16 on PATH: the `libghostty-vt` crate's build
-script fetches its pinned ghostty commit and builds ghostty's own static VT
-library with `zig build`, so a cold cache also needs `git` and network
-access. `.cargo/config.toml` sets `LIBGHOSTTY_VT_SYS_OPTIMIZE` and
-`LIBGHOSTTY_VT_SYS_CPU`. Set `GHOSTTY_SOURCE_DIR=<dir>` to build against an
-existing ghostty checkout instead of fetching. The system needs libxkbcommon
+check-code-file-lines` just before pushing. The system needs libxkbcommon
 and fontconfig. Live runs require a Wayland compositor with wlr-layer-shell
 (niri). If touching the legacy `pinwin.sh`, check it with `bash -n pinwin.sh`.
 
@@ -100,14 +74,13 @@ and fontconfig. Live runs require a Wayland compositor with wlr-layer-shell
 Rust only, `rustfmt` clean. Keep modules small and split them by
 responsibility: the port maps one Rust module to one former C/Zig file
 (`openspec/changes/port-to-rust/design.md` D3), and a file should stay at or
-under 800 lines. The documented exception is `src/nerd_font.rs`, a generated
-glyph table whose regeneration is described in its module comment. It is
-excluded in `scripts/check-code-file-lines.sh`. Public
+under 800 lines. Public
 types keep their fields private and expose constructors and accessors, so the
 invariant lives in the field type rather than a runtime check (`port-to-rust`
-D6). Panics must never cross the library's API: run any body that can panic —
-the public `Panel` entry points, calloop callbacks and Wayland event handlers,
-and `extern "C"` terminal callbacks — through the shared `guard` helper
+D6). Panics must never cross the binary's boundaries: run any body that can
+panic — an IPC, daemon or command-line entry point, calloop callbacks and
+Wayland event handlers, and `extern "C"` callbacks — through the shared
+`guard` helper
 (`src/guard.rs`), which latches a poisoned flag (`port-to-rust` D5). Quote
 path and command arguments where expansion should remain one argument. Keep
 comments focused on niri, Wayland or timing behaviour that is not obvious
@@ -117,18 +90,14 @@ from (an archived change, or the design of the change that added the code:
 
 ## Testing Guidelines
 
-Run `cargo test` after any change; it covers layout validation, the pty yield
-decision, the font/theme parser, the tween step, the FFI layouts against the
-pinned headers, and the `Panel` handle's error and panic-containment paths.
-Build the display-free inner handle rather than a panel thread for handle
-tests, and take the fd and terminal as parameters in `pty`/`term` tests, so
-the tests run without a display (`port-to-rust` D10). Tests that need a real
-compositor are `#[ignore]`d and run explicitly. Exercise visual or
-behavioural changes with the demo example in a running niri session (`cargo
-run --example demo`; `DEMO_DENSE=1` adds a full grid with kitty images and
-resize traffic). Verify launch, width animation both ways, focus accent and
-cleanup when the launched command exits. Keep gutters aligned with the user's
-niri layout when changing defaults.
+Run `cargo nextest run` after any change; it covers the layout validation,
+the held-gap rule, the tween step, the width tween's crop plan
+(`src/proxy/crop.rs`) and the panic guard. Keep the pure parts display-free
+(`port-to-rust` D10): take the fd and the outputs of the environment as
+parameters, so the tests run without a display. Tests that need a real
+compositor are `#[ignore]`d and run explicitly. Once the proxy lands, exercise
+visual and behavioural changes live in a running niri session, and keep
+gutters aligned with the user's niri layout when changing defaults.
 
 ## Commit & Pull Request Guidelines
 

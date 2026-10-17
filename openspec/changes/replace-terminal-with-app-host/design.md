@@ -372,11 +372,11 @@ so there is no transition. Rollback is the previous release. The README gets a m
 table: `pinwin cmd` to `pinwin run -- ghostty -e cmd`, `COLS` to `--size`, `GUTTER` to the
 gutter settings, `PINWIN_*` to options, `pinwin --toggle name` to `pinwin toggle name`.
 
+## Known limits
+
+Apps that hand their window to an already running copy, or that start it through a launcher,
+are not supported. Users run them at their own risk.
+
 ## Open Questions
 
 - The default icon for the tray. A themed icon name is enough for the first release.
-- Do apps that hand a launch to a running copy stay out of scope for now? The user has
-  not answered.
-- Apps that launch differently (launchers such as `zeditor`): the spike watches the child
-  it starts, so the spike uses the foreground form. A future item, or out of scope? The
-  user has not answered.
