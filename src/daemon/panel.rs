@@ -18,7 +18,7 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::locked;
 use crate::cli::Amount;
@@ -245,14 +245,41 @@ impl PanelHandle {
     /// so a panel that polls the eventfd always finds the command in the
     /// channel.
     pub fn call(&self, request: PanelRequest, wait: Duration) -> Result<PanelReply, CommandError> {
+        self.send(request, wait)?.finish()
+    }
+
+    /// Queue `request` and wake the panel without waiting for the answer, so
+    /// a caller can ask several panels at once and collect the answers with
+    /// [`PendingCall::finish`]. `wait` runs from this call.
+    pub fn send(&self, request: PanelRequest, wait: Duration) -> Result<PendingCall, CommandError> {
         let (reply, answer) = mpsc::sync_channel(1);
         let queued = locked(&self.commands).send(Command { request, reply });
         if queued.is_err() {
             return Err(CommandError::Ended);
         }
         self.wake.notify().map_err(CommandError::Wake)?;
-        answer.recv_timeout(wait).map_err(|error| match error {
-            RecvTimeoutError::Timeout => CommandError::Timeout(wait),
+        Ok(PendingCall {
+            answer,
+            wait,
+            deadline: Instant::now() + wait,
+        })
+    }
+}
+
+/// A command a panel has been asked to carry out and has not yet answered.
+#[derive(Debug)]
+pub struct PendingCall {
+    answer: mpsc::Receiver<PanelReply>,
+    wait: Duration,
+    deadline: Instant,
+}
+
+impl PendingCall {
+    /// Wait for the panel's answer until the call's deadline.
+    pub fn finish(self) -> Result<PanelReply, CommandError> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        self.answer.recv_timeout(left).map_err(|error| match error {
+            RecvTimeoutError::Timeout => CommandError::Timeout(self.wait),
             RecvTimeoutError::Disconnected => CommandError::Ended,
         })
     }

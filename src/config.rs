@@ -77,6 +77,19 @@ pub enum Layer {
     Overlay,
 }
 
+impl Layer {
+    /// The layer's text in the setting grammar and on the wire.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Bottom => "bottom",
+            Self::Top => "top",
+            Self::Overlay => "overlay",
+        }
+    }
+}
+
 impl FromStr for Layer {
     type Err = InvalidValue;
 
@@ -98,6 +111,18 @@ pub enum Keyboard {
     None,
     OnDemand,
     Exclusive,
+}
+
+impl Keyboard {
+    /// The mode's text in the setting grammar and on the wire.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::OnDemand => "on-demand",
+            Self::Exclusive => "exclusive",
+        }
+    }
 }
 
 impl FromStr for Keyboard {
@@ -247,7 +272,7 @@ impl std::error::Error for InvalidValue {}
 
 /// A whole number of digits. `u32::from_str` also accepts a sign, so the
 /// grammar checks the bytes first: `+640px` is not a size.
-fn parse_digits(raw: &str) -> Option<u32> {
+pub(crate) fn parse_digits(raw: &str) -> Option<u32> {
     if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }

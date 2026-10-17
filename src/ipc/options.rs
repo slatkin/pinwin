@@ -50,11 +50,11 @@ pub(super) struct WireOptions {
 /// grammar (spec "Run options").
 fn wire_options(options: &PanelOptions) -> WireOptions {
     WireOptions {
-        edge: options.edge.map(edge_text),
+        edge: options.edge.map(|value| value.as_str().to_owned()),
         size: options.size.map(size_text),
-        reserve: options.reserve.map(reserve_text),
-        layer: options.layer.map(layer_text),
-        keyboard: options.keyboard.map(keyboard_text),
+        reserve: options.reserve.map(|value| value.as_str().to_owned()),
+        layer: options.layer.map(|value| value.as_str().to_owned()),
+        keyboard: options.keyboard.map(|value| value.as_str().to_owned()),
         output: options.output.clone(),
         hidden: options.hidden,
         focus_ring: options.focus_ring.map(focus_ring_text),
@@ -123,47 +123,6 @@ impl Serialize for Amount {
     }
 }
 
-/// The wire text of an edge (spec "Run options").
-fn edge_text(edge: Edge) -> String {
-    match edge {
-        Edge::Left => "left",
-        Edge::Right => "right",
-        Edge::Top => "top",
-        Edge::Bottom => "bottom",
-    }
-    .to_owned()
-}
-
-/// The wire text of a reserve mode (spec "Run options").
-fn reserve_text(reserve: ReserveMode) -> String {
-    match reserve {
-        ReserveMode::Push => "push",
-        ReserveMode::Cover => "cover",
-    }
-    .to_owned()
-}
-
-/// The wire text of a layer (spec "Run options").
-fn layer_text(layer: Layer) -> String {
-    match layer {
-        Layer::Background => "background",
-        Layer::Bottom => "bottom",
-        Layer::Top => "top",
-        Layer::Overlay => "overlay",
-    }
-    .to_owned()
-}
-
-/// The wire text of a keyboard mode (spec "Run options").
-fn keyboard_text(keyboard: Keyboard) -> String {
-    match keyboard {
-        Keyboard::None => "none",
-        Keyboard::OnDemand => "on-demand",
-        Keyboard::Exclusive => "exclusive",
-    }
-    .to_owned()
-}
-
 /// The wire text of a focus ring (spec "Run options"): `off` or
 /// `#RRGGBB:width`, the forms the setting grammar parses.
 fn focus_ring_text(ring: FocusRing) -> String {
@@ -178,24 +137,24 @@ fn focus_ring_text(ring: FocusRing) -> String {
 
 impl Serialize for Edge {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&edge_text(*self))
+        serializer.serialize_str(self.as_str())
     }
 }
 
 impl Serialize for ReserveMode {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&reserve_text(*self))
+        serializer.serialize_str(self.as_str())
     }
 }
 
 impl Serialize for Layer {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&layer_text(*self))
+        serializer.serialize_str(self.as_str())
     }
 }
 
 impl Serialize for Keyboard {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&keyboard_text(*self))
+        serializer.serialize_str(self.as_str())
     }
 }

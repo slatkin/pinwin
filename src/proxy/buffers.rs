@@ -20,8 +20,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::ffi::CStr;
-use std::io;
+use std::ffi::{CStr, CString};
+use std::io::{self, Write as _};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::rc::{Rc, Weak};
 
@@ -55,6 +55,30 @@ pub(super) fn memfd(name: &CStr) -> io::Result<OwnedFd> {
     // SAFETY: `fd` is a fresh descriptor the call above returned and nothing
     // else owns, so this `OwnedFd` is its only owner.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// An opaque `wl_shm` ARGB8888 buffer holding `pixels`, `width` by `height`
+/// with `stride` bytes a row, in a memfd pool named `name` (D4, D9, D10). The
+/// buffer belongs to the proxy, so its release has no client to go to.
+///
+/// # Errors
+///
+/// The error of `memfd_create` or of writing the pixels.
+pub(super) fn argb_buffer(
+    shm: &WlShm,
+    name: &str,
+    pixels: &[u8],
+    (width, height, stride): (i32, i32, i32),
+) -> io::Result<Rc<WlBuffer>> {
+    let name = CString::new(name).map_err(io::Error::other)?;
+    let mut file = std::fs::File::from(memfd(&name)?);
+    file.write_all(pixels)?;
+    let size = i32::try_from(pixels.len()).map_err(io::Error::other)?;
+    let pool = shm.new_send_create_pool(&Rc::new(file.into()), size);
+    let buffer = pool.new_send_create_buffer(0, width, height, stride, WlShmFormat::ARGB8888);
+    buffer.set_forward_to_client(false);
+    pool.send_destroy();
+    Ok(buffer)
 }
 
 /// The buffer sizes one panel knows (D8): every buffer the app created

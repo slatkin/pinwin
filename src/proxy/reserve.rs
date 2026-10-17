@@ -19,15 +19,14 @@
 //! crate); the strip and zone math is pinwin's own [`crate::geometry`].
 
 use std::cell::{Cell, RefCell};
-use std::ffi::CString;
-use std::io::{self, Write as _};
+use std::io;
 use std::rc::{Rc, Weak};
 
 use wl_proxy::object::{Object, ObjectCoreApi};
 use wl_proxy::protocols::wayland::wl_buffer::WlBuffer;
 use wl_proxy::protocols::wayland::wl_compositor::WlCompositor;
 use wl_proxy::protocols::wayland::wl_output::WlOutput;
-use wl_proxy::protocols::wayland::wl_shm::{WlShm, WlShmFormat};
+use wl_proxy::protocols::wayland::wl_shm::WlShm;
 use wl_proxy::protocols::wayland::wl_surface::{WlSurface, WlSurfaceHandler};
 use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_shell_v1::{
     ZwlrLayerShellV1, ZwlrLayerShellV1Layer,
@@ -201,24 +200,12 @@ impl Reserve {
     /// The transparent buffer, created on first use: a memfd holding one
     /// transparent ARGB8888 pixel, wrapped in a `wl_shm` pool.
     fn transparent_buffer(&self) -> io::Result<Rc<WlBuffer>> {
-        let name = CString::new("pinwin-reserve").map_err(io::Error::other)?;
-        let mut file = std::fs::File::from(super::buffers::memfd(&name)?);
-        file.write_all(&TRANSPARENT_PIXEL)?;
-        let pool = self
-            .shm
-            .new_send_create_pool(&Rc::new(file.into()), BUFFER_BYTES);
-        let buffer = pool.new_send_create_buffer(
-            0,
-            BUFFER_SIDE,
-            BUFFER_SIDE,
-            BUFFER_BYTES,
-            WlShmFormat::ARGB8888,
-        );
-        // The reserve's buffer belongs to the proxy, so its release has no
-        // client to go to.
-        buffer.set_forward_to_client(false);
-        pool.send_destroy();
-        Ok(buffer)
+        super::buffers::argb_buffer(
+            &self.shm,
+            "pinwin-reserve",
+            &TRANSPARENT_PIXEL,
+            (BUFFER_SIDE, BUFFER_SIDE, BUFFER_BYTES),
+        )
     }
 }
 

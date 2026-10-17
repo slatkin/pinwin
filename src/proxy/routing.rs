@@ -61,7 +61,7 @@ use super::reserve::Reserve;
 use super::slot::{Route, Slot};
 use super::viewport::{StaticCrop, apply_steady_crop, settle_forwarded, write_crop};
 use super::window::ClientXdgToplevel;
-use crate::config::PanelSettings;
+use crate::config::{FocusRing, Keyboard, Layer, PanelSettings};
 use crate::daemon::panel::AppId;
 use crate::geometry::{Geometry, HeldGap, OutputSize, Size};
 
@@ -182,6 +182,21 @@ impl Routing {
     /// (D11, row 6.6).
     pub(super) fn settings(&self) -> PanelSettings {
         self.settings.borrow().clone()
+    }
+
+    /// The panel's live layer, read without cloning the settings.
+    pub(super) fn layer(&self) -> Layer {
+        self.settings.borrow().layer()
+    }
+
+    /// The panel's live keyboard mode, read without cloning the settings.
+    pub(super) fn keyboard(&self) -> Keyboard {
+        self.settings.borrow().keyboard()
+    }
+
+    /// The panel's live focus ring, read without cloning the settings.
+    pub(super) fn focus_ring(&self) -> FocusRing {
+        self.settings.borrow().focus_ring()
     }
 
     /// Changes the panel's live settings (row 6.6): a validated apply stores
@@ -638,7 +653,7 @@ impl ClientXdgSurface {
         dock::start_reserve(
             &self.routing,
             &geometry,
-            layer_of(self.routing.settings().layer()),
+            layer_of(self.routing.layer()),
             self.routing.pinned_output().as_ref(),
         );
         // D9: the surface watch learns which output the compositor docked

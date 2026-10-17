@@ -188,7 +188,7 @@ pub(super) fn dock_panel_window(
     let pin = routing.pinned_output();
     // The commits handler is installed after this first dock, so the launch
     // takes its pending value from the mode itself (see [`super::keyboard`]).
-    let defer_keyboard = keyboard::deferred_until_map(routing.settings().keyboard());
+    let defer_keyboard = keyboard::deferred_until_map(routing.keyboard());
     dock_window(
         routing,
         layer_shell,
@@ -306,7 +306,7 @@ pub(super) fn recreate_reserve(routing: &Rc<Routing>, output_global: Option<u32>
         &shm,
         &layer_shell,
         gap,
-        layer_of(routing.settings().layer()),
+        layer_of(routing.layer()),
         pin.as_ref(),
     );
 }

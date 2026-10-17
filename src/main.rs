@@ -225,85 +225,64 @@ fn daemon() -> ExitCode {
 /// "Command-line client", "Command-line exit codes").
 fn client(command: ClientCommand) -> ExitCode {
     if matches!(command, ClientCommand::Subscribe) {
-        return subscribe();
+        return finish(subscribe());
     }
     // `pinwin status` prints the reply's JSON; the other successes print
     // nothing (spec "Command-line exit codes").
     let status = matches!(command, ClientCommand::Status { .. });
-    let request = Request::from(command);
-    let path = match daemon::socket_path_from_env() {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("pinwin: {error}");
-            return ExitCode::FAILURE;
+    finish(send(&Request::from(command), status))
+}
+
+/// The exit code of a command's result: a failure prints `pinwin: ` and its
+/// message to stderr.
+fn finish(result: Result<(), String>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("pinwin: {message}");
+            ExitCode::FAILURE
         }
-    };
-    let answer = match ipc::call(&path, &request) {
-        Ok(answer) => answer,
-        Err(error) => {
-            eprintln!("pinwin: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    }
+}
+
+/// Send `request` and, for `status`, print the reply.
+fn send(request: &Request, status: bool) -> Result<(), String> {
+    let path = daemon::socket_path_from_env().map_err(|error| error.to_string())?;
+    let answer = ipc::call(&path, request).map_err(|error| error.to_string())?;
     if let Some(error) = answer.reply().as_error() {
         // The daemon's own message, so a script sees why the request failed
         // (spec "Unknown panel").
-        eprintln!("pinwin: {}", error.message());
-        return ExitCode::FAILURE;
+        return Err(error.message().to_string());
     }
-    if status && let Err(error) = write_stdout(answer.line()) {
-        eprintln!("pinwin: {error}");
-        return ExitCode::FAILURE;
+    if status {
+        write_stdout(answer.line()).map_err(|error| error.to_string())?;
     }
-    ExitCode::SUCCESS
+    Ok(())
 }
 
 /// Print each line of the daemon's event stream until the daemon closes it
 /// or the reader goes away (spec "Event stream", "Command-line client").
-fn subscribe() -> ExitCode {
-    let path = match daemon::socket_path_from_env() {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("pinwin: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut subscription = match Subscription::connect(&path) {
-        Ok(subscription) => subscription,
-        Err(error) => {
-            eprintln!("pinwin: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    match subscription.reply() {
-        Ok(reply) if reply.is_ok() => {}
-        Ok(reply) => {
-            if let Some(error) = reply.as_error() {
-                eprintln!("pinwin: {}", error.message());
-            }
-            return ExitCode::FAILURE;
-        }
-        Err(error) => {
-            eprintln!("pinwin: {error}");
-            return ExitCode::FAILURE;
+fn subscribe() -> Result<(), String> {
+    let path = daemon::socket_path_from_env().map_err(|error| error.to_string())?;
+    let mut subscription = Subscription::connect(&path).map_err(|error| error.to_string())?;
+    let reply = subscription.reply().map_err(|error| error.to_string())?;
+    if let Some(error) = reply.as_error() {
+        return Err(error.message().to_string());
+    }
+    if !reply.is_ok() {
+        return Err("the daemon refused the subscription".to_owned());
+    }
+    while let Some(line) = subscription
+        .next_event()
+        .map_err(|error| error.to_string())?
+    {
+        // A closed pipe (`pinwin subscribe | head -1`) ends the stream:
+        // nobody is left to print the events for.
+        if write_stdout(&line).is_err() {
+            break;
         }
     }
-    loop {
-        match subscription.next_event() {
-            Ok(Some(line)) => {
-                // A closed pipe (`pinwin subscribe | head -1`) ends the
-                // stream: nobody is left to print the events for.
-                if write_stdout(&line).is_err() {
-                    return ExitCode::SUCCESS;
-                }
-            }
-            Ok(None) => return ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("pinwin: {error}");
-                return ExitCode::FAILURE;
-            }
-        }
-    }
+    Ok(())
 }
 
 /// Write one line to stdout and flush it, so a reply or an event reaches the

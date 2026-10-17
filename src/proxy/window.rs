@@ -75,17 +75,23 @@ impl XdgToplevelHandler for ClientXdgToplevel {
         if let Some(toplevel) = self.toplevel.upgrade() {
             toplevel.unset_handler();
         }
-        // D11: destroy the panel's current layer surface — a `set-output` or
-        // a `closed` may have replaced the one this window docked with.
-        if let Some(layer_surface) = self.routing.panel_layer_surface() {
-            layer_surface.send_destroy();
-        }
-        // D9: the reserve surface is destroyed with the panel window it was
-        // created for, which also frees the slot and the strip; D10: the
-        // focus ring's sub-surfaces go with the window they were laid over.
-        ring::window_destroyed(&self.routing);
-        self.routing.on_panel_window_destroyed(self.window);
+        teardown(&self.routing, self.window);
     }
+}
+
+/// End the panel window `window`: its layer surface, reserve and focus ring
+/// go with it and the slot is free.
+fn teardown(routing: &Routing, window: u64) {
+    // D11: destroy the panel's current layer surface — a `set-output` or a
+    // `closed` may have replaced the one this window docked with.
+    if let Some(layer_surface) = routing.panel_layer_surface() {
+        layer_surface.send_destroy();
+    }
+    // D9: the reserve surface is destroyed with the panel window it was
+    // created for, which also frees the slot and the strip; D10: the focus
+    // ring's sub-surfaces go with the window they were laid over.
+    ring::window_destroyed(routing);
+    routing.on_panel_window_destroyed(window);
 }
 
 /// A client connection went away without destroying its toplevel (row 7.3,
@@ -95,9 +101,5 @@ pub(super) fn client_disconnected(routing: &Routing, client: &Weak<Client>) {
     let Some(window) = routing.client_window(client) else {
         return;
     };
-    if let Some(layer_surface) = routing.panel_layer_surface() {
-        layer_surface.send_destroy();
-    }
-    ring::window_destroyed(routing);
-    routing.on_panel_window_destroyed(window);
+    teardown(routing, window);
 }

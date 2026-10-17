@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::locked;
-use super::panel::{PanelHandle, PanelReply, PanelRequest};
+use super::panel::{CommandError, PanelHandle, PanelReply, PanelRequest, PendingCall};
 use crate::ipc::{ErrorKind, ErrorReply, PanelEntry, Reply, Request};
 use crate::name::PanelName;
 
@@ -183,9 +183,15 @@ impl Registry {
             Ok(panels) => panels,
             Err(reply) => return reply,
         };
+        // Ask every panel first, then collect, so the wait is the slowest
+        // panel's and not the sum.
+        let pending: Vec<_> = panels
+            .iter()
+            .map(|(_, handle)| handle.send(PanelRequest::Status, wait))
+            .collect();
         let mut entries = Vec::with_capacity(panels.len());
-        for (name, handle) in panels {
-            match entry(&name, &handle, wait) {
+        for ((name, handle), pending) in panels.iter().zip(pending) {
+            match entry(name, handle, pending.and_then(PendingCall::finish)) {
                 Ok(entry) => entries.push(entry),
                 Err(reply) => return reply,
             }
@@ -231,8 +237,12 @@ impl Registry {
 
 /// The status entry of one panel: its name and its app's process ID from the
 /// registry, the rest from the panel itself.
-fn entry(name: &PanelName, handle: &PanelHandle, wait: Duration) -> Result<PanelEntry, Reply> {
-    match handle.call(PanelRequest::Status, wait) {
+fn entry(
+    name: &PanelName,
+    handle: &PanelHandle,
+    answer: Result<PanelReply, CommandError>,
+) -> Result<PanelEntry, Reply> {
+    match answer {
         Ok(PanelReply::Status(status)) => Ok(PanelEntry::new(name.clone(), handle.pid(), status)),
         Ok(PanelReply::Refused(error)) => Err(Reply::Error(error)),
         Ok(PanelReply::Done) => Err(Reply::error(

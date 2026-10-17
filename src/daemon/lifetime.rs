@@ -62,9 +62,6 @@ pub struct Lifetime {
     config: Mutex<Config>,
     /// The trigger the accept loop watches (D12).
     shutdown: Shutdown,
-    /// Whether a panel ever started, so an idle daemon that never had one
-    /// stays resident (spec "Daemon lifetime preference").
-    had_panel: AtomicBool,
     /// The bound of every wait for a panel, so a test uses a short one
     /// (spec "The daemon survives bad input", `port-to-rust` D10).
     wait: Duration,
@@ -113,7 +110,6 @@ impl Lifetime {
             config_path,
             config: Mutex::new(config),
             shutdown: Shutdown::new()?,
-            had_panel: AtomicBool::new(false),
             wait,
             tray: Mutex::new(TrayState::Off),
             tray_daemon: OnceLock::new(),
@@ -153,12 +149,10 @@ impl Lifetime {
     }
 
     /// Register a new panel under `name` (spec "Panel names", "Duplicate
-    /// name", "Event stream"): the name must be free, a registered panel
-    /// makes the daemon eligible to exit with its last panel, and every
-    /// subscriber hears `added`.
+    /// name", "Event stream"): the name must be free and every subscriber
+    /// hears `added`.
     pub fn add_panel(&self, name: PanelName, handle: PanelHandle) -> Result<(), ErrorReply> {
         self.registry.add(name.clone(), handle)?;
-        self.had_panel.store(true, Ordering::SeqCst);
         self.bus.publish(&Event::Added { panel: name });
         // The first panel brings the tray icon (D14, spec "Icon with
         // panels"); later panels keep the one icon.
@@ -301,11 +295,11 @@ impl Lifetime {
     }
 
     /// Whether the daemon exits with its last panel: `exit_when_idle` is
-    /// true and a panel has ended before (spec "Daemon lifetime
-    /// preference": a daemon with no panel "SHALL NOT exit before its first
-    /// panel has ended").
+    /// true. Only `panel_ended` asks, so a panel has ended (spec "Daemon
+    /// lifetime preference": a daemon with no panel "SHALL NOT exit before
+    /// its first panel has ended").
     fn exits_when_idle(&self) -> bool {
-        self.had_panel.load(Ordering::SeqCst) && self.daemon_settings().exit_when_idle()
+        self.daemon_settings().exit_when_idle()
     }
 }
 

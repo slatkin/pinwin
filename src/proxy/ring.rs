@@ -23,8 +23,7 @@
 //! their tests run without a compositor (`port-to-rust` D10).
 
 use std::cell::{Cell, RefCell};
-use std::ffi::CString;
-use std::io::{self, Write as _};
+use std::io;
 use std::rc::{Rc, Weak};
 
 use wl_proxy::object::{ObjectCoreApi, ObjectUtils};
@@ -32,7 +31,7 @@ use wl_proxy::protocols::wayland::wl_buffer::WlBuffer;
 use wl_proxy::protocols::wayland::wl_compositor::WlCompositor;
 use wl_proxy::protocols::wayland::wl_keyboard::{WlKeyboard, WlKeyboardHandler};
 use wl_proxy::protocols::wayland::wl_seat::{WlSeat, WlSeatHandler};
-use wl_proxy::protocols::wayland::wl_shm::{WlShm, WlShmFormat};
+use wl_proxy::protocols::wayland::wl_shm::WlShm;
 use wl_proxy::protocols::wayland::wl_subcompositor::WlSubcompositor;
 use wl_proxy::protocols::wayland::wl_subsurface::WlSubsurface;
 use wl_proxy::protocols::wayland::wl_surface::WlSurface;
@@ -298,7 +297,7 @@ impl RingSlot {
     /// Creates the ring for the configured size, when the ring is set, the
     /// size is known and the proxy has the globals the ring is built from.
     fn ensure(&self, routing: &Routing) -> Option<Rc<Ring>> {
-        let FocusRing::On { color, width } = routing.settings().focus_ring() else {
+        let FocusRing::On { color, width } = routing.focus_ring() else {
             return None;
         };
         let size = self.size.get()?;
@@ -329,7 +328,7 @@ pub(super) fn on_panel_hidden(routing: &Routing) {
 /// Whether the panel's settings carry a ring at all (spec "Accent
 /// disabled"): `off` builds no objects.
 fn enabled(routing: &Routing) -> bool {
-    matches!(routing.settings().focus_ring(), FocusRing::On { .. })
+    matches!(routing.focus_ring(), FocusRing::On { .. })
 }
 
 /// The panel window's `wl_seat` handler (D10): it puts the focus watch on
@@ -632,28 +631,22 @@ fn solid_buffer(shm: &Rc<WlShm>, width: u32, height: u32, color: Rgb) -> io::Res
         .checked_mul(height)
         .ok_or_else(|| io::Error::other("the ring bar is too large"))?;
     let length = usize::try_from(bytes).map_err(io::Error::other)?;
-    let name = CString::new(SHM_NAME).map_err(io::Error::other)?;
-    let mut file = std::fs::File::from(super::buffers::memfd(&name)?);
     let [red, green, blue] = color.channels();
     let pixel = [blue, green, red, u8::MAX];
     let mut data = vec![0_u8; length];
     for chunk in data.chunks_exact_mut(usize::try_from(BYTES_PER_PIXEL).unwrap_or(4)) {
         chunk.copy_from_slice(&pixel);
     }
-    file.write_all(&data)?;
-    let pool = shm.new_send_create_pool(&Rc::new(file.into()), bytes.cast_signed());
-    let buffer = pool.new_send_create_buffer(
-        0,
-        width.cast_signed(),
-        height.cast_signed(),
-        stride.cast_signed(),
-        WlShmFormat::ARGB8888,
-    );
-    // The ring's buffer belongs to the proxy, so its release has no client
-    // to go to.
-    buffer.set_forward_to_client(false);
-    pool.send_destroy();
-    Ok(buffer)
+    super::buffers::argb_buffer(
+        shm,
+        SHM_NAME,
+        &data,
+        (
+            width.cast_signed(),
+            height.cast_signed(),
+            stride.cast_signed(),
+        ),
+    )
 }
 
 #[cfg(test)]

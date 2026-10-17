@@ -18,7 +18,7 @@ use std::fmt;
 use std::os::unix::ffi::OsStrExt;
 use std::str::FromStr;
 
-use crate::config::{FocusRing, InvalidValue, Keyboard, Layer, PanelOptions};
+use crate::config::{FocusRing, InvalidValue, Keyboard, Layer, PanelOptions, parse_digits};
 use crate::geometry::{Edge, ReserveMode, Size};
 use crate::name::PanelName;
 
@@ -589,17 +589,11 @@ fn panel_value_ms(
 /// "Animated size changes").
 fn millis(raw: &OsStr) -> Result<u32, UsageError> {
     let raw = text("--ms", raw)?;
-    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(UsageError::new(format!(
+    parse_digits(raw).ok_or_else(|| {
+        UsageError::new(format!(
             "--ms: expected a whole number of milliseconds, got '{raw}'"
-        )));
-    }
-    let Ok(ms) = raw.parse() else {
-        return Err(UsageError::new(format!(
-            "--ms: expected a whole number of milliseconds, got '{raw}'"
-        )));
-    };
-    Ok(ms)
+        ))
+    })
 }
 
 /// A subcommand that takes no arguments.

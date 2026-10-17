@@ -147,7 +147,7 @@ impl PanelSurfaceCommits {
             routing: Rc::clone(routing),
             watch: PanelSurfaceWatch::new(routing, surface),
             coordinator: CommitCoordinator::new(),
-            defer_keyboard: Cell::new(keyboard::deferred_until_map(routing.settings().keyboard())),
+            defer_keyboard: Cell::new(keyboard::deferred_until_map(routing.keyboard())),
             forwarded_buffer: false,
         }
     }
@@ -174,7 +174,7 @@ impl PanelSurfaceCommits {
         if !self.defer_keyboard.replace(false) {
             return;
         }
-        let keyboard = self.routing.settings().keyboard();
+        let keyboard = self.routing.keyboard();
         if !keyboard::takes_keyboard_when_mapped(keyboard) {
             return;
         }

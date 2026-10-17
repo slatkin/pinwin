@@ -28,6 +28,17 @@ pub enum Edge {
 }
 
 impl Edge {
+    /// The edge's text in the setting grammar and on the wire.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+
     /// Whether the size across this edge is a width (a side edge) or a height
     /// (a top or bottom edge).
     #[must_use]
@@ -204,6 +215,17 @@ pub enum ReserveMode {
     Push,
     /// Cover: leave the strip where the last pushing setting put it.
     Cover,
+}
+
+impl ReserveMode {
+    /// The mode's text in the setting grammar and on the wire.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Push => "push",
+            Self::Cover => "cover",
+        }
+    }
 }
 
 /// A percent of the output's length across the panel's edge, from 1 to 100
