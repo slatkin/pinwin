@@ -249,6 +249,18 @@ and several modules wait for the rows that wire them in (D15).
   viewport values upstream unchanged — composed cropping of app viewports
   waits for row 10.x. Display-free, so its four tests run without a
   compositor.
+- `src/proxy/commit.rs` — the commit coordinator (row 8.1, D7): the dirty
+  flag the app's four pending-state requests set — `attach`, `damage`,
+  `damage_buffer` and `set_buffer_scale` — and the FIFO queue of proxy
+  changes, so a change on a clean surface is applied at once with the
+  proxy's own commit (inject) and one on a dirty surface waits for the
+  app's next commit (piggyback), which applies the queue in order just
+  before it is forwarded. `PanelSurfaceCommits` is the `wl_surface` handler
+  the routing installs on the panel surface: it watches those requests and
+  the app's commit on top of the D9 output watch and forwards each request
+  as the generated default handler does. No row requests a change yet (hide
+  and show are row 8.2, the tween is row 10.x), and the module stays public
+  until row 12.x. Display-free, so its five tests run without a compositor.
 - `src/run.rs` — the app `pinwin run` becomes (row 7.1, D2, spec "Run an app
   in a panel"): the pure exec spec of the program, its arguments and the
   environment the app inherits, with `WAYLAND_DISPLAY` set to the new panel's
@@ -394,7 +406,12 @@ list are refused so the panel does not move), and the viewport
 tests in `src/proxy/viewport.rs` cover the steady-state crop (D5, D8): the
 window geometry as source and 1:1 destination, a negative CSD origin
 clamped to the buffer's origin, a collapsed geometry refused, and the
-decision matrix that defers to an app viewport.
+decision matrix that defers to an app viewport, and the commit-coordinator
+tests in `src/proxy/commit.rs` cover D7: a clean surface injects the change
+with one proxy commit, a dirty surface queues it until the app's commit
+applies it before the forwarded commit, two queued changes keep their
+order, the app's commit clears the dirty flag, and each of the four
+pending-state requests sets it.
 The tests in `src/run/tests.rs` cover the exec spec's hand-over (row 7.1):
 the program and its arguments unchanged, `WAYLAND_DISPLAY` set to the
 panel's display, and the working folder inherited, so no test replaces the

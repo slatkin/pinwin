@@ -60,9 +60,10 @@ use wl_proxy::protocols::xdg_shell::xdg_toplevel::XdgToplevel;
 use wl_proxy::protocols::xdg_shell::xdg_wm_base::XdgWmBase;
 
 use super::apply;
+use super::commit::PanelSurfaceCommits;
 use super::dock;
 use super::mapping::layer_of;
-use super::output::{Globals, PanelSurfaceWatch, placeholder_output};
+use super::output::{Globals, placeholder_output};
 use super::popup::{ClientXdgPopup, ClientXdgPositioner, offset_anchor_rect};
 use super::reserve::Reserve;
 use super::slot::{Route, Slot};
@@ -642,9 +643,10 @@ impl ClientXdgSurface {
             self.routing.pinned_output().as_ref(),
         );
         // D9: the surface watch learns which output the compositor docked
-        // the panel on; the crop applies from here.
+        // the panel on; the D7 commits handler sits on top of it and sees
+        // each pending-state request and the app's commit.
         self.wl_surface
-            .set_handler(PanelSurfaceWatch::new(&self.routing, &self.wl_surface));
+            .set_handler(PanelSurfaceCommits::new(&self.routing, &self.wl_surface));
         // A window geometry the app set before its toplevel crops from here.
         apply_steady_crop(&self.routing, self.geometry);
     }

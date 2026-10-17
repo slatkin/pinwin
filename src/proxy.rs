@@ -116,6 +116,12 @@ mod mapping;
 #[path = "proxy/output.rs"]
 mod output;
 
+// The commit coordinator (row 8.1, D7): the dirty flag the app's four
+// pending-state requests set and the queue of proxy changes that waits for
+// the app's next commit, plus the surface handler that watches both.
+#[path = "proxy/commit.rs"]
+pub mod commit;
+
 // The reserve surface: the transparent layer surface that owns the
 // exclusive zone (D9).
 #[path = "proxy/reserve.rs"]
