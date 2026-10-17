@@ -146,7 +146,7 @@ below). Its code does not enter pinwin; only the findings do.
 - [x] 5.1 Create `src/ipc.rs` (D13): request enum, reply and error kinds, line limit, client
   call with a bounded wait. Verify: unit tests for "Valid request", "Not JSON", "Unknown
   command" and an over-long line pass.
-- [ ] 5.2 Create the daemon socket (spec "Daemon socket", "One daemon for each Wayland
+- [x] 5.2 Create the daemon socket (spec "Daemon socket", "One daemon for each Wayland
   display") from the bind and stale-file code in `src/instance.rs`; then delete
   `src/instance*`. Verify: tests for "Stale socket file", "Second daemon", "Two displays",
   "No runtime directory" and the 0600 mode pass, with the socket in a temp
