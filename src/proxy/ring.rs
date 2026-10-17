@@ -259,7 +259,7 @@ impl RingSlot {
     fn paint(&self, routing: &Routing) {
         let visible = self.state.get().is_visible();
         let mut created = false;
-        if visible && self.ring.borrow().is_none() {
+        if self.needs_ring(visible) {
             created = self.ensure(routing).is_some();
         }
         let Some(ring) = self.ring.borrow().clone() else {
@@ -285,6 +285,15 @@ impl RingSlot {
             return;
         };
         commits.request(Box::new(move || ring.show()));
+    }
+
+    /// Whether a visible ring still has to be built, because no ring exists
+    /// yet (D10). The check releases its shared borrow before it returns, so
+    /// the caller's [`ensure`](Self::ensure) can store the new ring: a borrow
+    /// that outlived the check would panic the panel thread with a
+    /// `BorrowMutError` when a global arrived after the first configure.
+    fn needs_ring(&self, visible: bool) -> bool {
+        visible && self.ring.borrow().is_none()
     }
 
     /// Creates the ring for the configured size, when the ring is set, the

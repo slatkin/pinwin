@@ -1,4 +1,4 @@
-use super::{Bar, RingState, bars};
+use super::{Bar, RingSlot, RingState, bars};
 
 /// The standard ring: every side of the panel, with the corners taken by
 /// the perpendicular bars (D10).
@@ -173,6 +173,29 @@ fn a_disabled_ring_never_shows() {
     assert!(!shown.is_visible());
     assert!(!shown.focus(true), "a disabled ring takes no focus");
     assert!(!shown.is_visible());
+}
+
+/// A ring built after the first configure takes the ring cell (D10): the
+/// check that the ring is missing releases its shared borrow before the
+/// build stores the ring, so the late-creation path cannot panic the panel
+/// thread with a `BorrowMutError`.
+#[test]
+fn a_late_built_ring_can_take_the_ring_cell() {
+    let slot = RingSlot::new();
+    let mut state = RingState::new(true, false);
+    assert!(state.focus(true), "the enter shows the ring");
+    slot.state.set(state);
+    assert!(
+        slot.needs_ring(true),
+        "a focused panel without a ring still has to build one"
+    );
+    // `ensure` stores the new ring here; a shared borrow still held by the
+    // check above would make this line panic.
+    assert!(
+        slot.ring.borrow_mut().is_none(),
+        "the ring cell is free for the late build"
+    );
+    assert!(!slot.needs_ring(false), "a hidden ring is never built");
 }
 
 /// Whether `bar` lies inside a `size` panel.
