@@ -183,7 +183,7 @@ below). Its code does not enter pinwin; only the findings do.
 - [x] 6.3 Add popups and per-window decorations (D5). Verify: unit tests for the popup anchor
   offset and the decoration routing pass; live: the user confirms "Context menu", "App with
   its own title bar" and "Dialog keeps its decorations".
-- [ ] 6.4 Add the reserve surface and geometry apply: anchors, margins, size, layer and zones
+- [x] 6.4 Add the reserve surface and geometry apply: anchors, margins, size, layer and zones
   from `geometry.rs`, and output size from `zxdg_output_v1` (D9). Verify: live, the user
   confirms "Tiles move right", "Other monitors unaffected", "Covers an existing top bar
   without a bottom gap", "Top docking" and "Change the layer".
