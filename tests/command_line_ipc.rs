@@ -425,6 +425,20 @@ fn panel_names(reply: &serde_json::Value) -> Vec<String> {
     })
 }
 
+/// The child process IDs the kernel lists for `pid`, read from `/proc`, or
+/// none when the process is already gone.
+fn child_pids(pid: u32) -> Vec<u32> {
+    let path = format!("/proc/{pid}/task/{pid}/children");
+    fs::read_to_string(path).map_or_else(
+        |_| Vec::new(),
+        |text| {
+            text.split_whitespace()
+                .filter_map(|pid| pid.parse().ok())
+                .collect()
+        },
+    )
+}
+
 /// Wait, bounded, until the daemon answers `status` with every one of
 /// `names`, and return that reply.
 fn wait_for_panels(dir: &Path, names: &[&str]) -> serde_json::Value {
@@ -463,6 +477,18 @@ fn two_first_runs_leave_one_daemon() {
     runs.start("second");
     let reply = wait_for_panels(&dir, &["first", "second"]);
     let pid = reply["pid"].as_u64().expect("the daemon names itself");
+    // The spawned daemon detached itself: each `pinwin run` process (now the
+    // app, same PID) holds no child, so neither the intermediate child nor the
+    // daemon becomes a zombie under an app that never waits (spec "Two first
+    // runs", D12).
+    for child in &runs.children {
+        let children = child_pids(child.id());
+        assert!(
+            children.is_empty(),
+            "the run process {} left an un-reaped child: {children:?}",
+            child.id()
+        );
+    }
     assert_eq!(
         panel_names(&reply).len(),
         2,

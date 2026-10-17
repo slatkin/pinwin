@@ -3,11 +3,15 @@
 //! mode, detached from the caller's terminal and session, and the bounded wait
 //! for the display's socket to answer.
 //!
-//! The child runs `pinwin daemon` in a new session (`setsid`) with stdin,
-//! stdout and stderr on `/dev/null`, so closing the caller's terminal neither
-//! hangs it up nor writes to a gone terminal. Two starts that race are settled
-//! by the daemon's own socket bind: the loser sees a live daemon and exits 0,
-//! and both `pinwin run` calls connect to the winner (spec "Two first runs").
+//! The intermediate child forks once more and exits at once, so `pinwin run`
+//! reaps it and the daemon it leaves is reparented to init: the daemon is no
+//! child of the process that `exec`s the app, and nothing stays a zombie under
+//! an app that does not wait. The daemon runs in a new session (`setsid`) with
+//! stdin, stdout and stderr on `/dev/null`, so closing the caller's terminal
+//! neither hangs it up nor writes to a gone terminal. Two starts that race are
+//! settled by the daemon's own socket bind: the loser sees a live daemon and
+//! exits 0, and both `pinwin run` calls connect to the winner (spec "Two first
+//! runs").
 //!
 //! The wait is a probe of the socket, bounded by [`START_TIMEOUT`] and polled
 //! at [`POLL_INTERVAL`], so an already running daemon answers at once and a
@@ -83,21 +87,12 @@ pub fn start_and_wait(path: &Path) -> Result<(), StartError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    // SAFETY: `setsid` is async-signal-safe and changes only the child's own
-    // session between `fork` and `exec`; a failure becomes the spawn error.
-    let spawned = unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-        command.spawn()
-    };
-    let child = spawned.map_err(StartError::Spawn)?;
-    // Dropping the child leaves it running; the daemon has its own session
-    // and serves the display until `quit` or a signal ends it (D12).
-    drop(child);
+    detach(&mut command);
+    let mut child = command.spawn().map_err(StartError::Spawn)?;
+    // The intermediate child exits as soon as it has forked the daemon, so
+    // this wait is short. Reaping it here is what keeps no zombie under the
+    // app this process becomes; the daemon itself is init's child now (D12).
+    child.wait().map_err(StartError::Spawn)?;
     if wait_until_answering(path, START_TIMEOUT) {
         Ok(())
     } else {
@@ -105,6 +100,35 @@ pub fn start_and_wait(path: &Path) -> Result<(), StartError> {
             path: path.to_owned(),
             timeout: START_TIMEOUT,
         })
+    }
+}
+
+/// Detach the spawned command from the caller with a second fork (D12): the
+/// intermediate child exits at once, the caller reaps it, and the daemon is
+/// reparented to init, so no process stays a zombie under the app the caller
+/// `exec`s. The daemon also gets its own session, so no terminal hangs it up.
+/// SIGCHLD is deliberately left alone: the `exec`ed app would inherit the
+/// disposition.
+fn detach(command: &mut Command) {
+    // SAFETY: `fork` and `setsid` are async-signal-safe and only the child's
+    // own process state changes between `fork` and `exec`; every failure is
+    // returned as the spawn error, so `spawn` reports it instead of the daemon
+    // leaving no answer.
+    unsafe {
+        command.pre_exec(|| {
+            match libc::fork() {
+                -1 => return Err(io::Error::last_os_error()),
+                // The intermediate child leaves the daemon to init and exits
+                // without running its destructors or flushing the caller's
+                // buffers, which `_exit` guarantees.
+                0 => {}
+                _ => libc::_exit(0),
+            }
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
 }
 
