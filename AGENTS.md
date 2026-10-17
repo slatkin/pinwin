@@ -322,8 +322,9 @@ roundtrip, so the daemon's start check passes without the user's compositor.
 The crop harness includes `src/geometry.rs` as well, for the `Edge` the crop
 names, under a `dead_code` allow whose reason names the rows that use the
 accessors it does not. `src/anim.rs` is not compiled until the tween rows
-wire it in, so it has no tests yet. The dead-code staging in
-`src/geometry.rs` is per-item now: `Margins::new` and the `Geometry::across`
+wire it in, so it has no tests yet. The parts of `src/geometry.rs` that wait
+for later rows stay unreported as dead code because `src/main.rs` keeps the
+module public until row 12.x: `Margins::new` and the `Geometry::across`
 and `Geometry::gutters` accessors wait for row 6.6's apply path, and
 `HeldGap::reserve`, `HeldGap::tweens_with_panel` and `HeldGap::edge` for the
 row 10.x tween. Keep the pure parts display-free
