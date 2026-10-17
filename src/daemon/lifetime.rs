@@ -227,9 +227,18 @@ impl Lifetime {
     }
 
     /// Stop the tray service when the last panel ends, so no icon shows
-    /// without a panel (spec "No icon without panels").
+    /// without a panel (spec "No icon without panels"). The registry is read
+    /// again under the tray lock: a panel that starts while the last one ends
+    /// is registered before its `show_tray` runs, so this call sees it and
+    /// keeps the icon (D14, spec "One tray icon while panels exist"). The
+    /// lock order is tray then registry; no path holds the registry lock and
+    /// then takes the tray lock.
     fn hide_tray(&self) {
-        let previous = std::mem::take(&mut *locked(&self.tray));
+        let mut tray = locked(&self.tray);
+        if !self.registry.is_empty() {
+            return;
+        }
+        let previous = std::mem::take(&mut *tray);
         if let TrayState::Running(service) = previous {
             service.stop();
         }
@@ -562,5 +571,65 @@ impl Daemon {
         if let Err(error) = spawned {
             eprintln!("pinwin: could not serve an ipc connection: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::{Lifetime, TrayState, locked};
+    use crate::config::Config;
+    use crate::daemon::panel::{EventFd, PanelHandle};
+    use crate::name::PanelName;
+
+    /// A panel name the test registers.
+    fn notes() -> PanelName {
+        PanelName::parse("notes").expect("notes is a panel name")
+    }
+
+    /// A lifetime whose tray state is `Unavailable`, which a hide would
+    /// clear: no test enables the tray, so this stands in for a running
+    /// service without reaching a session bus.
+    fn lifetime() -> Lifetime {
+        let path = PathBuf::from("config.toml");
+        let config = Config::parse(&path, "").expect("the built-in config");
+        let lifetime = Lifetime::new(path, config, Duration::ZERO).expect("a daemon lifetime");
+        *locked(&lifetime.tray) = TrayState::Unavailable;
+        lifetime
+    }
+
+    /// A panel added between the last panel's end and the tray lock keeps the
+    /// tray state, so no icon disappears while a panel exists (D14, spec "One
+    /// tray icon while panels exist"); once that panel ends, the hide clears
+    /// the state.
+    #[test]
+    fn a_panel_added_before_the_hide_keeps_the_tray() {
+        let lifetime = lifetime();
+        let (commands, _answers) = mpsc::channel();
+        let handle = PanelHandle::new(
+            0,
+            commands,
+            Arc::new(EventFd::new().expect("a wake eventfd")),
+        );
+        lifetime.add_panel(notes(), handle).expect("notes is free");
+
+        lifetime.hide_tray();
+        assert!(
+            matches!(*locked(&lifetime.tray), TrayState::Unavailable),
+            "a hide must keep the tray while a panel exists"
+        );
+
+        assert!(
+            lifetime.panel_ended(&notes(), None),
+            "the panel was registered"
+        );
+        assert!(
+            matches!(*locked(&lifetime.tray), TrayState::Off),
+            "the hide after the last panel clears the tray"
+        );
     }
 }
