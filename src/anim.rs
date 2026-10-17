@@ -7,9 +7,9 @@
 //! `replace-gtk-with-wayland` D7): the daemon reads no desktop animation
 //! setting — the requested duration is the only control.
 
-/// Ease-out cubic, close to niri's critically damped window-resize spring
-/// (`glue_anim.c`), in millionths: `t` and the result are fractions of one
-/// scaled by `1_000_000`, so the step needs no lossy float-to-int conversion.
+/// Ease-out cubic, close to a critically damped spring (`glue_anim.c`), in
+/// millionths: `t` and the result are fractions of one scaled by
+/// `1_000_000`, so the step needs no lossy float-to-int conversion.
 fn ease_millionths(t: i64) -> i64 {
     const ONE: i64 = 1_000_000;
     let u = ONE - t;

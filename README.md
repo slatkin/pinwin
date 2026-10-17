@@ -3,7 +3,8 @@
 A layer-shell app host for Wayland compositors: it runs an app in a panel at
 one edge of an output as a layer surface, reserves space from tiled windows
 via a transparent reservation surface, and animates the panel's width between
-layouts. Built for niri, on a direct Wayland client with no toolkit.
+layouts. It runs on any Wayland compositor that offers the layer-shell
+protocol, on a direct Wayland client with no toolkit.
 
 pinwin is a single Rust crate: `src/main.rs` is the `pinwin` binary. One
 daemon owns every panel on a Wayland display; `pinwin run` starts an app in a
