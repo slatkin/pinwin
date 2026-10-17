@@ -328,7 +328,8 @@ The tray uses `ksni` with the `blocking` feature and `async-io` instead of tokio
 starts the tray service when the first panel appears and shuts it down when the last panel
 ends, so no icon shows without panels. ksni re-registers when a tray host appears later, and
 a missing session bus is logged and ignored. Menu actions call the same command functions as
-the IPC.
+the IPC. The item uses the theme icon name `pinwin`; pinwin installs no icon file, the tray
+host takes the icon from the user's theme.
 
 ### D15. Crate layout after the change
 
@@ -392,5 +393,4 @@ and the `no-window` event); users run them at their own risk.
 
 ## Open Questions
 
-- The default icon for the tray. A themed icon name is enough for the first release.
 - A desktop notification for the `no-window` report, once the tray work brings D-Bus.

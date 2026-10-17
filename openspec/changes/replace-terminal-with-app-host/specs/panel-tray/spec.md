@@ -9,12 +9,12 @@ without one icon for each panel and without an icon when no panel exists.
 
 ### Requirement: One tray icon while panels exist
 The daemon SHALL show one StatusNotifierItem tray icon on the session bus while at least one
-panel exists. When no panel exists, no pinwin icon SHALL show. The number of panels SHALL NOT
-change the number of icons.
+panel exists. The item's icon SHALL be the icon-theme name `pinwin`. When no panel exists, no
+pinwin icon SHALL show. The number of panels SHALL NOT change the number of icons.
 
 #### Scenario: Icon with panels
 - **WHEN** a tray host runs and the user starts two panels
-- **THEN** the tray shows one pinwin icon
+- **THEN** the tray shows one item with the icon named `pinwin`
 
 #### Scenario: No icon without panels
 - **WHEN** `exit_when_idle` is false and the last panel ends
