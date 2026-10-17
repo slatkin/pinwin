@@ -25,7 +25,6 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::CString;
 use std::io::{self, Write as _};
-use std::os::fd::FromRawFd;
 use std::rc::{Rc, Weak};
 
 use wl_proxy::object::{ObjectCoreApi, ObjectUtils};
@@ -634,15 +633,7 @@ fn solid_buffer(shm: &Rc<WlShm>, width: u32, height: u32, color: Rgb) -> io::Res
         .ok_or_else(|| io::Error::other("the ring bar is too large"))?;
     let length = usize::try_from(bytes).map_err(io::Error::other)?;
     let name = CString::new(SHM_NAME).map_err(io::Error::other)?;
-    // SAFETY: `memfd_create` takes a NUL-terminated name and flags and reads
-    // no other pointer; a failure is a negative return, not a panic.
-    let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: `fd` is a fresh descriptor the call above returned and nothing
-    // else owns, so this `OwnedFd` is its only owner.
-    let mut file = std::fs::File::from(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) });
+    let mut file = std::fs::File::from(super::buffers::memfd(&name)?);
     let [red, green, blue] = color.channels();
     let pixel = [blue, green, red, u8::MAX];
     let mut data = vec![0_u8; length];

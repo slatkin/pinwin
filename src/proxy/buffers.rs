@@ -20,7 +20,9 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::os::fd::OwnedFd;
+use std::ffi::CStr;
+use std::io;
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::rc::{Rc, Weak};
 
 use wl_proxy::object::ObjectCoreApi;
@@ -35,6 +37,25 @@ use wl_proxy::protocols::wayland::wl_shm::{WlShm, WlShmFormat, WlShmHandler};
 use wl_proxy::protocols::wayland::wl_shm_pool::{WlShmPool, WlShmPoolHandler};
 
 use super::output::Globals;
+
+/// A fresh close-on-exec memfd named `name`, the backing store of a
+/// proxy-owned `wl_shm` pool (D4, D9, D10): the reserve strip and the focus
+/// ring both build one, so the descriptor creation lives here once.
+///
+/// # Errors
+///
+/// The error of `memfd_create`, such as running out of file descriptors.
+pub(super) fn memfd(name: &CStr) -> io::Result<OwnedFd> {
+    // SAFETY: `memfd_create` takes a NUL-terminated name and flags and reads
+    // no other pointer; a failure is a negative return, not a panic.
+    let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a fresh descriptor the call above returned and nothing
+    // else owns, so this `OwnedFd` is its only owner.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
 
 /// The buffer sizes one panel knows (D8): every buffer the app created
 /// through `wl_shm` or `zwp_linux_dmabuf_v1`, the buffer the panel surface
