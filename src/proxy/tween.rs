@@ -145,8 +145,10 @@ pub(super) struct Tween {
     to: u32,
     /// The app surface's extent the visible fraction is taken over (D8):
     /// the window geometry the app reports, its own viewport destination, or
-    /// the size the panel configures. The first entry is the length across
-    /// the tween axis.
+    /// the size the panel configures. Width first, height second — the
+    /// surface-local order the proxy's window geometry, viewport destination
+    /// and panel size all carry; [`Tween::across`] picks the axis by the
+    /// edge, so a top or bottom panel crops against the height.
     surface: (u32, u32),
     phase: Phase,
     anim: Anim,
@@ -162,8 +164,9 @@ pub(super) struct Tween {
 impl Tween {
     /// The tween of a change from `from` to `geometry.across()` over
     /// `duration_ms`. `surface` is the app's current extent in surface-local
-    /// pixels, the denominator of the visible fraction. `grow` starts in the
-    /// wait for the app's wide buffer; a shrink starts moving at once.
+    /// pixels, width first, the source of the visible fraction's denominator.
+    /// `grow` starts in the wait for the app's wide buffer; a shrink starts
+    /// moving at once.
     /// `None` for a change with no distance, no duration or a size the
     /// easing's integer step cannot carry.
     pub(super) fn start(
@@ -231,10 +234,21 @@ impl Tween {
         self.surface
     }
 
+    /// The app surface's length across the tween axis (D8): the width on a
+    /// left or right panel, the height on a top or bottom one.
+    const fn across(self) -> u32 {
+        if self.geometry.edge().across_is_width() {
+            self.surface.0
+        } else {
+            self.surface.1
+        }
+    }
+
     /// The visible fraction of the app surface the viewport composition
-    /// crops to now (D8): the eased length over the surface's length.
+    /// crops to now (D8): the eased length over the surface's length across
+    /// the edge.
     pub(super) fn fraction(self) -> Fraction {
-        Fraction::of(self.visible, self.surface.0).unwrap_or_else(Fraction::whole)
+        Fraction::of(self.visible, self.across()).unwrap_or_else(Fraction::whole)
     }
 
     /// The gap the reserve holds once the tween ends: a pushing target's own
@@ -292,7 +306,12 @@ impl Tween {
         if reported < self.to {
             return false;
         }
-        self.surface.0 = reported.max(1);
+        let reported = reported.max(1);
+        if self.geometry.edge().across_is_width() {
+            self.surface.0 = reported;
+        } else {
+            self.surface.1 = reported;
+        }
         self.phase = Phase::Running;
         true
     }
@@ -332,13 +351,23 @@ mod tests {
         geometry(edge, across, ReserveMode::Cover)
     }
 
+    /// The app surface `across` pixels across the tween axis on `edge`, with
+    /// 1080 along it: the width-first pair the driver hands the tween (D8).
+    fn surface(edge: Edge, across: u32) -> (u32, u32) {
+        if edge.across_is_width() {
+            (across, 1080)
+        } else {
+            (1080, across)
+        }
+    }
+
     /// A 200 ms grow from `from` to `to` on `edge`, with the app surface at
     /// its old length.
     fn growing(edge: Edge, from: u32, to: u32) -> Tween {
         Tween::start(
             push(edge, to),
             from,
-            (from, 1080),
+            surface(edge, from),
             HeldGap::start(push(edge, from)),
             true,
             200,
@@ -352,7 +381,7 @@ mod tests {
         Tween::start(
             push(edge, to),
             from,
-            (from, 1080),
+            surface(edge, from),
             HeldGap::start(push(edge, from)),
             false,
             200,
@@ -399,6 +428,58 @@ mod tests {
                 "the shrink ends on the target on {edge:?}"
             );
             assert_eq!(shrink.phase(), Phase::Finished);
+        }
+    }
+
+    /// The driver hands the tween a width-first surface pair, so a top or
+    /// bottom panel takes its length across the edge from the height: the
+    /// first frame of a shrink and of a grow crops against the panel's own
+    /// length, not the output's width (D8, spec "Content does not slide").
+    #[test]
+    fn a_top_panel_reads_the_across_length_from_the_height() {
+        for edge in [Edge::Top, Edge::Bottom] {
+            let mut shrink = shrinking(edge, 450, 300);
+            let first = frame(shrink.step(0));
+            assert_eq!(first.visible, 450);
+            assert_eq!(
+                first.fraction,
+                Fraction::of(450, 450).expect("the whole height"),
+                "the first shrink frame crops the height on {edge:?}"
+            );
+            // t = 0.5 -> ease(0.5) = 0.875 -> 450 - round(150 * 0.875).
+            let mid = frame(shrink.step(100_000));
+            assert_eq!(mid.visible, 319);
+            assert_eq!(
+                mid.fraction,
+                Fraction::of(319, 450).expect("the docked part of the height"),
+                "the mid shrink frame crops the height on {edge:?}"
+            );
+
+            let mut grow = growing(edge, 300, 450);
+            assert_eq!(grow.step(0), Step::Held);
+            assert!(grow.app_commit(Some(450)));
+            assert_eq!(
+                grow.surface,
+                surface(edge, 450),
+                "the wide surface keeps the width first on {edge:?}"
+            );
+            let first = frame(grow.step(0));
+            assert_eq!(
+                first.fraction,
+                Fraction::of(300, 450).expect("the start part of the height"),
+                "the first grow frame crops the height on {edge:?}"
+            );
+            let last = frame(grow.step(200_000));
+            assert_eq!(
+                last.fraction,
+                Fraction::of(450, 450).expect("the whole height"),
+                "the grow ends on the whole height on {edge:?}"
+            );
+            assert_eq!(
+                last.layer,
+                (0, 450),
+                "the layer size across the edge on {edge:?}"
+            );
         }
     }
 
@@ -539,6 +620,24 @@ mod tests {
             "the steady path forwards again after the tween"
         );
         assert_eq!(app_sizes, [600], "exactly one size for the whole tween");
+    }
+
+    /// A frame queued for a tween the slot has since cleared is stale and
+    /// does nothing, so it cannot re-send its layer state over a hide, a
+    /// re-dock or a newer tween; a frame of the tween the slot still owns
+    /// applies (D8).
+    #[test]
+    fn a_cleared_tween_drops_the_frames_it_queued() {
+        let slot = Slot::new();
+        let queued = slot.generation();
+        assert!(slot.is_current(queued), "the tween's frame applies");
+        slot.clear();
+        assert!(!slot.is_current(queued), "a cleared tween's frame is stale");
+        slot.clear();
+        assert!(
+            !slot.is_current(queued),
+            "a second clear keeps the old frame stale"
+        );
     }
 
     /// A serial the proxy minted is swallowed, and a compositor's is not

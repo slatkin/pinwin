@@ -36,11 +36,20 @@ use crate::geometry::{Geometry, HeldGap};
 /// How long the panel loop sleeps between two tween frames.
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
-/// One panel's tween state (D8): the tween the driver runs, if any, and the
-/// next serial the proxy mints for a configure it sends the app itself.
+/// One panel's tween state (D8): the tween the driver runs, if any, the next
+/// serial the proxy mints for a configure it sends the app itself, and the
+/// generation a queued frame is told apart by.
 pub(in crate::proxy) struct Slot {
     driver: RefCell<Option<Driver>>,
     next_serial: Cell<u32>,
+    /// The tween that owns the frames (D8). A frame waits in the commit
+    /// coordinator while the app's surface is dirty, and the state it carries
+    /// is stale once the slot drops its tween — the tween finished, a hide or
+    /// the panel window's end cleared it, or a new tween replaced it, and any
+    /// of those may have sent newer layer state in the meantime.
+    /// [`Slot::clear`] and [`Slot::set_driver`] bump it, so a frame captured
+    /// before the bump sees [`Slot::is_current`] fail and does nothing.
+    generation: Cell<u64>,
 }
 
 impl Slot {
@@ -49,13 +58,32 @@ impl Slot {
         Self {
             driver: RefCell::new(None),
             next_serial: Cell::new(PROXY_SERIAL_BASE),
+            generation: Cell::new(0),
         }
     }
 
-    /// Forgets a tween whose panel window went away (D8): its frames would
-    /// have nothing to apply.
+    /// Forgets the tween the slot holds (D8): its frames would have nothing
+    /// to apply, and one already queued in the commit coordinator must not
+    /// re-send the layer state it captured over the state a newer event sent.
     pub(in crate::proxy) fn clear(&self) {
+        self.bump();
         self.driver.borrow_mut().take();
+    }
+
+    /// The generation a frame is queued for (D8).
+    pub(super) fn generation(&self) -> u64 {
+        self.generation.get()
+    }
+
+    /// Whether a frame queued for `generation` still applies (D8): false once
+    /// the slot has cleared the tween it belonged to.
+    pub(super) fn is_current(&self, generation: u64) -> bool {
+        self.generation.get() == generation
+    }
+
+    /// Invalidates every frame queued for the tween the slot holds (D8).
+    fn bump(&self) {
+        self.generation.set(self.generation.get().wrapping_add(1));
     }
 
     /// The next serial of the proxy's own configures (D8), always at or above
@@ -81,8 +109,10 @@ impl Slot {
         self.driver.borrow_mut()
     }
 
-    /// Keeps the tween a change just started (D8).
+    /// Keeps the tween a change just started (D8), invalidating the frames
+    /// of the tween it replaces.
     fn set_driver(&self, driver: Driver) {
+        self.bump();
         *self.driver.borrow_mut() = Some(driver);
     }
 }
@@ -122,7 +152,17 @@ pub(in crate::proxy) fn start(
         // D8: a grow that cannot see the app's size never knows when the
         // wide buffer arrives, so it snaps.
         None if grow => return false,
-        None => (from, panel_length(routing, geometry)),
+        // D8: the pair is width first, like every other surface extent the
+        // composition reads, so a top or bottom panel's length across its
+        // edge is the height.
+        None => {
+            let length = panel_length(routing, geometry);
+            if geometry.edge().across_is_width() {
+                (from, length)
+            } else {
+                (length, from)
+            }
+        }
     };
     let resting = routing
         .held_gap()
@@ -178,6 +218,9 @@ pub(in crate::proxy) fn advance(routing: &Rc<Routing>) -> Option<Duration> {
         let serial = globals.tween().mint();
         send_configure(routing, geometry, serial);
     }
+    // D8: the tween owns no frames once it ends, so a frame the coordinator
+    // still holds for it is dropped instead of re-sending the state it
+    // captured over whatever a later event sent.
     globals.tween().clear();
     None
 }
@@ -209,8 +252,8 @@ pub(in crate::proxy) fn on_app_commit(routing: &Routing) {
 }
 
 impl Routing {
-    /// The app surface's extent the viewport composition crops (D8) while a
-    /// tween runs and the app reports no window geometry.
+    /// The app surface's extent, width first, the viewport composition crops
+    /// (D8) while a tween runs and the app reports no window geometry.
     pub(in crate::proxy) fn tween_surface(&self) -> Option<(u32, u32)> {
         let globals = self.globals();
         let slot = globals.tween();
@@ -226,10 +269,16 @@ impl Routing {
 pub(in crate::proxy) fn stop(routing: &Routing) {
     let globals = routing.globals();
     let slot = globals.tween();
-    let Some(driver) = slot.driver().take() else {
-        return;
+    let gap = {
+        let driver = slot.driver();
+        let Some(driver) = driver.as_ref() else {
+            return;
+        };
+        driver.tween.final_gap()
     };
-    let gap = driver.tween.final_gap();
+    // The gap applied here is the frame the tween would have ended on, so a
+    // frame still queued for the tween would only re-send the old one.
+    slot.clear();
     routing.set_held_gap(gap);
     if let Some(reserve) = routing.reserve() {
         if routing.hidden.is_hidden() {
@@ -251,9 +300,9 @@ impl Routing {
     }
 }
 
-/// The app surface's extent in surface-local pixels (D8): the window
-/// geometry the app reported, or its own viewport destination on the panel
-/// surface. `None` when it reports neither.
+/// The app surface's extent in surface-local pixels, width first (D8): the
+/// window geometry the app reported, or its own viewport destination on the
+/// panel surface. `None` when it reports neither.
 fn app_surface(routing: &Routing) -> Option<(u32, u32)> {
     if let Some([_, _, width, height]) = routing.globals().viewport().window() {
         return Some((extent(width), extent(height)));
@@ -332,8 +381,15 @@ fn apply(routing: &Rc<Routing>, frame: Frame) {
     let Ok(commits) = surface.try_get_handler_ref::<PanelSurfaceCommits>() else {
         return;
     };
+    let generation = routing.globals().tween().generation();
     let routing = Rc::clone(routing);
     commits.request(Box::new(move || {
+        // D8: a frame the slot cleared its tween out from under is stale —
+        // a hide, a re-dock or a new tween may have sent newer layer state —
+        // so it must not re-send the state it captured.
+        if !routing.globals().tween().is_current(generation) {
+            return;
+        }
         let (width, height) = frame.layer_size();
         layer_surface.send_set_size(width, height);
         let margins = frame.margins();
