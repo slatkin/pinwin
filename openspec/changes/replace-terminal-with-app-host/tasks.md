@@ -161,7 +161,7 @@ below). Its code does not enter pinwin; only the findings do.
   and `reload` (spec "Reload", "Runtime changes stay in memory"). Verify: tests for "Exit with
   the last panel", "Stay resident", "Quit with panels", "Reload a valid file" and "Reload an
   invalid file" pass.
-- [ ] 5.6 Wire the client subcommands and exit codes (spec "Command-line exit codes").
+- [x] 5.6 Wire the client subcommands and exit codes (spec "Command-line exit codes").
   Write a new `tests/command_line_ipc.rs` that runs the binary against a daemon in a temp
   runtime directory. Verify: `cargo nextest run` passes "No daemon", "Unknown panel" and
   "Usage error" with exit codes 1, 1 and 2.
