@@ -153,6 +153,11 @@ zone back in the same frame.
 Alternative: destroy the layer surface and create a new one on show. Rejected: it needs a
 role change on the app's surface, and compositors differ on reusing a role.
 
+Spike 1.3 finding (explicit sync): while hidden, the proxy drops the attach, so it must
+also hold the acquire and release points of `wp_linux_drm_syncobj_surface_v1` and emit
+them only with a buffer-carrying commit. A dropped hidden attach keeps its buffer and its
+points, so the app's release point is signalled.
+
 ### D7. Proxy commits: piggyback or inject
 
 The tween, the ring position, hide and show change state on the app's surface, and a
@@ -167,6 +172,10 @@ commit. When the proxy needs a commit:
   app's next commit.
 
 The pure part (the dirty flag and the queue) is unit tested.
+
+Spike 1.3 finding: the dirty flag is set by `attach`, `damage`, `damage_buffer` and
+`set_buffer_scale`; the queue is flushed just before the app's next commit (the spike
+approximates "any request" this way).
 
 ### D8. Tween on the app's buffer
 
@@ -215,6 +224,32 @@ Spike findings (row 1.2, hide/show spike; findings, not decisions):
   (otherwise the compositor raises `viewport_exists` and closes the proxy connection). Such
   clients get no client-side-decoration crop. Composing the app's viewport (D8) is still not
   implemented.
+
+Spike findings (row 1.3, tween spike; findings, not decisions):
+
+1. Viewport ownership: apps create their `wp_viewport` before the toplevel (foot, GLFW,
+   browsers). The proxy keeps every app viewport local, defers mirroring until the panel
+   surface is known, adopts the panel surface's viewport and composes it into the crop, and
+   mirrors non-panel viewports upstream. One viewport per upstream surface; a second is
+   `viewport_exists` and is fatal.
+2. The crop needs a bound on the app's surface size along the tween axis, and the crop
+   source must be clamped to the attached buffer (a source past the buffer is a fatal
+   `out_of_buffer`, seen with Zed). The proxy tracks buffer sizes for `wl_shm` and
+   `zwp_linux_dmabuf_v1`. The source is in post-buffer-scale coordinates: do not multiply
+   by `buffer_scale`. With an unknown buffer size, the proxy draws the whole buffer (no
+   source).
+3. "One size per tween": the proxy mints its own configures from a serial range and
+   swallows their acks. D4 covers forwarding only.
+4. Grow starts when the app's reported size reaches the target, checked at COMMIT (GTK3
+   order: `attach`, `set_window_geometry`, `commit`), not at `attach`. The 500 ms snap
+   fallback stays.
+5. Fractional scale: a destination-only `wp_viewport` (Chromium, foot) maps the whole
+   buffer to the destination, so the ratio is `preferred_scale / 120`. The app's own source
+   wins. No viewport gives ratio 1 (GTK3). A surface may have only one
+   `wp_fractional_scale_v1`: the proxy watches the app's object and never creates another.
+   Known gap: an app that uses `buffer_scale` 2 (Zed) is cropped at the 1.1 ratio, so a
+   half-width tween crop may look about 10% zoomed. The user has not seen it. Kept as a
+   risk.
 
 ### D9. Geometry in pixels for four edges
 
@@ -340,3 +375,8 @@ gutter settings, `PINWIN_*` to options, `pinwin --toggle name` to `pinwin toggle
 ## Open Questions
 
 - The default icon for the tray. A themed icon name is enough for the first release.
+- Do apps that hand a launch to a running copy stay out of scope for now? The user has
+  not answered.
+- Apps that launch differently (launchers such as `zeditor`): the spike watches the child
+  it starts, so the spike uses the foreground form. A future item, or out of scope? The
+  user has not answered.

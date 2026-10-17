@@ -57,6 +57,39 @@ below). Its code does not enter pinwin; only the findings do.
   user checks: smooth width change, content stays at the docked edge, the app gets one size.
   Record the answer here, and update design.md where a finding changes a decision.
 
+  Recorded answer (the user's words, word for word):
+
+  - galculator, first tween build: "the tween is a bit of a fail. the expand if janky, it
+    happens in like two frames, first half-expanded, then full. then the collapse is
+    animated. ensure WM animation rules not interfering as well."
+  - galculator, after the commit-time grow detection: "all is smooth".
+  - paw yes, first build: died with `wp_viewport for this surface already exists` (the
+    user pasted the log).
+  - brave-origin: "it works, but interestingly when it expands it scales differently and
+    looks blurrier". With fractional scale off: "not blurry at scale 1, all good at
+    scale 1. however, i would prefer that it do support fractional scale".
+  - After the fractional fix, about paw: "this does not seem to affect paw". (The sentence
+    "no it looks blurry when launched in spike compared to normally launched" was about
+    zeditor, see below.)
+  - zeditor, first runs: "zeditor is the one that looks blurry when i launch it." Later
+    the run died: "no, something tries to launch and there is brief reservation of space
+    and it immediately ends". Cause: `zeditor` is a launcher that exits 0; not a proxy
+    fault. Run as `zeditor --foreground`.
+  - `zeditor --foreground`, after the syncobj and buffer-bound fixes: "yes to all" (it
+    shows in the panel, the text is sharp, grow and shrink are smooth).
+  - Final run with galculator, `paw yes` and meld: "all pass".
+  - meld: "everything is bigger in spike with meld vs meld normally" (earlier run; no
+    trace was taken). Resolved: the user answered "yes" to "does all pass include meld
+    now looking the right size".
+  - Single-instance apps (Brave, code, Firefox) hand a launch to a running copy and exit;
+    the proxy never sees the window. The user: "hi motherfucker, if this panel isn't
+    going to work if an existing binary is running then it needs to fuck off, spike
+    failed" and "I AM NOT CLOSING EVERY BRAVE WINDOW". Tests must run beside the user's
+    open apps.
+
+  Section 1 is a spike outside this repository. There is no commit range, so there is no
+  `reviewer` round for it.
+
 ## 2. Remove the terminal and the library
 
 - [ ] 2.1 Remove the terminal code. Move the rounding and crop-rect parts of
