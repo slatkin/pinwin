@@ -143,7 +143,7 @@ below). Its code does not enter pinwin; only the findings do.
 
 ## 5. IPC and daemon core
 
-- [ ] 5.1 Create `src/ipc.rs` (D13): request enum, reply and error kinds, line limit, client
+- [x] 5.1 Create `src/ipc.rs` (D13): request enum, reply and error kinds, line limit, client
   call with a bounded wait. Verify: unit tests for "Valid request", "Not JSON", "Unknown
   command" and an over-long line pass.
 - [ ] 5.2 Create the daemon socket (spec "Daemon socket", "One daemon for each Wayland
