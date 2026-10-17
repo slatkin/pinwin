@@ -58,6 +58,40 @@ fn an_invalid_config_file_error_names_the_line() {
     );
 }
 
+/// A `[panel.<name>]` key must be a panel name (spec "Config file"): a key
+/// outside the name rules is refused with the file, the line and the key,
+/// because the key has no setting value to point at.
+#[test]
+fn a_panel_table_key_must_be_a_panel_name() {
+    let text = "[daemon]\nexit_when_idle = true\n\n[panel.\"my.app\"]\nedge = \"left\"\n";
+    let error = parse(text).expect_err("a dot is not in the name rules");
+    assert_eq!(
+        error.to_string(),
+        "/home/user/.config/pinwin/config.toml:4: the [panel.<name>] key is not a panel \
+         name: expected a name of 1..=64 characters from [A-Za-z0-9_-], got 'my.app'"
+    );
+
+    // An empty quoted key is not a name either, and the error names line 1.
+    let error = parse("[panel.\"\"]\nedge = \"left\"\n").expect_err("an empty name");
+    assert!(
+        error
+            .to_string()
+            .starts_with("/home/user/.config/pinwin/config.toml:1:"),
+        "the message names the file and line: {error}"
+    );
+    assert!(error.to_string().contains("got ''"), "{error}");
+}
+
+/// `defaults` names the defaults table, so it cannot also name a panel's own
+/// table: its key is lifted out and no `[panel.defaults]` table remains.
+#[test]
+fn defaults_is_the_defaults_table_not_a_panel_table() {
+    let config = parse("[panel.defaults]\nedge = \"right\"\n").expect("a valid file");
+    assert!(!config.panels.contains_key(DEFAULTS));
+    let defaults = config.panel(&name("defaults"), &PanelOptions::default());
+    assert_eq!(defaults.edge(), Edge::Right);
+}
+
 /// A panel's own table wins over `[panel.defaults]` (spec "Per-name
 /// override").
 #[test]
@@ -241,6 +275,37 @@ fn the_readme_documents_every_config_key() {
         DAEMON_KEYS.len() + PANEL_KEYS.len(),
         "the README's configuration table repeats a key"
     );
+}
+
+/// The table fields are the documented keys (row 4.2): a `PanelTable` or
+/// `DaemonTable` field renamed without updating its key list changes the
+/// field list `deny_unknown_fields` reports, and this test fails.
+#[test]
+fn the_table_fields_are_the_documented_keys() {
+    let error = parse("[panel.defaults]\nunknown = 1\n").expect_err("unknown is not a key");
+    assert_eq!(expected_keys(&error.to_string()), documented(PANEL_KEYS));
+
+    let error = parse("[daemon]\nunknown = true\n").expect_err("unknown is not a key");
+    assert_eq!(expected_keys(&error.to_string()), documented(DAEMON_KEYS));
+}
+
+/// The key list serde's `deny_unknown_fields` error names, with the
+/// quoting removed: several names after `expected one of`, or one name
+/// after `expected`.
+fn expected_keys(message: &str) -> Vec<String> {
+    let (_, tail) = message
+        .split_once("expected ")
+        .expect("the unknown-field message names the expected keys");
+    let names = tail.strip_prefix("one of ").unwrap_or(tail);
+    names
+        .split(", ")
+        .map(|name| name.trim_matches('`').to_owned())
+        .collect()
+}
+
+/// The documented keys in declaration order.
+fn documented(keys: impl IntoIterator<Item = &'static str>) -> Vec<String> {
+    keys.into_iter().map(str::to_owned).collect()
 }
 
 /// The `(table, key)` pairs of the README's `## Configuration` table.

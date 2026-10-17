@@ -5,6 +5,9 @@
 //!
 //! The file is TOML read with `serde` and `deny_unknown_fields`, so a typo
 //! or an invalid value is an error that names the file and the line (D13).
+//! A `[panel.<name>]` key is checked against the name rules too, because a
+//! key that is not a name would never match a panel; `defaults` is the
+//! defaults table, so no panel table can be named `defaults`.
 //! The setting grammar here is also the grammar of the run options: row 4.3
 //! parses a command-line value with the same `FromStr` implementations, so
 //! the file and the options cannot drift apart.
@@ -23,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use serde::Deserialize;
+use toml::Spanned;
 
 use crate::geometry::{Edge, Gutters, ReserveMode, Size};
 use crate::name::PanelName;
@@ -278,12 +282,14 @@ struct PanelTable {
 }
 
 /// The whole file: the two known tables and the `[panel.*]` map, which keeps
-/// `defaults` until [`Config::parse`] lifts it out.
+/// `defaults` until [`Config::parse`] lifts it out. The map keys keep their
+/// byte span, so a key outside the name rules can name its line, which the
+/// setting values get from serde's own error span.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ConfigFile {
     daemon: DaemonTable,
-    panel: BTreeMap<String, PanelTable>,
+    panel: BTreeMap<Spanned<String>, PanelTable>,
 }
 
 /// A string value parsed with the setting grammar, including the line that
@@ -496,18 +502,33 @@ impl Config {
 
     /// Parse the text of the file the error messages name as `path`.
     pub fn parse(path: &Path, text: &str) -> Result<Self, ConfigError> {
-        let mut file: ConfigFile = toml::from_str(text).map_err(|error| ConfigError::Invalid {
+        let file: ConfigFile = toml::from_str(text).map_err(|error| ConfigError::Invalid {
             path: path.to_path_buf(),
             line: line_of(&error, text),
             message: error.message().to_owned(),
         })?;
-        let defaults = file.panel.remove(DEFAULTS).unwrap_or_default();
+        let mut defaults = PanelTable::default();
+        let mut panels = BTreeMap::new();
+        for (key, table) in file.panel {
+            let line = line_at(text, key.span().start);
+            let key = key.into_inner();
+            if key == DEFAULTS {
+                defaults = table;
+                continue;
+            }
+            PanelName::parse(&key).map_err(|error| ConfigError::Invalid {
+                path: path.to_path_buf(),
+                line,
+                message: format!("the [panel.<name>] key is not a panel name: {error}"),
+            })?;
+            panels.insert(key, table);
+        }
         Ok(Self {
             daemon: DaemonSettings {
                 exit_when_idle: file.daemon.exit_when_idle.unwrap_or(true),
             },
             defaults,
-            panels: file.panel,
+            panels,
         })
     }
 
@@ -533,10 +554,14 @@ fn line_of(error: &toml::de::Error, text: &str) -> usize {
     let Some(span) = error.span() else {
         return 1;
     };
-    let Some(before) = text.get(..span.start) else {
-        return 1;
-    };
-    before.split('\n').count()
+    line_at(text, span.start)
+}
+
+/// The one-based line of the byte `offset` in `text`: a span before the file
+/// names the first line rather than hiding the error.
+fn line_at(text: &str, offset: usize) -> usize {
+    text.get(..offset)
+        .map_or(1, |before| before.split('\n').count())
 }
 
 /// A setting from the highest level that has it: the option, else the

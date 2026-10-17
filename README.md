@@ -59,7 +59,11 @@ Only the binary reads these; the library reads no pinwin-owned configuration.
 The daemon reads `$XDG_CONFIG_HOME/pinwin/config.toml` (default
 `~/.config/pinwin/config.toml`) when it starts, and `pinwin reload` reads it
 again. A missing file means the built-in defaults. An invalid file, including
-an unknown key, makes the daemon print the file and the line and exit 2.
+an unknown key, makes the daemon print a message with the file and the line:
+at start it exits 2, while `pinwin reload` exits 1, the daemon keeps the
+previous config and the reply is `invalid_config`. A `[panel.<name>]` key
+must follow the panel name rules, so `[panel."my.app"]` is an error;
+`defaults` names the defaults table, so a panel cannot be named `defaults`.
 
 The file has a `[daemon]` table, a `[panel.defaults]` table that applies to
 every panel and one `[panel.<name>]` table for the panel with that name. For
