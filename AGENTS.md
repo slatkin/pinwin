@@ -163,7 +163,8 @@ and several modules wait for the rows that wire them in (D15).
   docks with, the `set-layer` re-dock, the resize arithmetic, the gap
   publish and the `Event::GeometryChanged` a successful apply sends, plus
   the output-driven re-apply the routing calls. Its pure part
-  is display-free, so its tests run without a compositor.
+  is display-free, so its tests run without a compositor
+  (`src/proxy/apply/tests.rs`).
 - `src/proxy/slot.rs` — the panel's one window slot (D4, spec "First
   window", "Window comes back", "Dialog", "Passed-through window stays",
   "Empty panel shows nothing"): the pure `Slot` of no window or one held
@@ -248,8 +249,11 @@ and several modules wait for the rows that wire them in (D15).
   margins, held-gap zone and viewport fraction. It also owns the
   one-size-per-tween rule: the proxy acks the compositor's intermediate
   configures itself, the app gets one minted configure, and its ack of that
-  minted serial is swallowed. Display-free, so its tests run without a
-  compositor.
+  minted serial is swallowed. Row 10.2 adds the duration rule (the request's
+  `ms` or `tween_ms`, clamped to 1000 ms), the no-viewporter snap decision,
+  the grow-versus-crop decision a retarget reads, and the eased clock that
+  starts with the change. Display-free, so its tests run without a
+  compositor (`src/proxy/tween/tests.rs`).
 - `src/proxy/tween/drive.rs` — the tween's driver (row 10.1, D8): the
   per-panel tween slot, the frame clock the panel loop waits on, the grow's
   configure to the target with a minted serial, and the per-frame apply of

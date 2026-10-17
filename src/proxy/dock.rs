@@ -212,9 +212,10 @@ pub(super) fn redock(routing: &Rc<Routing>, output_global: Option<u32>) {
         return;
     };
     // D8: the new layer surface sends its own state outside the commit
-    // coordinator, so a frame a tween still had queued is stale — it would
-    // otherwise re-send the old surface's size and margins over the new one.
-    routing.globals().tween().supersede();
+    // coordinator and wins over a running tween, so the tween and a frame it
+    // queued are dropped — otherwise a frame would re-send the old surface's
+    // size and margins over the new one (spec "Interrupting an animation").
+    routing.globals().tween().clear();
     // A re-dock of a panel that already launched uses the real mode at once;
     // one still inside the launch-deferral window keeps deferring, so the
     // replacement surface steals no focus (row 8.3, spec "No focus steal on

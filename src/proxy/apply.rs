@@ -71,9 +71,12 @@ struct Plan {
     /// animated change starts from (D8).
     from_across: u32,
     /// The duration of an animated change that only moves the width: the
-    /// request's `ms` when it is above zero and the app's size changes
-    /// (D8). `None` snaps.
+    /// request's `ms` or the panel's `tween_ms`, clamped (D8). `None` snaps.
     animate: Option<u32>,
+    /// Whether this size command asks for a step change (D8): a zero
+    /// duration, or a target the panel already has. It still stops a running
+    /// tween at its target (spec "Snap interrupts").
+    snaps: bool,
 }
 
 /// The answer to one layout command (row 6.6, spec "Panel commands"): the
@@ -128,8 +131,15 @@ fn plan_change(
     // A re-dock sends the whole geometry, so it carries no size of its own.
     let needs_size = !redock && needs_new_app_size(current_geometry, geometry, output);
     // D8: only a width change with a duration animates; an edge or gutter
-    // change and a request without `ms` snap.
-    let animate = request_ms(request).filter(|ms| *ms > 0 && needs_size);
+    // change snaps. The request's `ms` or the panel's `tween_ms` is clamped to
+    // the tween's ceiling (spec "Duration clamp"), and a zero duration snaps
+    // (spec "Snap on zero duration", "Snap when animations are disabled").
+    let duration = request_duration(request, current.tween_ms());
+    let animate = duration.filter(|ms| *ms > 0 && needs_size);
+    // A size command that does not animate still wins over a running tween
+    // (spec "Snap interrupts"), even when it names the settings the panel
+    // already targets.
+    let snaps = duration.is_some() && animate.is_none();
     Ok(Some(Plan {
         layout_changed: current_geometry != geometry,
         settings: next,
@@ -138,16 +148,19 @@ fn plan_change(
         redock,
         from_across: current_geometry.across(),
         animate,
+        snaps,
     }))
 }
 
-/// The duration a layout command asks for (D8): `set-size` and `resize`
-/// carry it; every other command snaps.
-fn request_ms(request: &PanelRequest) -> Option<u32> {
-    match request {
+/// The duration a layout command animates over (D8): `set-size` and `resize`
+/// use their `ms` or the panel's `tween_ms`, clamped; every other command
+/// returns `None`.
+fn request_duration(request: &PanelRequest, panel_ms: u32) -> Option<u32> {
+    let ms = match request {
         PanelRequest::SetSize { ms, .. } | PanelRequest::Resize { ms, .. } => *ms,
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some(super::tween::duration_ms(ms, panel_ms))
 }
 
 /// The geometry `settings` describe on `output` (D9): the edge, the size
@@ -247,6 +260,11 @@ fn apply_plan(routing: &Rc<Routing>, plan: Plan, panel: &PanelName, bus: &Bus) {
         return;
     }
     if !plan.layout_changed {
+        // D8: a snap wins over a running animation even when it names the
+        // state the panel already targets (spec "Snap interrupts").
+        if plan.snaps {
+            snap(routing, &plan.geometry);
+        }
         return;
     }
     routing.set_last_resolved_across(Some(plan.geometry.across()));
@@ -258,12 +276,19 @@ fn apply_plan(routing: &Rc<Routing>, plan: Plan, panel: &PanelName, bus: &Bus) {
         bus.publish_geometry_changed(panel);
         return;
     }
+    // D8: the snap sends the layer state outside the commit coordinator and
+    // wins over a running tween, so the tween and a frame it queued are
+    // dropped (spec "Snap interrupts", "Interrupting an animation").
+    let interrupted = super::tween::is_running(routing);
+    routing.globals().tween().clear();
     if let Some(layer_surface) = routing.panel_layer_surface() {
-        // D8: the snap sends the layer state outside the commit coordinator,
-        // so a frame the tween queued before is stale (row 10.2 owns the
-        // interrupt rule itself).
-        routing.globals().tween().supersede();
-        if let Some((width, height)) = plan.size {
+        // A change with no new app size of its own (a pure edge move) still
+        // lands on its target when it interrupts a tween: the layer surface
+        // still shows an intermediate frame.
+        let size = plan
+            .size
+            .or_else(|| interrupted.then(|| plan.geometry.size()));
+        if let Some((width, height)) = size {
             layer_surface.send_set_size(width, height);
         }
         let margins = plan.geometry.margins();
@@ -277,6 +302,30 @@ fn apply_plan(routing: &Rc<Routing>, plan: Plan, panel: &PanelName, bus: &Bus) {
     }
     publish_gap(routing, &plan.geometry);
     bus.publish_geometry_changed(panel);
+}
+
+/// Stops a running tween at the state a snap names (D8, spec "Snap
+/// interrupts"): the tween and its queued frames go, and the layer surface
+/// re-sends the target so the panel lands on it at once. Nothing happens when
+/// no tween runs.
+fn snap(routing: &Rc<Routing>, geometry: &Geometry) {
+    if !super::tween::is_running(routing) {
+        return;
+    }
+    routing.globals().tween().clear();
+    if let Some(layer_surface) = routing.panel_layer_surface() {
+        let (width, height) = geometry.size();
+        layer_surface.send_set_size(width, height);
+        let margins = geometry.margins();
+        layer_surface.send_set_margin(
+            margins.top(),
+            margins.right(),
+            margins.bottom(),
+            margins.left(),
+        );
+        layer_surface.send_set_anchor(anchor_of(geometry.anchors()));
+    }
+    publish_gap(routing, geometry);
 }
 
 /// The re-apply the panel's output state triggers (D9): a percent size
@@ -302,8 +351,9 @@ pub(super) fn reapply(routing: &Routing) {
     routing.set_last_resolved_across(Some(across));
     if let Some(layer_surface) = routing.panel_layer_surface() {
         // D8: the re-apply re-sends the layer state outside the commit
-        // coordinator, so a frame a tween queued before it is stale.
-        routing.globals().tween().supersede();
+        // coordinator and wins over a running tween, so the tween and a frame
+        // it queued are dropped (spec "Interrupting an animation").
+        routing.globals().tween().clear();
         let (width, height) = geometry.size();
         layer_surface.send_set_size(width, height);
     }
@@ -332,407 +382,5 @@ fn publish_gap(routing: &Routing, geometry: &Geometry) {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::mpsc::RecvTimeoutError;
-    use std::time::Duration;
-
-    use super::{Plan, Routing, app_size, needs_new_app_size, plan_change, resize_size};
-    use crate::cli::Amount;
-    use crate::config::{Layer, PanelSettings};
-    use crate::daemon::events::{Bus, Event};
-    use crate::daemon::panel::{PanelReply, PanelRequest};
-    use crate::geometry::{Edge, Gutters, OutputSize, ReserveMode, Size};
-    use crate::ipc::ErrorKind;
-    use crate::name::PanelName;
-
-    /// An output of `width` by `height` logical pixels.
-    fn output(width: u32, height: u32) -> OutputSize {
-        OutputSize::new(width, height).expect("a test output has two axes")
-    }
-
-    /// The built-in settings: a pushing panel, 25% of the output, on the
-    /// left, with no gutters (spec "Built-in defaults").
-    fn settings() -> PanelSettings {
-        PanelSettings::built_in()
-    }
-
-    /// A pixel size the test knows is valid.
-    fn pixels(px: u32) -> Size {
-        Size::pixels(px).expect("a positive pixel size")
-    }
-
-    /// A percent the test knows is valid.
-    fn percent(value: u32) -> Size {
-        Size::percent(value).expect("a percent from 1 to 100")
-    }
-
-    /// A growing and a shrinking amount of `size`.
-    fn grow(size: Size) -> Amount {
-        Amount::grow(size)
-    }
-
-    fn shrink(size: Size) -> Amount {
-        Amount::shrink(size)
-    }
-
-    /// The plan of one request, unwrapped.
-    fn planned(current: &PanelSettings, request: &PanelRequest, output: OutputSize) -> Plan {
-        plan_change(current, request, output)
-            .expect("the change fits the output")
-            .expect("the request is a layout command")
-    }
-
-    /// The kind of a refused request.
-    fn refused(current: &PanelSettings, request: &PanelRequest, output: OutputSize) -> ErrorKind {
-        plan_change(current, request, output)
-            .expect_err("the change is refused")
-            .kind()
-    }
-
-    /// A pure edge move with the same size (spec "Change the edge"): the
-    /// panel docks at the other side and the app gets no new size.
-    #[test]
-    fn a_pure_edge_move_sends_no_new_size() {
-        let current = settings();
-        let plan = planned(
-            &current,
-            &PanelRequest::SetEdge(Edge::Right),
-            output(1920, 1080),
-        );
-        assert_eq!(plan.settings.edge(), Edge::Right);
-        assert_eq!(plan.size, None, "the same size across the other side");
-        assert!(plan.layout_changed, "the anchors and margins move");
-        assert!(!plan.redock, "the window keeps its layer surface");
-    }
-
-    /// An edge move to a perpendicular edge changes the app's size, because
-    /// the size resolves against the other axis and the length runs along the
-    /// other one: exactly one new size.
-    #[test]
-    fn an_edge_move_across_the_axes_sends_one_new_size() {
-        let current = settings();
-        let plan = planned(
-            &current,
-            &PanelRequest::SetEdge(Edge::Top),
-            output(1920, 1080),
-        );
-        assert_eq!(plan.settings.edge(), Edge::Top);
-        assert_eq!(plan.size, Some((0, 270)), "25% of the 1080 pixel height");
-    }
-
-    /// A `set-size` with `ms` above zero animates (D8): the plan carries the
-    /// start length and the duration instead of re-sending the target size
-    /// at once.
-    #[test]
-    fn a_size_change_with_a_duration_animates_from_the_current_width() {
-        let current = settings();
-        let plan = planned(
-            &current,
-            &PanelRequest::SetSize {
-                size: pixels(800),
-                ms: Some(200),
-            },
-            output(1920, 1080),
-        );
-        assert_eq!(plan.from_across, 480, "25% of the 1920 pixel output");
-        assert_eq!(plan.animate, Some(200));
-        assert_eq!(plan.size, Some((800, 0)), "the size the tween targets");
-    }
-
-    /// A `resize` with `ms` animates too (D8), from the panel's current
-    /// width to the resized one.
-    #[test]
-    fn a_resize_with_a_duration_animates() {
-        let current = settings();
-        let plan = planned(
-            &current,
-            &PanelRequest::Resize {
-                by: grow(pixels(120)),
-                ms: Some(150),
-            },
-            output(1920, 1080),
-        );
-        assert_eq!(plan.geometry.across(), 600);
-        assert_eq!(plan.from_across, 480);
-        assert_eq!(plan.animate, Some(150));
-    }
-
-    /// A duration of zero, or none at all, snaps (D8): the plan carries no
-    /// animation.
-    #[test]
-    fn no_duration_or_a_zero_one_snaps() {
-        let current = settings();
-        for ms in [None, Some(0)] {
-            let plan = planned(
-                &current,
-                &PanelRequest::SetSize {
-                    size: pixels(800),
-                    ms,
-                },
-                output(1920, 1080),
-            );
-            assert_eq!(plan.animate, None, "ms {ms:?} snaps");
-        }
-    }
-
-    /// A size change (spec "Change the size"): one new window size of the
-    /// requested width.
-    #[test]
-    fn a_size_change_sends_one_new_size() {
-        let current = settings();
-        let plan = planned(
-            &current,
-            &PanelRequest::SetSize {
-                size: pixels(800),
-                ms: None,
-            },
-            output(1920, 1080),
-        );
-        assert_eq!(plan.settings.size(), pixels(800));
-        assert_eq!(plan.size, Some((800, 0)));
-    }
-
-    /// A size whose resolution does not change sends no new size (spec
-    /// "Apply layout without restarting the app"): 25% and the 480 pixels it
-    /// resolves to are the same panel.
-    #[test]
-    fn a_size_that_resolves_the_same_sends_no_new_size() {
-        let current = settings();
-        let plan = planned(
-            &current,
-            &PanelRequest::SetSize {
-                size: pixels(480),
-                ms: None,
-            },
-            output(1920, 1080),
-        );
-        assert_eq!(plan.size, None);
-        assert!(!plan.layout_changed, "nothing has to be re-sent");
-    }
-
-    /// A reserve mode change never resizes the app: the strip moves, the
-    /// panel does not.
-    #[test]
-    fn a_reserve_change_sends_no_new_size() {
-        let current = settings();
-        let plan = planned(
-            &current,
-            &PanelRequest::SetReserve(ReserveMode::Cover),
-            output(1920, 1080),
-        );
-        assert_eq!(plan.size, None);
-        assert!(plan.layout_changed, "the strip the reserve holds moves");
-    }
-
-    /// A layer change re-docks the window, because a live layer surface
-    /// carries its layer from its creation (D11): no size of its own, the
-    /// re-dock sends the geometry.
-    #[test]
-    fn a_layer_change_re_docks_the_window() {
-        let current = settings();
-        let plan = planned(
-            &current,
-            &PanelRequest::SetLayer(Layer::Bottom),
-            output(1920, 1080),
-        );
-        assert!(plan.redock);
-        assert_eq!(plan.size, None, "the re-dock sends the size itself");
-    }
-
-    /// A percent amount moves a percent size in percent (spec "Size
-    /// values"): the size keeps following the output.
-    #[test]
-    fn a_percent_resize_keeps_the_percent_form() {
-        let current = settings();
-        let size = resize_size(&current, grow(percent(10)), output(1920, 1080));
-        assert_eq!(size, Some(percent(35)));
-        let size = resize_size(&current, shrink(percent(5)), output(1920, 1080));
-        assert_eq!(size, Some(percent(20)));
-    }
-
-    /// A pixel amount moves a pixel size in pixels (spec "Relative resize"):
-    /// 640 pixels less 40 is 600.
-    #[test]
-    fn a_pixel_resize_moves_pixels() {
-        let current = settings().with_size(pixels(640));
-        assert_eq!(
-            resize_size(&current, shrink(pixels(40)), output(1920, 1080)),
-            Some(pixels(600))
-        );
-        assert_eq!(
-            resize_size(&current, grow(pixels(40)), output(1920, 1080)),
-            Some(pixels(680))
-        );
-    }
-
-    /// A mixed resize resolves both sides against the output (spec "Size
-    /// values"): a percent of the output's width and a pixel step add up in
-    /// pixels.
-    #[test]
-    fn a_mixed_resize_resolves_against_the_output() {
-        let current = settings();
-        assert_eq!(
-            resize_size(&current, grow(pixels(40)), output(1920, 1080)),
-            Some(pixels(520)),
-            "25% of 1920 is 480, plus 40"
-        );
-        let sized = settings().with_size(pixels(640));
-        assert_eq!(
-            resize_size(&sized, grow(percent(10)), output(1920, 1080)),
-            Some(pixels(832)),
-            "10% of 1920 is 192, added to 640 pixels"
-        );
-    }
-
-    /// A resize whose result is outside the size grammar is refused with
-    /// `invalid_value` (spec "Size values", "Invalid size"): a panel is at
-    /// least one pixel, and a percent stays within 1 to 100.
-    #[test]
-    fn a_resize_outside_the_size_grammar_is_refused() {
-        let current = settings();
-        assert_eq!(
-            resize_size(&current, shrink(pixels(480)), output(1920, 1080)),
-            None,
-            "the panel would be zero pixels wide"
-        );
-        assert_eq!(
-            resize_size(&current, grow(percent(90)), output(1920, 1080)),
-            None,
-            "the panel would be more than the whole output"
-        );
-        assert_eq!(
-            resize_size(&current, shrink(percent(30)), output(1920, 1080)),
-            None,
-            "the panel would be below one percent"
-        );
-        assert_eq!(
-            refused(
-                &current,
-                &PanelRequest::Resize {
-                    by: shrink(pixels(480)),
-                    ms: None,
-                },
-                output(1920, 1080)
-            ),
-            ErrorKind::InvalidValue
-        );
-    }
-
-    /// A size the output cannot hold is refused with `invalid_layout` and
-    /// nothing changes (spec "Too large for the output", "Panel commands").
-    #[test]
-    fn a_size_too_large_for_the_output_is_refused() {
-        let current = settings();
-        let request = PanelRequest::SetSize {
-            size: pixels(1000),
-            ms: None,
-        };
-        assert_eq!(
-            refused(&current, &request, output(1000, 1000)),
-            ErrorKind::InvalidLayout,
-            "a pushing panel that leaves no output space for other windows"
-        );
-    }
-
-    /// Gutters that leave less than one pixel of visible length are refused
-    /// with `invalid_layout` (spec "No visible length"). The IPC has no
-    /// gutter command, so the test reaches the validation through the
-    /// settings a config merge would carry; it is the same validation the
-    /// first dock and every apply run.
-    #[test]
-    fn gutters_that_leave_no_visible_length_are_refused() {
-        let current = settings().with_gutters(Gutters::new(0, 0, 600, 600));
-        let request = PanelRequest::SetSize {
-            size: pixels(640),
-            ms: None,
-        };
-        assert_eq!(
-            refused(&current, &request, output(1920, 1080)),
-            ErrorKind::InvalidLayout
-        );
-    }
-
-    /// A negative reservation is refused with `invalid_layout` (spec
-    /// "Validate a change before applying it"), reached the same way.
-    #[test]
-    fn a_negative_reservation_is_refused() {
-        let current = settings()
-            .with_size(pixels(640))
-            .with_gutters(Gutters::new(-2000, 0, 0, 0));
-        let request = PanelRequest::SetSize {
-            size: pixels(640),
-            ms: None,
-        };
-        assert_eq!(
-            refused(&current, &request, output(1920, 1080)),
-            ErrorKind::InvalidLayout
-        );
-    }
-
-    /// A successful apply publishes the panel's geometry change (spec "Event
-    /// stream"): an edge move changes the geometry and names the panel.
-    #[test]
-    fn a_successful_apply_publishes_the_geometry_change() {
-        let bus = Bus::new();
-        let events = bus.subscribe();
-        let routing = Routing::new(settings());
-        let panel = PanelName::parse("notes").expect("a panel name");
-        let reply = super::answer(&routing, &PanelRequest::SetEdge(Edge::Right), &panel, &bus);
-        assert_eq!(reply, Some(PanelReply::Done));
-        assert_eq!(
-            events.next(Duration::from_millis(100)),
-            Ok(Event::GeometryChanged { panel })
-        );
-    }
-
-    /// A refused change applies nothing and publishes nothing (spec
-    /// "Validate a change before applying it").
-    #[test]
-    fn a_refused_apply_publishes_no_geometry_change() {
-        let bus = Bus::new();
-        let events = bus.subscribe();
-        let routing = Routing::new(settings());
-        let panel = PanelName::parse("notes").expect("a panel name");
-        let reply = super::answer(
-            &routing,
-            &PanelRequest::SetSize {
-                size: pixels(10_000),
-                ms: None,
-            },
-            &panel,
-            &bus,
-        );
-        assert!(matches!(reply, Some(PanelReply::Refused(_))));
-        assert_eq!(
-            events.next(Duration::from_millis(50)),
-            Err(RecvTimeoutError::Timeout)
-        );
-    }
-
-    /// The app size the geometry configures: the size across the edge on the
-    /// edge's axis and the visible length on the other, whatever the edge is.
-    #[test]
-    fn the_app_size_follows_the_edge() {
-        let left = super::geometry_of(&settings(), output(1920, 1080));
-        assert_eq!(app_size(left, output(1920, 1080)), (480, 1080));
-        let top = super::geometry_of(&settings().with_edge(Edge::Top), output(1920, 1080));
-        assert_eq!(app_size(top, output(1920, 1080)), (1920, 270));
-    }
-
-    /// The decision itself: the same geometry is no change, and any change of
-    /// the width or the length is.
-    #[test]
-    fn the_size_decision_compares_the_configured_size() {
-        let output = output(1920, 1080);
-        let current = super::geometry_of(&settings(), output);
-        assert!(!needs_new_app_size(current, current, output));
-        let wider = super::geometry_of(&settings().with_size(pixels(800)), output);
-        assert!(needs_new_app_size(current, wider, output));
-        let inset =
-            super::geometry_of(&settings().with_gutters(Gutters::new(0, 0, 10, 10)), output);
-        assert!(
-            needs_new_app_size(current, inset, output),
-            "the side gutters shorten the panel's length"
-        );
-    }
-}
+#[path = "apply/tests.rs"]
+mod tests;

@@ -30,7 +30,9 @@ use super::super::commit::PanelSurfaceCommits;
 use super::super::dock;
 use super::super::routing::Routing;
 use super::super::viewport;
-use super::{Fraction, Frame, GROW_TIMEOUT_US, PROXY_SERIAL_BASE, Step, Tween};
+use super::{
+    Fraction, Frame, GROW_TIMEOUT_US, PROXY_SERIAL_BASE, Step, Tween, animates, waits_for_app,
+};
 use crate::geometry::{Geometry, HeldGap};
 
 /// How long the panel loop sleeps between two tween frames.
@@ -45,12 +47,13 @@ pub(in crate::proxy) struct Slot {
     /// The tween that owns the frames (D8). A frame waits in the commit
     /// coordinator while the app's surface is dirty, and the state it carries
     /// is stale once a newer owner has sent layer state: a hide or the panel
-    /// window's end cleared the tween ([`Slot::clear`]), a new tween replaced
-    /// it ([`Slot::set_driver`]), or a change snapped, re-applied or re-docked
-    /// outside the coordinator ([`Slot::supersede`]). Each of those bumps it,
-    /// so a frame captured before the bump sees [`Slot::is_current`] fail and
-    /// does nothing. A tween that ends naturally keeps the generation, so its
-    /// final frame, still queued, is applied.
+    /// window's end cleared the tween ([`Slot::clear`]), a new or retargeted
+    /// tween replaced it ([`Slot::set_driver`]), or a change snapped,
+    /// re-applied or re-docked outside the coordinator ([`Slot::clear`]).
+    /// Each of those bumps it, so a frame captured before the bump sees
+    /// [`Slot::is_current`] fail and does nothing, and the destroyed layer
+    /// surface it named can be dropped. A tween that ends naturally keeps the
+    /// generation, so its final frame, still queued, is applied.
     generation: Cell<u64>,
 }
 
@@ -64,10 +67,12 @@ impl Slot {
         }
     }
 
-    /// Abandons the tween the slot holds (D8): a hide or the panel window's
-    /// end takes it away before it reached its target, so a frame already
+    /// Abandons the tween the slot holds (D8): a hide, the panel window's
+    /// end, a snap, a re-apply or a re-dock takes it away, so a frame already
     /// queued in the commit coordinator must not re-send the layer state it
-    /// captured over the state the abandoning event sent.
+    /// captured over the state the abandoning event sent. A retarget replaces
+    /// the driver instead ([`Slot::set_driver`]), which bumps the generation
+    /// the same way.
     pub(in crate::proxy) fn clear(&self) {
         self.bump();
         self.driver.borrow_mut().take();
@@ -76,17 +81,9 @@ impl Slot {
     /// Forgets a tween that reached its target (D8): the state it ended on is
     /// the steady state, so its last frame — which may still wait in the
     /// commit coordinator — stays valid and must still be applied. A frame of
-    /// a later owner is told apart by [`Slot::supersede`]'s bump.
+    /// a later owner is told apart by that owner's own bump.
     fn finish(&self) {
         self.driver.borrow_mut().take();
-    }
-
-    /// Invalidates every frame the slot's tween queued (D8): a change that
-    /// sent layer state outside the commit coordinator — a snap apply, a
-    /// re-apply after an output change, or a re-dock — has taken the panel
-    /// over, so a frame still waiting must not re-send the state it captured.
-    pub(in crate::proxy) fn supersede(&self) {
-        self.bump();
     }
 
     /// The generation a frame is queued for (D8).
@@ -149,53 +146,77 @@ pub(in crate::proxy) fn is_running(routing: &Routing) -> bool {
 }
 
 /// Starts the tween of a validated change from `from` to `geometry.across()`
-/// (D8). `false` when the change snaps instead: no duration, a hidden panel,
-/// no panel window, a running tween (row 10.2 retargets it), or a size the
-/// easing cannot carry. A grow sends the app its one new configure here.
+/// (D8). `false` when the change snaps instead: no duration, no viewporter to
+/// crop through, a hidden panel, no panel window, or a size the easing cannot
+/// carry. A running tween is retargeted from the length it shows now (spec
+/// "Retarget"); a change that has to grow the app sends its one new configure
+/// here.
 pub(in crate::proxy) fn start(
     routing: &Rc<Routing>,
     from: u32,
     geometry: Geometry,
     duration_ms: u32,
 ) -> bool {
-    if duration_ms == 0 || routing.hidden.is_hidden() || routing.panel_window().is_none() {
-        return false;
-    }
     let globals = routing.globals();
-    if globals.tween().is_running() {
+    if duration_ms == 0
+        || !animates(
+            routing.panel_window().is_some(),
+            routing.hidden.is_hidden(),
+            globals.viewporter().is_some(),
+        )
+    {
         return false;
     }
-    let grow = geometry.across() > from;
-    let surface = match app_surface(routing) {
-        Some(surface) => surface,
-        // D8: a grow that cannot see the app's size never knows when the
-        // wide buffer arrives, so it snaps.
-        None if grow => return false,
-        // D8: the pair is width first, like every other surface extent the
-        // composition reads, so a top or bottom panel's length across its
-        // edge is the height.
-        None => {
-            let length = panel_length(routing, geometry);
-            if geometry.edge().across_is_width() {
-                (from, length)
-            } else {
-                (length, from)
-            }
-        }
+    // D8: a running tween continues from the length it shows now and from the
+    // gap it holds, so a retarget does not jump (spec "Retarget").
+    let running = {
+        let slot = globals.tween();
+        let driver = slot.driver();
+        driver.as_ref().map(|driver| {
+            (
+                driver.tween.visible(),
+                driver.tween.surface(),
+                driver.tween.current_gap(),
+            )
+        })
     };
-    let resting = routing
-        .held_gap()
-        .unwrap_or_else(|| HeldGap::start(geometry));
-    let Some(tween) = Tween::start(geometry, from, surface, resting, grow, duration_ms) else {
+    let (from, surface, resting) = if let Some((visible, surface, gap)) = running {
+        (visible, app_surface(routing).unwrap_or(surface), gap)
+    } else {
+        let surface = match app_surface(routing) {
+            Some(surface) => surface,
+            // D8: a change that grows the app and cannot see its size
+            // never knows when the wide buffer arrives, so it snaps.
+            None if geometry.across() > from => return false,
+            // D8: the pair is width first, like every other surface
+            // extent the composition reads, so a top or bottom panel's
+            // length across its edge is the height.
+            None => {
+                let length = panel_length(routing, geometry);
+                if geometry.edge().across_is_width() {
+                    (from, length)
+                } else {
+                    (length, from)
+                }
+            }
+        };
+        let resting = routing
+            .held_gap()
+            .unwrap_or_else(|| HeldGap::start(geometry));
+        (from, surface, resting)
+    };
+    let wait = waits_for_app(geometry.edge(), surface, geometry.across());
+    let Some(tween) = Tween::start(geometry, from, surface, resting, wait, duration_ms) else {
         return false;
     };
     globals.tween().set_driver(Driver {
         tween,
         begun: Instant::now(),
     });
-    // D8: a grow configures the app once to the target and then waits; a
-    // shrink configures it when the last frame arrives.
-    if grow {
+    // D8: a change that grows the app configures it once to the target and
+    // then waits; a shrink, or a retarget inside the buffer it has, configures
+    // it when the last frame arrives.
+    if wait {
         let serial = globals.tween().mint();
         send_configure(routing, geometry, serial);
     }
@@ -211,29 +232,30 @@ pub(in crate::proxy) fn start(
 /// and the steady state then takes over.
 pub(in crate::proxy) fn advance(routing: &Rc<Routing>) -> Option<Duration> {
     let globals = routing.globals();
-    let (frame, finished, shrink, geometry) = {
+    let (frame, finished, resize_app, geometry) = {
         let slot = globals.tween();
         let mut driver = slot.driver();
         let driver = driver.as_mut()?;
         let elapsed = micros(driver.begun.elapsed());
-        let shrink = driver.tween.is_shrink();
+        let resize_app = driver.tween.shrinks_app();
         let geometry = driver.tween.geometry();
         match driver.tween.step(elapsed) {
             Step::Held => {
                 let left = (GROW_TIMEOUT_US - elapsed).max(0);
                 return Some(Duration::from_micros(u64::try_from(left).unwrap_or(0)));
             }
-            Step::Frame(frame) => (frame, false, shrink, geometry),
-            Step::Finished(frame) => (frame, true, shrink, geometry),
+            Step::Frame(frame) => (frame, false, resize_app, geometry),
+            Step::Finished(frame) => (frame, true, resize_app, geometry),
         }
     };
     apply(routing, frame);
     if !finished {
         return Some(FRAME_INTERVAL);
     }
-    // D8: a shrink ends by configuring the app to the target width. A grow
-    // already did at its start, and a snapped grow never needs it.
-    if shrink {
+    // D8: a change that leaves the app wider than the target ends by
+    // configuring it to the target width. A grow already did at its start,
+    // and a snapped grow never needs it.
+    if resize_app {
         let serial = globals.tween().mint();
         send_configure(routing, geometry, serial);
     }
@@ -266,7 +288,8 @@ pub(in crate::proxy) fn on_app_commit(routing: &Routing) {
     let slot = globals.tween();
     let mut driver = slot.driver();
     if let Some(driver) = driver.as_mut() {
-        driver.tween.app_commit(reported);
+        let elapsed = micros(driver.begun.elapsed());
+        driver.tween.app_commit(reported, elapsed);
     }
 }
 
@@ -471,10 +494,11 @@ mod tests {
         );
     }
 
-    /// A frame queued by a tween is stale once a new tween takes the slot, a
-    /// hide abandons the tween, or a direct send supersedes it (D8).
+    /// A frame queued by a tween is stale once a new tween takes the slot or a
+    /// clear abandons it, which is what a hide, a snap, a re-apply and a
+    /// re-dock do (D8, spec "Snap interrupts").
     #[test]
-    fn a_new_tween_a_hide_and_a_supersede_drop_queued_frames() {
+    fn a_new_tween_and_a_clear_drop_queued_frames() {
         let renamed = Slot::new();
         let queued = renamed.generation();
         renamed.set_driver(Driver {
@@ -483,17 +507,12 @@ mod tests {
         });
         assert!(!renamed.is_current(queued), "a new tween drops old frames");
 
-        let hidden = Slot::new();
-        let queued = hidden.generation();
-        hidden.clear();
-        assert!(!hidden.is_current(queued), "a hide drops queued frames");
-
         let superseded = Slot::new();
         let queued = superseded.generation();
-        superseded.supersede();
+        superseded.clear();
         assert!(
             !superseded.is_current(queued),
-            "a direct layer-state send drops queued frames"
+            "a snap or re-dock drops queued frames"
         );
     }
 }
