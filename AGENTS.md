@@ -240,15 +240,35 @@ and several modules wait for the rows that wire them in (D15).
   D8): the exact-rational scale rounding, the tween crop and the viewport
   source rectangle. No module compiles it yet; `tests/tween_crop.rs` includes
   it so its unit tests run.
-- `src/proxy/viewport.rs` — the panel window's viewport crop (D5, D8): the
-  pure `static_crop` that turns the app's window geometry into the proxy
-  viewport's source and 1:1 destination (a negative CSD origin clamps to
-  the buffer's origin, a collapsed geometry gives no crop), the decision
-  that defers to an app viewport the proxy must not second (D8's
-  one-viewport rule), and the mirror handlers that pass an app's own
-  viewport values upstream unchanged — composed cropping of app viewports
-  waits for row 10.x. Display-free, so its four tests run without a
-  compositor.
+- `src/proxy/compose.rs` — the viewport composition (row 10.1, D8): the
+  pure `compose` that turns the visible fraction of the panel's width, the
+  docked edge, the app's own viewport values, the surface size and the
+  attached buffer into the source rectangle and destination the proxy's
+  viewport carries. The visible fraction of the destination length maps to
+  the same fraction of the source length, taken from the docked edge; an
+  app source is scaled onto its destination; a destination-only app
+  viewport maps the whole buffer, so its ratio is `preferred_scale / 120`;
+  and without one the mapping is one to one. The source stays in the
+  viewporter's post-buffer-scale coordinates, is clamped to the buffer, and
+  is unset when the buffer size is unknown. Every decision is exact-rational
+  in whole pixels. The tween driver (row 10.x) passes each frame's fraction,
+  so the module stays public until then. Display-free, so its thirteen tests
+  run without a compositor.
+- `src/proxy/viewport.rs` — the panel window's viewport (D5, D8): the
+  proxy-owned `wp_viewport` the composed crop is written through, the state
+  its inputs come from (the app's own viewport values per surface, the
+  window geometry, the compositor's preferred scale, what the proxy wrote
+  last), the plan that adopts an app viewport on the panel surface, mirrors
+  one on any other surface and defers one created before the window's role
+  is known, and the fractional-scale watch a surface's one
+  `wp_fractional_scale_v1` needs. It sends no commit of its own: the values
+  ride the commit coordinator (D7).
+- `src/proxy/buffers.rs` — the panel surface's buffer sizes (row 10.1, D8):
+  the `wl_shm` pool and `zwp_linux_dmabuf_v1` params handlers that record
+  each buffer's pixel size when it is created and forget it when the app
+  destroys it, and the panel surface's attached buffer and buffer scale the
+  composition is clamped to. A buffer the proxy did not see created has no
+  size, so the whole buffer draws.
 - `src/proxy/commit.rs` — the commit coordinator (row 8.1, D7): the dirty
   flag the app's four pending-state requests set — `attach`, `damage`,
   `damage_buffer` and `set_buffer_scale` — and the FIFO queue of proxy
@@ -446,11 +466,14 @@ the mode-and-scale tests in `src/proxy/output.rs` cover the D9 size fallback
 `zxdg_output_v1` logical size wins over the fallback), the `set-output`
 decision tests in `src/proxy/dock.rs` cover D11 (a known name pins the
 panel to its output, an unknown name, a nameless output and an empty output
-list are refused so the panel does not move), and the viewport
-tests in `src/proxy/viewport.rs` cover the steady-state crop (D5, D8): the
-window geometry as source and 1:1 destination, a negative CSD origin
-clamped to the buffer's origin, a collapsed geometry refused, and the
-decision matrix that defers to an app viewport, and the commit-coordinator
+list are refused so the panel does not move), and the composition tests in
+`src/proxy/compose.rs` cover the viewport (D5, D8): the window geometry as
+source and destination, a negative CSD origin clamped to the buffer's
+origin, the visible fraction taken from each docked edge, an app source
+scaled onto its destination, the destination-only `preferred_scale / 120`
+ratio, the source clamped to the buffer in post-buffer-scale coordinates,
+an unknown buffer drawing the whole buffer, a collapsed surface refused and
+fraction 0, and the commit-coordinator
 tests in `src/proxy/commit.rs` cover D7: a clean surface injects the change
 with one proxy commit, a dirty surface queues it until the app's commit
 applies it before the forwarded commit, two queued changes keep their

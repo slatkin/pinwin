@@ -14,24 +14,28 @@ use std::rc::{Rc, Weak};
 
 use wl_proxy::object::{Object, ObjectCoreApi, ObjectRcUtils};
 use wl_proxy::protocols::ObjectInterface;
+use wl_proxy::protocols::fractional_scale_v1::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
+use wl_proxy::protocols::linux_dmabuf_v1::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wl_proxy::protocols::linux_drm_syncobj_v1::wp_linux_drm_syncobj_manager_v1::WpLinuxDrmSyncobjManagerV1;
 use wl_proxy::protocols::viewporter::wp_viewporter::WpViewporter;
 use wl_proxy::protocols::wayland::wl_display::{WlDisplay, WlDisplayHandler};
 use wl_proxy::protocols::wayland::wl_registry::{WlRegistry, WlRegistryHandler};
 use wl_proxy::protocols::wayland::wl_seat::WlSeat;
+use wl_proxy::protocols::wayland::wl_shm::WlShm;
 use wl_proxy::protocols::wayland::wl_surface::WlSurface;
 use wl_proxy::protocols::xdg_decoration_unstable_v1::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
 use wl_proxy::protocols::xdg_shell::xdg_positioner::XdgPositioner;
 use wl_proxy::protocols::xdg_shell::xdg_surface::XdgSurface;
 use wl_proxy::protocols::xdg_shell::xdg_wm_base::{XdgWmBase, XdgWmBaseHandler};
 
+use super::buffers::{ClientDmabuf, ClientWlShm};
 use super::decoration::{ClientDecorationManager, ClientSyntheticDecorationManager};
 use super::output::ProxyRegistry;
 use super::popup::ClientXdgPositioner;
 use super::ring::ClientWlSeat;
 use super::routing::{ClientXdgSurface, Routing};
 use super::syncobj::ClientSyncobjManager;
-use super::viewport::ClientWpViewporter;
+use super::viewport::{ClientFractionalScaleManager, ClientWpViewporter};
 
 /// The global name the proxy's synthetic decoration manager is announced
 /// under (D5): a compositor's global names start at 1, so the app's bind of
@@ -172,6 +176,26 @@ impl WlRegistryHandler for ClientRegistry {
             // surface's crop decision is made per viewport.
             let viewporter = id.downcast::<WpViewporter>();
             viewporter.set_handler(ClientWpViewporter::new(&viewporter, &self.routing));
+        }
+        if id.interface() == ObjectInterface::WpFractionalScaleManagerV1 {
+            // D8: a surface may have only one `wp_fractional_scale_v1`, so
+            // the proxy watches the app's object for the panel surface's
+            // preferred scale instead of asking for one itself.
+            let manager = id.downcast::<WpFractionalScaleManagerV1>();
+            manager.set_handler(ClientFractionalScaleManager::new(&manager, &self.routing));
+        }
+        if id.interface() == ObjectInterface::WlShm {
+            // D8: the crop is clamped to the buffer the panel surface
+            // attached, and a `wl_shm` buffer's size is only in the request
+            // that creates it.
+            let shm = id.downcast::<WlShm>();
+            shm.set_handler(ClientWlShm::new(&shm, &self.routing.globals()));
+        }
+        if id.interface() == ObjectInterface::ZwpLinuxDmabufV1 {
+            // D8: a dmabuf buffer's size is in its params' create request,
+            // for the clients that draw from the GPU.
+            let dmabuf = id.downcast::<ZwpLinuxDmabufV1>();
+            dmabuf.set_handler(ClientDmabuf::new(&dmabuf, &self.routing.globals()));
         }
         if id.interface() == ObjectInterface::WpLinuxDrmSyncobjManagerV1 {
             // D6: the app's explicit-sync surfaces are observed, so the

@@ -46,6 +46,7 @@ use wl_proxy::protocols::xdg_output_unstable_v1::zxdg_output_v1::{
 
 use super::ring::RingSlot;
 use super::routing::Routing;
+use super::viewport::ViewportState;
 use crate::geometry::OutputSize;
 
 /// The protocol versions the generated bindings know; a compositor that
@@ -183,6 +184,10 @@ pub(super) struct Globals {
     /// (row 9.1, D10); the ring is created with the first configure and
     /// destroyed with the panel window.
     ring: RingSlot,
+    /// The panel surface's viewport inputs (row 10.1, D8): the app's own
+    /// viewports, the window geometry, the compositor's preferred scale, the
+    /// buffer sizes the crop is clamped to, and what the proxy wrote last.
+    viewport: ViewportState,
 }
 
 impl Globals {
@@ -198,6 +203,7 @@ impl Globals {
             panel_output: Cell::new(None),
             viewport_surfaces: RefCell::new(HashSet::new()),
             ring: RingSlot::new(),
+            viewport: ViewportState::new(),
         }
     }
 
@@ -218,6 +224,11 @@ impl Globals {
     /// The panel window's focus-ring slot (row 9.1, D10).
     pub(super) fn ring(&self) -> &RingSlot {
         &self.ring
+    }
+
+    /// The panel surface's viewport inputs (row 10.1, D8).
+    pub(super) fn viewport(&self) -> &ViewportState {
+        &self.viewport
     }
 
     pub(super) fn viewporter(&self) -> Option<Rc<WpViewporter>> {

@@ -1,140 +1,403 @@
-//! The panel window's viewport crop (replace-terminal-with-app-host D5, D8):
-//! the proxy-owned `wp_viewport` that crops a client-side title bar and
-//! shadow out of the panel's buffer.
+//! The panel window's viewport (replace-terminal-with-app-host D5, D8): the
+//! proxy-owned `wp_viewport` that carries the composed crop on the panel
+//! surface, and the app viewports the proxy keeps local.
 //!
 //! A GTK3 app draws its drop shadow into its buffer and reports where the
-//! real window sits with `xdg_surface.set_window_geometry`. A compositor
+//! real window sits with `xdg_surface.set_window_geometry`; a compositor
 //! draws a layer surface's buffer at the buffer's own size, so without a
 //! crop the shadow is a gap at the docked edge and an overhang at the far
-//! one (D5). The proxy owns the panel surface's viewport: its source is the
-//! window geometry and its destination the geometry's own size, so the
-//! window — not the buffer — fills the panel, one logical pixel to one
-//! logical pixel.
-//!
-//! The values are double-buffered viewport state: they apply with the app's
-//! next commit, so the proxy sends no commit of its own here (the commit
-//! coordinator is row 8.1, D7).
+//! one (D5). The proxy therefore owns the panel surface's viewport: its
+//! source is the window geometry and its destination the geometry's own
+//! size, so the window — not the buffer — fills the panel, one pixel to one
+//! pixel.
 //!
 //! D8's one-viewport rule: a surface has at most one `wp_viewport`, and a
-//! second is the fatal `viewport_exists` error. So the proxy creates its own
-//! only when the surface has none. An app that made its own viewport on the
-//! panel surface (foot and browsers do, before the toplevel) keeps it: the
-//! proxy mirrors its values upstream unchanged, so the app's own mapping —
-//! fractional scale included — survives. Composing that mapping into the
-//! crop waits for the size-animation row (10.x), which owns the buffer-size
-//! tracking the composition needs to stay inside `out_of_buffer` bounds;
-//! until then mirrored apps are not cropped, exactly as they would render
-//! without pinwin.
+//! second is the fatal `viewport_exists` error. The proxy therefore creates
+//! its own only on a surface that has no upstream one, and every app
+//! viewport stays local: on the panel surface its source and destination are
+//! composed into the proxy's values ([`super::compose`]), on any other
+//! surface they are mirrored upstream unchanged, and a viewport created
+//! before the window's role is known waits, because that surface may be the
+//! panel's.
 //!
-//! [`static_crop`] and [`CropDecision`] are pure (`port-to-rust` D10), so
-//! their matrix is unit tested without a compositor.
+//! The values are double-buffered viewport state: they apply with the app's
+//! next commit, so the proxy sends no commit of its own here (D7). The
+//! buffer sizes the composition is clamped to are [`super::buffers`]. A
+//! surface may have only one `wp_fractional_scale_v1` too, so the proxy
+//! watches the app's object for the panel surface's preferred scale and
+//! never creates one of its own.
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use wl_proxy::fixed::Fixed;
 use wl_proxy::object::ObjectCoreApi;
+use wl_proxy::protocols::fractional_scale_v1::wp_fractional_scale_manager_v1::{
+    WpFractionalScaleManagerV1, WpFractionalScaleManagerV1Handler,
+};
+use wl_proxy::protocols::fractional_scale_v1::wp_fractional_scale_v1::{
+    WpFractionalScaleV1, WpFractionalScaleV1Handler,
+};
 use wl_proxy::protocols::viewporter::wp_viewport::{WpViewport, WpViewportHandler};
 use wl_proxy::protocols::viewporter::wp_viewporter::{WpViewporter, WpViewporterHandler};
 use wl_proxy::protocols::wayland::wl_surface::WlSurface;
 
+use super::buffers::PanelBuffers;
+use super::compose::{AppViewport, Compose, Composition, Fraction, UNSET_FIXED, compose};
 use super::routing::Routing;
 
-/// What the proxy does about the panel window's viewport (D8).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CropDecision {
-    /// The app put its own `wp_viewport` on the panel surface: the proxy
-    /// must not create a second, and until row 10.x composes with the app's
-    /// mapping the app's values stand. No crop.
-    DeferToAppViewport,
-    /// No app viewport: the proxy owns the crop, built from the window
-    /// geometry.
-    OwnCrop(StaticCrop),
-    /// Nothing to apply: the app reported no window geometry, so the whole
-    /// buffer already draws at the surface's size.
-    NoCrop,
-}
-
-/// The steady-state viewport decision (D5, D8): a pure function of whether
-/// the app reported a window geometry and whether the panel surface already
-/// carries an app viewport.
-pub(super) fn crop_decision(
-    geometry: Option<[i32; 4]>,
-    app_viewport_present: bool,
-) -> CropDecision {
-    if app_viewport_present {
-        return CropDecision::DeferToAppViewport;
-    }
-    match geometry.map(static_crop) {
-        Some(Some(crop)) => CropDecision::OwnCrop(crop),
-        _ => CropDecision::NoCrop,
-    }
-}
-
-/// The viewport values the proxy puts on the panel surface for the steady
-/// state (D5): the source rectangle — the app's window geometry, in the
-/// coordinates the viewporter reads — and the destination it is drawn at,
-/// the geometry's own size so the crop is 1:1 and only what lies outside
-/// the geometry is cut. Built only by [`static_crop`] (`port-to-rust` D6).
+/// The viewport values the proxy puts on the panel surface (D5, D8): the
+/// source rectangle in the app's buffer coordinates — `None` draws the whole
+/// buffer — and the destination it is drawn at, `None` when the crop is
+/// removed. Built only by [`StaticCrop::composed`] and
+/// [`StaticCrop::cleared`] (`port-to-rust` D6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct StaticCrop {
-    source: [i32; 4],
-    destination: (i32, i32),
+    source: Option<[i32; 4]>,
+    destination: Option<(i32, i32)>,
 }
 
 impl StaticCrop {
-    /// The source rectangle: the window geometry, clamped to the buffer's
-    /// origin.
-    #[must_use]
-    pub const fn source(&self) -> [i32; 4] {
+    /// The crop a composition decided (D8).
+    fn composed(composition: Composition) -> Self {
+        Self {
+            source: composition.source(),
+            destination: Some(composition.destination()),
+        }
+    }
+
+    /// The removal of the crop: the app's own viewport went away, so the
+    /// whole buffer draws at its own size again.
+    fn cleared() -> Self {
+        Self {
+            source: None,
+            destination: None,
+        }
+    }
+
+    /// The source rectangle, in the viewporter's coordinates.
+    fn source(self) -> Option<[i32; 4]> {
         self.source
     }
 
-    /// The destination: the geometry's own size, so the crop draws 1:1.
-    #[must_use]
-    pub const fn destination(&self) -> (i32, i32) {
+    /// The destination size, in surface-local pixels.
+    fn destination(self) -> Option<(i32, i32)> {
         self.destination
     }
 }
 
-/// The steady-state crop from the app's window geometry `[x, y, width,
-/// height]` (D5): the geometry itself as the source, drawn 1:1 at its own
-/// size. The viewporter refuses a negative source origin (`bad_value`), and
-/// a client-side drop shadow reports exactly that (GTK3 draws the window at
-/// a negative offset inside its buffer), so the rectangle is clamped to the
-/// buffer's origin. `None` when nothing usable remains — the caller then
-/// unsets the source so the whole buffer draws instead of risking
-/// `out_of_buffer`.
-pub(super) fn static_crop(geometry: [i32; 4]) -> Option<StaticCrop> {
-    let [x, y, width, height] = geometry;
-    let left = x.max(0);
-    let top = y.max(0);
-    let right = x.saturating_add(width);
-    let bottom = y.saturating_add(height);
-    if right <= left || bottom <= top {
-        return None;
-    }
-    Some(StaticCrop {
-        source: [left, top, right - left, bottom - top],
-        destination: (right - left, bottom - top),
-    })
+/// Applies the panel window's steady-state crop (D5, D8): the window
+/// geometry the app reported, the app's own viewport mapping and the buffer
+/// it attached, composed into the proxy's viewport. Called when the app sets
+/// a window geometry and when the panel window takes the slot.
+pub(super) fn apply_steady_crop(routing: &Routing, geometry: Option<[i32; 4]>) {
+    routing.globals().viewport().set_window(geometry);
+    settle_app_viewports(routing);
+    recompose(routing);
 }
 
-/// Applies the steady-state crop to the panel surface through the routing
-/// (D5, D8): creates the proxy's viewport on first use and writes the
-/// source and destination. Called when the app sets a window geometry and
-/// when the slot is taken with a geometry already recorded.
-pub(super) fn apply_steady_crop(routing: &Routing, geometry: Option<[i32; 4]>) {
-    match crop_decision(geometry, routing.panel_has_app_viewport()) {
-        CropDecision::NoCrop | CropDecision::DeferToAppViewport => {}
-        CropDecision::OwnCrop(crop) => routing.send_viewport_crop(&crop),
+/// Writes the values the panel's inputs decide now into the proxy's viewport
+/// (D8): the source and destination of the composed crop. A change is only
+/// sent when it differs from what the proxy wrote last, and nothing is
+/// created while the buffer size is unknown, because a source the proxy
+/// cannot bound is the fatal `out_of_buffer`.
+pub(super) fn recompose(routing: &Routing) {
+    let Some((surface, _, _)) = routing.panel_window() else {
+        return;
+    };
+    let surface_id = surface.unique_id();
+    let globals = routing.globals();
+    let state = globals.viewport();
+    let geometry = routing.geometry();
+    let window = state.window();
+    let has_app_viewport = routing.panel_has_app_viewport();
+    let crop = if window.is_some() || has_app_viewport {
+        let Some(composition) = compose(&Compose {
+            edge: geometry.edge(),
+            // Row 10.1 composes the steady state; the tween driver (row 10.x)
+            // passes each frame's visible fraction.
+            fraction: Fraction::whole(),
+            surface: surface_extent(window, geometry.size()),
+            origin: window.map_or((0, 0), |[x, y, _, _]| (x, y)),
+            app: state.app(surface_id),
+            preferred_scale: state.preferred_scale(surface_id),
+            buffer: state.buffers().panel_size(),
+            buffer_scale: state.buffers().panel_scale(),
+        }) else {
+            return;
+        };
+        StaticCrop::composed(composition)
+    } else if routing.has_proxy_viewport() {
+        // Nothing is left to compose: the app destroyed its own viewport and
+        // reported no window geometry, so the proxy removes its crop (D8).
+        StaticCrop::cleared()
+    } else {
+        return;
+    };
+    if state.written(surface_id) == Some(crop) {
+        return;
+    }
+    if crop.source().is_none() && !routing.has_proxy_viewport() {
+        // Nothing to write yet: the buffer size is unknown, and a viewport
+        // created for it would only draw the whole buffer.
+        return;
+    }
+    if globals.viewporter().is_none() || globals.has_app_viewport(surface_id) {
+        // There is no viewport to write, or the app's own already maps this
+        // surface (D8). Nothing is recorded as written, so a later pass can
+        // try again.
+        return;
+    }
+    state.set_written(surface_id, crop);
+    routing.send_viewport_crop(&crop);
+}
+
+/// The app surface's extent in surface-local pixels (D8): its window
+/// geometry's size when it reports one, the panel's configured size
+/// otherwise.
+fn surface_extent(window: Option<[i32; 4]>, configured: (u32, u32)) -> (u32, u32) {
+    match window {
+        Some([_, _, width, height]) => (
+            u32::try_from(width).unwrap_or(1).max(1),
+            u32::try_from(height).unwrap_or(1).max(1),
+        ),
+        None => (configured.0.max(1), configured.1.max(1)),
+    }
+}
+
+/// What the proxy does with an app viewport now (D8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kept {
+    /// Composed into the proxy's own viewport on the panel surface.
+    Adopted,
+    /// Forwarded to the compositor on a viewport of its own surface.
+    Mirrored,
+    /// Waiting for the panel surface to be known: this surface may be it,
+    /// and mirroring now would put a second viewport on the panel surface.
+    Deferred,
+}
+
+/// The plan for a new app viewport (D8): the panel surface's own is adopted,
+/// a surface that cannot be the panel's is mirrored, and while the slot is
+/// still empty the decision waits.
+fn plan(routing: &Routing, surface_id: u64) -> Kept {
+    if routing.is_panel_surface(surface_id) {
+        Kept::Adopted
+    } else if routing.has_window() {
+        Kept::Mirrored
+    } else {
+        Kept::Deferred
+    }
+}
+
+/// One app `wp_viewport` the proxy kept local (D8). The objects are held
+/// weak, as every handler here holds its own object: a strong reference
+/// would close the cycle through the handler's routing.
+struct AppEntry {
+    viewport: Weak<WpViewport>,
+    surface: Weak<WlSurface>,
+    values: AppViewport,
+    kept: Kept,
+}
+
+/// The inputs of the panel surface's viewport (D8): the app's own viewports
+/// by surface, the compositor's preferred scale, the window geometry the app
+/// reported, the buffer sizes the crop is clamped to, and what the proxy
+/// wrote last.
+pub(super) struct ViewportState {
+    app: RefCell<HashMap<u64, AppEntry>>,
+    preferred: RefCell<HashMap<u64, u32>>,
+    window: Cell<Option<[i32; 4]>>,
+    written: Cell<Option<(u64, StaticCrop)>>,
+    buffers: PanelBuffers,
+}
+
+impl ViewportState {
+    /// No app viewport, no window geometry and nothing written yet.
+    pub(super) fn new() -> Self {
+        Self {
+            app: RefCell::new(HashMap::new()),
+            preferred: RefCell::new(HashMap::new()),
+            window: Cell::new(None),
+            written: Cell::new(None),
+            buffers: PanelBuffers::new(),
+        }
+    }
+
+    /// The buffer sizes the crop is clamped to (D8).
+    pub(super) fn buffers(&self) -> &PanelBuffers {
+        &self.buffers
+    }
+
+    /// Records the window geometry the app reported on the panel surface
+    /// (D5).
+    fn set_window(&self, window: Option<[i32; 4]>) {
+        self.window.set(window);
+    }
+
+    /// The window geometry the app reported on the panel surface (D5).
+    fn window(&self) -> Option<[i32; 4]> {
+        self.window.get()
+    }
+
+    /// The app's own viewport values on the surface named `surface_id` (D8).
+    fn app(&self, surface_id: u64) -> AppViewport {
+        self.app
+            .borrow()
+            .get(&surface_id)
+            .map_or_else(AppViewport::none, |entry| entry.values)
+    }
+
+    /// The app's own viewport object on the surface, when it kept one.
+    fn app_viewport(&self, surface_id: u64) -> Option<Rc<WpViewport>> {
+        self.app.borrow().get(&surface_id)?.viewport.upgrade()
+    }
+
+    /// How the proxy keeps the surface's app viewport (D8).
+    fn kept(&self, surface_id: u64) -> Option<Kept> {
+        self.app.borrow().get(&surface_id).map(|entry| entry.kept)
+    }
+
+    /// Records a viewport the app just created (D8).
+    fn add(&self, surface_id: u64, viewport: &Rc<WpViewport>, surface: &Rc<WlSurface>, kept: Kept) {
+        self.app.borrow_mut().insert(
+            surface_id,
+            AppEntry {
+                viewport: Rc::downgrade(viewport),
+                surface: Rc::downgrade(surface),
+                values: AppViewport::none(),
+                kept,
+            },
+        );
+    }
+
+    /// Records the source the app set, `None` for the unset form (D8).
+    fn set_source(&self, surface_id: u64, source: Option<[Fixed; 4]>) {
+        if let Some(entry) = self.app.borrow_mut().get_mut(&surface_id) {
+            entry.values = entry.values.with_source(source);
+        }
+    }
+
+    /// Records the destination the app set, `None` for the unset form (D8).
+    fn set_destination(&self, surface_id: u64, destination: Option<(i32, i32)>) {
+        if let Some(entry) = self.app.borrow_mut().get_mut(&surface_id) {
+            entry.values = entry.values.with_destination(destination);
+        }
+    }
+
+    /// Forgets a viewport the app destroyed, and says how the proxy kept it
+    /// (D8).
+    fn remove(&self, surface_id: u64) -> Option<Kept> {
+        self.app
+            .borrow_mut()
+            .remove(&surface_id)
+            .map(|entry| entry.kept)
+    }
+
+    /// The viewports still waiting for the panel surface, with the values
+    /// they already set (D8).
+    fn deferred(&self) -> Vec<(u64, Rc<WpViewport>, Rc<WlSurface>, AppViewport)> {
+        let app = self.app.borrow();
+        let mut waiting: Vec<u64> = app
+            .iter()
+            .filter(|(_, entry)| entry.kept == Kept::Deferred)
+            .map(|(surface_id, _)| *surface_id)
+            .collect();
+        waiting.sort_unstable();
+        waiting
+            .into_iter()
+            .filter_map(|surface_id| {
+                let entry = app.get(&surface_id)?;
+                Some((
+                    surface_id,
+                    entry.viewport.upgrade()?,
+                    entry.surface.upgrade()?,
+                    entry.values,
+                ))
+            })
+            .collect()
+    }
+
+    /// Records that the surface's viewport is the proxy's to compose (D8).
+    fn adopt(&self, surface_id: u64) {
+        if let Some(entry) = self.app.borrow_mut().get_mut(&surface_id) {
+            entry.kept = Kept::Adopted;
+        }
+    }
+
+    /// Records that the surface's viewport is mirrored upstream (D8).
+    fn mirror(&self, surface_id: u64) {
+        if let Some(entry) = self.app.borrow_mut().get_mut(&surface_id) {
+            entry.kept = Kept::Mirrored;
+        }
+    }
+
+    /// Records the compositor's preferred scale for the surface (D8).
+    fn set_preferred_scale(&self, surface_id: u64, scale: u32) {
+        self.preferred.borrow_mut().insert(surface_id, scale);
+    }
+
+    /// The compositor's preferred scale for the surface, in 1/120ths (D8).
+    fn preferred_scale(&self, surface_id: u64) -> Option<u32> {
+        self.preferred.borrow().get(&surface_id).copied()
+    }
+
+    /// The crop the proxy last wrote on the surface's viewport (D8).
+    fn written(&self, surface_id: u64) -> Option<StaticCrop> {
+        match self.written.get() {
+            Some((written_surface, crop)) if written_surface == surface_id => Some(crop),
+            _ => None,
+        }
+    }
+
+    /// Records the crop the proxy just wrote (D8).
+    fn set_written(&self, surface_id: u64, crop: StaticCrop) {
+        self.written.set(Some((surface_id, crop)));
+    }
+}
+
+/// Settles the app viewports created before the panel surface was known
+/// (D8): the panel surface's own is adopted and composed into the proxy's
+/// crop, and every other one is mirrored upstream with the values it already
+/// set.
+fn settle_app_viewports(routing: &Routing) {
+    let Some((panel_surface, _, _)) = routing.panel_window() else {
+        return;
+    };
+    let panel_id = panel_surface.unique_id();
+    let globals = routing.globals();
+    for (surface_id, viewport, surface, values) in globals.viewport().deferred() {
+        if surface_id == panel_id {
+            globals.viewport().adopt(surface_id);
+            routing.set_panel_has_app_viewport(true);
+            continue;
+        }
+        let Some(viewporter) = globals.viewporter() else {
+            continue;
+        };
+        viewporter.send_get_viewport(&viewport, &surface);
+        globals.add_app_viewport(surface_id);
+        globals.viewport().mirror(surface_id);
+        write_app_values(&viewport, values);
+    }
+}
+
+/// Mirrors the app's own values onto its upstream viewport (D8).
+fn write_app_values(viewport: &WpViewport, values: AppViewport) {
+    if let Some([x, y, width, height]) = values.source() {
+        viewport.send_set_source(x, y, width, height);
+    }
+    if let Some((width, height)) = values.destination() {
+        viewport.send_set_destination(width, height);
     }
 }
 
 /// The app's `wp_viewporter` handler (D8): every viewport the app creates is
-/// recorded and mirrored upstream — the values pass through unchanged — and
-/// on the panel surface a second viewport is kept local instead of
-/// forwarded, because a second would raise the fatal `viewport_exists`
-/// error.
+/// kept local. On the panel surface the values are composed into the proxy's
+/// crop, on any other surface they are mirrored onto a viewport of that
+/// surface, and while the slot is empty they wait for the panel surface to
+/// be known.
 pub(super) struct ClientWpViewporter {
     /// The viewporter this handler answers, kept weak so the handler does
     /// not keep its own object alive.
@@ -160,45 +423,42 @@ impl WpViewporterHandler for ClientWpViewporter {
         surface: &Rc<WlSurface>,
     ) {
         let surface_id = surface.unique_id();
-        let is_panel = self.routing.is_panel_surface(surface_id);
-        if is_panel && self.routing.has_proxy_viewport() {
-            // The proxy owns the panel surface's viewport (D8): the app's
-            // request stays local, or forwarding it would kill the
-            // connection with `viewport_exists`.
-            id.set_handler(ClientWpViewport {
-                viewport: Rc::downgrade(id),
-                routing: Rc::clone(&self.routing),
-                surface_id,
-                mirror: false,
-            });
-            return;
-        }
-        if is_panel {
-            self.routing.set_panel_has_app_viewport(true);
-        }
-        self.routing.globals().add_app_viewport(surface_id);
+        let kept = plan(&self.routing, surface_id);
+        self.routing
+            .globals()
+            .viewport()
+            .add(surface_id, id, surface, kept);
         id.set_handler(ClientWpViewport {
             viewport: Rc::downgrade(id),
             routing: Rc::clone(&self.routing),
             surface_id,
-            mirror: true,
         });
-        if let Some(viewporter) = self.viewporter.upgrade() {
-            viewporter.send_get_viewport(id, surface);
+        match kept {
+            Kept::Adopted => {
+                // D8: never forwarded — the proxy's own viewport is this
+                // surface's one, and a second is the fatal `viewport_exists`.
+                self.routing.set_panel_has_app_viewport(true);
+            }
+            Kept::Mirrored => {
+                if let Some(viewporter) = self.viewporter.upgrade() {
+                    viewporter.send_get_viewport(id, surface);
+                }
+                self.routing.globals().add_app_viewport(surface_id);
+            }
+            Kept::Deferred => {}
         }
     }
 }
 
-/// The app's `wp_viewport` (D8): a mirrored one forwards its values
-/// upstream, a swallowed one on the panel surface keeps them local. Every
-/// other event keeps the default forward path.
+/// The app's own `wp_viewport` (D8): its values are kept local and either
+/// composed into the proxy's crop or mirrored upstream, never forwarded as
+/// they are.
 pub(super) struct ClientWpViewport {
     /// The viewport this handler answers, kept weak so the handler does not
-    /// keep its own object alive (the routing's handler convention).
+    /// keep its own object alive.
     viewport: Weak<WpViewport>,
     routing: Rc<Routing>,
     surface_id: u64,
-    mirror: bool,
 }
 
 impl WpViewportHandler for ClientWpViewport {
@@ -210,32 +470,129 @@ impl WpViewportHandler for ClientWpViewport {
         width: Fixed,
         height: Fixed,
     ) {
-        if !self.mirror {
-            return;
-        }
-        if let Some(viewport) = self.viewport.upgrade() {
-            viewport.send_set_source(x, y, width, height);
+        let routing = Rc::clone(&self.routing);
+        let surface_id = self.surface_id;
+        let globals = routing.globals();
+        let state = globals.viewport();
+        let unset = [x, y, width, height]
+            .iter()
+            .all(|value| value.to_wire() == UNSET_FIXED);
+        state.set_source(surface_id, (!unset).then_some([x, y, width, height]));
+        match state.kept(surface_id) {
+            Some(Kept::Adopted) => recompose(&routing),
+            Some(Kept::Mirrored) => {
+                if let Some(viewport) = state.app_viewport(surface_id) {
+                    viewport.send_set_source(x, y, width, height);
+                }
+            }
+            Some(Kept::Deferred) | None => {}
         }
     }
 
     fn handle_set_destination(&mut self, _slf: &Rc<WpViewport>, width: i32, height: i32) {
-        if !self.mirror {
-            return;
-        }
-        if let Some(viewport) = self.viewport.upgrade() {
-            viewport.send_set_destination(width, height);
+        let routing = Rc::clone(&self.routing);
+        let surface_id = self.surface_id;
+        let globals = routing.globals();
+        let state = globals.viewport();
+        let unset = width == -1 && height == -1;
+        state.set_destination(surface_id, (!unset).then_some((width, height)));
+        match state.kept(surface_id) {
+            Some(Kept::Adopted) => recompose(&routing),
+            Some(Kept::Mirrored) => {
+                if let Some(viewport) = state.app_viewport(surface_id) {
+                    viewport.send_set_destination(width, height);
+                }
+            }
+            Some(Kept::Deferred) | None => {}
         }
     }
 
     fn handle_destroy(&mut self, _slf: &Rc<WpViewport>) {
-        self.routing.globals().remove_app_viewport(self.surface_id);
-        if self.mirror && self.routing.is_panel_surface(self.surface_id) {
-            // The app gave up its own mapping: the proxy can crop again on
-            // the next window geometry.
-            self.routing.set_panel_has_app_viewport(false);
+        let routing = Rc::clone(&self.routing);
+        let surface_id = self.surface_id;
+        let Some(viewport) = self.viewport.upgrade() else {
+            return;
+        };
+        let Some(kept) = routing.globals().viewport().remove(surface_id) else {
+            return;
+        };
+        match kept {
+            Kept::Mirrored => {
+                routing.globals().remove_app_viewport(surface_id);
+                viewport.send_destroy();
+            }
+            Kept::Adopted => {
+                // The panel surface's mapping is the proxy's own again: the
+                // composition drops the app's values (D8).
+                routing.set_panel_has_app_viewport(false);
+                recompose(&routing);
+                viewport.delete_id();
+            }
+            Kept::Deferred => viewport.delete_id(),
         }
-        if let Some(viewport) = self.viewport.upgrade() {
-            viewport.send_destroy();
+    }
+}
+
+/// The app's `wp_fractional_scale_manager_v1` bind (D8): a surface may have
+/// only one `wp_fractional_scale_v1`, so the proxy watches the app's object
+/// for the preferred scale instead of asking for one itself.
+pub(super) struct ClientFractionalScaleManager {
+    /// The manager this handler answers, kept weak so the handler does not
+    /// keep its own object alive.
+    manager: Weak<WpFractionalScaleManagerV1>,
+    routing: Rc<Routing>,
+}
+
+impl ClientFractionalScaleManager {
+    /// The handler of the app's `wp_fractional_scale_manager_v1` bind.
+    pub(super) fn new(manager: &Rc<WpFractionalScaleManagerV1>, routing: &Rc<Routing>) -> Self {
+        Self {
+            manager: Rc::downgrade(manager),
+            routing: Rc::clone(routing),
+        }
+    }
+}
+
+impl WpFractionalScaleManagerV1Handler for ClientFractionalScaleManager {
+    fn handle_get_fractional_scale(
+        &mut self,
+        _slf: &Rc<WpFractionalScaleManagerV1>,
+        id: &Rc<WpFractionalScaleV1>,
+        surface: &Rc<WlSurface>,
+    ) {
+        id.set_handler(ClientFractionalScale {
+            scale: Rc::downgrade(id),
+            routing: Rc::clone(&self.routing),
+            surface_id: surface.unique_id(),
+        });
+        if let Some(manager) = self.manager.upgrade() {
+            manager.send_get_fractional_scale(id, surface);
+        }
+    }
+}
+
+/// One app `wp_fractional_scale_v1` (D8): its preferred scale is what a
+/// destination-only app viewport on the panel surface is cropped at.
+pub(super) struct ClientFractionalScale {
+    /// The fractional-scale object this handler answers, kept weak so the
+    /// handler does not keep its own object alive.
+    scale: Weak<WpFractionalScaleV1>,
+    routing: Rc<Routing>,
+    surface_id: u64,
+}
+
+impl WpFractionalScaleV1Handler for ClientFractionalScale {
+    fn handle_preferred_scale(&mut self, _slf: &Rc<WpFractionalScaleV1>, scale: u32) {
+        let routing = Rc::clone(&self.routing);
+        routing
+            .globals()
+            .viewport()
+            .set_preferred_scale(self.surface_id, scale);
+        if routing.is_panel_surface(self.surface_id) {
+            recompose(&routing);
+        }
+        if let Some(object) = self.scale.upgrade() {
+            object.send_preferred_scale(scale);
         }
     }
 }
@@ -244,106 +601,34 @@ impl WpViewportHandler for ClientWpViewport {
 /// with the panel window. Lives on [`super::routing::Routing`]; the helper
 /// here keeps the double-buffered write in one place.
 pub(super) fn write_crop(viewport: &WpViewport, crop: Option<&StaticCrop>) {
-    match crop {
-        Some(crop) => {
-            let [x, y, width, height] = crop.source();
-            viewport.send_set_source(
-                Fixed::from_f64_lossy(f64::from(x)),
-                Fixed::from_f64_lossy(f64::from(y)),
-                Fixed::from_f64_lossy(f64::from(width)),
-                Fixed::from_f64_lossy(f64::from(height)),
-            );
-            let (destination_width, destination_height) = crop.destination();
-            viewport.send_set_destination(destination_width, destination_height);
-        }
-        None => {
-            // -1 in every field unsets the source: the whole buffer is
-            // drawn, which is always inside the buffer (viewporter.xml).
-            viewport.send_set_source(
-                Fixed::from_f64_lossy(-1.0),
-                Fixed::from_f64_lossy(-1.0),
-                Fixed::from_f64_lossy(-1.0),
-                Fixed::from_f64_lossy(-1.0),
-            );
-        }
+    let (source, destination) =
+        crop.map_or((None, None), |crop| (crop.source(), crop.destination()));
+    match source {
+        Some([x, y, width, height]) => viewport.send_set_source(
+            Fixed::from_f64_lossy(f64::from(x)),
+            Fixed::from_f64_lossy(f64::from(y)),
+            Fixed::from_f64_lossy(f64::from(width)),
+            Fixed::from_f64_lossy(f64::from(height)),
+        ),
+        None => unset_source(viewport),
+    }
+    match destination {
+        Some((width, height)) => viewport.send_set_destination(width, height),
+        None => viewport.send_set_destination(-1, -1),
     }
 }
 
-// The registry-side state the viewport handlers share (the set of surfaces
-// carrying app viewports) lives in [`super::output`]; the panel surface the
-// crop writes through is reached through [`super::routing::Routing`].
-
-#[cfg(test)]
-mod tests {
-    use super::{CropDecision, crop_decision, static_crop};
-
-    /// The GTK3 CSD case (D5): the geometry is the source and is drawn 1:1
-    /// at its own size, so the shadow outside it is cropped away.
-    #[test]
-    fn the_window_geometry_becomes_the_source_and_destination() {
-        let crop = static_crop([5, 7, 640, 480]).expect("a usable geometry");
-        assert_eq!(crop.source(), [5, 7, 640, 480]);
-        assert_eq!(crop.destination(), (640, 480));
-    }
-
-    /// A negative geometry origin, which a client-side drop shadow produces,
-    /// clamps to the buffer's origin: the source stays legal (`bad_value`
-    /// fires on a negative x or y) and keeps the window's far edge.
-    #[test]
-    fn a_negative_origin_clamps_to_the_buffer_origin() {
-        let crop = static_crop([-20, -30, 640, 480]).expect("a usable geometry");
-        assert_eq!(crop.source(), [0, 0, 620, 450]);
-        assert_eq!(crop.destination(), (620, 450));
-    }
-
-    /// A geometry that collapses — zero size, or an origin whose offset
-    /// swallows the whole rectangle — gives no crop: the caller unsets the
-    /// source and the whole buffer draws, which is always inside it.
-    #[test]
-    fn a_collapsed_geometry_gives_no_crop() {
-        assert!(static_crop([0, 0, 0, 0]).is_none());
-        assert!(static_crop([-20, -30, 10, 10]).is_none());
-        assert!(static_crop([10, 10, -5, 100]).is_none());
-        assert!(static_crop([10, 10, 100, -5]).is_none());
-    }
-
-    /// Origins that saturate past `i32` cannot wrap into a valid crop.
-    #[test]
-    fn extreme_origins_give_no_crop() {
-        assert!(static_crop([i32::MAX, i32::MAX, i32::MAX, i32::MAX]).is_none());
-        assert!(static_crop([i32::MIN, i32::MIN, 1, 1]).is_none());
-    }
-
-    /// The decision matrix (D8): an app viewport on the panel surface defers
-    /// to the app's mapping, a geometry without one builds the proxy's crop,
-    /// and no geometry means nothing to apply.
-    #[test]
-    fn the_decision_follows_the_viewport_and_the_geometry() {
-        let geometry = [5, 7, 640, 480];
-
-        assert_eq!(
-            crop_decision(Some(geometry), true),
-            CropDecision::DeferToAppViewport,
-            "an app viewport owns the mapping (D8)"
-        );
-        assert_eq!(
-            crop_decision(None, true),
-            CropDecision::DeferToAppViewport,
-            "the app viewport defers the crop whatever the geometry is"
-        );
-
-        let CropDecision::OwnCrop(crop) = crop_decision(Some(geometry), false) else {
-            panic!("a geometry without an app viewport crops");
-        };
-        assert_eq!(crop.source(), geometry);
-
-        assert_eq!(
-            crop_decision(None, false),
-            CropDecision::NoCrop,
-            "no geometry, nothing to crop yet"
-        );
-        let CropDecision::NoCrop = crop_decision(Some([0, 0, 0, 0]), false) else {
-            panic!("a collapsed geometry is NoCrop");
-        };
-    }
+/// Unsets the viewport's source rectangle: `-1` in every field draws the
+/// whole buffer, which is always inside it (`wp_viewport`).
+fn unset_source(viewport: &WpViewport) {
+    viewport.send_set_source(
+        Fixed::from_f64_lossy(-1.0),
+        Fixed::from_f64_lossy(-1.0),
+        Fixed::from_f64_lossy(-1.0),
+        Fixed::from_f64_lossy(-1.0),
+    );
 }
+
+// The panel surface the crop writes through is reached through
+// [`super::routing::Routing`]; the values it carries are composed in
+// [`super::compose`] and bounded by [`super::buffers`].

@@ -157,6 +157,19 @@ mod reserve;
 #[path = "proxy/viewport.rs"]
 mod viewport;
 
+// The viewport composition (row 10.1, D8): the source rectangle and
+// destination the proxy's viewport carries, composed from the visible
+// fraction, the docked edge, the app's own viewport and the buffer. The
+// tween driver (row 10.x) passes each frame's fraction, so the module stays
+// public until then.
+#[path = "proxy/compose.rs"]
+pub mod compose;
+
+// The panel surface's buffer sizes (row 10.1, D8): the bounds the viewport
+// crop is clamped to, recorded from `wl_shm` and `zwp_linux_dmabuf_v1`.
+#[path = "proxy/buffers.rs"]
+mod buffers;
+
 // The D5 popup handlers: the recorded anchor rectangle and the configure a
 // layer popup reports in the app's own coordinates.
 #[path = "proxy/popup.rs"]

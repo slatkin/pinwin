@@ -34,6 +34,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::rc::{Rc, Weak};
 
+use wl_proxy::object::ObjectCoreApi;
 use wl_proxy::protocols::wayland::wl_buffer::WlBuffer;
 use wl_proxy::protocols::wayland::wl_output::WlOutput;
 use wl_proxy::protocols::wayland::wl_surface::{WlSurface, WlSurfaceHandler};
@@ -43,6 +44,7 @@ use super::keyboard;
 use super::mapping::keyboard_of;
 use super::output::PanelSurfaceWatch;
 use super::routing::Routing;
+use super::viewport;
 
 /// One state change the proxy wants applied to the app's surface with a
 /// commit (D7): a tween frame, the ring's position, hide or show. It runs
@@ -238,6 +240,13 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
         let Some(surface) = self.surface() else {
             return;
         };
+        // D8: the crop is clamped to the buffer the app attaches, and its
+        // size is known from the request that created it.
+        self.routing
+            .globals()
+            .viewport()
+            .buffers()
+            .set_panel_buffer(buffer.map(|buffer| buffer.unique_id()));
         // D6: a hidden panel forwards no attach and returns every buffer it
         // removed to the app, so the app does not run out of buffers.
         let decision = self.routing.hidden.on_app_attach(buffer);
@@ -274,6 +283,13 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
 
     fn handle_set_buffer_scale(&mut self, _slf: &Rc<WlSurface>, scale: i32) {
         self.coordinator.mark_dirty();
+        // D8: the viewporter's source rectangle is in the coordinates after
+        // the buffer scale, so the crop's bound is the buffer divided by it.
+        self.routing
+            .globals()
+            .viewport()
+            .buffers()
+            .set_panel_scale(scale);
         if let Some(surface) = self.surface() {
             ForwardToServer.handle_set_buffer_scale(&surface, scale);
         }
@@ -293,6 +309,11 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
             if let Some(points) = plan.points {
                 self.routing.hidden.emit_points(&points);
             }
+            // D8: the viewport state applies with the app's own commit, so
+            // the composed crop rides this one. The buffer the commit
+            // attaches is what the crop is bounded by, so the values are
+            // composed here rather than at the attach.
+            viewport::recompose(&self.routing);
             ForwardToServer.handle_commit(&surface);
             for buffer in plan.release {
                 buffer.send_release();
