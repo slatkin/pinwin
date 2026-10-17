@@ -241,7 +241,7 @@ below). Its code does not enter pinwin; only the findings do.
   live, the user confirms "Animate on request", "Covering expand holds tiles still", "One new
   size for the app", "Grow waits for the app" and "Content does not slide" on a left and a
   top panel.
-- [ ] 10.2 Add the end and interrupt rules (spec "Exact final width", "Interrupting an
+- [x] 10.2 Add the end and interrupt rules (spec "Exact final width", "Interrupting an
   animation", "No intermediate width after a failure"), the 1000 ms clamp, `tween_ms` and the
   no-viewporter snap. Verify: unit tests for "Duration clamp", "Retarget", "Snap interrupts"
   and "Stalled frame clock" pass; live, the user confirms "Animation completes" and "Stop
