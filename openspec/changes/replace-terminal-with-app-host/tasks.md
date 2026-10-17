@@ -187,7 +187,7 @@ below). Its code does not enter pinwin; only the findings do.
   from `geometry.rs`, and output size from `zxdg_output_v1` (D9). Verify: live, the user
   confirms "Tiles move right", "Other monitors unaffected", "Covers an existing top bar
   without a bottom gap", "Top docking" and "Change the layer".
-- [ ] 6.5 Add output handling (D11): `set-output`, unknown output, and a new layer surface on
+- [x] 6.5 Add output handling (D11): `set-output`, unknown output, and a new layer surface on
   `closed`. Verify: unit test for "Unknown output"; live, the user confirms "Opens on the
   chosen output" and "Monitor unplugged".
 - [ ] 6.6 Add "Apply layout without restarting the app": edge, size, gutters, reserve and layer
