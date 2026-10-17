@@ -44,10 +44,10 @@ and several modules wait for the rows that wire them in (D15).
   does not answer makes its request fail with error kind `internal`.
 - `src/daemon/registry.rs` — the registry of panels and the routing of a
   decoded `ipc::Request` to the panel it names (D12): a unique name, the
-  start order a status reply lists, every panel command, and the status reply
-  of all panels or one. Nothing compiles the daemon yet; `tests/daemon.rs`
-  includes it so its unit tests run. The event bus and the connection
-  handling join it in row 5.4; the lifetime follows in row 5.5.
+  start order a status reply lists, every panel command, the status reply
+  of all panels or one, and the removal that frees a name or clears every
+  panel for `quit`. Nothing compiles the daemon yet; `tests/daemon.rs`
+  includes it so its unit tests run.
 - `src/daemon/events.rs` — the daemon's event bus (spec "Event stream", D12):
   the `Event` kinds a panel publishes (added, removed, shown, hidden and
   geometry changed, each naming the panel), one bounded queue for each
@@ -55,10 +55,22 @@ and several modules wait for the rows that wire them in (D15).
   queue is full (spec "Slow subscriber"). `tests/daemon.rs` includes it, and
   its tests are `src/daemon/events/tests.rs`.
 - `src/daemon/connection.rs` — one IPC connection (D12, D13): the bounded
-  request read, the reply write, and the `subscribe` stream that writes one
+  request read, the reply write, the `subscribe` stream that writes one
   event line after the success reply until the client closes it or falls
-  behind (spec "Event stream", "Silent client"). Nothing compiles the daemon
-  yet; `tests/daemon.rs` includes it so its tests run.
+  behind (spec "Event stream", "Silent client"), and the daemon-owned
+  `quit` and `reload` requests, whose replies it writes before the daemon or
+  the config changes. Nothing compiles the daemon yet; `tests/daemon.rs`
+  includes it so its tests run.
+- `src/daemon/lifetime.rs` — the daemon's lifetime (spec "Daemon lifetime
+  preference", "Quit", "Reload", D12): the shared state of the daemon (the
+  registry, the event bus, the config it holds and the shutdown trigger),
+  the accept loop that polls the listener with the shutdown eventfd and an
+  optional SIGINT/SIGTERM signalfd, `quit` that ends every panel and then
+  the daemon, `reload` that keeps the previous config when the file is
+  invalid, and the panel-end report that exits with the last panel when
+  `exit_when_idle` is true. The socket file is removed by the
+  `DaemonSocket` drop when the loop returns. `tests/daemon.rs` includes it,
+  and its tests are `tests/daemon/lifetime.rs`.
 - `src/name.rs` — the panel name rules (spec "Panel names"): the validated
   `PanelName` of 1..=64 characters from `[A-Za-z0-9_-]`, the default name
   taken from the command's file name, and the two name errors. `src/cli.rs`
@@ -166,7 +178,19 @@ events: "Toggle events" (a `hidden` then a `shown` event, and the
 subscriber's queue freed when its client closes), "Slow subscriber" (a
 client that stops reading is dropped when its bounded queue fills, while
 another request is still answered) and "Silent client" (a connection that
-sends nothing delays no other request and ends with an error reply).
+sends nothing delays no other request and ends with an error reply), and the
+lifetime tests in `tests/daemon/lifetime.rs`, which run a real daemon socket
+in a scratch runtime directory and cover "Exit with the last panel" (the
+idle daemon stays before its first panel and exits and removes its socket
+when the last ends), "Stay resident" (an `exit_when_idle` false daemon
+answers `status` with no panels after its last one ends), "Quit with
+panels" (the client's success reply, both stand-in panel threads ending and
+the socket file gone), "Reload a valid file" (existing panels keep their
+settings while the next panel and the daemon preference take the new file)
+and "Reload an invalid file" (error kind `invalid_config` with the file and
+line, and the previous config kept). No test sends a real signal: the accept
+loop reads a shutdown trigger, and only the SIGINT/SIGTERM mapping
+(`shutdown_signal`) is tested, so the signalfd path runs live.
 The crop harness includes `src/geometry.rs` as well, for the `Edge` the crop
 names, under a `dead_code` allow whose reason names the rows that use the
 accessors it does not. The other kept modules (`anim`, `guard`) are not

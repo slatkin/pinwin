@@ -8,15 +8,17 @@
 
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::{Bus, Event};
+use crate::config::Config;
 use crate::daemon::connection;
+use crate::daemon::lifetime::Lifetime;
 use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply, PanelRequest};
-use crate::daemon::registry::Registry;
 use crate::ipc::{LineReader, MAX_LINE, read_line, write_line};
 use crate::name::PanelName;
 
@@ -50,12 +52,26 @@ fn panel_thread(
     (notes(), PanelHandle::new(7, commands, wake), thread)
 }
 
+/// A daemon lifetime with `bus` and a short wait, standing in for the daemon
+/// the connection threads share (D12).
+fn test_lifetime(bus: Bus) -> Arc<Lifetime> {
+    Arc::new(
+        Lifetime::with_bus(
+            PathBuf::from("config.toml"),
+            Config::default(),
+            bus,
+            CONNECTION_WAIT,
+        )
+        .expect("a lifetime"),
+    )
+}
+
 /// Serve one daemon side of a socket pair on its own thread, as the daemon
 /// does for each accepted connection (D12), so the test drives the other side
 /// as a client.
-fn serve_connection(stream: UnixStream, registry: Arc<Registry>, bus: Bus) -> JoinHandle<()> {
+fn serve_connection(stream: UnixStream, lifetime: Arc<Lifetime>) -> JoinHandle<()> {
     thread::spawn(move || {
-        let _ = connection::serve(stream, &registry, &bus, CONNECTION_WAIT);
+        let _ = connection::serve(stream, &lifetime, CONNECTION_WAIT);
     })
 }
 
@@ -67,18 +83,18 @@ fn ask(client: &mut UnixStream, request: &str) -> String {
 }
 
 /// A client connection served by its own thread, which answers panel
-/// requests through the registry.
-fn connect_client(registry: &Arc<Registry>, bus: &Bus) -> UnixStream {
+/// requests through the lifetime's registry.
+fn connect_client(lifetime: &Arc<Lifetime>) -> UnixStream {
     let (client, server) = UnixStream::pair().expect("a socket pair");
-    serve_connection(server, Arc::clone(registry), bus.clone());
+    serve_connection(server, Arc::clone(lifetime));
     client
 }
 
 /// A client that has sent `subscribe` and read its success reply, plus the
 /// thread that serves its connection.
-fn subscribed_client(bus: &Bus, registry: &Arc<Registry>) -> (UnixStream, JoinHandle<()>) {
+fn subscribed_client(lifetime: &Arc<Lifetime>) -> (UnixStream, JoinHandle<()>) {
     let (mut client, server) = UnixStream::pair().expect("a socket pair");
-    let task = serve_connection(server, Arc::clone(registry), bus.clone());
+    let task = serve_connection(server, Arc::clone(lifetime));
     assert_eq!(
         ask(&mut client, "{\"cmd\":\"subscribe\"}\n"),
         "{\"ok\":true}\n"
@@ -143,7 +159,7 @@ fn shrink_buffers(one: &UnixStream, two: &UnixStream) {
 #[test]
 fn a_subscriber_receives_toggle_events() {
     let bus = Bus::new();
-    let registry = Arc::new(Registry::new());
+    let lifetime = test_lifetime(bus.clone());
     let toggles = Arc::new(AtomicUsize::new(0));
     let publisher = {
         let bus = bus.clone();
@@ -161,13 +177,16 @@ fn a_subscriber_receives_toggle_events() {
         }
     };
     let (name, handle, panel) = panel_thread(publisher);
-    registry.add(name, handle).expect("notes is free");
+    lifetime
+        .registry()
+        .add(name, handle)
+        .expect("notes is free");
 
-    let (mut subscriber, task) = subscribed_client(&bus, &registry);
+    let (mut subscriber, task) = subscribed_client(&lifetime);
     let mut events = LineReader::new();
     // Each `pinwin toggle` is its own connection and its own request.
     for _ in 0..2 {
-        let mut client = connect_client(&registry, &bus);
+        let mut client = connect_client(&lifetime);
         assert_eq!(
             ask(&mut client, "{\"cmd\":\"toggle\",\"panel\":\"notes\"}\n"),
             "{\"ok\":true}\n"
@@ -187,7 +206,7 @@ fn a_subscriber_receives_toggle_events() {
     drop(subscriber);
     task.join().expect("the subscriber's connection ends");
     assert_eq!(bus.subscriber_count(), 0, "the closed subscriber is gone");
-    drop(registry);
+    drop(lifetime);
     panel.join().expect("the panel thread ends");
 }
 
@@ -196,13 +215,16 @@ fn a_subscriber_receives_toggle_events() {
 #[test]
 fn a_slow_subscriber_is_closed_and_other_requests_are_answered() {
     let bus = Bus::with_queue_depth(2);
-    let registry = Arc::new(Registry::new());
+    let lifetime = test_lifetime(bus.clone());
     let (name, handle, panel) = panel_thread(|_| PanelReply::Done);
-    registry.add(name, handle).expect("notes is free");
+    lifetime
+        .registry()
+        .add(name, handle)
+        .expect("notes is free");
 
     let (mut subscriber, server) = UnixStream::pair().expect("a socket pair");
     shrink_buffers(&subscriber, &server);
-    let task = serve_connection(server, Arc::clone(&registry), bus.clone());
+    let task = serve_connection(server, Arc::clone(&lifetime));
     assert_eq!(
         ask(&mut subscriber, "{\"cmd\":\"subscribe\"}\n"),
         "{\"ok\":true}\n"
@@ -219,7 +241,7 @@ fn a_slow_subscriber_is_closed_and_other_requests_are_answered() {
     );
 
     // Another client's request is still answered.
-    let mut client = connect_client(&registry, &bus);
+    let mut client = connect_client(&lifetime);
     assert_eq!(
         ask(&mut client, "{\"cmd\":\"toggle\",\"panel\":\"notes\"}\n"),
         "{\"ok\":true}\n"
@@ -230,7 +252,7 @@ fn a_slow_subscriber_is_closed_and_other_requests_are_answered() {
     );
     task.join().expect("the slow subscriber's connection ends");
 
-    drop(registry);
+    drop(lifetime);
     panel.join().expect("the panel thread ends");
 }
 
@@ -240,14 +262,17 @@ fn a_slow_subscriber_is_closed_and_other_requests_are_answered() {
 #[test]
 fn a_silent_client_does_not_block_another_request() {
     let bus = Bus::new();
-    let registry = Arc::new(Registry::new());
+    let lifetime = test_lifetime(bus);
     let (name, handle, panel) = panel_thread(|_| PanelReply::Done);
-    registry.add(name, handle).expect("notes is free");
+    lifetime
+        .registry()
+        .add(name, handle)
+        .expect("notes is free");
 
     let (mut silent, server) = UnixStream::pair().expect("a socket pair");
-    let silent_task = serve_connection(server, Arc::clone(&registry), bus.clone());
+    let silent_task = serve_connection(server, Arc::clone(&lifetime));
 
-    let mut client = connect_client(&registry, &bus);
+    let mut client = connect_client(&lifetime);
     let started = Instant::now();
     assert_eq!(
         ask(&mut client, "{\"cmd\":\"toggle\",\"panel\":\"notes\"}\n"),
@@ -268,6 +293,6 @@ fn a_silent_client_does_not_block_another_request() {
     );
     silent_task.join().expect("the silent connection ends");
 
-    drop(registry);
+    drop(lifetime);
     panel.join().expect("the panel thread ends");
 }

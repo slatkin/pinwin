@@ -8,6 +8,11 @@
 //! connection thread (spec "Clients cannot block the daemon", "Silent
 //! client"). The daemon runs one of these per accepted connection, so the
 //! thread that accepts connections never handles a client's bytes itself.
+//!
+//! A panel request goes through the registry, while the requests the daemon
+//! owns go through its [`Lifetime`]: `quit` writes its success reply and
+//! then ends every panel and the daemon (spec "Quit"), and `reload` answers
+//! with the reloaded config or the file's error (spec "Reload").
 
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -15,7 +20,7 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
 use super::events::Bus;
-use super::registry::Registry;
+use super::lifetime::Lifetime;
 use crate::ipc::{self, MAX_LINE, Reply, Request};
 
 /// Serve one accepted connection: one request line and its reply, or the
@@ -23,13 +28,12 @@ use crate::ipc::{self, MAX_LINE, Reply, Request};
 ///
 /// `timeout` bounds the first read, every reply write and every wait for an
 /// event, so no client holds this connection thread longer than it takes to
-/// notice a stalled peer. The daemon's own requests that need its lifetime
-/// (`quit`) or the config file (`reload`) close the connection until rows
-/// 5.5 and 5.6 answer them.
+/// notice a stalled peer. The daemon's own requests go through `lifetime`:
+/// a `quit` reply goes out before the panels and the daemon end, and a
+/// `reload` reply is the file's success or its `invalid_config` error.
 pub fn serve(
     mut stream: UnixStream,
-    registry: &Registry,
-    bus: &Bus,
+    lifetime: &Lifetime,
     timeout: Duration,
 ) -> Result<(), ipc::LineError> {
     let line = match ipc::read_line(&mut stream, MAX_LINE, timeout) {
@@ -51,11 +55,19 @@ pub fn serve(
         Err(error) => return answer(&mut stream, &Reply::from(error), timeout),
     };
     match request {
-        Request::Subscribe => subscribe(&mut stream, bus, timeout),
-        request => match registry.route(&request, timeout) {
+        Request::Subscribe => subscribe(&mut stream, lifetime.bus(), timeout),
+        // The reply goes out first, so the client gets its success even
+        // though the daemon and its panels end right after (spec "Quit").
+        Request::Quit => {
+            let written = answer(&mut stream, &Reply::ok(), timeout);
+            lifetime.quit();
+            written
+        }
+        Request::Reload => answer(&mut stream, &lifetime.reload(), timeout),
+        request => match lifetime.registry().route(&request, timeout) {
             Some(reply) => answer(&mut stream, &reply, timeout),
-            // `quit` and `reload` are the daemon's own requests; the
-            // lifetime (row 5.5) and the client wiring (row 5.6) own them.
+            // The registry leaves only `subscribe`, `quit` and `reload` to
+            // the daemon, and the arms above answered them.
             None => Ok(()),
         },
     }

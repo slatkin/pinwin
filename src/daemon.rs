@@ -22,9 +22,10 @@
 //! maps a panel name to its handle and routes a decoded request, so one
 //! panel that does not answer never stops another or the daemon (spec "The
 //! daemon survives bad input"). [`events`] is the bus that carries a panel's
-//! events to its subscribers, and [`connection`] serves one IPC connection,
-//! including the `subscribe` stream. The daemon's lifetime joins them in row
-//! 5.5.
+//! events to its subscribers, [`connection`] serves one IPC connection,
+//! including the `subscribe` stream, and [`lifetime`] holds the accept loop,
+//! the shutdown trigger, `quit`, `reload` and the SIGINT and SIGTERM
+//! handling (spec "Daemon lifetime preference", "Quit", "Reload").
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -50,6 +51,9 @@ pub mod events;
 
 #[path = "daemon/connection.rs"]
 pub mod connection;
+
+#[path = "daemon/lifetime.rs"]
+pub mod lifetime;
 
 /// The display the Wayland client library connects with when
 /// `WAYLAND_DISPLAY` is unset, so a daemon started without it names the

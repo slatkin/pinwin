@@ -85,6 +85,19 @@ impl Registry {
         locked(&self.inner).panels.remove(name).is_some()
     }
 
+    /// Remove every panel, so a `quit` ends each panel thread by closing its
+    /// command channel (spec "Quit").
+    pub fn clear(&self) {
+        locked(&self.inner).panels.clear();
+    }
+
+    /// Whether no panel is registered, so the daemon's lifetime can tell
+    /// when the last panel ended (spec "Daemon lifetime preference").
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        locked(&self.inner).panels.is_empty()
+    }
+
     /// Route one decoded request (D12). `None` means the daemon answers it
     /// itself: `subscribe` (the event bus), `quit` (the lifetime) and
     /// `reload` (the config file) name no panel.

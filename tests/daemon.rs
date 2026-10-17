@@ -1,20 +1,21 @@
 //! The harness that compiles the daemon's tests
-//! (replace-terminal-with-app-host rows 5.2 to 5.4).
+//! (replace-terminal-with-app-host rows 5.2 to 5.5).
 //!
 //! `src/daemon.rs` holds the one socket that serves a Wayland display's
 //! panels (spec "Daemon socket", "One daemon for each Wayland display") and,
 //! with `src/daemon/panel.rs`, `src/daemon/registry.rs`,
-//! `src/daemon/events.rs` and `src/daemon/connection.rs`, the panel handles,
-//! the routing of a request to a panel, the event bus and one IPC
-//! connection (D12). The daemon's lifetime arrives with row 5.5, and
-//! `src/main.rs` compiles the daemon once it dispatches `pinwin daemon`.
-//! Until then this file includes the modules, so `cargo nextest run`
-//! exercises the path rule, the stale-file replacement, the live-daemon
-//! refusal, the two displays, the socket file's mode, the name rules, the
-//! status reply and the routing, with a test thread in the panel's place,
-//! all without a daemon. The event-stream tests live in
+//! `src/daemon/events.rs`, `src/daemon/connection.rs` and
+//! `src/daemon/lifetime.rs`, the panel handles, the routing of a request to a
+//! panel, the event bus, one IPC connection and the daemon's lifetime
+//! (D12). `src/main.rs` compiles the daemon once it dispatches
+//! `pinwin daemon`. Until then this file includes the modules, so `cargo
+//! nextest run` exercises the path rule, the stale-file replacement, the
+//! live-daemon refusal, the two displays, the socket file's mode, the name
+//! rules, the status reply and the routing, with a test thread in the panel's
+//! place, all without a daemon. The event-stream tests live in
 //! `src/daemon/events/tests.rs`, which `src/daemon/events.rs` includes under
-//! `cfg(test)`.
+//! `cfg(test)`, and the lifetime tests in `tests/daemon/lifetime.rs`, included
+//! as a child module below.
 //!
 //! The modules are `pub` so the dead-code lint does not report the parts of
 //! the included modules these tests do not reach.
@@ -597,3 +598,8 @@ fn the_daemon_answers_its_own_requests() {
         "a panel request is routed"
     );
 }
+
+// The lifetime's tests are a child module so this harness stays well under
+// the 800-line limit; `#[path]` keeps them in `tests/daemon/` beside it.
+#[path = "daemon/lifetime.rs"]
+mod lifetime;
