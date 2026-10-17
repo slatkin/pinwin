@@ -206,7 +206,7 @@ below). Its code does not enter pinwin; only the findings do.
 - [x] 7.3 Add panel lifetime from the pidfd and the connection count (D3). Verify: unit test
   of the end rule (exited and no connection); live, the user confirms "App exits", "App never
   connects", "App hands off to a running copy" and "Launcher process forks".
-- [ ] 7.4 Report an app that exits without a window (spec "Hand-off app is reported", D3): the
+- [x] 7.4 Report an app that exits without a window (spec "Hand-off app is reported", D3): the
   panel thread knows if a connection ever existed; the daemon logs the line and publishes
   `no_window` before `removed`. Verify: unit test of the pure rule (exited, never connected ->
   report; exited after a connection -> no report); live, the user confirms "Hand-off app is
