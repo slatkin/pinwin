@@ -67,6 +67,13 @@ and several modules wait for the rows that wire them in (D15).
   of all panels or one, and the removal that frees a name or clears every
   panel for `quit`. `src/main.rs` compiles it; `tests/daemon.rs` includes it
   so its unit tests run.
+- `src/daemon/spawn.rs` — the daemon `pinwin run` starts when none answers
+  (row 7.2, D12, spec "Run starts the daemon"): the `pinwin daemon` child in
+  a new session with its three standard streams on `/dev/null`, so the
+  caller's terminal can close, and the bounded probe of the display's
+  socket. Two starts that race are settled by the daemon socket's bind; the
+  loser's process exits 0 and both `run` calls use the winner. `src/main.rs`
+  compiles it.
 - `src/daemon/events.rs` — the daemon's event bus (spec "Event stream", D12):
   the `Event` kinds a panel publishes (added, removed, shown, hidden and
   geometry changed, each naming the panel), one bounded queue for each

@@ -11,13 +11,13 @@
 //! stays connected and prints each event line (spec "Command-line client").
 //!
 //! `pinwin run` asks the daemon for a new panel, sets the display the reply
-//! names and replaces itself with the app (D2). Rows 7.2 and 7.3 add the
-//! daemon spawn the spec's "Run starts the daemon" asks for and the pidfd
-//! lifetime; until then `run` talks to a daemon that is already running and
-//! reports the usual no-daemon error when none is.
+//! names and replaces itself with the app (D2). When no daemon answers, it
+//! starts one in the background and waits a bounded time for it (row 7.2,
+//! spec "Run starts the daemon"); row 7.3 adds the pidfd lifetime.
 
 use std::ffi::OsString;
 use std::io::{self, Write as _};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -26,7 +26,7 @@ use crate::config::Config;
 use crate::daemon::DaemonSocket;
 use crate::daemon::SocketError;
 use crate::daemon::lifetime::{Daemon, Lifetime, SignalFd};
-use crate::ipc::{ErrorKind, Request, Subscription};
+use crate::ipc::{Answer, CallError, ErrorKind, Request, Subscription};
 use crate::run::Exec;
 
 pub mod cli;
@@ -114,10 +114,10 @@ fn run_app(run: &cli::Run) -> ExitCode {
         pid: std::process::id(),
         options: run.options().clone(),
     };
-    let answer = match ipc::call(&path, &request) {
+    let answer = match create_panel(&path, &request) {
         Ok(answer) => answer,
-        Err(error) => {
-            eprintln!("pinwin: {error}");
+        Err(message) => {
+            eprintln!("pinwin: {message}");
             return ExitCode::FAILURE;
         }
     };
@@ -145,6 +145,21 @@ fn run_app(run: &cli::Run) -> ExitCode {
     let error = exec.exec();
     eprintln!("pinwin: could not run '{program}': {error}");
     ExitCode::from(COMMAND_NOT_FOUND)
+}
+
+/// Ask the daemon for a new panel, starting one in the background when none
+/// answers (spec "Run starts the daemon", D12). The wait for the started
+/// daemon is bounded, so a daemon that cannot start makes `pinwin run` print
+/// a message and exit 1 instead of hanging.
+fn create_panel(path: &Path, request: &Request) -> Result<Answer, String> {
+    match ipc::call(path, request) {
+        Ok(answer) => Ok(answer),
+        Err(CallError::Connect { .. }) => {
+            daemon::spawn::start_and_wait(path).map_err(|error| error.to_string())?;
+            ipc::call(path, request).map_err(|error| error.to_string())
+        }
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// Run the daemon in the foreground (spec "One daemon for each Wayland

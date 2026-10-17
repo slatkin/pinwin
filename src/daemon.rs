@@ -60,6 +60,9 @@ pub mod create;
 #[path = "daemon/lifetime.rs"]
 pub mod lifetime;
 
+#[path = "daemon/spawn.rs"]
+pub mod spawn;
+
 /// The display the Wayland client library connects with when
 /// `WAYLAND_DISPLAY` is unset, so a daemon started without it names the
 /// socket of the display it will actually use.

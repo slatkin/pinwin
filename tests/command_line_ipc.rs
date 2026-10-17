@@ -344,6 +344,154 @@ fn quit_ends_the_daemon_and_removes_its_socket() {
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 
+/// The two `pinwin run` children of the "Two first runs" test and the
+/// daemon they start. Dropping it asks the daemon to `quit`, bounded, and
+/// then kills and reaps both children, so no daemon and no app outlives the
+/// test whatever it asserted.
+struct FirstRuns {
+    dir: PathBuf,
+    children: Vec<Child>,
+}
+
+impl FirstRuns {
+    fn new(dir: &Path) -> Self {
+        Self {
+            dir: dir.to_owned(),
+            children: Vec::new(),
+        }
+    }
+
+    /// Start `pinwin run` with `name` and the harmless `sleep` app, so the
+    /// panel stays until the test ends it.
+    fn start(&mut self, name: &str) {
+        let child = pinwin(&self.dir, &["run", "--name", name, "--", "sleep", "30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start pinwin run");
+        self.children.push(child);
+    }
+
+    /// Ask the daemon to `quit` and wait, bounded, for its socket file to go.
+    fn quit(&self) {
+        let path = socket_path(&self.dir);
+        if !path.exists() {
+            return;
+        }
+        let mut command = pinwin(&self.dir, &["quit"]);
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        let Ok(mut child) = command.spawn() else {
+            return;
+        };
+        let deadline = Instant::now() + CLIENT_TIMEOUT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+            }
+        }
+        let deadline = Instant::now() + CLIENT_TIMEOUT;
+        while path.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for FirstRuns {
+    fn drop(&mut self) {
+        self.quit();
+        for mut child in self.children.drain(..) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// The panel names of a status reply, in the daemon's start order.
+fn panel_names(reply: &serde_json::Value) -> Vec<String> {
+    reply["panels"].as_array().map_or_else(Vec::new, |panels| {
+        panels
+            .iter()
+            .filter_map(|panel| panel["name"].as_str().map(str::to_owned))
+            .collect()
+    })
+}
+
+/// Wait, bounded, until the daemon answers `status` with every one of
+/// `names`, and return that reply.
+fn wait_for_panels(dir: &Path, names: &[&str]) -> serde_json::Value {
+    let deadline = Instant::now() + DAEMON_TIMEOUT;
+    loop {
+        let output = client_output(pinwin(dir, &["status"]));
+        if output.status.code() == Some(0)
+            && let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        {
+            let panels = panel_names(&reply);
+            if names
+                .iter()
+                .all(|name| panels.iter().any(|panel| panel == name))
+            {
+                return reply;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the daemon did not own {names:?} within {DAEMON_TIMEOUT:?}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Two `pinwin run` calls that start at the same time with no daemon leave
+/// one daemon that owns both panels (spec "Run starts the daemon": "Two
+/// first runs", D12). The daemon's socket bind decides the race; the loser's
+/// spawned daemon exits 0 and the loser's `run` waits for the winner.
+#[test]
+fn two_first_runs_leave_one_daemon() {
+    let dir = temp_dir("two-first-runs");
+    let _compositor = FakeCompositor::start(&dir);
+    let mut runs = FirstRuns::new(&dir);
+    runs.start("first");
+    runs.start("second");
+    let reply = wait_for_panels(&dir, &["first", "second"]);
+    let pid = reply["pid"].as_u64().expect("the daemon names itself");
+    assert_eq!(
+        panel_names(&reply).len(),
+        2,
+        "the one daemon owns both panels: {reply}"
+    );
+    // The same daemon answers again and still owns both panels, so no second
+    // daemon replaced it.
+    let again = client_output(pinwin(&dir, &["status"]));
+    assert_eq!(again.status.code(), Some(0), "status, status");
+    let again: serde_json::Value =
+        serde_json::from_slice(&again.stdout).expect("the reply is one JSON object");
+    assert_eq!(
+        again["pid"].as_u64(),
+        Some(pid),
+        "the daemon that answers is the first one: {again}"
+    );
+    assert_eq!(
+        panel_names(&again).len(),
+        2,
+        "it still owns both panels: {again}"
+    );
+    drop(runs);
+    assert!(
+        !socket_path(&dir).exists(),
+        "the daemon removed its socket file"
+    );
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
 /// A daemon that starts with an invalid config file names the file and the
 /// line, exits 2 and takes no socket (spec "Invalid config file").
 #[test]
