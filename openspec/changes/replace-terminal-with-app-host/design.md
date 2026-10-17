@@ -88,6 +88,18 @@ that forks a child which keeps the connection; and an app that hands off to a ru
 Alternative: end the panel when the last connection closes. Rejected: a panel whose app has
 not connected yet would have no end, and an app that reconnects would lose its panel.
 
+Report when an app exits without a window: the daemon knows when a panel ended because the
+pidfd reported exit and the panel's connection count stayed zero for the panel's whole life.
+That is the sign of a hand-off to a running copy, but it is also the sign of a crash or of a
+plain non-graphical program, so the message says "may have". The report goes out on two
+channels: one warn-level log line in the daemon, and one `no_window` event on the event bus,
+published once just before the `removed` event of that panel. `pinwin run` still replaces
+itself with the app and prints nothing; the notice comes from the daemon only. The message
+is "`<app>` exited without opening a window in panel `<name>`. It may have handed its window
+to a running copy, which pinwin cannot dock.", where `<app>` is the command name that
+`pinwin run` sent (the base name of the program). A desktop notification is left to a later
+change, once the tray work brings D-Bus (Open Questions).
+
 ### D4. Window routing: the empty-slot rule
 
 The proxy handles `xdg_wm_base.get_xdg_surface` for every client, as wl-paper does, and
@@ -375,8 +387,10 @@ gutter settings, `PINWIN_*` to options, `pinwin --toggle name` to `pinwin toggle
 ## Known limits
 
 Apps that hand their window to an already running copy, or that start it through a launcher,
-are not supported. Users run them at their own risk.
+are not supported. The daemon reports the ones it sees exit without a window (the D3 log line
+and the `no_window` event); users run them at their own risk.
 
 ## Open Questions
 
 - The default icon for the tray. A themed icon name is enough for the first release.
+- A desktop notification for the `no_window` report, once the tray work brings D-Bus.

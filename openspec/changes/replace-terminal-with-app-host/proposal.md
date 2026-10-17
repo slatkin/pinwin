@@ -67,5 +67,6 @@ panel can be a real Ghostty and pinwin can stop being a terminal.
 - Consumers: any program that used the `Panel` library moves to the IPC.
 - Users: apps that hand launches to an already running instance (Ghostty
   without `--gtk-single-instance=false`, Firefox, Chromium, Electron) do
-  not enter the panel. This is documented, not handled.
+  not enter the panel. This is documented, and reported by the daemon
+  when pinwin sees the app exit without a window.
 - License: `Cargo.toml` and a new `LICENSE` file change to GPL-3.0.

@@ -63,7 +63,10 @@ the app SHALL get the same decorations as without pinwin.
 ### Requirement: Panel lifetime follows the app
 A panel SHALL exist from its `pinwin run` until the launched process has exited and the app
 has no Wayland connection to the panel left. Then the panel SHALL end: its window goes away,
-its strip is released and its name is free.
+its strip is released and its name is free. When a panel ends because its process exited and it
+never had a connection, the daemon SHALL log a warning and SHALL send a `no_window` event before
+the panel's `removed` event. A launcher that exits before its child has connected ends the panel
+at once.
 
 #### Scenario: App exits
 - **WHEN** the panel's app exits
@@ -81,6 +84,14 @@ its strip is released and its name is free.
 #### Scenario: Launcher process forks
 - **WHEN** the launched process starts a child that keeps the Wayland connection and then exits
 - **THEN** the panel stays until the child closes its connection
+
+#### Scenario: Hand-off app is reported
+- **WHEN** the launched process of panel `notes` exits, the panel never had a connection, and
+  a client has subscribed
+- **THEN** the daemon logs "`<app>` exited without opening a window in panel `notes`. It may
+  have handed its window to a running copy, which pinwin cannot dock." (`<app>` is the command
+  name that `pinwin run` sent) and the subscriber receives a `no_window` event for `notes`
+  before its `removed` event
 
 ### Requirement: Apply layout without restarting the app
 A successful change of size, edge, gutters, reserve mode, layer, output or keyboard mode SHALL

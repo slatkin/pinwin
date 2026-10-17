@@ -239,14 +239,26 @@ output name. `status` with a `panel` field SHALL reply with that panel only.
 
 ### Requirement: Event stream
 A `subscribe` request SHALL make the daemon send a success reply and then one JSON line for
-each event on that connection until the client closes it. Events SHALL cover a panel added, a
-panel removed, a panel shown, a panel hidden and a panel's geometry changed, and each SHALL
-name the panel. A client that does not read SHALL NOT block the daemon or other clients; the
+each event on that connection until the client closes it. Events SHALL cover a panel added,
+removed, shown or hidden, a panel's geometry changed and a panel that ends with no connection
+(`no_window`), and each SHALL name the panel. A client that does not read SHALL NOT block the
+daemon or other clients; the
 daemon SHALL close the connection of a client that falls too far behind.
 
 #### Scenario: Toggle events
 - **WHEN** a client has subscribed and another client toggles `notes` twice
 - **THEN** the subscriber receives a `hidden` event and then a `shown` event for `notes`
+
+#### Scenario: App never opens a window
+- **WHEN** a client has subscribed and the app of panel `notes` exits without ever having
+  connected to the panel
+- **THEN** the subscriber receives a `no_window` event for `notes` and then a `removed`
+  event for `notes`
+
+#### Scenario: A panel that had a connection gets no notice
+- **WHEN** a client has subscribed and the app of panel `notes`, which had a connection to
+  the panel, exits
+- **THEN** the subscriber receives a `removed` event for `notes` and no `no_window` event
 
 #### Scenario: Slow subscriber
 - **WHEN** a subscriber stops reading and many events happen
