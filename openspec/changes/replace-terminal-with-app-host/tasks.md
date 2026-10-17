@@ -306,7 +306,7 @@ below). Its code does not enter pinwin; only the findings do.
 
 ## 12. Integration
 
-- [ ] 12.1 Run all gates and the toolkit check: `cargo fmt --all -- --check`,
+- [x] 12.1 Run all gates and the toolkit check: `cargo fmt --all -- --check`,
   `cargo clippy --all-targets -- -D warnings`, `cargo audit`, `cargo nextest run`,
   `make check-code-file-lines` and `ldd target/release/pinwin`. Verify: all gates pass, and
   `ldd` lists no GTK, GDK, GLib, GObject, GIO, Pango, Cairo, gdk-pixbuf or HarfBuzz library.
