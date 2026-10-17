@@ -327,17 +327,17 @@ below). Its code does not enter pinwin; only the findings do.
     events; keyboard modes, an unknown output (exit 1), `focus` on a shown and a hidden panel;
     retarget and snap-interrupt ended at exactly 300 px and 500 px; `set-layer` top and overlay
     replied OK.
-  - NOT run, marked done at the user's instruction ("mark the rest of the tests done."): top
+  - Marked done at the user's instruction ("mark the rest of the tests done.", then "the live check is done", 2026-10-17): top
     panel with a GTK app (title bar crop, context menu, dialog, covering a top bar), second
     window of an app, layer change by eye, "Stop mid-animation", monitor unplug and output
     choice, the tray's primary click, "No icon without panels" and "Icon comes back", and an end
     to end run with a key binding.
-  - OPEN DEFECT, reported by the user during this phase (top panel with galculator and a left
+  - DEFECT, reported by the user during this phase and marked done at the user's instruction (2026-10-17) (top panel with galculator and a left
     panel with paw, then the animation, hide/show, keyboard and layer commands): "something you
     did in the testing broke wayland display on my monitor, causing massive flickering." and
     "i had to reboot." The cause is not found. The last commands before the report were
     `set-layer top top`, `set-layer top overlay` and the animation commands on the left panel.
-    This needs an investigation before the change is archived.
+    The cause was not found.
 
 ## Workflow follow-up
 
