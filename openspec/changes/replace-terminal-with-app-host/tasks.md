@@ -180,7 +180,7 @@ below). Its code does not enter pinwin; only the findings do.
   `--gtk-single-instance=false`). Verify: unit tests for the slot rule pass ("First window",
   "Window comes back", "Dialog", "Passed-through window stays", "Empty panel shows nothing");
   live: the user runs an app with two windows and confirms the same.
-- [ ] 6.3 Add popups and per-window decorations (D5). Verify: unit tests for the popup anchor
+- [x] 6.3 Add popups and per-window decorations (D5). Verify: unit tests for the popup anchor
   offset and the decoration routing pass; live: the user confirms "Context menu", "App with
   its own title bar" and "Dialog keeps its decorations".
 - [ ] 6.4 Add the reserve surface and geometry apply: anchors, margins, size, layer and zones
