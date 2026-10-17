@@ -259,6 +259,10 @@ fn apply_plan(routing: &Rc<Routing>, plan: Plan, panel: &PanelName, bus: &Bus) {
         return;
     }
     if let Some(layer_surface) = routing.panel_layer_surface() {
+        // D8: the snap sends the layer state outside the commit coordinator,
+        // so a frame the tween queued before is stale (row 10.2 owns the
+        // interrupt rule itself).
+        routing.globals().tween().supersede();
         if let Some((width, height)) = plan.size {
             layer_surface.send_set_size(width, height);
         }
@@ -297,6 +301,9 @@ pub(super) fn reapply(routing: &Routing) {
     }
     routing.set_last_resolved_across(Some(across));
     if let Some(layer_surface) = routing.panel_layer_surface() {
+        // D8: the re-apply re-sends the layer state outside the commit
+        // coordinator, so a frame a tween queued before it is stale.
+        routing.globals().tween().supersede();
         let (width, height) = geometry.size();
         layer_surface.send_set_size(width, height);
     }
