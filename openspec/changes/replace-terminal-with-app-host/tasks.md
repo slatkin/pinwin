@@ -16,6 +16,23 @@ below). Its code does not enter pinwin; only the findings do.
   user runs it with a GTK app and a terminal app, and checks: the window docks, tiled windows
   move beside it, right-click menus open at the pointer, a second window opens as a normal
   window, and `on-demand` keyboard focus works. Record the answer here.
+
+  Recorded answer (the user's words, word for word):
+
+  - paw (foot fork): "1. Yes" (docks, full height); "4. Yes" (second window normal);
+    "5. Yes" (keyboard). On the tiled-window check: "A new window starts to the right of
+    this terminal." Menus: "Paw does not have a menu".
+  - galculator (GTK3), first run: "it works. it is not fully top to bottom like paw, the
+    top has a gap. the bottom runs off the screen." Keyboard: "keyboard does work. it was
+    a calculator, i had to press numbers lol".
+  - galculator, rerun after the spike fix: "everything looks fine now".
+  - code (Electron): "it did NOT work with code". Cause not known; parked for the viewport
+    work in row 1.3.
+
+  Not run: the right-click menu check was not run with an app that has menus (paw has no
+  menu; the user did not report a menu test for galculator), and the second-window check
+  ran only with paw, a terminal, not with a GUI app. The user did not report these two
+  checks.
 - [ ] 1.2 Add hide and show by unmap with a null buffer, with commits stripped of `attach` and
   fake `wl_buffer.release` while hidden (D6). The user toggles 20 times with the app drawing,
   and checks: no protocol error, no wrong-size frame, the app redraws on show. Record the

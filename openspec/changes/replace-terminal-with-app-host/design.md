@@ -127,6 +127,18 @@ Edge case: an app can create the decoration object before the window enters or l
 slot. The proxy routes by the toplevel's state at the time of the request and, for the panel
 window, answers again on each `set_mode`.
 
+Spike findings (row 1.1):
+
+- GTK3 3.24 has no `zxdg_toplevel_decoration` support and keeps its client-side title bar
+  and shadow. So "server-side decorations remove the title bar" does not hold for GTK3.
+- `xdg_toplevel.configure` sizes are window-geometry coordinates. The layer-surface
+  configure is a surface size. The buffer can be larger than the window by the shadow. The
+  spike fixed this with a proxy-owned `wp_viewport` whose source is the app's
+  `set_window_geometry`.
+- The crop must therefore use window-geometry coordinates. D8 and D10 need this too.
+- OPEN, the user decides at the geometry rows: show the GTK3 title bar inside the panel,
+  or crop it.
+
 ### D6. Hide keeps the layer surface and unmaps it
 
 Hide commits a null buffer on the panel surface and moves the reserve's zone to 0. While
