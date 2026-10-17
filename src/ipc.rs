@@ -18,7 +18,8 @@
 //! can fill the daemon's memory with one endless line (spec "Clients cannot
 //! block the daemon", D12). The client [`call`] connects, writes one line
 //! and reads one reply under the [`REPLY_TIMEOUT`] deadline; it uses no
-//! async runtime.
+//! async runtime. The client itself lives in `ipc/client.rs` beside the
+//! reply types.
 //!
 //! `tests/ipc.rs` compiles this module together with `src/cli.rs` and the
 //! modules their value types name, so the parsing, the line limit and the
@@ -28,7 +29,6 @@ use std::fmt;
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
@@ -40,9 +40,13 @@ use crate::config::{Keyboard, Layer};
 use crate::geometry::{Edge, ReserveMode, Size};
 use crate::name::PanelName;
 
+#[path = "ipc/client.rs"]
+mod client;
+
 #[path = "ipc/reply.rs"]
 mod reply;
 
+pub use client::{Answer, CallError, Subscription, call};
 pub use reply::{ErrorKind, ErrorReply, PanelEntry, PanelStatus, Reply, StatusReply};
 
 /// The largest request line in bytes, without its newline: a line over it
@@ -686,77 +690,6 @@ fn poll_ready(fd: std::os::fd::RawFd, events: libc::c_short, timeout: Duration) 
     // SAFETY: `fds` is one valid pollfd entry for the duration of the call.
     let ready = unsafe { libc::poll(std::ptr::addr_of_mut!(fds), 1, timeout_ms) };
     ready > 0 && fds.revents & events != 0
-}
-
-/// Why a client could not get a reply (spec "Command-line exit codes").
-#[derive(Debug)]
-pub enum CallError {
-    /// The connect failed: no daemon answers on the path.
-    Connect {
-        /// The socket path nothing answered on.
-        path: PathBuf,
-        /// The connect's own error.
-        source: io::Error,
-    },
-    /// The request line could not be sent.
-    Send(LineError),
-    /// No reply line came back.
-    Receive(LineError),
-    /// The reply line is not one reply object.
-    InvalidReply(String),
-}
-
-impl fmt::Display for CallError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Connect { path, source } => {
-                write!(f, "no daemon answered on {} ({source})", path.display())
-            }
-            Self::Send(error) => write!(f, "could not send the request: {error}"),
-            Self::Receive(error) => write!(f, "no reply came from the daemon: {error}"),
-            Self::InvalidReply(message) => {
-                write!(f, "the daemon's reply is not valid: {message}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for CallError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Connect { source, .. } => Some(source),
-            Self::Send(error) | Self::Receive(error) => Some(error),
-            Self::InvalidReply(_) => None,
-        }
-    }
-}
-
-/// Connect to the daemon socket at `path`, send `request` as one line and
-/// read one reply line, every wait bounded by [`REPLY_TIMEOUT`] (spec
-/// "Command-line exit codes", D13).
-pub fn call(path: &Path, request: &Request) -> Result<Reply, CallError> {
-    let stream = UnixStream::connect(path).map_err(|source| CallError::Connect {
-        path: path.to_owned(),
-        source,
-    })?;
-    exchange(stream, request, REPLY_TIMEOUT)
-}
-
-/// [`call`] over an already-connected stream, so a test drives the exchange
-/// with a socket pair and no daemon.
-fn exchange(
-    mut stream: UnixStream,
-    request: &Request,
-    timeout: Duration,
-) -> Result<Reply, CallError> {
-    write_line(&mut stream, request.to_line().as_bytes(), timeout).map_err(CallError::Send)?;
-    let line = read_line(&mut stream, MAX_LINE, timeout).map_err(CallError::Receive)?;
-    if !line.ends_with(b"\n") {
-        return Err(CallError::InvalidReply(
-            "the connection closed before the reply line ended".to_owned(),
-        ));
-    }
-    Reply::parse(&line).map_err(CallError::InvalidReply)
 }
 
 // The path is explicit because `tests/ipc.rs` includes this file with

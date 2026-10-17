@@ -72,8 +72,9 @@ impl ErrorReply {
 /// The daemon's answer to one request (D13, spec "Request and reply
 /// format"): `{"ok":true}`, `{"ok":true,"pid":...,"panels":[...]}` for a
 /// carried-out status, or `{"ok":false,"error":{"kind","message"}}` on one
-/// line. The client keeps only the ok flag, because `pinwin status` prints
-/// the line it read (spec "Command-line client").
+/// line. The parsed value is what the client reads; the line it came in is
+/// kept beside it in [`Answer`](super::Answer), because `pinwin status`
+/// prints the daemon's JSON unchanged (spec "Command-line exit codes").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reply {
     /// The command succeeded.
@@ -157,7 +158,8 @@ impl Reply {
 
 /// One reply on the wire: the `ok` flag plus, for a failure, the error
 /// object, and for a status, the daemon's process ID and its panels. The
-/// reader a row later needs keeps only the ok flag.
+/// reader keeps the parsed reply only; the line itself is kept beside it for
+/// a client that prints it.
 #[derive(Serialize)]
 struct ReplyJson<'a> {
     ok: bool,

@@ -59,9 +59,9 @@ fn notes() -> PanelName {
     PanelName::parse("notes").expect("notes is a panel name")
 }
 
-/// Ask the daemon for a `status` reply and return its JSON object: the client
-/// keeps only the ok flag (row 5.1), so a test that needs the panels reads
-/// the line the daemon wrote.
+/// Ask the daemon for a `status` reply and return its JSON object: the
+/// client's parsed reply does not decode the panel list, so a test that needs
+/// the panels reads the line the daemon wrote.
 fn status(path: &Path, panel: Option<PanelName>) -> serde_json::Value {
     let mut stream = UnixStream::connect(path).expect("the daemon socket");
     let request = Request::Status { panel };
@@ -142,8 +142,8 @@ fn the_daemon_stays_resident() {
         "the last panel ended and the daemon kept running: {reply}"
     );
 
-    let reply = ipc::call(&started.path, &Request::Quit).expect("quit is answered");
-    assert!(reply.is_ok(), "the quit reply is a success");
+    let answer = ipc::call(&started.path, &Request::Quit).expect("quit is answered");
+    assert!(answer.reply().is_ok(), "the quit reply is a success");
     started
         .loop_thread
         .join()
@@ -174,8 +174,8 @@ fn quit_ends_every_panel_and_the_daemon() {
         .add_panel(second, second_handle)
         .expect("chat is free");
 
-    let reply = ipc::call(&started.path, &Request::Quit).expect("the client gets its reply");
-    assert!(reply.is_ok(), "the quit reply is a success");
+    let answer = ipc::call(&started.path, &Request::Quit).expect("the client gets its reply");
+    assert!(answer.reply().is_ok(), "the quit reply is a success");
 
     started
         .loop_thread
@@ -219,8 +219,8 @@ fn a_valid_reload_changes_only_new_panels() {
         "[daemon]\nexit_when_idle = false\n\n[panel.defaults]\nsize = \"40%\"\n",
     )
     .expect("the changed config file");
-    let reply = ipc::call(&started.path, &Request::Reload).expect("the reload is answered");
-    assert!(reply.is_ok(), "the valid file reloaded");
+    let answer = ipc::call(&started.path, &Request::Reload).expect("the reload is answered");
+    assert!(answer.reply().is_ok(), "the valid file reloaded");
 
     // The existing panel is untouched, while a panel that starts now and the
     // daemon preference take the new file.
@@ -242,8 +242,8 @@ fn a_valid_reload_changes_only_new_panels() {
         "the reloaded daemon preference applies"
     );
 
-    let reply = ipc::call(&started.path, &Request::Quit).expect("quit is answered");
-    assert!(reply.is_ok(), "the quit reply is a success");
+    let answer = ipc::call(&started.path, &Request::Quit).expect("quit is answered");
+    assert!(answer.reply().is_ok(), "the quit reply is a success");
     started
         .loop_thread
         .join()
@@ -265,8 +265,11 @@ fn an_invalid_reload_keeps_the_previous_config() {
     let started = start(&dir, config);
 
     fs::write(&config_path, "[panel.defaults]\nsize = \"wide\"\n").expect("the broken file");
-    let reply = ipc::call(&started.path, &Request::Reload).expect("the reload is answered");
-    let error = reply.as_error().expect("the invalid file is refused");
+    let answer = ipc::call(&started.path, &Request::Reload).expect("the reload is answered");
+    let error = answer
+        .reply()
+        .as_error()
+        .expect("the invalid file is refused");
     assert_eq!(error.kind(), ErrorKind::InvalidConfig);
     assert!(
         error
@@ -290,8 +293,8 @@ fn an_invalid_reload_keeps_the_previous_config() {
         "the daemon kept the previous config"
     );
 
-    let reply = ipc::call(&started.path, &Request::Quit).expect("quit is answered");
-    assert!(reply.is_ok(), "the quit reply is a success");
+    let answer = ipc::call(&started.path, &Request::Quit).expect("quit is answered");
+    assert!(answer.reply().is_ok(), "the quit reply is a success");
     started
         .loop_thread
         .join()

@@ -18,26 +18,36 @@ Cargo only. `openspec/changes/replace-terminal-with-app-host/` removes the
 terminal, the renderer and the library API, so the crate is binary-only now
 and several modules wait for the rows that wire them in (D15).
 
-- `src/main.rs` — the `pinwin` binary. Until the panel-control rows add the
-  daemon, the IPC client and the option parser, it prints the usage and
-  exits 2.
+- `src/main.rs` — the `pinwin` binary (row 5.6, D2, D12, D15): the
+  subcommand dispatch. `pinwin daemon` binds the display's socket, reads the
+  config file, opens the signalfd before any thread and runs the accept loop;
+  the client subcommands send one request, print the reply (`status` its JSON
+  and `subscribe` each event line), and exit 0 on success, 1 on a daemon error
+  or no daemon and 2 on a usage error (spec "Command-line exit codes").
+  `pinwin run` reports that rows 7.1 to 7.3 add it and exits 1.
 - `src/cli.rs` — the hand-written command line (row 4.3): `run` with the
   options of spec "Run options", `daemon`, and one client subcommand for each
   daemon request. It produces the command value and the `PanelOptions` of the
-  config file and opens no socket. No module compiles it yet; `tests/cli.rs`
-  includes it so its unit tests run.
+  config file and opens no socket. `src/main.rs` compiles it and dispatches
+  its commands; `tests/cli.rs` includes it so its unit tests run.
 - `src/ipc.rs` — the daemon's wire format (D13): the request enum with one
   variant for each client subcommand, the reply with its error kinds and the
   status reply's panel fields (spec "Status"), the 64 KiB request line with a
   bounded reader that keeps the lines behind the one it returns, and the
-  client call with a bounded wait. No module compiles it yet; `tests/ipc.rs`
-  includes it so its unit tests run.
+  wire types. `src/main.rs` compiles it; `tests/ipc.rs` includes it so its
+  unit tests run.
+- `src/ipc/client.rs` — the daemon's client (row 5.6, spec "Command-line exit
+  codes"): the connect, the one request line and reply line with a bounded
+  wait, the `Answer` that keeps the reply line for `pinwin status`, and the
+  `Subscription` that prints each event line of a `subscribe` stream until
+  the daemon closes it.
 - `src/daemon.rs` — the daemon's socket (D12, D15): the path
   `$XDG_RUNTIME_DIR/pinwin/<display>.sock` of spec "Daemon socket", the bind
   that creates the `pinwin` directory and the 0600 socket file, the
   stale-file replacement and the live-daemon refusal (spec "One daemon for
   each Wayland display"), and the file's removal when the socket drops. It
-  also holds the mutex helper the daemon's threads share.
+  also holds the mutex helper the daemon's threads share. `src/main.rs`
+  compiles it for `pinwin daemon`.
 - `src/daemon/panel.rs` — the daemon's handle on one panel thread (D12): the
   command channel, the eventfd that wakes the panel's poll loop, the panel
   request and reply types and the bounded wait for the answer. A panel that
@@ -46,8 +56,8 @@ and several modules wait for the rows that wire them in (D15).
   decoded `ipc::Request` to the panel it names (D12): a unique name, the
   start order a status reply lists, every panel command, the status reply
   of all panels or one, and the removal that frees a name or clears every
-  panel for `quit`. Nothing compiles the daemon yet; `tests/daemon.rs`
-  includes it so its unit tests run.
+  panel for `quit`. `src/main.rs` compiles it; `tests/daemon.rs` includes it
+  so its unit tests run.
 - `src/daemon/events.rs` — the daemon's event bus (spec "Event stream", D12):
   the `Event` kinds a panel publishes (added, removed, shown, hidden and
   geometry changed, each naming the panel), one bounded queue for each
@@ -59,8 +69,8 @@ and several modules wait for the rows that wire them in (D15).
   event line after the success reply until the client closes it or falls
   behind (spec "Event stream", "Silent client"), and the daemon-owned
   `quit` and `reload` requests, whose replies it writes before the daemon or
-  the config changes. Nothing compiles the daemon yet; `tests/daemon.rs`
-  includes it so its tests run.
+  the config changes. `src/main.rs` compiles it; `tests/daemon.rs` includes
+  it so its tests run.
 - `src/daemon/lifetime.rs` — the daemon's lifetime (spec "Daemon lifetime
   preference", "Quit", "Reload", D12): the shared state of the daemon (the
   registry, the event bus, the config it holds and the shutdown trigger),
@@ -75,14 +85,15 @@ and several modules wait for the rows that wire them in (D15).
   `PanelName` of 1..=64 characters from `[A-Za-z0-9_-]`, the default name
   taken from the command's file name, and the two name errors. `src/cli.rs`
   uses it; `tests/name.rs` and `tests/cli.rs` include it so its unit tests
-  run until the daemon owns it.
+  run.
 - `src/config.rs` — the config file (spec "Config file" and "Panel settings
   and precedence", D13): the `[daemon]`, `[panel.defaults]` and
   `[panel.<name>]` tables, the setting grammar the run options share, the
-  built-in defaults and the precedence of the options over the file.
-  `src/cli.rs` parses the run options with the same grammar; `tests/config.rs`
-  and `tests/cli.rs` include it so its unit tests run until the daemon owns
-  it.
+  built-in defaults and the precedence of the options over the file, plus
+  the path rule of `$XDG_CONFIG_HOME/pinwin/config.toml` (default
+  `~/.config/pinwin/config.toml`). `src/cli.rs` parses the run options with
+  the same grammar and `src/main.rs` reads the file; `tests/config.rs` and
+  `tests/cli.rs` include it so its unit tests run.
 - `src/geometry.rs` — the display-free geometry core: `Edge`, `Size` (pixels
   or percent), `Gutters`, `ReserveMode`, the layer-surface anchors, margins
   and size, the reserved strip and the held gap (D9). `src/main.rs` compiles
@@ -161,10 +172,17 @@ README's configuration table against `config.rs`, and the tests in
 name" and an invalid `--focus-ring`) and check every subcommand in the
 README's command table against `cli.rs`, and the tests in `tests/ipc.rs`,
 which cover the wire format (spec "Valid request", "Not JSON" and
-"Unknown command") and an invalid value's own kind, the 64 KiB line limit
-and the client's bounded wait, and check every request `cmd` against
-`cli.rs` including the status reply's fields (spec "Status"), and the tests
-in `tests/daemon.rs`, which cover the daemon socket (spec "Daemon socket",
+"Unknown command") and an invalid value's own kind, the 64 KiB line limit,
+the client's bounded wait and the reply line it keeps for `status`, and
+check every request `cmd` against `cli.rs` including the status reply's
+fields (spec "Status"), and the tests in `tests/command_line_ipc.rs`,
+which run the real binary against a daemon in a scratch runtime directory
+(`XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY` and `XDG_CONFIG_HOME` set on the child
+only) and cover "No daemon" (exit 1), "Unknown panel" (the daemon's
+message, exit 1), "Usage error" (exit 2), `status`'s JSON on stdout (exit
+0), `quit` ending the daemon and removing its socket (exit 0) and an invalid
+config file (exit 2, with the file and line, and no socket), and the tests in `tests/daemon.rs`, which cover the daemon socket (spec "Daemon
+socket",
 "One daemon for each Wayland display"): the path rule, the stale-file
 replacement, the live-daemon refusal, two displays under one runtime
 directory and the socket file's 0600 mode in a scratch runtime directory, and

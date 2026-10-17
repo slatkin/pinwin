@@ -11,6 +11,33 @@ fn name(raw: &str) -> PanelName {
     PanelName::parse(raw).expect("a valid panel name")
 }
 
+/// The config file is `$XDG_CONFIG_HOME/pinwin/config.toml`, or
+/// `$HOME/.config/pinwin/config.toml` when `XDG_CONFIG_HOME` is unset or
+/// empty (spec "Config file").
+#[test]
+fn the_config_file_is_named_for_the_config_home() {
+    let home = OsStr::new("/home/user");
+    let config_home = OsStr::new("/run/user/1000/config");
+    assert_eq!(
+        config_path(Some(config_home), Some(home)),
+        Some(PathBuf::from("/run/user/1000/config/pinwin/config.toml"))
+    );
+    assert_eq!(
+        config_path(None, Some(home)),
+        Some(PathBuf::from("/home/user/.config/pinwin/config.toml"))
+    );
+    assert_eq!(
+        config_path(Some(OsStr::new("")), Some(home)),
+        Some(PathBuf::from("/home/user/.config/pinwin/config.toml")),
+        "an empty XDG_CONFIG_HOME falls back to HOME"
+    );
+    assert_eq!(
+        config_path(None, None),
+        None,
+        "no home at all names no file"
+    );
+}
+
 /// A missing file means the built-in defaults (spec "No config file").
 #[test]
 fn a_missing_config_file_means_the_built_in_defaults() {

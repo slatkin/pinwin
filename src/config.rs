@@ -19,6 +19,7 @@
 //! daemon owns it.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -35,6 +36,11 @@ use crate::name::PanelName;
 /// The `[panel.defaults]` key: the table that applies to every panel, not to
 /// a panel named `defaults`. The two cannot coexist in one file.
 const DEFAULTS: &str = "defaults";
+
+/// The directory and file name of the config file under the config home
+/// (spec "Config file": `$XDG_CONFIG_HOME/pinwin/config.toml`).
+const CONFIG_DIR: &str = "pinwin";
+const CONFIG_FILE: &str = "config.toml";
 
 /// The keys a `[panel.defaults]` or `[panel.<name>]` table accepts, in
 /// README order (spec "Panel settings and precedence"). Kept beside
@@ -486,10 +492,29 @@ pub struct Config {
     panels: BTreeMap<String, PanelTable>,
 }
 
+/// The config file's path (spec "Config file"):
+/// `$XDG_CONFIG_HOME/pinwin/config.toml`, or `$HOME/.config/pinwin/config.toml`
+/// when `XDG_CONFIG_HOME` is unset or empty. `None` means neither variable
+/// names a config home, so no config file can be named.
+#[must_use]
+pub fn config_path(config_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
+    let dir = match config_home.filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => Path::new(home.filter(|home| !home.is_empty())?).join(".config"),
+    };
+    Some(dir.join(CONFIG_DIR).join(CONFIG_FILE))
+}
+
+/// [`config_path`] from the process environment: `XDG_CONFIG_HOME` and
+/// `HOME`, so the daemon reads the file the spec names.
+#[must_use]
+pub fn config_path_from_env() -> Option<PathBuf> {
+    let config_home = std::env::var_os("XDG_CONFIG_HOME");
+    let home = std::env::var_os("HOME");
+    config_path(config_home.as_deref(), home.as_deref())
+}
+
 impl Config {
-    /// Read `path` (spec "Config file"): a missing file means the built-in
-    /// defaults, an unreadable or invalid one is an error that names the
-    /// file and, for an invalid file, the line.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         match fs::read_to_string(path) {
             Ok(text) => Self::parse(path, &text),

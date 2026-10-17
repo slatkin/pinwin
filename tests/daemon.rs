@@ -7,15 +7,15 @@
 //! `src/daemon/events.rs`, `src/daemon/connection.rs` and
 //! `src/daemon/lifetime.rs`, the panel handles, the routing of a request to a
 //! panel, the event bus, one IPC connection and the daemon's lifetime
-//! (D12). `src/main.rs` compiles the daemon once it dispatches
-//! `pinwin daemon`. Until then this file includes the modules, so `cargo
-//! nextest run` exercises the path rule, the stale-file replacement, the
-//! live-daemon refusal, the two displays, the socket file's mode, the name
-//! rules, the status reply and the routing, with a test thread in the panel's
-//! place, all without a daemon. The event-stream tests live in
-//! `src/daemon/events/tests.rs`, which `src/daemon/events.rs` includes under
-//! `cfg(test)`, and the lifetime tests in `tests/daemon/lifetime.rs`, included
-//! as a child module below.
+//! (D12). `src/main.rs` compiles the daemon for `pinwin daemon`, but an
+//! integration test cannot name the binary's modules; this file includes
+//! them, so `cargo nextest run` exercises the path rule, the stale-file
+//! replacement, the live-daemon refusal, the two displays, the socket
+//! file's mode, the name rules, the status reply and the routing, with a test
+//! thread in the panel's place, all without a daemon. The event-stream tests
+//! live in `src/daemon/events/tests.rs`, which `src/daemon/events.rs`
+//! includes under `cfg(test)`, and the lifetime tests in
+//! `tests/daemon/lifetime.rs`, included as a child module below.
 //!
 //! The modules are `pub` so the dead-code lint does not report the parts of
 //! the included modules these tests do not reach.

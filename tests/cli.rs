@@ -1,11 +1,10 @@
 //! The harness that compiles the command-line tests
 //! (replace-terminal-with-app-host row 4.3).
 //!
-//! `src/cli.rs` is not part of a compiled module tree yet: `src/main.rs`
-//! still prints the usage and the subcommand dispatch arrives with the
-//! daemon rows (D15), and a module the binary does not use would be dead
-//! code. This file includes the parser and the modules whose types it
-//! names, so `cargo nextest run` still exercises the parsing rules.
+//! `src/main.rs` compiles `src/cli.rs` for the subcommand dispatch (row
+//! 5.6), but an integration test cannot name the binary's modules. This file
+//! includes the parser and the modules whose types it names, so `cargo
+//! nextest run` exercises the parsing rules directly.
 //!
 //! The modules are `pub` so the dead-code lint does not report the parts
 //! of the included modules these tests do not reach.

@@ -299,14 +299,14 @@ fn the_client_exchanges_one_request_and_reply() {
         )
         .expect("the reply line");
     });
-    let reply = super::exchange(
+    let answer = super::client::exchange(
         client,
         &Request::Show { panel: notes() },
         Duration::from_secs(1),
     )
     .expect("a reply");
     assert_eq!(
-        reply.as_error().map(super::ErrorReply::kind),
+        answer.reply().as_error().map(super::ErrorReply::kind),
         Some(ErrorKind::NoPanel)
     );
     daemon.join().expect("the daemon finishes");
@@ -327,10 +327,74 @@ fn the_client_call_connects_writes_and_reads() {
         write_line(&mut stream, b"{\"ok\":true}\n", Duration::from_secs(1))
             .expect("the reply line");
     });
-    let reply = super::call(&path, &Request::Quit).expect("a reply");
-    assert_eq!(reply, Reply::Ok);
+    let answer = super::call(&path, &Request::Quit).expect("a reply");
+    assert_eq!(answer.reply(), &Reply::Ok);
+    assert_eq!(answer.line(), b"{\"ok\":true}\n");
     daemon.join().expect("the daemon finishes");
     std::fs::remove_file(&path).expect("remove the scratch socket");
+}
+
+/// The client keeps the reply line as the daemon wrote it, so `pinwin
+/// status` prints the daemon's JSON unchanged (spec "Command-line exit
+/// codes": "`pinwin status` SHALL print the reply's JSON on stdout").
+#[test]
+fn the_client_keeps_the_status_line_it_prints() {
+    let (client, mut server) = UnixStream::pair().expect("a socket pair");
+    let daemon = std::thread::spawn(move || {
+        let line =
+            read_line(&mut server, MAX_LINE, Duration::from_secs(1)).expect("the request line");
+        assert_eq!(line, b"{\"cmd\":\"status\"}\n");
+        write_line(
+            &mut server,
+            b"{\"ok\":true,\"pid\":4242,\"panels\":[]}\n",
+            Duration::from_secs(1),
+        )
+        .expect("the reply line");
+    });
+    let answer = super::client::exchange(
+        client,
+        &Request::Status { panel: None },
+        Duration::from_secs(1),
+    )
+    .expect("a reply");
+    assert!(answer.reply().is_ok());
+    assert_eq!(answer.line(), b"{\"ok\":true,\"pid\":4242,\"panels\":[]}\n");
+    daemon.join().expect("the daemon finishes");
+}
+
+/// A `subscribe` client reads the success reply and then one event line
+/// after another until the daemon closes the stream, so `pinwin subscribe`
+/// prints one JSON line for the event (spec "Command-line client", "Event
+/// stream").
+#[test]
+fn a_subscription_reads_the_reply_and_the_event_lines() {
+    let (client, mut server) = UnixStream::pair().expect("a socket pair");
+    let daemon = std::thread::spawn(move || {
+        let line =
+            read_line(&mut server, MAX_LINE, Duration::from_secs(1)).expect("the request line");
+        assert_eq!(line, b"{\"cmd\":\"subscribe\"}\n");
+        write_line(&mut server, b"{\"ok\":true}\n", Duration::from_secs(1))
+            .expect("the reply line");
+        write_line(
+            &mut server,
+            b"{\"event\":\"shown\",\"panel\":\"notes\"}\n",
+            Duration::from_secs(1),
+        )
+        .expect("the event line");
+    });
+    let mut subscription =
+        super::client::Subscription::over(client).expect("the subscribe request");
+    assert_eq!(subscription.reply().expect("the success reply"), Reply::Ok);
+    assert_eq!(
+        subscription.next_event().expect("an event line"),
+        Some(b"{\"event\":\"shown\",\"panel\":\"notes\"}\n".to_vec())
+    );
+    assert_eq!(
+        subscription.next_event().expect("the stream ends"),
+        None,
+        "a closed stream ends the subscription"
+    );
+    daemon.join().expect("the daemon finishes");
 }
 
 /// A daemon that takes the request and never answers cannot hold the client
@@ -344,8 +408,8 @@ fn the_client_gives_up_when_no_reply_comes() {
         std::thread::sleep(Duration::from_millis(200));
     });
     let started = Instant::now();
-    let error =
-        super::exchange(client, &Request::Quit, Duration::from_millis(50)).expect_err("no reply");
+    let error = super::client::exchange(client, &Request::Quit, Duration::from_millis(50))
+        .expect_err("no reply");
     assert!(
         matches!(error, CallError::Receive(LineError::Timeout)),
         "error = {error:?}"
