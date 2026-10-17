@@ -47,14 +47,18 @@ use crate::daemon::events::Bus;
 use crate::daemon::panel::{PanelReply, PanelRequest};
 use crate::name::PanelName;
 
-/// The interactivity a layer surface is created with (row 8.3): an
-/// `on-demand` launch withholds the mode until the first buffer has mapped
-/// the surface (spec "No focus steal on launch"), so only `exclusive` maps as
-/// itself. A `none` launch maps as `none` either way.
-pub(super) const fn launch_interactivity(
+/// The interactivity a layer surface is created with (row 8.3): while a
+/// launch's deferral is pending the surface maps without the keyboard, and
+/// once it is consumed the surface carries the real mode at once (spec "No
+/// focus steal on launch"). [`deferred_until_map`] gives a launch's pending
+/// value, and a re-dock reads it from the panel surface's
+/// [`super::commit::PanelSurfaceCommits`], so a re-dock that lands before the
+/// app's first buffer keeps deferring and a later one does not.
+pub(super) const fn dock_interactivity(
     keyboard: Keyboard,
+    deferral_pending: bool,
 ) -> ZwlrLayerSurfaceV1KeyboardInteractivity {
-    if deferred_until_map(keyboard) {
+    if deferral_pending {
         ZwlrLayerSurfaceV1KeyboardInteractivity::NONE
     } else {
         keyboard_of(keyboard)
@@ -133,7 +137,7 @@ mod tests {
 
     use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1KeyboardInteractivity;
 
-    use super::{deferred_until_map, launch_interactivity, takes_keyboard_when_mapped};
+    use super::{deferred_until_map, dock_interactivity, takes_keyboard_when_mapped};
     use crate::config::{Keyboard, PanelSettings};
     use crate::daemon::events::{Bus, Event};
     use crate::daemon::panel::{PanelReply, PanelRequest};
@@ -152,20 +156,42 @@ mod tests {
     #[test]
     fn a_launch_withholds_only_the_on_demand_keyboard() {
         assert_eq!(
-            launch_interactivity(Keyboard::OnDemand),
+            dock_interactivity(Keyboard::OnDemand, deferred_until_map(Keyboard::OnDemand)),
             ZwlrLayerSurfaceV1KeyboardInteractivity::NONE
         );
         assert!(deferred_until_map(Keyboard::OnDemand));
         assert_eq!(
-            launch_interactivity(Keyboard::Exclusive),
+            dock_interactivity(Keyboard::Exclusive, deferred_until_map(Keyboard::Exclusive)),
             ZwlrLayerSurfaceV1KeyboardInteractivity::EXCLUSIVE
         );
         assert!(!deferred_until_map(Keyboard::Exclusive));
         assert_eq!(
-            launch_interactivity(Keyboard::None),
+            dock_interactivity(Keyboard::None, deferred_until_map(Keyboard::None)),
             ZwlrLayerSurfaceV1KeyboardInteractivity::NONE
         );
         assert!(!deferred_until_map(Keyboard::None));
+    }
+
+    /// A re-dock inside the launch-deferral window keeps withholding the
+    /// keyboard, so the replacement surface steals no focus, and one after
+    /// the first buffer uses the real mode at once (spec "No focus steal on
+    /// launch").
+    #[test]
+    fn a_redock_defers_until_the_launch_deferral_is_consumed() {
+        assert_eq!(
+            dock_interactivity(Keyboard::OnDemand, true),
+            ZwlrLayerSurfaceV1KeyboardInteractivity::NONE,
+            "a re-dock before the first buffer carries no keyboard mode"
+        );
+        assert_eq!(
+            dock_interactivity(Keyboard::OnDemand, false),
+            ZwlrLayerSurfaceV1KeyboardInteractivity::ON_DEMAND,
+            "a launched panel re-docks with its own mode"
+        );
+        assert_eq!(
+            dock_interactivity(Keyboard::Exclusive, false),
+            ZwlrLayerSurfaceV1KeyboardInteractivity::EXCLUSIVE
+        );
     }
 
     /// `on-demand` and `exclusive` give the keyboard when a show maps the

@@ -158,6 +158,14 @@ impl PanelSurfaceCommits {
         self.defer_keyboard.set(false);
     }
 
+    /// Whether the launch deferral is still pending (row 8.3): a re-dock that
+    /// lands before the first forwarded buffer must keep withholding the
+    /// keyboard, so its replacement surface steals no focus (spec "No focus
+    /// steal on launch").
+    pub(super) fn keyboard_deferred(&self) -> bool {
+        self.defer_keyboard.get()
+    }
+
     /// Applies a deferred on-demand mode after the first forwarded buffer
     /// has mapped the surface (row 8.3, spec "No focus steal on launch",
     /// "Click to type"): the map itself carried `none`, so it took no focus,
