@@ -190,7 +190,7 @@ below). Its code does not enter pinwin; only the findings do.
 - [x] 6.5 Add output handling (D11): `set-output`, unknown output, and a new layer surface on
   `closed`. Verify: unit test for "Unknown output"; live, the user confirms "Opens on the
   chosen output" and "Monitor unplugged".
-- [ ] 6.6 Add "Apply layout without restarting the app": edge, size, gutters, reserve and layer
+- [x] 6.6 Add "Apply layout without restarting the app": edge, size, gutters, reserve and layer
   changes on a live panel. Verify: live, the user confirms "Change the edge" (no new size for
   the app) and "Change the size" (one new size).
 
