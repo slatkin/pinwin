@@ -14,12 +14,9 @@ authorize changes here.
 ## Project Structure & Module Organization
 
 pinwin is one Rust crate that builds the `pinwin` binary; the build is
-Cargo only. The pre-port C and Zig sources (`src/*.c`, `src/*.h`,
-`src/*.zig`, `build.zig`, `build.zig.zon`) are removed by row 7.1 of
-`openspec/changes/port-to-rust/`, so this file describes the Rust layout.
-`openspec/changes/replace-terminal-with-app-host/` removes the terminal, the
-renderer and the library API, so the crate is binary-only now and several
-modules wait for the rows that wire them in (D15).
+Cargo only. `openspec/changes/replace-terminal-with-app-host/` removes the
+terminal, the renderer and the library API, so the crate is binary-only now
+and several modules wait for the rows that wire them in (D15).
 
 - `src/main.rs` — the `pinwin` binary. Until the panel-control rows add the
   daemon, the IPC client and the option parser, it prints the usage and
@@ -65,21 +62,22 @@ attribute in any form, no loosening `[lints]`, never edit `clippy.toml`
 unless explicitly asked. Fix the cause instead (params struct, delete dead
 code and its tests, drop the unused import). Run `cargo fmt` for each Rust
 change (stock edition-2024 defaults) and accept all reflow. Run `make
-check-code-file-lines` just before pushing. The system needs libxkbcommon
-and fontconfig. Live runs require a Wayland compositor with wlr-layer-shell
-(niri). If touching the legacy `pinwin.sh`, check it with `bash -n pinwin.sh`.
+check-code-file-lines` just before pushing. The build needs no system
+libraries beyond the Rust toolchain. Live runs require a Wayland compositor
+with wlr-layer-shell (niri). If touching the legacy `pinwin.sh`, check it
+with `bash -n pinwin.sh`.
 
 ## Coding Style & Naming Conventions
 
 Rust only, `rustfmt` clean. Keep modules small and split them by
-responsibility: the port maps one Rust module to one former C/Zig file
+responsibility: the port maps one Rust module to one design area
 (`openspec/changes/port-to-rust/design.md` D3), and a file should stay at or
 under 800 lines. Public
 types keep their fields private and expose constructors and accessors, so the
 invariant lives in the field type rather than a runtime check (`port-to-rust`
 D6). Panics must never cross the binary's boundaries: run any body that can
-panic — an IPC, daemon or command-line entry point, calloop callbacks and
-Wayland event handlers, and `extern "C"` callbacks — through the shared
+panic — an IPC, daemon or command-line entry point, Wayland event handlers,
+and `extern "C"` callbacks — through the shared
 `guard` helper
 (`src/guard.rs`), which latches a poisoned flag (`port-to-rust` D5). Quote
 path and command arguments where expansion should remain one argument. Keep
