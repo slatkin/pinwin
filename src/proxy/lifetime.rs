@@ -12,9 +12,12 @@
 //!
 //! [`PidFd`] is the descriptor the panel's loop polls for the process's exit
 //! (D1, D3). `pidfd_open` needs Linux 5.3 or later, and a pidfd needs no
-//! `waitpid`, so the daemon never becomes the app's parent. The rule itself
-//! is a pure function and the pidfd takes the process ID as a parameter, so
-//! both are tested without a compositor (`port-to-rust` D10).
+//! `waitpid`, so the daemon never becomes the app's parent. [`pidfd_watch`]
+//! says when the loop drops that descriptor from its poll set, so a panel that
+//! outlives its launched process sleeps instead of spinning. The rule itself
+//! is a pure function, the poll entry and the pidfd take their inputs as
+//! parameters, so all three are tested without a compositor (`port-to-rust`
+//! D10).
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -62,13 +65,34 @@ impl AsRawFd for PidFd {
     }
 }
 
+/// The pidfd's entry in the panel's poll set (D3): the app's descriptor until
+/// the loop has seen the exit, and `poll`'s ignored descriptor after it.
+///
+/// A pidfd stays readable once the process exits, and `poll` reports a
+/// readable descriptor on every pass, so a panel that kept watching it would
+/// spin for as long as a forked child or a remaining connection keeps it alive
+/// (spec "Launcher process forks"). `poll` skips a negative descriptor, so the
+/// panel sleeps until a Wayland event, a command or the last connection
+/// closes instead.
+#[must_use]
+pub(super) const fn pidfd_watch(pidfd: RawFd, app_exited: bool) -> libc::pollfd {
+    libc::pollfd {
+        // A negative descriptor is `poll`'s own "ignore this entry" value and
+        // is not a descriptor, so nothing closes it.
+        fd: if app_exited { -1 } else { pidfd },
+        events: libc::POLLIN,
+        revents: 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io;
+    use std::os::fd::AsRawFd;
     use std::process::Command;
     use std::time::Duration;
 
-    use super::{PidFd, ends};
+    use super::{PidFd, ends, pidfd_watch};
 
     /// "App never connects" (spec "App never connects"): a launched process
     /// that exits without a connection ends its panel.
@@ -120,22 +144,51 @@ mod tests {
         );
     }
 
+    /// An exited app's pidfd leaves the poll set (spec "Launcher process
+    /// forks", D3): the entry names no descriptor, so `poll` ignores it and
+    /// the panel's loop sleeps even though the pidfd stays readable.
+    #[test]
+    fn the_poll_set_drops_the_pidfd_of_an_exited_app() {
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("a short-lived child");
+        let pidfd = PidFd::open(child.id()).expect("the child's pidfd");
+        child.wait().expect("the child is reaped");
+        assert!(
+            triggered(
+                pidfd_watch(pidfd.as_raw_fd(), false),
+                Duration::from_secs(2)
+            ),
+            "a watched pidfd reports the exit"
+        );
+        assert_eq!(pidfd_watch(pidfd.as_raw_fd(), true).fd, -1);
+        assert!(
+            !triggered(
+                pidfd_watch(pidfd.as_raw_fd(), true),
+                Duration::from_millis(20)
+            ),
+            "the loop no longer wakes on the readable pidfd"
+        );
+    }
+
+    /// Whether one poll entry reports an event within `timeout`, so a test
+    /// never waits without a bound.
+    fn triggered(watched: libc::pollfd, timeout: Duration) -> bool {
+        let mut watched = watched;
+        let timeout = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
+        // SAFETY: `watched` is one live `pollfd` and the count is its length;
+        // `poll` reads and writes only that value.
+        let ready = unsafe { libc::poll(std::ptr::addr_of_mut!(watched), 1, timeout) };
+        assert!(ready >= 0, "poll failed: {}", io::Error::last_os_error());
+        ready > 0 && watched.revents != 0
+    }
+
     /// Whether `pidfd` is readable within `timeout`, which is how the panel's
     /// loop learns that the app exited. The wait is bounded, so a regression
     /// fails the test instead of hanging it.
     fn readable(pidfd: &PidFd, timeout: Duration) -> bool {
-        use std::os::fd::AsRawFd as _;
-
-        let mut watched = libc::pollfd {
-            fd: pidfd.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let timeout = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
-        // SAFETY: `watched` is one live `pollfd` and the count is its length;
-        // `poll` reads and writes only that array.
-        let ready = unsafe { libc::poll(std::ptr::addr_of_mut!(watched), 1, timeout) };
-        assert!(ready >= 0, "poll failed: {}", io::Error::last_os_error());
-        ready > 0 && watched.revents != 0
+        triggered(pidfd_watch(pidfd.as_raw_fd(), false), timeout)
     }
 }

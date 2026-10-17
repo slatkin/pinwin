@@ -5,8 +5,9 @@
 //! A panel owns one thread and one [`State`]: one upstream connection to the
 //! compositor, one acceptor (the socket the app connects to) and every client
 //! connection of the app (D1). The thread polls that state's `poll_fd`, the
-//! daemon's command eventfd and the app's pidfd, so a command never waits for
-//! Wayland traffic and the app's exit needs no `waitpid` (D3, D12). Row 6.2
+//! daemon's command eventfd and the app's pidfd until the pidfd reports the
+//! exit, so a command never waits for Wayland traffic and the app's exit
+//! needs no `waitpid` (D3, D12). Row 6.2
 //! adds window routing (D4): the app's first toplevel becomes the panel's
 //! layer surface, every later one passes through, and the panel's `shown` and
 //! `has_window` reflect that slot. Row 6.3 adds popups and the per-window
@@ -68,7 +69,7 @@ use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply, PanelReque
 use crate::guard::{Poisoned, guard};
 use crate::ipc::{ErrorReply, PanelStatus};
 use crate::name::PanelName;
-use lifetime::{PidFd, ends};
+use lifetime::{PidFd, ends, pidfd_watch};
 use registry::ClientDisplay;
 use routing::Routing;
 
@@ -338,6 +339,8 @@ enum Serve {
 /// Which of the panel's descriptors woke the loop.
 struct Ready {
     wake: bool,
+    /// Whether the pidfd reported the exit, which it cannot do once the loop
+    /// dropped it from its poll set (D3).
     exited: bool,
 }
 
@@ -441,7 +444,7 @@ impl Panel {
         if self.serve() == Serve::End {
             return Ok(true);
         }
-        let ready = self.wait()?;
+        let ready = self.wait(*app_exited)?;
         if ready.wake {
             self.wake.drain().map_err(io::Error::other)?;
             if self.serve() == Serve::End {
@@ -514,8 +517,11 @@ impl Panel {
     /// Wait for the state's poll fd, the command eventfd or the app's pidfd,
     /// at most one tick. [`State::before_poll`] flushes the proxy's own
     /// requests first, so a request the loop just made is on its way before
-    /// the thread sleeps (D12).
-    fn wait(&self) -> io::Result<Ready> {
+    /// the thread sleeps (D12). The pidfd leaves the set once it reported the
+    /// exit, so a panel that a forked child keeps alive sleeps instead of
+    /// waking on the readable descriptor every pass (D3, spec "Launcher
+    /// process forks").
+    fn wait(&self, app_exited: bool) -> io::Result<Ready> {
         self.state
             .before_poll()
             .map_err(|error| state_error(&error))?;
@@ -530,11 +536,7 @@ impl Panel {
                 events: libc::POLLIN,
                 revents: 0,
             },
-            libc::pollfd {
-                fd: self.pidfd.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
+            pidfd_watch(self.pidfd.as_raw_fd(), app_exited),
         ];
         let timeout = libc::c_int::try_from(TICK.as_millis()).unwrap_or(libc::c_int::MAX);
         loop {
