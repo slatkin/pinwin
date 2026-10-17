@@ -44,6 +44,19 @@ mod geometry;
 // harnesses include the same files as public modules for the same reason.
 pub mod ipc;
 
+// The proxy's panic guard (port-to-rust D5) is compiled now that the panel
+// thread uses `guard`; `guard_always` and `guard_default` wait for the rows
+// that register the trampolines they protect (the event callbacks of rows
+// 8.x and the ring of row 9.1), so the module stays public at this crate
+// root until those callers land and nothing outside the binary can name it.
+pub mod guard;
+
+// The panel proxy lands before the rows that wire it in: row 7.1 calls
+// `proxy::spawn` from the `create` request, and that row makes this module
+// private once every part of it has a caller in the binary (D15). Until then
+// a private module would report the API that row calls as dead code.
+pub mod proxy;
+
 mod name;
 
 /// The usage line a refused command line ends with.
@@ -96,6 +109,14 @@ fn daemon() -> ExitCode {
             return ExitCode::from(INVALID_CONFIG);
         }
     };
+    // D12: the compositor must offer layer-shell before the daemon takes the
+    // display's socket, so a compositor that lacks it leaves no daemon and no
+    // panel behind (spec "Wayland layer-shell is required", "No
+    // layer-shell").
+    if let Err(error) = crate::proxy::check::check_layer_shell() {
+        eprintln!("pinwin: {error}");
+        return ExitCode::FAILURE;
+    }
     let socket = match DaemonSocket::bind_from_env() {
         Ok(socket) => socket,
         Err(error) => {

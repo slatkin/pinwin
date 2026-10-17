@@ -98,12 +98,29 @@ and several modules wait for the rows that wire them in (D15).
   or percent), `Gutters`, `ReserveMode`, the layer-surface anchors, margins
   and size, the reserved strip and the held gap (D9). `src/main.rs` compiles
   it; the option parser and the reserve surface are its first users.
+- `src/proxy.rs` — the panel thread (D1, D2, D3, D5, D12): one wl-proxy
+  `State` with its acceptor, the loop that polls the state's `poll_fd`, the
+  command eventfd and the app's pidfd, the pass-through dispatch under the
+  shared panic guard, the end rule (the app exited and no connection is
+  left, or the daemon dropped the handle), and `spawn`, which rows 7.1 to
+  7.3 call for the display the app sets in `WAYLAND_DISPLAY` and the handle
+  the daemon registers. Row 6.1 is the skeleton: the change commands are
+  answered without effect until rows 6.2 to 6.6 add routing, popups,
+  geometry, outputs and live layout changes. `src/main.rs` compiles it; its
+  tests are `src/proxy/tests.rs`.
+- `src/proxy/check.rs` — the layer-shell check at daemon start (D12, spec
+  "Wayland layer-shell is required"): a throwaway `State` reads the
+  compositor's globals in one roundtrip and `has_layer_shell` decides over
+  their names, so a compositor that lacks `zwlr_layer_shell_v1` exits 1
+  before any panel exists. `src/main.rs` calls it in the daemon start path,
+  before the socket bind.
 - `src/proxy/crop.rs` — the width tween's crop plan (replace-terminal-with-app-host
   D8): the exact-rational scale rounding, the tween crop and the viewport
   source rectangle. No module compiles it yet; `tests/tween_crop.rs` includes
   it so its unit tests run.
 - `src/anim.rs` — the animated width transition's pure tween step.
-- `src/guard.rs` — the shared panic guard.
+- `src/guard.rs` — the shared panic guard. `src/main.rs` compiles it now
+  that the panel thread guards its loop under it.
 
 `openspec/specs/pinwin-panel/spec.md` is the behaviour spec.
 `openspec/changes/archive/` holds the archived design decisions code comments
@@ -209,11 +226,18 @@ and "Reload an invalid file" (error kind `invalid_config` with the file and
 line, and the previous config kept). No test sends a real signal: the accept
 loop reads a shutdown trigger, and only the SIGINT/SIGTERM mapping
 (`shutdown_signal`) is tested, so the signalfd path runs live.
+The proxy tests in `src/proxy/tests.rs` cover "Panic in one panel": a body
+that panics under the guard ends only that panel's handle — its name leaves
+the registry, the other panel still answers and the daemon stays up — with
+stand-in panel threads and no compositor, and the decision tests in
+`src/proxy/check.rs` cover the layer-shell global list ("No layer-shell").
+The tests in `tests/command_line_ipc.rs` run a stand-in compositor on the
+made-up display: it announces `zwlr_layer_shell_v1` and answers the
+roundtrip, so the daemon's start check passes without the user's compositor.
 The crop harness includes `src/geometry.rs` as well, for the `Edge` the crop
 names, under a `dead_code` allow whose reason names the rows that use the
-accessors it does not. The other kept modules (`anim`, `guard`) are not
-compiled until the daemon and the proxy wire them in, so they have no tests
-yet. Keep the pure parts display-free
+accessors it does not. `src/anim.rs` is not compiled until the tween rows
+wire it in, so it has no tests yet. Keep the pure parts display-free
 (`port-to-rust` D10): take the fd and the outputs of the environment as
 parameters, so the tests run without a display. Tests that need a real
 compositor are `#[ignore]`d and run explicitly. Once the proxy lands, exercise

@@ -27,6 +27,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = { version = "1.1", default-features = false, features = ["parse", "std", "serde"] }
 
+# The panel proxy (replace-terminal-with-app-host D1, D15): one State per
+# panel, with the Wayland and wlr protocol bindings the proxy and the panel
+# use. The two suites cover wl_surface, xdg-shell and layer-shell.
+wl-proxy = { version = "0.1.5", features = ["suite-wayland-protocols", "suite-wlr-protocols"] }
+
 # port-to-rust D5: panics must never cross the public API, so the unwind
 # runtime is required for the catch_unwind guards at every boundary. Setting
 # `panic = "abort"` is forbidden: it would abort the host instead.

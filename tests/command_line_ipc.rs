@@ -5,19 +5,36 @@
 //! `XDG_RUNTIME_DIR` and a made-up `WAYLAND_DISPLAY`, set on the child only,
 //! so no test touches the user's runtime directory, socket or config file.
 //! The daemon tests start `pinwin daemon` in the same scratch directory and
-//! wait, bounded, until its socket answers before they send a request. The
-//! daemon needs no compositor until row 6.1 adds the layer-shell check.
+//! wait, bounded, until its socket answers before they send a request.
+//!
+//! The daemon checks for wlr-layer-shell before it binds its socket (row 6.1,
+//! spec "Wayland layer-shell is required"), so each test that starts a daemon
+//! runs a stand-in compositor on the made-up display. The stand-in is a
+//! wl-proxy `State` without an upstream connection: it announces
+//! `zwlr_layer_shell_v1` and answers the daemon's roundtrip, and it never
+//! touches the user's compositor.
 
 use std::fs;
-use std::os::unix::net::UnixStream;
+use std::os::fd::OwnedFd;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// The display the tests use; its Wayland socket does not exist, because a
-/// daemon serves its panels only once the proxy rows land.
+use wl_proxy::baseline::Baseline;
+use wl_proxy::client::ClientHandler;
+use wl_proxy::object::ConcreteObject;
+use wl_proxy::protocols::wayland::wl_callback::WlCallback;
+use wl_proxy::protocols::wayland::wl_display::{WlDisplay, WlDisplayHandler};
+use wl_proxy::protocols::wayland::wl_registry::WlRegistry;
+use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_shell_v1::ZwlrLayerShellV1;
+use wl_proxy::state::State;
+
+/// The display the tests use: a made-up name whose socket the stand-in
+/// compositor binds, so no test touches the user's display.
 const DISPLAY: &str = "wayland-test";
 
 /// How long a test waits for the daemon's socket to answer, and for the
@@ -58,16 +75,24 @@ fn socket_path(dir: &Path) -> PathBuf {
     dir.join("pinwin").join(format!("{DISPLAY}.sock"))
 }
 
-/// A `pinwin daemon` child that a failing test cannot leave behind: dropping
-/// it kills the child in every path.
+/// A `pinwin daemon` child and the stand-in compositor its layer-shell check
+/// connects to. Dropping it kills the child in every path; the compositor
+/// thread ends with the test process.
 struct Daemon {
     child: Child,
     path: PathBuf,
+    /// Kept for the whole test, so the daemon's check finds a compositor
+    /// (row 6.1).
+    _compositor: FakeCompositor,
 }
 
 impl Daemon {
-    /// Start `pinwin daemon` in `dir` and wait, bounded, for its socket.
+    /// Start `pinwin daemon` in `dir` and wait, bounded, for its socket. The
+    /// stand-in compositor listens on the test's display first, so the check
+    /// passes before the daemon binds (spec "Wayland layer-shell is
+    /// required").
     fn start(dir: &Path) -> Self {
+        let compositor = FakeCompositor::start(dir);
         let child = pinwin(dir, &["daemon"])
             .stdout(Stdio::null())
             .spawn()
@@ -75,6 +100,7 @@ impl Daemon {
         let mut daemon = Self {
             child,
             path: socket_path(dir),
+            _compositor: compositor,
         };
         daemon.wait_until_answering();
         daemon
@@ -119,6 +145,82 @@ impl Drop for Daemon {
             let _ = self.child.kill();
         }
         let _ = self.child.wait();
+    }
+}
+
+/// A stand-in compositor on the test's display socket. The daemon checks for
+/// wlr-layer-shell at start (row 6.1, spec "Wayland layer-shell is required"),
+/// so the tests serve one that announces it instead of connecting to the
+/// user's compositor.
+struct FakeCompositor {
+    _thread: thread::JoinHandle<()>,
+}
+
+impl FakeCompositor {
+    /// Listen on `dir`'s display socket and answer every connection.
+    fn start(dir: &Path) -> Self {
+        let listener =
+            UnixListener::bind(dir.join(DISPLAY)).expect("the stand-in compositor socket");
+        let thread = thread::spawn(move || {
+            // One thread and one `State` for each connection, as the real
+            // proxy serves one upstream connection per panel (D1).
+            while let Ok((stream, _)) = listener.accept() {
+                thread::spawn(move || answer_as_compositor(stream.into()));
+            }
+        });
+        Self { _thread: thread }
+    }
+}
+
+/// Answer one proxy connection as a compositor that implements layer-shell:
+/// `get_registry` announces `zwlr_layer_shell_v1` and `sync` ends the
+/// roundtrip (`src/proxy/check.rs`).
+fn answer_as_compositor(socket: OwnedFd) {
+    let state = State::builder(Baseline::V6)
+        .without_server()
+        .build()
+        .expect("a stand-in compositor state");
+    state.set_default_forward_to_server(false);
+    let _destructor = state.create_destructor();
+    let client = state
+        .add_client(&Rc::new(socket))
+        .expect("the daemon's connection");
+    client.display().set_handler(FakeDisplay);
+    client.set_handler(FakeClient {
+        state: Rc::clone(&state),
+    });
+    while state.is_not_destroyed() {
+        if state.dispatch_blocking().is_err() {
+            return;
+        }
+    }
+}
+
+/// The stand-in compositor's display: it answers the two requests the
+/// daemon's check sends (spec "Layer-shell is required").
+struct FakeDisplay;
+
+impl WlDisplayHandler for FakeDisplay {
+    fn handle_get_registry(&mut self, _slf: &Rc<WlDisplay>, registry: &Rc<WlRegistry>) {
+        // Version 4 is the first with `keyboard_interactivity` `on_demand`,
+        // which row 8.3 uses.
+        registry.send_global(1, ZwlrLayerShellV1::INTERFACE, 4);
+    }
+
+    fn handle_sync(&mut self, _slf: &Rc<WlDisplay>, callback: &Rc<WlCallback>) {
+        callback.send_done(0);
+    }
+}
+
+/// The stand-in compositor ends when its connection closes, so its thread
+/// does not stay blocked in `dispatch` (D1).
+struct FakeClient {
+    state: Rc<State>,
+}
+
+impl ClientHandler for FakeClient {
+    fn disconnected(self: Box<Self>) {
+        self.state.destroy();
     }
 }
 
