@@ -90,9 +90,12 @@ from (an archived change, or the design of the change that added the code:
 
 ## Testing Guidelines
 
-Run `cargo nextest run` after any change; it covers the layout validation,
-the held-gap rule, the tween step, the width tween's crop plan
-(`src/proxy/crop.rs`) and the panic guard. Keep the pure parts display-free
+Run `cargo nextest run` after any change; it runs the three tests in
+`tests/tween_crop.rs`, which cover the width tween's crop plan
+(`src/proxy/crop.rs`) — the only kept module compiled now. The other kept
+modules (`anim`, `guard`, `layout`, `surfaces`, `instance`, `cli`) are not
+compiled until rows 3.1, 4.3, 5.2 and 6.1 wire them in, so they have no
+tests yet. Keep the pure parts display-free
 (`port-to-rust` D10): take the fd and the outputs of the environment as
 parameters, so the tests run without a display. Tests that need a real
 compositor are `#[ignore]`d and run explicitly. Once the proxy lands, exercise
