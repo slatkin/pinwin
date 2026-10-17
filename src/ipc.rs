@@ -31,6 +31,7 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize, Serializer};
+use serde_json::Number;
 
 use crate::cli::{Amount, ClientCommand};
 use crate::config::{Keyboard, Layer};
@@ -312,13 +313,13 @@ enum RawRequest {
         panel: String,
         size: RawSize,
         #[serde(default)]
-        ms: Option<i64>,
+        ms: Option<Number>,
     },
     Resize {
         panel: String,
         by: RawAmount,
         #[serde(default)]
-        ms: Option<i64>,
+        ms: Option<Number>,
     },
     SetOutput {
         panel: String,
@@ -346,12 +347,14 @@ enum RawRequest {
 }
 
 /// A wire size: `640px` or `30%` as text, or a JSON number of pixels (spec
-/// "Size values").
+/// "Size values"). Every JSON number is kept, so a negative, fractional or
+/// over-`u32` one is a bad value of a known command rather than a serde
+/// failure of the whole line (spec "Panel commands").
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum RawSize {
     Text(String),
-    Pixels(u32),
+    Pixels(Number),
 }
 
 /// A wire resize amount: a signed size as text (`-40px`, `+10%`), or a JSON
@@ -360,7 +363,7 @@ enum RawSize {
 #[serde(untagged)]
 enum RawAmount {
     Text(String),
-    Steps(i64),
+    Steps(Number),
 }
 
 /// A panel name from the wire (spec "Panel names"). A name outside the rules
@@ -380,15 +383,31 @@ where
         .map_err(|error| RequestError::InvalidValue(format!("{field}: {error}")))
 }
 
+/// A wire number as a whole number of its field's unit: a fractional or an
+/// over-`i64` value is none, so the field turns it into `invalid_value`.
+fn whole(number: &Number) -> Option<i64> {
+    number.to_string().parse().ok()
+}
+
+/// The value error of a `by` number the grammar cannot hold.
+fn invalid_amount(number: &Number) -> RequestError {
+    RequestError::InvalidValue(format!(
+        "by: expected a non-zero whole number of pixels, got {number}"
+    ))
+}
+
 /// A wire size: text through the grammar, a number as pixels.
 fn wire_size(raw: RawSize) -> Result<Size, RequestError> {
     match raw {
         RawSize::Text(text) => setting("size", &text),
-        RawSize::Pixels(px) => Size::pixels(px).ok_or_else(|| {
-            RequestError::InvalidValue(format!(
-                "size: expected a whole number of pixels from 1, got {px}"
-            ))
-        }),
+        RawSize::Pixels(number) => whole(&number)
+            .and_then(|px| u32::try_from(px).ok())
+            .and_then(Size::pixels)
+            .ok_or_else(|| {
+                RequestError::InvalidValue(format!(
+                    "size: expected a whole number of pixels from 1, got {number}"
+                ))
+            }),
     }
 }
 
@@ -397,15 +416,12 @@ fn wire_size(raw: RawSize) -> Result<Size, RequestError> {
 fn amount(raw: RawAmount) -> Result<Amount, RequestError> {
     match raw {
         RawAmount::Text(text) => setting("by", &text),
-        RawAmount::Steps(steps) => {
+        RawAmount::Steps(number) => {
+            let steps = whole(&number).ok_or_else(|| invalid_amount(&number))?;
             let magnitude = u32::try_from(steps.unsigned_abs())
                 .ok()
                 .and_then(Size::pixels)
-                .ok_or_else(|| {
-                    RequestError::InvalidValue(format!(
-                        "by: expected a non-zero whole number of pixels, got {steps}"
-                    ))
-                })?;
+                .ok_or_else(|| invalid_amount(&number))?;
             Ok(if steps < 0 {
                 Amount::shrink(magnitude)
             } else {
@@ -417,16 +433,18 @@ fn amount(raw: RawAmount) -> Result<Amount, RequestError> {
 
 /// The `ms` field: an absent one means the panel's `tween_ms`, and `0` the
 /// snap animation (spec "Animated size changes").
-fn millis(raw: Option<i64>) -> Result<Option<u32>, RequestError> {
-    match raw {
-        None => Ok(None),
-        Some(ms) => match u32::try_from(ms) {
-            Ok(ms) => Ok(Some(ms)),
-            Err(_) => Err(RequestError::InvalidValue(format!(
-                "ms: expected a whole number of milliseconds from 0, got {ms}"
-            ))),
-        },
-    }
+fn millis(raw: Option<Number>) -> Result<Option<u32>, RequestError> {
+    let Some(number) = raw else {
+        return Ok(None);
+    };
+    whole(&number)
+        .and_then(|ms| u32::try_from(ms).ok())
+        .map(Some)
+        .ok_or_else(|| {
+            RequestError::InvalidValue(format!(
+                "ms: expected a whole number of milliseconds from 0, got {number}"
+            ))
+        })
 }
 
 /// The wire text of a size: `640px` or `30%`.

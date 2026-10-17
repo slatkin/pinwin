@@ -165,6 +165,44 @@ fn an_invalid_value_is_invalid_value() {
     assert_eq!(error.kind(), ErrorKind::InvalidRequest);
 }
 
+/// A JSON number the typed field cannot hold is still a known command with a
+/// bad value, so it is `invalid_value`; only a wrong JSON type is
+/// `invalid_request` (spec "Panel commands", "Size values").
+#[test]
+fn a_number_out_of_range_or_fractional_is_invalid_value() {
+    for line in [
+        &br#"{"cmd":"set-size","panel":"notes","size":-5}"#[..],
+        br#"{"cmd":"set-size","panel":"notes","size":4294967296}"#,
+        br#"{"cmd":"set-size","panel":"notes","size":1.5}"#,
+        br#"{"cmd":"set-size","panel":"notes","size":0}"#,
+        br#"{"cmd":"resize","panel":"notes","by":1.5}"#,
+        br#"{"cmd":"set-size","panel":"notes","size":"640px","ms":1.5}"#,
+        br#"{"cmd":"set-size","panel":"notes","size":"640px","ms":-1}"#,
+    ] {
+        let error = Request::parse(line).expect_err("an invalid value");
+        assert_eq!(
+            error.kind(),
+            ErrorKind::InvalidValue,
+            "line = {:?}",
+            String::from_utf8_lossy(line)
+        );
+    }
+
+    // A wrong JSON type is not a value, so it stays a request error.
+    for line in [
+        &br#"{"cmd":"set-size","panel":"notes","size":[1]}"#[..],
+        br#"{"cmd":"set-size","panel":"notes","size":true}"#,
+    ] {
+        let error = Request::parse(line).expect_err("a wrong type");
+        assert_eq!(
+            error.kind(),
+            ErrorKind::InvalidRequest,
+            "line = {:?}",
+            String::from_utf8_lossy(line)
+        );
+    }
+}
+
 /// Every error kind of D13 has its wire name, and a failed reply round-trips
 /// through the reply parser.
 #[test]
