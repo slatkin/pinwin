@@ -135,7 +135,7 @@ below). Its code does not enter pinwin; only the findings do.
   every key in README.md. Verify: unit tests for "No config file", "Invalid config file"
   (message has the line), "Per-name override", "Option wins" and "Defaults" pass, and every
   key in the README table exists in `config.rs`.
-- [ ] 4.3 Rewrite `src/cli.rs` for `run`, `daemon` and the client subcommands, with the
+- [x] 4.3 Rewrite `src/cli.rs` for `run`, `daemon` and the client subcommands, with the
   options of spec "Run options" and "Command-line client". Document the options and
   subcommands in README.md, with the migration table of design "Migration Plan". Verify: unit
   tests for "Invalid option value", "No command", "Usage error" and an invalid `--focus-ring`
