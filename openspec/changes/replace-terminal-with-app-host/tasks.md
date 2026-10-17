@@ -200,7 +200,7 @@ below). Its code does not enter pinwin; only the findings do.
   set `WAYLAND_DISPLAY`, `exec`; exit 127 when `exec` fails. Verify: unit test of the
   environment and argument hand-over; live, the user confirms "Run an app" (working folder and
   environment kept) and "Command not found".
-- [ ] 7.2 Add the daemon spawn with `setsid` and the bounded wait (D12). Verify: test that two
+- [x] 7.2 Add the daemon spawn with `setsid` and the bounded wait (D12). Verify: test that two
   `pinwin run` calls at once against a temp runtime directory leave one daemon ("Two first
   runs"); live, the user confirms "First run" (closing the terminal keeps the daemon).
 - [ ] 7.3 Add panel lifetime from the pidfd and the connection count (D3). Verify: unit test
