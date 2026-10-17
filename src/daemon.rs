@@ -1,5 +1,6 @@
-//! The daemon's socket (replace-terminal-with-app-host D12, D15): the one
-//! Unix socket that serves every panel of a Wayland display.
+//! The daemon (replace-terminal-with-app-host D12, D15): the one Unix
+//! socket that serves every panel of a Wayland display, the panel handles and
+//! the registry that routes a request to the panel it names.
 //!
 //! The path is `$XDG_RUNTIME_DIR/pinwin/<display>.sock`, where `<display>` is
 //! the base name of the display's socket (spec "Daemon socket"). [`bind`]
@@ -15,6 +16,13 @@
 //! touching the process environment (`port-to-rust` D10); only
 //! [`socket_path_from_env`] and [`DaemonSocket::bind_from_env`] read
 //! `XDG_RUNTIME_DIR` and `WAYLAND_DISPLAY`.
+//!
+//! The panel handles live in [`panel`]: a command channel, an eventfd that
+//! wakes the panel's poll loop and a bounded wait for the answer. [`registry`]
+//! maps a panel name to its handle and routes a decoded request, so one
+//! panel that does not answer never stops another or the daemon (spec "The
+//! daemon survives bad input"). The event bus and the daemon's lifetime join
+//! them in rows 5.4 and 5.5.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -24,11 +32,30 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+// The paths are explicit because `tests/daemon.rs` includes this file with
+// `#[path]`, and a module loaded that way searches its own children in the
+// included file's directory rather than beside it (as in `src/ipc.rs`).
+#[path = "daemon/panel.rs"]
+pub mod panel;
+
+#[path = "daemon/registry.rs"]
+pub mod registry;
 
 /// The display the Wayland client library connects with when
 /// `WAYLAND_DISPLAY` is unset, so a daemon started without it names the
 /// socket of the display it will actually use.
 const DEFAULT_DISPLAY: &str = "wayland-0";
+
+/// Lock a mutex the daemon's threads share, ignoring poisoning: a panic in
+/// another thread must not stop the daemon or another panel (spec "The
+/// daemon survives bad input", `port-to-rust` D5), and the registry and the
+/// command channel keep their own invariant across a panic because no thread
+/// panics while holding either.
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// The directory inside the runtime directory that holds the daemon sockets.
 const SOCKET_DIR: &str = "pinwin";

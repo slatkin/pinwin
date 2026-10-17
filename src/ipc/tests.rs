@@ -226,6 +226,40 @@ fn every_error_kind_has_its_wire_name() {
     }
 }
 
+/// A status reply carries the daemon's process ID and one entry per panel,
+/// with every field the spec names (spec "Status").
+#[test]
+fn a_status_reply_carries_the_panel_fields() {
+    let status =
+        super::PanelStatus::new(crate::config::PanelSettings::built_in(), true, false, 640);
+    let reply = super::Reply::status(4242, vec![super::PanelEntry::new(notes(), 77, status)]);
+    assert!(reply.is_ok());
+    assert_eq!(reply.as_status().map(super::StatusReply::pid), Some(4242));
+
+    let value: serde_json::Value = serde_json::from_str(&reply.to_line()).expect("a reply is JSON");
+    assert_eq!(value["ok"], serde_json::json!(true));
+    assert_eq!(value["pid"], serde_json::json!(4242));
+    assert_eq!(
+        value["panels"],
+        serde_json::json!([{
+            "name": "notes",
+            "pid": 77,
+            "shown": true,
+            "has_window": false,
+            "edge": "left",
+            "size": "25%",
+            "width": 640,
+            "reserve": "push",
+            "layer": "overlay",
+            "keyboard": "on-demand",
+            "output": null,
+        }])
+    );
+
+    // A success without panels keeps the one-line reply the client reads.
+    assert_eq!(super::Reply::ok().to_line(), "{\"ok\":true}\n");
+}
+
 /// One request line longer than 64 KiB is refused, and the refusal carries
 /// the spec's error kind (spec "Clients cannot block the daemon").
 #[test]

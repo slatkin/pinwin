@@ -4,9 +4,18 @@
 //! A reply is one JSON object on one line: `{"ok":true}`, or
 //! `{"ok":false,"error":{"kind","message"}}` (spec "Request and reply
 //! format"). The kind is a closed set from D13, so a client can match it and
-//! print the message it carries.
+//! print the message it carries. A `status` success also carries the
+//! daemon's process ID and its panels ([`StatusReply`], spec "Status").
+//!
+//! [`PanelStatus`] is the part of a status entry a panel reports; the daemon
+//! adds the panel's name and the app's process ID from its registry, so the
+//! panel thread and the wire type share one shape.
 
 use serde::{Deserialize, Serialize, Serializer};
+
+use crate::config::{Keyboard, Layer, PanelSettings};
+use crate::geometry::{Edge, ReserveMode, Size};
+use crate::name::PanelName;
 
 /// The error kind of a failed reply (D13, spec "Request and reply format"):
 /// the closed set the daemon uses and the `kind` a client prints.
@@ -61,13 +70,17 @@ impl ErrorReply {
 }
 
 /// The daemon's answer to one request (D13, spec "Request and reply
-/// format"): `{"ok":true}` or
-/// `{"ok":false,"error":{"kind","message"}}` on one line. A success reply
-/// may carry more fields; the client keeps only the ok flag.
+/// format"): `{"ok":true}`, `{"ok":true,"pid":...,"panels":[...]}` for a
+/// carried-out status, or `{"ok":false,"error":{"kind","message"}}` on one
+/// line. The client keeps only the ok flag, because `pinwin status` prints
+/// the line it read (spec "Command-line client").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reply {
     /// The command succeeded.
     Ok,
+    /// The command succeeded and reports the daemon's panels (spec
+    /// "Status").
+    Status(StatusReply),
     /// The command failed with a kind and a message.
     Error(ErrorReply),
 }
@@ -79,6 +92,13 @@ impl Reply {
         Self::Ok
     }
 
+    /// The success reply of a `status` request: the daemon's process ID and
+    /// its panels (spec "Status").
+    #[must_use]
+    pub const fn status(pid: u32, panels: Vec<PanelEntry>) -> Self {
+        Self::Status(StatusReply { pid, panels })
+    }
+
     /// A failed reply with `kind` and `message`.
     #[must_use]
     pub fn error(kind: ErrorKind, message: impl Into<String>) -> Self {
@@ -88,7 +108,16 @@ impl Reply {
     /// Whether the command succeeded.
     #[must_use]
     pub const fn is_ok(&self) -> bool {
-        matches!(self, Self::Ok)
+        matches!(self, Self::Ok | Self::Status(_))
+    }
+
+    /// The status payload, or `None` for another reply.
+    #[must_use]
+    pub const fn as_status(&self) -> Option<&StatusReply> {
+        match self {
+            Self::Status(status) => Some(status),
+            Self::Ok | Self::Error(_) => None,
+        }
     }
 
     /// The error object of a failed reply, or `None` for a success.
@@ -96,7 +125,7 @@ impl Reply {
     pub const fn as_error(&self) -> Option<&ErrorReply> {
         match self {
             Self::Error(error) => Some(error),
-            Self::Ok => None,
+            Self::Ok | Self::Status(_) => None,
         }
     }
 
@@ -127,13 +156,17 @@ impl Reply {
 }
 
 /// One reply on the wire: the `ok` flag plus, for a failure, the error
-/// object. The success fields a later reply carries (spec "Status") are
-/// ignored here.
+/// object, and for a status, the daemon's process ID and its panels. The
+/// reader a row later needs keeps only the ok flag.
 #[derive(Serialize)]
 struct ReplyJson<'a> {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<&'a ErrorReply>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    panels: Option<&'a [PanelEntry]>,
 }
 
 impl Serialize for Reply {
@@ -142,13 +175,193 @@ impl Serialize for Reply {
             Self::Ok => ReplyJson {
                 ok: true,
                 error: None,
+                pid: None,
+                panels: None,
+            },
+            Self::Status(status) => ReplyJson {
+                ok: true,
+                error: None,
+                pid: Some(status.pid),
+                panels: Some(&status.panels),
             },
             Self::Error(error) => ReplyJson {
                 ok: false,
                 error: Some(error),
+                pid: None,
+                panels: None,
             },
         };
         json.serialize(serializer)
+    }
+}
+
+/// A `status` reply (spec "Status"): the daemon's process ID and its
+/// panels, every panel or the one the request names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatusReply {
+    pid: u32,
+    panels: Vec<PanelEntry>,
+}
+
+impl StatusReply {
+    /// The daemon's process ID.
+    #[must_use]
+    pub const fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// The panels, in the order they started.
+    #[must_use]
+    pub fn panels(&self) -> &[PanelEntry] {
+        &self.panels
+    }
+}
+
+/// One panel of a status reply (spec "Status"): its name, the app's
+/// process ID, whether it is shown, whether it holds a window, its edge,
+/// size, resolved width in pixels, reserve mode, layer, keyboard mode and
+/// output name. The output name is null while the panel lets the compositor
+/// choose.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PanelEntry {
+    name: PanelName,
+    pid: u32,
+    shown: bool,
+    has_window: bool,
+    edge: Edge,
+    size: Size,
+    width: u32,
+    reserve: ReserveMode,
+    layer: Layer,
+    keyboard: Keyboard,
+    output: Option<String>,
+}
+
+impl PanelEntry {
+    /// The entry of the panel `name`, whose app has process ID `pid`, from
+    /// what the panel reports about itself.
+    #[must_use]
+    pub fn new(name: PanelName, pid: u32, status: PanelStatus) -> Self {
+        let settings = status.settings;
+        Self {
+            name,
+            pid,
+            shown: status.shown,
+            has_window: status.has_window,
+            edge: settings.edge(),
+            size: settings.size(),
+            width: status.width,
+            reserve: settings.reserve(),
+            layer: settings.layer(),
+            keyboard: settings.keyboard(),
+            output: settings.output().map(str::to_owned),
+        }
+    }
+
+    #[must_use]
+    pub const fn name(&self) -> &PanelName {
+        &self.name
+    }
+
+    /// The app's process ID.
+    #[must_use]
+    pub const fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    #[must_use]
+    pub const fn shown(&self) -> bool {
+        self.shown
+    }
+
+    /// Whether the panel's window is in it.
+    #[must_use]
+    pub const fn has_window(&self) -> bool {
+        self.has_window
+    }
+
+    #[must_use]
+    pub const fn edge(&self) -> Edge {
+        self.edge
+    }
+
+    #[must_use]
+    pub const fn size(&self) -> Size {
+        self.size
+    }
+
+    /// The size across the edge, resolved to pixels on the panel's output.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    #[must_use]
+    pub const fn reserve(&self) -> ReserveMode {
+        self.reserve
+    }
+
+    #[must_use]
+    pub const fn layer(&self) -> Layer {
+        self.layer
+    }
+
+    #[must_use]
+    pub const fn keyboard(&self) -> Keyboard {
+        self.keyboard
+    }
+
+    /// The output the panel is pinned to; `None` lets the compositor choose.
+    #[must_use]
+    pub fn output(&self) -> Option<&str> {
+        self.output.as_deref()
+    }
+}
+
+/// What a panel reports about itself for a status reply (spec "Status"):
+/// its settings and its view state. The daemon's registry adds the name and
+/// the app's process ID, so a panel thread never needs either.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PanelStatus {
+    settings: PanelSettings,
+    shown: bool,
+    has_window: bool,
+    width: u32,
+}
+
+impl PanelStatus {
+    /// `settings` as they are now, whether the panel is shown, whether it
+    /// holds a window and its resolved width in pixels.
+    #[must_use]
+    pub const fn new(settings: PanelSettings, shown: bool, has_window: bool, width: u32) -> Self {
+        Self {
+            settings,
+            shown,
+            has_window,
+            width,
+        }
+    }
+
+    /// The panel's current settings.
+    #[must_use]
+    pub const fn settings(&self) -> &PanelSettings {
+        &self.settings
+    }
+
+    #[must_use]
+    pub const fn shown(&self) -> bool {
+        self.shown
+    }
+
+    #[must_use]
+    pub const fn has_window(&self) -> bool {
+        self.has_window
+    }
+
+    /// The size across the edge, resolved to pixels on the panel's output.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
     }
 }
 

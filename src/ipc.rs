@@ -3,8 +3,10 @@
 //!
 //! A client sends a [`Request`] — the tagged `cmd` enum with one variant for
 //! each client subcommand of `src/cli.rs` — and the daemon answers one
-//! [`Reply`]: `{"ok":true}` or `{"ok":false,"error":{"kind","message"}}` with
-//! the seven error kinds D13 names. A line that is not a request is a
+//! [`Reply`]: `{"ok":true}`, the same with the daemon's process ID and its
+//! panels for a carried-out `status` ([`StatusReply`], spec "Status"), or
+//! `{"ok":false,"error":{"kind","message"}}` with the seven error kinds D13
+//! names. A line that is not a request is a
 //! [`RequestError::InvalidRequest`], while a known command whose setting
 //! value is outside the config file's grammar is a
 //! [`RequestError::InvalidValue`], so a bad value gets the kind the spec
@@ -41,7 +43,7 @@ use crate::name::PanelName;
 #[path = "ipc/reply.rs"]
 mod reply;
 
-pub use reply::{ErrorKind, ErrorReply, Reply};
+pub use reply::{ErrorKind, ErrorReply, PanelEntry, PanelStatus, Reply, StatusReply};
 
 /// The largest request line in bytes, without its newline: a line over it
 /// gets error kind `invalid_request` and the daemon closes the connection

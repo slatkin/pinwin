@@ -27,17 +27,26 @@ and several modules wait for the rows that wire them in (D15).
   config file and opens no socket. No module compiles it yet; `tests/cli.rs`
   includes it so its unit tests run.
 - `src/ipc.rs` — the daemon's wire format (D13): the request enum with one
-  variant for each client subcommand, the reply and its error kinds, the
-  64 KiB request line with a bounded reader, and the client call with a
-  bounded wait. No module compiles it yet; `tests/ipc.rs` includes it so its
-  unit tests run.
+  variant for each client subcommand, the reply with its error kinds and the
+  status reply's panel fields (spec "Status"), the 64 KiB request line with a
+  bounded reader, and the client call with a bounded wait. No module compiles
+  it yet; `tests/ipc.rs` includes it so its unit tests run.
 - `src/daemon.rs` — the daemon's socket (D12, D15): the path
   `$XDG_RUNTIME_DIR/pinwin/<display>.sock` of spec "Daemon socket", the bind
   that creates the `pinwin` directory and the 0600 socket file, the
   stale-file replacement and the live-daemon refusal (spec "One daemon for
-  each Wayland display"), and the file's removal when the socket drops. No
-  module compiles it yet; `tests/daemon.rs` includes it so its unit tests
-  run. The registry, event bus and lifetime join it in rows 5.3 to 5.5.
+  each Wayland display"), and the file's removal when the socket drops. It
+  also holds the mutex helper the daemon's threads share.
+- `src/daemon/panel.rs` — the daemon's handle on one panel thread (D12): the
+  command channel, the eventfd that wakes the panel's poll loop, the panel
+  request and reply types and the bounded wait for the answer. A panel that
+  does not answer makes its request fail with error kind `internal`.
+- `src/daemon/registry.rs` — the registry of panels and the routing of a
+  decoded `ipc::Request` to the panel it names (D12): a unique name, the
+  start order a status reply lists, every panel command, and the status reply
+  of all panels or one. Nothing compiles the daemon yet; `tests/daemon.rs`
+  includes it so its unit tests run. The event bus and the lifetime join it
+  in rows 5.4 and 5.5.
 - `src/name.rs` — the panel name rules (spec "Panel names"): the validated
   `PanelName` of 1..=64 characters from `[A-Za-z0-9_-]`, the default name
   taken from the command's file name, and the two name errors. `src/cli.rs`
@@ -130,15 +139,18 @@ README's command table against `cli.rs`, and the tests in `tests/ipc.rs`,
 which cover the wire format (spec "Valid request", "Not JSON" and
 "Unknown command") and an invalid value's own kind, the 64 KiB line limit
 and the client's bounded wait, and check every request `cmd` against
-`cli.rs`, and the tests in `tests/daemon.rs`,
-which cover the daemon socket (spec "Daemon socket", "One daemon for each
-Wayland display"): the path rule, the stale-file replacement, the
-live-daemon refusal, two displays under one runtime directory and the
-socket file's 0600 mode in a scratch runtime directory. The crop harness
-includes `src/geometry.rs` as well, for the `Edge` the crop names, under a
-`dead_code` allow whose reason names the rows that use the accessors it does
-not. The other kept modules
-(`anim`, `guard`) are not
+`cli.rs` including the status reply's fields (spec "Status"), and the tests
+in `tests/daemon.rs`, which cover the daemon socket (spec "Daemon socket",
+"One daemon for each Wayland display"): the path rule, the stale-file
+replacement, the live-daemon refusal, two displays under one runtime
+directory and the socket file's 0600 mode in a scratch runtime directory, and
+the registry and routing (D12) with a test thread in the panel's place: the
+eventfd wake, "Unknown panel", "Duplicate name", "Name is free again",
+"Status of all panels", "Status of one panel" and a panel that does not
+answer (error kind `internal` after a short wait, not the production one).
+The crop harness includes `src/geometry.rs` as well, for the `Edge` the crop
+names, under a `dead_code` allow whose reason names the rows that use the
+accessors it does not. The other kept modules (`anim`, `guard`) are not
 compiled until the daemon and the proxy wire them in, so they have no tests
 yet. Keep the pure parts display-free
 (`port-to-rust` D10): take the fd and the outputs of the environment as
