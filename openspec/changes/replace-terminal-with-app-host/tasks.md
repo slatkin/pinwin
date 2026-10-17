@@ -200,19 +200,63 @@ below). Its code does not enter pinwin; only the findings do.
   set `WAYLAND_DISPLAY`, `exec`; exit 127 when `exec` fails. Verify: unit test of the
   environment and argument hand-over; live, the user confirms "Run an app" (working folder and
   environment kept) and "Command not found".
+
+  Recorded answer:
+
+  - "Run an app" (the user ran `cd /tmp && .../pinwin run --name notes --size 640px -- paw`
+    and typed `pwd` in the panel): "it is /tmp". (Environment: not checked separately.)
+  - "Command not found" (run by the orchestrator at the user's instruction "just do it
+    yourself"): output `pinwin: could not run 'no-such-program': No such file or directory
+    (os error 2)`, exit status 127, and no pinwin process was left two seconds later.
 - [x] 7.2 Add the daemon spawn with `setsid` and the bounded wait (D12). Verify: test that two
   `pinwin run` calls at once against a temp runtime directory leave one daemon ("Two first
   runs"); live, the user confirms "First run" (closing the terminal keeps the daemon).
+
+  Recorded answer:
+
+  - "First run". The first test used one panel (the orchestrator's test text wrongly said the
+    panel would survive); the user answered: "closing the terminal I ran '... pinwin run
+    --name notes --size 640px -- galculator' in does close the panel" and "the daemon didn't
+    survive either. nor should it...." (With one panel the app dies from the terminal
+    hang-up, the panel ends, and the daemon exits idle: expected.) The corrected test used
+    two terminals (notes with galculator in terminal A, two with paw in terminal B, close
+    terminal A only): "paw stays open when I close terminal A. but paw also stays open when
+    I close terminal B. galculator does not when i close its terminal." Result: the daemon
+    outlives the closed terminal while another panel is open.
 - [x] 7.3 Add panel lifetime from the pidfd and the connection count (D3). Verify: unit test
   of the end rule (exited and no connection); live, the user confirms "App exits", "App never
   connects", "App hands off to a running copy" and "Launcher process forks".
+
+  Recorded answer (run by the orchestrator, process level only; windows and tiling not
+  observed):
+
+  - "App never connects" (`sleep 3` as the app): the daemon was present during the run and no
+    pinwin process remained afterwards.
+  - "App exits" (paw with a 4 second shell): daemon present at 2 s, gone by 9 s.
+  - "Launcher process forks": a launcher that starts paw in the background and stays 2 s: the
+    launcher ended, the daemon and the child stayed, both gone after the child ended. A
+    launcher that quits at once, before its child connects, ended the panel at once and the
+    child printed "failed to connect to wayland; no compositor running?": this is the
+    accepted behaviour (see 7.4).
+  - "App hands off to a running copy": not run with a real hand-off app; the mechanism is the
+    same as "App never connects"; design "Known limits" lists these apps as unsupported and
+    row 7.4 reports them.
 - [x] 7.4 Report an app that exits without a window (spec "Hand-off app is reported", D3): the
   panel thread knows if a connection ever existed; the daemon logs the line and publishes
-  `no_window` before `removed`. Verify: unit test of the pure rule (exited, never connected ->
+  `no-window` before `removed`. Verify: unit test of the pure rule (exited, never connected ->
   report; exited after a connection -> no report); live, the user confirms "Hand-off app is
   reported" by running a program that exits without a window and watching `pinwin subscribe`.
   The README 'Known limits' text that says these apps are reported is written in the README
   row, not in this row.
+
+  Recorded answer (run by the orchestrator):
+
+  - With a `pinwin subscribe` listener, a program that exits without a window gave
+    `{"event":"added","panel":"nowin"}`, `{"event":"no-window","panel":"nowin"}`,
+    `{"event":"removed","panel":"nowin"}`; the second panel `keep` (also never connected)
+    gave no-window and removed; no pinwin process was left. The warning line was not seen
+    because an auto-started daemon discards its error output; the exact message is covered by
+    a test.
 
 ## 8. Show, hide, focus and keyboard modes
 
@@ -225,6 +269,9 @@ below). Its code does not enter pinwin; only the findings do.
 - [ ] 8.3 Add keyboard modes, `set-keyboard` and `focus`. Verify: live, the user confirms
   "Click to type", "Click away", "No focus steal on launch", "Opt-in keyboard focus",
   "Change mode at run time", "Show takes focus", "Show in none mode" and "Focus".
+
+  Decision (the user's words, word for word): "we don't focus already show panels we
+  show/hide". `focus` on a shown panel changes nothing; hide then show moves the keyboard.
 
 ## 9. Focus ring
 

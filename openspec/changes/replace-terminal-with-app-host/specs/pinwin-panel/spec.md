@@ -64,7 +64,7 @@ the app SHALL get the same decorations as without pinwin.
 A panel SHALL exist from its `pinwin run` until the launched process has exited and the app
 has no Wayland connection to the panel left. Then the panel SHALL end: its window goes away,
 its strip is released and its name is free. When a panel ends because its process exited and it
-never had a connection, the daemon SHALL log a warning and SHALL send a `no_window` event before
+never had a connection, the daemon SHALL log a warning and SHALL send a `no-window` event before
 the panel's `removed` event. A launcher that exits before its child has connected ends the panel
 at once.
 
@@ -90,7 +90,7 @@ at once.
   a client has subscribed
 - **THEN** the daemon logs "`<app>` exited without opening a window in panel `notes`. It may
   have handed its window to a running copy, which pinwin cannot dock." (`<app>` is the command
-  name that `pinwin run` sent) and the subscriber receives a `no_window` event for `notes`
+  name that `pinwin run` sent) and the subscriber receives a `no-window` event for `notes`
   before its `removed` event
 
 ### Requirement: Apply layout without restarting the app
@@ -186,8 +186,8 @@ strip. The app SHALL keep running and connected while hidden and SHALL NOT be as
 Neither hiding nor showing SHALL give the app a new window size, and no frame SHALL show the
 panel at another size. While the panel is hidden, a change SHALL be validated and stored with
 no animation, and the next show uses it. In `on-demand` mode, `show` and `toggle` SHALL give
-the panel the keyboard as a click does. `focus` SHALL show the panel and give it the keyboard
-in any mode except `none`.
+the panel the keyboard as a click does. `focus` on a hidden panel SHALL show it and give it
+the keyboard in any mode except `none`; `focus` on a shown panel SHALL change nothing.
 
 #### Scenario: Show takes focus
 - **WHEN** an `on-demand` panel is hidden, a tiled window has the keyboard, and a client
@@ -197,6 +197,10 @@ in any mode except `none`.
 #### Scenario: Show in none mode
 - **WHEN** a `none` panel is hidden and a client toggles it
 - **THEN** the panel shows and the keyboard stays with the window that had it
+
+#### Scenario: Focus on a shown panel
+- **WHEN** a client sends `focus` for a shown panel
+- **THEN** the reply is a success and the panel and the keyboard focus do not change
 
 #### Scenario: Size untouched
 - **WHEN** a client toggles a panel twice

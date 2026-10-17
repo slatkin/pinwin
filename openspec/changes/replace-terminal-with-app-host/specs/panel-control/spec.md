@@ -191,6 +191,10 @@ SHALL get error kind `invalid_layout`. Neither error SHALL change the panel.
 - **WHEN** the `notes` panel is hidden and a client sends `{"cmd":"focus","panel":"notes"}`
 - **THEN** the panel shows and gets the keyboard
 
+#### Scenario: Focus on a shown panel
+- **WHEN** the `notes` panel is shown and a client sends `{"cmd":"focus","panel":"notes"}`
+- **THEN** the reply is a success and the panel and the keyboard focus do not change
+
 ### Requirement: Size values
 A size SHALL be a whole number of logical pixels (`640px`, or a JSON number) or a percent of
 the output (`30%`) from 1 to 100. A percent SHALL be of the output's width for a left or right
@@ -241,7 +245,7 @@ output name. `status` with a `panel` field SHALL reply with that panel only.
 A `subscribe` request SHALL make the daemon send a success reply and then one JSON line for
 each event on that connection until the client closes it. Events SHALL cover a panel added,
 removed, shown or hidden, a panel's geometry changed and a panel that ends with no connection
-(`no_window`), and each SHALL name the panel. A client that does not read SHALL NOT block the
+(`no-window`), and each SHALL name the panel. A client that does not read SHALL NOT block the
 daemon or other clients; the
 daemon SHALL close the connection of a client that falls too far behind.
 
@@ -252,13 +256,13 @@ daemon SHALL close the connection of a client that falls too far behind.
 #### Scenario: App never opens a window
 - **WHEN** a client has subscribed and the app of panel `notes` exits without ever having
   connected to the panel
-- **THEN** the subscriber receives a `no_window` event for `notes` and then a `removed`
+- **THEN** the subscriber receives a `no-window` event for `notes` and then a `removed`
   event for `notes`
 
 #### Scenario: A panel that had a connection gets no notice
 - **WHEN** a client has subscribed and the app of panel `notes`, which had a connection to
   the panel, exits
-- **THEN** the subscriber receives a `removed` event for `notes` and no `no_window` event
+- **THEN** the subscriber receives a `removed` event for `notes` and no `no-window` event
 
 #### Scenario: Slow subscriber
 - **WHEN** a subscriber stops reading and many events happen
