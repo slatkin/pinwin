@@ -550,6 +550,8 @@ fn hide(routing: &Rc<Routing>, panel: &PanelName, bus: &Bus) -> PanelReply {
     if routing.hidden.is_hidden() {
         return PanelReply::Done;
     }
+    // D8: a hide ends a running tween at its target before the panel unmaps.
+    super::tween::stop(routing);
     routing.hidden.set_hidden(true);
     // D10: a hidden panel shows no ring, and the hide gives up the keyboard
     // focus the ring followed.

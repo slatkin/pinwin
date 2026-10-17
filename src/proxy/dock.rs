@@ -48,6 +48,7 @@ use super::keyboard;
 use super::mapping::{anchor_of, layer_of};
 use super::reserve::Reserve;
 use super::routing::Routing;
+use super::tween::{ConfigureRoute, is_running, route_configure};
 use crate::config::PanelSettings;
 use crate::daemon::events::Bus;
 use crate::geometry::{Geometry, HeldGap};
@@ -438,6 +439,17 @@ impl ZwlrLayerSurfaceV1Handler for ProxyLayerSurface {
                 .globals()
                 .ring()
                 .on_configure(&routing, (width, height));
+            // D8: during a width tween the proxy acks the compositor's
+            // intermediate configures itself and forwards none of them, so
+            // the app gets one new size for the whole tween.
+            if route_configure(is_running(&routing)) == ConfigureRoute::AckOnly {
+                // The handler's own object, kept weak so the cycle through
+                // the routing stays broken.
+                if let Some(layer_surface) = self.layer_surface.upgrade() {
+                    layer_surface.send_ack_configure(serial);
+                }
+                return;
+            }
         }
         let states = toplevel_states(&self.xdg_toplevel);
         if self.xdg_toplevel.version() >= XdgToplevel::MSG__CONFIGURE_BOUNDS__SINCE {
@@ -458,6 +470,25 @@ impl ZwlrLayerSurfaceV1Handler for ProxyLayerSurface {
             redock(&routing, None);
         }
     }
+}
+
+/// Sends the app one window configure with `serial` (D8): the tween's grow
+/// configures the app to the target size at its start and its shrink at the
+/// end, both with a serial the proxy minted. The app's ack of it is
+/// swallowed, because the layer surface never saw that serial.
+pub(in crate::proxy) fn send_app_configure(
+    toplevel: &Rc<XdgToplevel>,
+    xdg_surface: &Rc<XdgSurface>,
+    width: u32,
+    height: u32,
+    serial: u32,
+) {
+    if toplevel.version() >= XdgToplevel::MSG__CONFIGURE_BOUNDS__SINCE {
+        toplevel.send_configure_bounds(width.cast_signed(), height.cast_signed());
+    }
+    let states = toplevel_states(toplevel);
+    toplevel.send_configure(width.cast_signed(), height.cast_signed(), &states);
+    xdg_surface.send_configure(serial);
 }
 
 /// The tiled and constrained states the panel window is configured with (D4,

@@ -240,6 +240,22 @@ and several modules wait for the rows that wire them in (D15).
   D8): the exact-rational scale rounding, the tween crop and the viewport
   source rectangle. No module compiles it yet; `tests/tween_crop.rs` includes
   it so its unit tests run.
+- `src/proxy/tween.rs` — the animated width transition (row 10.1, D8): the
+  pure grow/shrink state machine (`Phase`, `Step`, `Frame`) that holds a grow
+  at its current width until the app commits a buffer whose reported size
+  reaches the target (bounded at 500 ms, then a snap), crops a shrink's wide
+  buffer down each frame, and yields each frame's visible length, layer size,
+  margins, held-gap zone and viewport fraction. It also owns the
+  one-size-per-tween rule: the proxy acks the compositor's intermediate
+  configures itself, the app gets one minted configure, and its ack of that
+  minted serial is swallowed. Display-free, so its tests run without a
+  compositor.
+- `src/proxy/tween/drive.rs` — the tween's driver (row 10.1, D8): the
+  per-panel tween slot, the frame clock the panel loop waits on, the grow's
+  configure to the target with a minted serial, and the per-frame apply of
+  the layer size, margins, reserve zone and viewport through the commit
+  coordinator (D7). Row 10.2 adds retargeting, the duration clamp,
+  `tween_ms` and the stalled-clock snap.
 - `src/proxy/compose.rs` — the viewport composition (row 10.1, D8): the
   pure `compose` that turns the visible fraction of the panel's width, the
   docked edge, the app's own viewport values, the surface size and the
@@ -331,7 +347,8 @@ and several modules wait for the rows that wire them in (D15).
   display, and the `exec` that keeps the process ID the daemon watches. Its
   test checks the hand-over without replacing the test process
   (`src/run/tests.rs`).
-- `src/anim.rs` — the animated width transition's pure tween step.
+- `src/anim.rs` — the animated width transition's easing and per-tick step,
+  which the proxy's tween machine (row 10.1, D8) runs.
 - `src/guard.rs` — the shared panic guard. `src/main.rs` compiles it now
   that the panel thread guards its loop under it.
 
@@ -487,8 +504,8 @@ stand-in compositor on the made-up display: it announces `zwlr_layer_shell_v1` a
 roundtrip, so the daemon's start check passes without the user's compositor.
 The crop harness includes `src/geometry.rs` as well, for the `Edge` the crop
 names, under a `dead_code` allow whose reason names the rows that use the
-accessors it does not. `src/anim.rs` is not compiled until the tween rows
-wire it in, so it has no tests yet. The parts of `src/geometry.rs` that wait
+accessors it does not. `src/anim.rs` is compiled by the proxy's tween machine
+(row 10.1), so its five tests run. The parts of `src/geometry.rs` that wait
 for later rows stay unreported as dead code because `src/main.rs` keeps the
 module public until row 12.x: `Margins::new` and the `Geometry::across` and
 `Geometry::gutters` accessors have their row 6.6 callers in

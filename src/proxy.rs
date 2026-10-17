@@ -170,6 +170,16 @@ pub mod compose;
 #[path = "proxy/buffers.rs"]
 mod buffers;
 
+// The animated width transition (row 10.1, D8): the pure grow/shrink state
+// machine and the driver that applies each frame through the commit
+// coordinator, with the one-size-per-tween configure rule, plus the easing
+// step (`src/anim.rs`) both use.
+#[path = "proxy/tween.rs"]
+mod tween;
+
+#[path = "anim.rs"]
+pub mod anim;
+
 // The D5 popup handlers: the recorded anchor rectangle and the configure a
 // layer popup reports in the app's own coordinates.
 #[path = "proxy/popup.rs"]
@@ -510,15 +520,18 @@ impl Panel {
         }
     }
 
-    /// One pass: answer the daemon's commands, wait for the state, the
-    /// command eventfd and the pidfd, dispatch what the state has, and say
-    /// whether the panel has ended (D3, spec "Panel lifetime follows the
-    /// app", "Quit").
+    /// One pass: answer the daemon's commands, apply the tween frames due,
+    /// wait for the state, the command eventfd and the pidfd, dispatch what
+    /// the state has, and say whether the panel has ended (D3, spec "Panel
+    /// lifetime follows the app", "Quit").
     fn step(&mut self, app_exited: &mut bool) -> io::Result<Step> {
         if self.serve() == Serve::End {
             return Ok(Step::End(None));
         }
-        let ready = self.wait(*app_exited)?;
+        // D8: a running tween applies the frames its clock owes and says how
+        // soon the loop has to wake again.
+        let frame_wait = tween::advance(&self.routing);
+        let ready = self.wait(*app_exited, frame_wait)?;
         if ready.wake {
             self.wake.drain().map_err(io::Error::other)?;
             if self.serve() == Serve::End {
@@ -606,7 +619,7 @@ impl Panel {
     /// exit, so a panel that a forked child keeps alive sleeps instead of
     /// waking on the readable descriptor every pass (D3, spec "Launcher
     /// process forks").
-    fn wait(&self, app_exited: bool) -> io::Result<Ready> {
+    fn wait(&self, app_exited: bool, frame_wait: Option<Duration>) -> io::Result<Ready> {
         self.state
             .before_poll()
             .map_err(|error| state_error(&error))?;
@@ -623,7 +636,10 @@ impl Panel {
             },
             pidfd_watch(self.pidfd.as_raw_fd(), app_exited),
         ];
-        let timeout = libc::c_int::try_from(TICK.as_millis()).unwrap_or(libc::c_int::MAX);
+        // A running tween wakes the loop at its next frame (D8); otherwise
+        // the tick is what ends a panel whose daemon dropped its handle.
+        let sleep = frame_wait.unwrap_or(TICK).min(TICK);
+        let timeout = libc::c_int::try_from(sleep.as_millis()).unwrap_or(libc::c_int::MAX);
         loop {
             // SAFETY: `watched` is a live array of three `pollfd` values and
             // the count is its length; `poll` reads and writes only that

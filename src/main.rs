@@ -36,12 +36,12 @@ pub mod daemon;
 
 // The geometry core is applied by the proxy from row 6.4 (D9): the apply
 // path of row 6.6 (`src/proxy/apply.rs`) reads `Margins::new` and the
-// `Geometry::across` and `Geometry::gutters` accessors, and
-// `HeldGap::reserve`, `HeldGap::tweens_with_panel` and `HeldGap::edge` wait
-// for the row 10.x width tween. Row 12.x makes the module private again once
-// those callers land (D15); until then it stays public at this crate root so
-// the waiting parts are not reported dead, and nothing outside the binary can
-// name them.
+// `Geometry::across` and `Geometry::gutters` accessors, and the width
+// tween (row 10.1) runs `HeldGap::reserve`, `HeldGap::tweens_with_panel` and
+// `HeldGap::edge`. Row 12.x makes the module private again once every part
+// has a caller in the binary (D15); until then it stays public at this crate
+// root so no waiting part is reported dead, and nothing outside the binary
+// can name them.
 pub mod geometry;
 
 // The parser, the config file and the daemon are complete before the rows

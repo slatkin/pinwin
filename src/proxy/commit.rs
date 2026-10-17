@@ -310,6 +310,10 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
             if let Some(points) = plan.points {
                 self.routing.hidden.emit_points(&points);
             }
+            // D8: a grow starts moving once this commit reports the target
+            // size, so the crop below holds the docked part of the wide
+            // buffer from this frame on.
+            super::tween::on_app_commit(&self.routing);
             // D8: the viewport state applies with the app's own commit, so
             // the composed crop rides this one. The buffer the commit
             // attaches is what the crop is bounded by, so the values are

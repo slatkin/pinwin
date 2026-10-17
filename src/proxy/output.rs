@@ -188,6 +188,9 @@ pub(super) struct Globals {
     /// viewports, the window geometry, the compositor's preferred scale, the
     /// buffer sizes the crop is clamped to, and what the proxy wrote last.
     viewport: ViewportState,
+    /// The panel's animated width transition (row 10.1, D8): the running
+    /// tween and the serials the proxy mints for its own configures.
+    tween: super::tween::Slot,
 }
 
 impl Globals {
@@ -204,7 +207,13 @@ impl Globals {
             viewport_surfaces: RefCell::new(HashSet::new()),
             ring: RingSlot::new(),
             viewport: ViewportState::new(),
+            tween: super::tween::Slot::new(),
         }
+    }
+
+    /// The panel's width tween, if one runs (row 10.1, D8).
+    pub(super) fn tween(&self) -> &super::tween::Slot {
+        &self.tween
     }
 
     pub(super) fn compositor(&self) -> Option<Rc<WlCompositor>> {

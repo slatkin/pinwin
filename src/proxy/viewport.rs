@@ -47,6 +47,7 @@ use super::buffers::PanelBuffers;
 use super::compose::{AppViewport, Compose, Composition, Fraction, UNSET_FIXED, compose};
 use super::output::Globals;
 use super::routing::Routing;
+use crate::geometry::Geometry;
 
 /// The viewport values the proxy puts on the panel surface (D5, D8): the
 /// source rectangle in the app's buffer coordinates — `None` draws the whole
@@ -113,13 +114,20 @@ pub(super) fn recompose(routing: &Routing) {
     let geometry = routing.geometry();
     let window = state.window();
     let has_app_viewport = routing.panel_has_app_viewport();
-    let crop = if window.is_some() || has_app_viewport {
+    let crop = if window.is_some() || has_app_viewport || routing.tween_surface().is_some() {
+        let surface = surface_extent(
+            window,
+            routing.tween_surface().unwrap_or_else(|| geometry.size()),
+        );
+        let fraction = routing
+            .tween_fraction()
+            .unwrap_or_else(|| steady_fraction(geometry, surface));
         let Some(composition) = compose(&Compose {
             edge: geometry.edge(),
-            // Row 10.1 composes the steady state; the tween driver (row 10.x)
-            // passes each frame's visible fraction.
-            fraction: Fraction::whole(),
-            surface: surface_extent(window, geometry.size()),
+            // D8: the running tween's visible fraction; a change that is not
+            // animated shows the panel's part of the surface.
+            fraction,
+            surface,
             origin: window.map_or((0, 0), |[x, y, _, _]| (x, y)),
             app: state.app(surface_id),
             preferred_scale: state.preferred_scale(surface_id),
@@ -155,16 +163,29 @@ pub(super) fn recompose(routing: &Routing) {
 }
 
 /// The app surface's extent in surface-local pixels (D8): its window
-/// geometry's size when it reports one, the panel's configured size
-/// otherwise.
-fn surface_extent(window: Option<[i32; 4]>, configured: (u32, u32)) -> (u32, u32) {
+/// geometry's size when it reports one, the fallback otherwise.
+fn surface_extent(window: Option<[i32; 4]>, fallback: (u32, u32)) -> (u32, u32) {
     match window {
         Some([_, _, width, height]) => (
             u32::try_from(width).unwrap_or(1).max(1),
             u32::try_from(height).unwrap_or(1).max(1),
         ),
-        None => (configured.0.max(1), configured.1.max(1)),
+        None => (fallback.0.max(1), fallback.1.max(1)),
     }
+}
+
+/// The visible fraction of a change that is not animated (D8): the whole app
+/// surface when it fits the panel, and the panel's length from the docked
+/// edge when the app's surface is still wider — the frames after a shrink's
+/// last frame, before the app commits its smaller buffer. The same rule the
+/// tween's final frame lands on, so an animated change and a snap end alike.
+fn steady_fraction(geometry: Geometry, surface: (u32, u32)) -> Fraction {
+    let across = if geometry.edge().across_is_width() {
+        surface.0
+    } else {
+        surface.1
+    };
+    Fraction::of(geometry.across(), across).unwrap_or_else(Fraction::whole)
 }
 
 /// What the proxy does with an app viewport now (D8).
@@ -238,12 +259,12 @@ impl ViewportState {
     }
 
     /// The window geometry the app reported on the panel surface (D5).
-    fn window(&self) -> Option<[i32; 4]> {
+    pub(super) fn window(&self) -> Option<[i32; 4]> {
         self.window.get()
     }
 
     /// The app's own viewport values on the surface named `surface_id` (D8).
-    fn app(&self, surface_id: u64) -> AppViewport {
+    pub(super) fn app(&self, surface_id: u64) -> AppViewport {
         self.app
             .borrow()
             .get(&surface_id)

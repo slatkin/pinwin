@@ -67,6 +67,13 @@ struct Plan {
     layout_changed: bool,
     /// Whether the change needs a new layer surface (see the module comment).
     redock: bool,
+    /// The panel's length across the edge before the change, which an
+    /// animated change starts from (D8).
+    from_across: u32,
+    /// The duration of an animated change that only moves the width: the
+    /// request's `ms` when it is above zero and the app's size changes
+    /// (D8). `None` snaps.
+    animate: Option<u32>,
 }
 
 /// The answer to one layout command (row 6.6, spec "Panel commands"): the
@@ -120,13 +127,27 @@ fn plan_change(
     let current_geometry = geometry_of(current, output);
     // A re-dock sends the whole geometry, so it carries no size of its own.
     let needs_size = !redock && needs_new_app_size(current_geometry, geometry, output);
+    // D8: only a width change with a duration animates; an edge or gutter
+    // change and a request without `ms` snap.
+    let animate = request_ms(request).filter(|ms| *ms > 0 && needs_size);
     Ok(Some(Plan {
         layout_changed: current_geometry != geometry,
         settings: next,
         geometry,
         size: needs_size.then(|| geometry.size()),
         redock,
+        from_across: current_geometry.across(),
+        animate,
     }))
+}
+
+/// The duration a layout command asks for (D8): `set-size` and `resize`
+/// carry it; every other command snaps.
+fn request_ms(request: &PanelRequest) -> Option<u32> {
+    match request {
+        PanelRequest::SetSize { ms, .. } | PanelRequest::Resize { ms, .. } => *ms,
+        _ => None,
+    }
 }
 
 /// The geometry `settings` describe on `output` (D9): the edge, the size
@@ -229,6 +250,14 @@ fn apply_plan(routing: &Rc<Routing>, plan: Plan, panel: &PanelName, bus: &Bus) {
         return;
     }
     routing.set_last_resolved_across(Some(plan.geometry.across()));
+    // D8: an animated change starts its tween instead of re-sending the
+    // target size; the tween's frames re-send the layer state each frame.
+    if let Some(ms) = plan.animate
+        && super::tween::start(routing, plan.from_across, plan.geometry, ms)
+    {
+        bus.publish_geometry_changed(panel);
+        return;
+    }
     if let Some(layer_surface) = routing.panel_layer_surface() {
         if let Some((width, height)) = plan.size {
             layer_surface.send_set_size(width, height);
@@ -382,6 +411,61 @@ mod tests {
         );
         assert_eq!(plan.settings.edge(), Edge::Top);
         assert_eq!(plan.size, Some((0, 270)), "25% of the 1080 pixel height");
+    }
+
+    /// A `set-size` with `ms` above zero animates (D8): the plan carries the
+    /// start length and the duration instead of re-sending the target size
+    /// at once.
+    #[test]
+    fn a_size_change_with_a_duration_animates_from_the_current_width() {
+        let current = settings();
+        let plan = planned(
+            &current,
+            &PanelRequest::SetSize {
+                size: pixels(800),
+                ms: Some(200),
+            },
+            output(1920, 1080),
+        );
+        assert_eq!(plan.from_across, 480, "25% of the 1920 pixel output");
+        assert_eq!(plan.animate, Some(200));
+        assert_eq!(plan.size, Some((800, 0)), "the size the tween targets");
+    }
+
+    /// A `resize` with `ms` animates too (D8), from the panel's current
+    /// width to the resized one.
+    #[test]
+    fn a_resize_with_a_duration_animates() {
+        let current = settings();
+        let plan = planned(
+            &current,
+            &PanelRequest::Resize {
+                by: grow(pixels(120)),
+                ms: Some(150),
+            },
+            output(1920, 1080),
+        );
+        assert_eq!(plan.geometry.across(), 600);
+        assert_eq!(plan.from_across, 480);
+        assert_eq!(plan.animate, Some(150));
+    }
+
+    /// A duration of zero, or none at all, snaps (D8): the plan carries no
+    /// animation.
+    #[test]
+    fn no_duration_or_a_zero_one_snaps() {
+        let current = settings();
+        for ms in [None, Some(0)] {
+            let plan = planned(
+                &current,
+                &PanelRequest::SetSize {
+                    size: pixels(800),
+                    ms,
+                },
+                output(1920, 1080),
+            );
+            assert_eq!(plan.animate, None, "ms {ms:?} snaps");
+        }
     }
 
     /// A size change (spec "Change the size"): one new window size of the
