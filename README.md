@@ -1,18 +1,18 @@
 # pinwin
 
-A layer-shell terminal panel for Wayland compositors: it docks a terminal
-running any command to a screen edge as a layer surface, reserves space from
-tiled windows via a transparent reservation surface, and animates its width
-between layouts. Built for niri, on a direct Wayland client with no toolkit.
+A layer-shell app host for Wayland compositors: it runs an app in a panel at
+one edge of an output as a layer surface, reserves space from tiled windows
+via a transparent reservation surface, and animates the panel's width between
+layouts. Built for niri, on a direct Wayland client with no toolkit.
 
-pinwin is a single Rust crate: `src/main.rs` is the `pinwin` binary. The
-pre-port C and Zig sources are removed with the port.
+pinwin is a single Rust crate: `src/main.rs` is the `pinwin` binary. One
+daemon owns every panel on a Wayland display; `pinwin run` starts an app in a
+panel and the client subcommands control the daemon.
 
 ## Install
 
-Building needs the Rust toolchain pinned in `rust-toolchain.toml`. The system
-needs libxkbcommon and fontconfig, and running needs a Wayland compositor with
-wlr-layer-shell.
+Building needs the Rust toolchain pinned in `rust-toolchain.toml`. Running
+needs a Wayland compositor with wlr-layer-shell.
 
 ```sh
 cargo install --path .          # installs the `pinwin` binary
@@ -28,31 +28,24 @@ The library API is removed: the crate is binary-only now, with no `Panel`,
 ## Usage
 
 ```text
-pinwin [--] [command...]    # default command: $SHELL, else /bin/sh; needs niri
-pinwin --toggle [name]      # hide or show the named running panel, then exit
+pinwin run [options] -- <command> [args...]   # start an app in a new panel
+pinwin daemon                                 # start the daemon
+pinwin <command> [args...]                    # send one request to the daemon
 ```
 
-The binary owns the pty and the child: it sets `TERM=xterm-256color` and
-`COLORTERM=truecolor` for the child, forwards SIGINT and SIGTERM to it as
-SIGHUP, and exits with the child's exit status (1 if the child did not exit
-normally). `--` ends option parsing; an unknown `--option` exits 2 with a
-message before any surface opens.
+`pinwin run` asks the daemon for a new panel and starts one in the background
+when none answers for the display. It sets `WAYLAND_DISPLAY` to the new
+panel's display and replaces itself with the command, so the app keeps its
+process ID, working folder and environment. A command that cannot run exits
+127; a missing daemon or a daemon error exits 1; a bad command line exits 2.
 
-Environment:
+`pinwin daemon` binds the display's socket and runs in the foreground until a
+`quit` request, SIGINT or SIGTERM ends it. The daemon reads the config file
+and requires a compositor with wlr-layer-shell before it creates anything.
 
-| Variable | Values | Default |
-| --- | --- | --- |
-| `COLS` | 1..=65535 | 40 |
-| `GUTTER` | 0..=65535 (the right gutter) | 0 |
-| `PINWIN_KEYBOARD` | `on-demand`, `exclusive`, `none` | `on-demand` |
-| `PINWIN_ZONE` | `reserve`, `overlay` | `reserve` |
-| `PINWIN_ACCENT` | `on`, `off` | `on` |
-| `PINWIN_ACCENT_COLOR` | `#RRGGBB` or `RRGGBB` | `#dabc7f` |
-| `PINWIN_ACCENT_WIDTH` | 1..=65535 (read only when the accent is on) | 1 |
-| `PINWIN_NAME` | 1..=64 characters from `A-Za-z0-9_-` | `default` |
-
-An invalid value exits 2 with a message on stderr before any surface opens.
-Only the binary reads these; the library reads no pinwin-owned configuration.
+pinwin reads `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `XDG_CONFIG_HOME` and
+`HOME` for its socket and config file; it reads no `PINWIN_*` variable. The
+app keeps every other variable unchanged.
 
 ## Commands
 
@@ -154,9 +147,8 @@ bar and drop shadow stay outside the panel; an app that manages its own
 surface scaling through a viewport keeps that mapping and is not cropped.
 
 An app that hands a launch to a running copy opens no window of its own, so it
-puts nothing in the panel; the running copy keeps its own window. Start such
-an app so that it opens a window in this process; Ghostty, for example, needs
-`--gtk-single-instance=false`.
+puts nothing in the panel; the running copy keeps its own window. See "Known
+limits".
 
 ## Migrating to 0.4.0
 
@@ -223,172 +215,91 @@ edge = "right"
 | `[panel.*]` | `gutter_top` | integer | `0` | Pixels between the panel and the output's top edge; may be negative. |
 | `[panel.*]` | `gutter_bottom` | integer | `0` | Pixels between the panel and the output's bottom edge; may be negative. |
 
-## Toggle request
+## Daemon socket
 
-Every instance reads `PINWIN_NAME`. The default name is `default`. A name has
-1..=64 characters from `A-Za-z0-9_-`. While its command runs, the instance
-listens on a Unix socket under `$XDG_RUNTIME_DIR/pinwin/`, named for the
-Wayland display and the name. A second instance with a name that a live
-instance already uses prints a message, exits 2 and opens nothing. A socket
-file left by a killed instance does not block a new host.
+The daemon listens on one Unix socket at
+`$XDG_RUNTIME_DIR/pinwin/<display>.sock`, where `<display>` is the base name
+of the Wayland display's socket. The socket file is readable and writable
+only by its owner. A socket file left by a daemon that no longer runs does not
+block a new daemon, and the daemon removes its socket file when it exits.
 
-`pinwin --toggle [name]` asks the instance with that name to hide its shown
-panel or show its hidden one, then exits. `pinwin --show [name]` asks it to
-show its hidden panel and leaves a shown one unchanged, then exits. Both
-reach any panel bound to that name, whether the `pinwin` program or a
-library host started it. The name defaults to `default`.
-The client exits 0 when the named instance accepts the request. With no
-instance on that name it prints a message and exits 1. A bad name prints a
-message and exits 2 in both places: in `PINWIN_NAME`, where the host opens
-nothing, and after `--toggle` or `--show`. The client reads no environment besides the
-display.
-
-`PINWIN_ZONE` chooses what a toggle moves. With `reserve` (the default) the
-panel starts with a pushing layout and reserves its strip, so tiled windows
-sit beside it and take the strip back while it is hidden. With `overlay` it
-starts with a covering layout, reserves nothing, draws over the tiles and
-moves no window on a toggle; `overlay` is kitty's `--exclusive-zone=0`.
-
-Showing the panel maps a new layer surface, so focus on show depends on the
-compositor focusing a newly mapped surface. Niri does this in `on-demand`
-and `exclusive` mode; in `none` mode the panel only appears. Clicking a
-shown panel also gives it focus in `on-demand` mode.
-
-In niri, bind a key to the client:
-
-```kdl
-Mod+P { spawn "pinwin" "--toggle"; }
-```
-
-## Migrating from `request_focus`
-
-Version 0.2.0 replaces GTK with a direct Wayland client. A host program that
-used 0.1.0 changes these things:
-
-- **`Panel::request_focus` is gone; call `Panel::toggle` or `Panel::show`.**
-  A toggle hides a shown panel and shows a hidden one; a show shows a hidden
-  panel and leaves a shown one unchanged. Focus is the effect of showing:
-  niri focuses a newly mapped `on-demand` or `exclusive` layer surface. The
-  calls are not focus requests, so a host that needs "focus the panel, never
-  hide it" calls `Panel::show`. The panel is shown at start.
-- **`pinwin --focus [name]` is gone; run `pinwin --toggle [name]`.** It uses
-  the same socket and the same `PINWIN_NAME`. Rebind the niri key:
-  `Mod+P { spawn "pinwin" "--toggle"; }`. Hosts that send the request
-  themselves send the line `toggle\n` to the instance socket instead of
-  `focus\n`.
-- **Hiding no longer resizes anything.** The terminal grid and the pty window
-  size stay as they were, and the child gets no `SIGWINCH`. The child keeps
-  running while the panel is hidden. This is the fix for the flash of a
-  different layout (issue #19).
-- **Hiding releases the reserved strip and showing restores it.** To keep
-  tiled windows still on a toggle, start with `PINWIN_ZONE=overlay` (binary)
-  or a `Layout::covering` layout (library). With `overlay` the panel draws
-  over the tiles and a toggle moves no window.
-- **Apply while hidden is stored.** `apply_layout` and `apply_layout_animated`
-  validate the layout, store it with no animation and return; the next show
-  uses it.
-- **`gtk-enable-animations` is no longer read.** To apply a layout without
-  animation, pass a duration of 0 to `apply_layout_animated`, or call
-  `apply_layout`.
-- **No GTK at run time.** The library and the binary link no GTK, GLib,
-  Pango, Cairo or gdk-pixbuf library; the `pinwin` binary links 13 shared
-  libraries in place of 113. The system needs libwayland, libxkbcommon and
-  fontconfig.
-- **`Startup` is built with `Startup::new(fd, layout, keyboard, accent)`.** Its
-  fields are private; read them through the accessors of the same names.
-- **Unchanged:** `Panel::start`, `Layout`, `Keyboard`, `Accent`,
-  `PinwinError` and the `COLS`, `GUTTER`, `PINWIN_KEYBOARD`, `PINWIN_ACCENT*`
-  and `PINWIN_NAME` variables.
-
-## Migrating to 0.3.0
-
-Version 0.3.0 moves the instance socket into the library and breaks one
-host type:
-
-- **`Startup` is no longer `Copy` — nor `Clone`.** It can own a bound
-  instance socket, an owned fd with one owner, so the startup moves into
-  `Panel::start`. Hosts that copied or cloned it keep one value and move it.
-- **The instance socket is opt-in and new.** Bind it with
-  `InstanceSocket::bind(&name)` and hand it to the start with
-  `Startup::with_instance`; a start without a socket listens on nothing, as
-  before. A panel started with a socket answers `toggle` and `show` on it
-  until the handle drops, so `pinwin --toggle [name]` and
-  `pinwin --show [name]` reach library-hosted panels. `Panel::show` and
-  `instance::send` are new with the socket: see "Use as a Cargo dependency"
-  for the shape.
+A second `pinwin daemon` for the same display prints a message and exits 0
+without changing the running daemon. Daemons for different displays do not
+interfere. With no `XDG_RUNTIME_DIR` the daemon prints a message, exits 1 and
+creates nothing.
 
 ## Behaviour
 
-- The panel is a layer-shell surface on the `overlay` layer, flush against the
-  top and bottom edges of its monitor and spanning its full height. It docks
-  left or right and stays on its original monitor across workspace switches,
-  focus moves and side changes.
-- A pushing layout reserves a strip at its docking edge of
-  `left + panel width + right` pixels, so the compositor tiles windows
-  beside it. Gutters are directional and may be negative; the reservation
-  sum may not be, and must leave some output width for other windows.
-- Each layout is either pushing or covering: `Layout::new` pushes and
-  `Layout::covering` opts in, per size. The reservation rules for both
-  choices — where the strip sits, what a side switch does — are stated once
-  on `pinwin::layout::Coverage` in the library docs.
-- Keyboard interactivity is fixed at start: `on-demand` (the default) takes
-  focus after a click, or when a toggle shows it on a compositor that
-  focuses a newly mapped surface; `exclusive` takes it immediately, `none`
-  never does. While focused, the panel draws its own focus accent in the
-  configured colour and width, because the compositor draws no focus ring on
-  layer surfaces.
-- Applying a layout updates the columns, all four gutters, the docking side
-  and the push/cover choice as one operation, follows the reservation rules
-  above, and resizes the existing terminal grid and pty winsize without
-  recreating the terminal or touching the child. An animated apply changes
-  the width continuously when only the column count or the push/cover choice
-  differs; a side switch or a left or right gutter change never animates.
-  A duration of 0 is the only user-controlled way to snap an animateable
-  apply — the desktop animation setting has no effect, because the library
-  reads no desktop setting — and an apply also snaps when the animation
-  cannot present its frames. During a covering animation the
-  reservation holds still while the panel width tweens.
-- The font and theme follow the user's Ghostty config (font family and size,
-  default background/foreground); with no config the panel falls back to
-  `monospace 11`. A missing or unreadable config never prevents opening.
-- The terminal supports the kitty keyboard protocol, SGR mouse reporting,
-  focus in/out reports, 24-bit/256-colour text and the kitty graphics protocol,
-  including answering the graphics query and drawing transmitted images.
-- The library raises `SIGWINCH` in the host process after every successful
-  winsize update and never terminates the host: bad arguments, bad layouts,
-  a missing display, a missing config and panics inside the library are error
-  values or degraded states, never `exit()` or an unwinding panic.
+- A panel is a layer-shell surface on its layer (default `overlay`) at one
+  edge of its output, flush against the output edges at the ends of that edge
+  except for the side gutters. It stays on its output and shows on every
+  workspace of that output.
+- A pushing panel reserves a strip at its docking edge of
+  `near + width + far` pixels, so the compositor tiles windows beside it.
+  Gutters are directional and may be negative; the reservation sum may not
+  be, and must leave some output width for other windows. A covering panel
+  uses the same insets and reserves nothing: it draws over the tiled windows.
+- A layout change keeps the app process and its window. The app gets a new
+  window size only when the panel's width or length changes, and an animated
+  change sends exactly one new size for the whole animation. While the panel
+  is hidden, a change is validated and stored with no animation, and the next
+  show uses it.
+- Keyboard interactivity is per panel and changes at run time. In `on-demand`
+  mode the panel gets the keyboard when the user clicks inside it or a show
+  or focus request shows it, and gives it up when the user clicks a compositor
+  window; at open it takes no keyboard. In `exclusive` mode it has the
+  keyboard while it shows. In `none` mode it never gets the keyboard.
+  `focus` shows a hidden panel and gives it the keyboard in any mode except
+  `none`; `focus` on a shown panel changes nothing, so to move the keyboard to
+  a shown panel, hide it and show it again.
+- While the panel holds keyboard focus and a focus ring is set, pinwin draws
+  the ring around the whole panel window, over the app's content. With the
+  ring `off`, pinwin draws nothing over the app.
+- When the panel's output is removed, the panel moves to the output the
+  compositor chooses, with the same settings, and the app keeps running.
+- A panel ends when the launched process has exited and the app has no
+  Wayland connection to the panel left. Its window goes away, its strip is
+  released and its name is free.
 
 ## Architecture
 
-`src/main.rs` is the `pinwin` binary; the daemon, the IPC client and the
-option parser arrive with the panel-control rows, so it prints the usage and
-exits 2 until then. `src/cli.rs` is the hand-written parser for `run`,
-`daemon` and the client subcommands, compiled by `tests/cli.rs` until the
-binary dispatches them; `src/instance.rs` and
-`src/instance/` hold the instance socket (identity, bind, listener and
-client); `src/geometry.rs` is the display-free geometry core (edges, sizes,
-gutters, the reserved strip and the held gap), compiled from `src/main.rs`;
-`src/proxy/crop.rs` is the width tween's crop plan, compiled by
-`tests/tween_crop.rs` until the proxy owns it; `src/anim.rs` eases the width;
-`src/guard.rs` is the panic guard.
+`src/main.rs` is the `pinwin` binary: it dispatches `run`, `daemon` and the
+client subcommands, and runs the daemon in the foreground. `src/cli.rs` is the
+hand-written command-line parser; `src/name.rs` holds the panel name rules;
+`src/config.rs` reads the config file. `src/ipc.rs`, with `src/ipc/options.rs`
+and `src/ipc/client.rs`, is the wire format, the run options and the client.
+`src/daemon.rs` owns the daemon socket, and `src/daemon/` holds the registry,
+the panel handles, the event bus, the connections, the `create` request, the
+lifetime and the daemon spawn. `src/proxy.rs` is the panel thread and
+`src/proxy/` holds the window routing, the dock, the reserve surface, popups,
+decorations, keyboard, the focus ring and the width tween. `src/tray.rs` is
+the tray icon, and `src/run.rs` is the exec that becomes the app.
+`src/geometry.rs` is the display-free geometry core, `src/anim.rs` eases the
+width and `src/guard.rs` is the panic guard.
 
 The behaviour spec lives in `openspec/specs/pinwin-panel/spec.md`; the
 archived design decisions code comments cite as D-numbers are under
 `openspec/changes/archive/`, the port's own are in
-`openspec/changes/port-to-rust/design.md`, and the Wayland rewrite's are in
-`openspec/changes/replace-gtk-with-wayland/design.md`.
+`openspec/changes/port-to-rust/design.md`, the Wayland rewrite's are in
+`openspec/changes/replace-gtk-with-wayland/design.md`, and this app host's
+are in `openspec/changes/replace-terminal-with-app-host/design.md`.
 
-## Known caveats
+## Known limits
 
+- Apps that hand their window to an already running copy, or that start it
+  through a launcher that quits before the window connects, cannot be docked.
+  The daemon reports an app it sees exit without a window: it logs a line
+  naming the app and the panel, and `pinwin subscribe` receives a `no-window`
+  event for the panel before its `removed` event. Run such an app so that it
+  opens a window in the process `pinwin run` starts; Ghostty, for example,
+  needs `--gtk-single-instance=false`.
 - Wayland with wlr-layer-shell is required. An X11 session or a compositor
-  without it (such as GNOME) fails with `NoDisplay`; there is no fallback to an
-  ordinary window.
-- One panel per process. A second start while a handle is alive fails with
-  `AlreadyRunning`.
-- Each start runs its own panel thread, and the thread ends when the handle
-  drops. There is no process-lifetime parked thread.
-- The library never closes the pty master fd; the host owns its lifetime.
-- `panic = "unwind"` is fixed in every Cargo profile. Setting `panic = "abort"`
-  would let a panic abort the host instead of being caught at the API
-  boundary.
+  without it (such as GNOME) makes the daemon print a message and exit 1 at
+  start, and `pinwin run` print a message and exit 1 without running the
+  command; there is no fallback to an ordinary window.
+- X11 apps are not supported. An app under Xwayland connects to the Xwayland
+  server, not to the panel socket, so it does not enter a panel.
+- A panic inside one panel ends only that panel and closes its app's Wayland
+  connections; the daemon and the other panels keep running. `panic =
+  "unwind"` is fixed in every Cargo profile, so a panic cannot abort the
+  daemon.
