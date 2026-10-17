@@ -151,7 +151,7 @@ below). Its code does not enter pinwin; only the findings do.
   `src/instance*`. Verify: tests for "Stale socket file", "Second daemon", "Two displays",
   "No runtime directory" and the 0600 mode pass, with the socket in a temp
   `XDG_RUNTIME_DIR`.
-- [ ] 5.3 Add the registry and command routing (D12): panel handles are a channel plus an
+- [x] 5.3 Add the registry and command routing (D12): panel handles are a channel plus an
   eventfd; replies use a bounded wait. Verify: tests with a test thread in the panel's place
   pass for "Unknown panel", "Duplicate name", "Name is free again", "Status of all panels",
   "Status of one panel" and a panel that does not answer (error `internal`).
