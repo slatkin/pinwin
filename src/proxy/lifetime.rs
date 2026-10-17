@@ -34,6 +34,14 @@ pub(super) const fn ends(app_exited: bool, connections: usize) -> bool {
     app_exited && connections == 0
 }
 
+/// Whether the daemon reports the app (row 7.4, D3, spec "Hand-off app is
+/// reported"): the panel ended because the app exited and it never had a
+/// connection. An app that connected and then exited is not reported.
+#[must_use]
+pub(super) const fn exited_without_window(app_exited: bool, ever_connected: bool) -> bool {
+    app_exited && !ever_connected
+}
+
 /// The app's pidfd (D3): readable when the process exits, so the panel ends
 /// without parenting the app. `pidfd_open` needs Linux 5.3 or later.
 #[derive(Debug)]
@@ -92,7 +100,7 @@ mod tests {
     use std::process::Command;
     use std::time::Duration;
 
-    use super::{PidFd, ends, pidfd_watch};
+    use super::{PidFd, ends, exited_without_window, pidfd_watch};
 
     /// "App never connects" (spec "App never connects"): a launched process
     /// that exits without a connection ends its panel.
@@ -124,6 +132,18 @@ mod tests {
     #[test]
     fn a_hand_off_ends_the_panel() {
         assert!(ends(true, 0));
+    }
+
+    /// "Hand-off app is reported" (spec "Hand-off app is reported", row
+    /// 7.4): a panel reports its app only when the app exited and the panel
+    /// never had a connection. An app that connected before it exited is
+    /// not reported.
+    #[test]
+    fn an_exited_app_is_reported_only_when_it_never_connected() {
+        assert!(exited_without_window(true, false));
+        assert!(!exited_without_window(true, true));
+        assert!(!exited_without_window(false, false));
+        assert!(!exited_without_window(false, true));
     }
 
     /// The pidfd becomes readable when a short-lived child exits (D3): the

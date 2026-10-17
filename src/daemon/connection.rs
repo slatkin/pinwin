@@ -62,9 +62,10 @@ pub fn serve(
         Request::Create {
             panel,
             pid,
+            app,
             options,
         } => {
-            let reply = create::panel(lifetime, panel, &options, pid);
+            let reply = create::panel(lifetime, panel, app, &options, pid);
             answer(&mut stream, &reply, timeout)
         }
         Request::Subscribe => subscribe(&mut stream, lifetime.bus(), timeout),

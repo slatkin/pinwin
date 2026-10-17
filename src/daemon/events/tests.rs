@@ -297,6 +297,61 @@ fn a_silent_client_does_not_block_another_request() {
     panel.join().expect("the panel thread ends");
 }
 
+/// A panel that ends without a window publishes `no_window` immediately
+/// before `removed` (spec "App never opens a window", row 7.4), and the
+/// event's JSON line names the panel like every other event.
+#[test]
+fn a_panel_without_a_window_reports_before_it_is_removed() {
+    let bus = Bus::new();
+    let lifetime = test_lifetime(bus.clone());
+    let events = bus.subscribe();
+    let (name, handle, panel) = panel_thread(|_| PanelReply::Done);
+
+    lifetime
+        .add_panel(name.clone(), handle)
+        .expect("notes is free");
+    assert_eq!(
+        events.next(WAIT).expect("the added event arrives"),
+        Event::Added {
+            panel: name.clone()
+        }
+    );
+    assert_eq!(
+        Event::NoWindow {
+            panel: name.clone()
+        }
+        .to_line(),
+        "{\"event\":\"no-window\",\"panel\":\"notes\"}\n",
+        "the no_window event's JSON line"
+    );
+
+    // The panel's app exited without ever connecting, so the daemon reports
+    // it and then removes the panel (spec "App never opens a window").
+    assert!(lifetime.panel_ended(&name, Some("myeditor")), "notes ended");
+    assert_eq!(
+        events.next(WAIT).expect("the no_window event arrives"),
+        Event::NoWindow {
+            panel: name.clone()
+        }
+    );
+    assert_eq!(
+        events.next(WAIT).expect("the removed event arrives"),
+        Event::Removed {
+            panel: name.clone()
+        }
+    );
+    assert!(
+        matches!(
+            events.next(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ),
+        "the report comes once, before removed"
+    );
+
+    drop(lifetime);
+    panel.join().expect("the panel thread ends");
+}
+
 /// A panel that starts and then ends publishes `added` and `removed` (spec
 /// "Event stream"; row 7.3 wires the two events at registration and end).
 #[test]
@@ -316,12 +371,21 @@ fn a_panel_announces_its_add_and_end() {
         }
     );
 
-    assert!(lifetime.panel_ended(&name), "notes ended");
+    assert!(lifetime.panel_ended(&name, None), "notes ended");
     assert_eq!(
         events.next(WAIT).expect("the removed event arrives"),
         Event::Removed {
             panel: name.clone()
         }
+    );
+    // A panel that had a connection gets no report (spec "A panel that had
+    // a connection gets no notice"): no event follows `removed`.
+    assert!(
+        matches!(
+            events.next(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ),
+        "a panel that had a connection gets no notice"
     );
     assert_eq!(bus.subscriber_count(), 1, "the subscriber stays");
 

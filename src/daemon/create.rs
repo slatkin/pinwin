@@ -25,9 +25,15 @@ use crate::proxy::{self, StartError};
 /// `duplicate_name` and that panel stays (spec "Duplicate name"). A panel
 /// whose thread or socket cannot start is error kind `internal`, so the
 /// caller reports it as the daemon's failure rather than its own.
-pub fn panel(lifetime: &Arc<Lifetime>, name: PanelName, options: &PanelOptions, pid: u32) -> Reply {
+pub fn panel(
+    lifetime: &Arc<Lifetime>,
+    name: PanelName,
+    app: String,
+    options: &PanelOptions,
+    pid: u32,
+) -> Reply {
     let settings = lifetime.panel_settings(&name, options);
-    match proxy::spawn(name, settings, pid, lifetime) {
+    match proxy::spawn(name, settings, app, pid, lifetime) {
         Ok(started) => Reply::created(started.display().to_owned()),
         Err(StartError::Refused(error)) => Reply::Error(error),
         Err(StartError::Io(error)) => Reply::error(

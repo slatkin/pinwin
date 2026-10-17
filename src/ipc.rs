@@ -191,6 +191,10 @@ pub enum Request {
         /// The process ID `pinwin run` reports; after `exec` it is the
         /// app's process, which the daemon's pidfd watches (D2, D3).
         pid: u32,
+        /// The command's file name, which the daemon's report of an app
+        /// that exits without a window names (row 7.4, D3, spec "Hand-off
+        /// app is reported").
+        app: String,
         #[serde(serialize_with = "options::serialize")]
         options: PanelOptions,
     },
@@ -279,10 +283,12 @@ impl Request {
             RawRequest::Create {
                 panel,
                 pid,
+                app,
                 options,
             } => Self::Create {
                 panel: panel_name(&panel)?,
                 pid,
+                app,
                 options: options::parse(options)?,
             },
             RawRequest::Subscribe => Self::Subscribe,
@@ -375,6 +381,7 @@ enum RawRequest {
     Create {
         panel: String,
         pid: u32,
+        app: String,
         #[serde(default)]
         options: options::WireOptions,
     },

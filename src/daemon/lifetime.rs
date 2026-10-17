@@ -132,14 +132,24 @@ impl Lifetime {
     }
 
     /// Drop the panel named `name` when its app ends (spec "Name is free
-    /// again", "Event stream"): every subscriber hears `removed`. When it
-    /// was the last panel and `exit_when_idle` is true, the daemon exits
-    /// (spec "Exit with the last panel"); otherwise it stays resident (spec
-    /// "Stay resident"). False when no panel had the name.
-    pub fn panel_ended(&self, name: &PanelName) -> bool {
+    /// again", "Event stream"): every subscriber hears `removed`. A panel
+    /// whose app exited without ever connecting also gets the D3 report
+    /// first (row 7.4, spec "Hand-off app is reported"): one warning line
+    /// naming `no_window_app`, and one `no_window` event immediately before
+    /// `removed`. When it was the last panel and `exit_when_idle` is true,
+    /// the daemon exits (spec "Exit with the last panel"); otherwise it
+    /// stays resident (spec "Stay resident"). False when no panel had the
+    /// name.
+    pub fn panel_ended(&self, name: &PanelName, no_window_app: Option<&str>) -> bool {
         let removed = self.registry.remove(name);
         if !removed {
             return false;
+        }
+        if let Some(app) = no_window_app {
+            eprintln!("pinwin: warning: {}", no_window_message(app, name));
+            self.bus.publish(&Event::NoWindow {
+                panel: name.clone(),
+            });
         }
         self.bus.publish(&Event::Removed {
             panel: name.clone(),
@@ -197,6 +207,17 @@ impl Lifetime {
     fn exits_when_idle(&self) -> bool {
         self.had_panel.load(Ordering::SeqCst) && self.daemon_settings().exit_when_idle()
     }
+}
+
+/// The daemon's warning for a panel that ended without a window (row 7.4,
+/// D3, spec "Hand-off app is reported"): the spec's wording, naming the app
+/// and the panel.
+#[must_use]
+pub(crate) fn no_window_message(app: &str, panel: &PanelName) -> String {
+    format!(
+        "{app} exited without opening a window in panel {panel}. It may have handed its \
+         window to a running copy, which pinwin cannot dock."
+    )
 }
 
 /// The daemon's shutdown trigger (D12): a flag the accept loop checks and an

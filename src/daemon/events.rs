@@ -31,8 +31,9 @@ use crate::name::PanelName;
 pub const QUEUE_DEPTH: usize = 64;
 
 /// One event of the stream (spec "Event stream"): a panel was added,
-/// removed, shown or hidden, or its geometry changed. Every event names the
-/// panel, which is the object `panel` of its JSON line.
+/// removed, shown or hidden, its geometry changed, or it ended with no
+/// connection (row 7.4's `no_window`). Every event names the panel, which is
+/// the object `panel` of its JSON line.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum Event {
@@ -40,6 +41,11 @@ pub enum Event {
     Added { panel: PanelName },
     /// A panel ended.
     Removed { panel: PanelName },
+    /// A panel ended because its app exited without ever connecting, so the
+    /// app may have handed its window to a running copy (row 7.4, D3, spec
+    /// "Hand-off app is reported"). Published once, just before
+    /// [`Event::Removed`].
+    NoWindow { panel: PanelName },
     /// A panel was shown.
     Shown { panel: PanelName },
     /// A panel was hidden.

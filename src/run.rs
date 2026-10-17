@@ -10,9 +10,23 @@
 //! process, with `exec`, so the app's process ID is the one `pinwin run`
 //! reported to the daemon (D2, D3).
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
+use std::path::Path;
 use std::process::Command;
+
+/// The app's name for the daemon's report (row 7.4, D3, spec "Hand-off app
+/// is reported"): the file name of the program `pinwin run` executes, so
+/// `/usr/bin/notes` reports `notes`. A program whose path has no file name
+/// is reported as the caller wrote it.
+#[must_use]
+pub fn app_name(program: &OsStr) -> String {
+    Path::new(program)
+        .file_name()
+        .unwrap_or(program)
+        .to_string_lossy()
+        .into_owned()
+}
 
 /// The process `pinwin run` becomes (spec "Run an app in a panel"): the app's
 /// program, its arguments and the environment it inherits, with

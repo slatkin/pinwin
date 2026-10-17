@@ -489,6 +489,7 @@ fn a_create_request_carries_the_run_options_and_its_reply_names_the_display() {
     let request = Request::Create {
         panel: notes(),
         pid: 4242,
+        app: "myeditor".to_owned(),
         options,
     };
     let line = request.to_line();
@@ -496,6 +497,9 @@ fn a_create_request_carries_the_run_options_and_its_reply_names_the_display() {
     assert_eq!(value["cmd"], serde_json::json!("create"));
     assert_eq!(value["panel"], serde_json::json!("notes"));
     assert_eq!(value["pid"], serde_json::json!(4242));
+    // The app's name is the command's file name, which the daemon's report
+    // names (row 7.4, D3).
+    assert_eq!(value["app"], serde_json::json!("myeditor"));
     assert_eq!(value["options"]["edge"], serde_json::json!("right"));
     assert_eq!(value["options"]["size"], serde_json::json!("30%"));
     assert_eq!(value["options"]["reserve"], serde_json::json!("cover"));
@@ -517,8 +521,9 @@ fn a_create_request_carries_the_run_options_and_its_reply_names_the_display() {
     let line = reply.to_line();
     assert_eq!(line, "{\"ok\":true,\"display\":\"wayland-1\"}\n");
     assert_eq!(Reply::parse(line.as_bytes()), Ok(reply));
-    let error =
-        Request::parse(br#"{"cmd":"create","panel":"notes","pid":1,"options":{"edge":"middle"}}"#)
-            .expect_err("an invalid option value");
+    let error = Request::parse(
+        br#"{"cmd":"create","panel":"notes","pid":1,"app":"notes","options":{"edge":"middle"}}"#,
+    )
+    .expect_err("an invalid option value");
     assert_eq!(error.kind(), ErrorKind::InvalidValue);
 }

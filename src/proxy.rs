@@ -69,7 +69,7 @@ use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply, PanelReque
 use crate::guard::{Poisoned, guard};
 use crate::ipc::{ErrorReply, PanelStatus};
 use crate::name::PanelName;
-use lifetime::{PidFd, ends, pidfd_watch};
+use lifetime::{PidFd, ends, exited_without_window, pidfd_watch};
 use registry::ClientDisplay;
 use routing::Routing;
 
@@ -208,6 +208,7 @@ impl Started {
 pub fn spawn(
     name: PanelName,
     settings: PanelSettings,
+    app: String,
     pid: u32,
     lifetime: &Arc<Lifetime>,
 ) -> Result<Started, StartError> {
@@ -224,6 +225,7 @@ pub fn spawn(
             panel_thread(PanelThread {
                 name: thread_name,
                 settings,
+                app,
                 pid,
                 lifetime: thread_lifetime,
                 commands: incoming,
@@ -260,6 +262,8 @@ pub fn spawn(
 struct PanelThread {
     name: PanelName,
     settings: PanelSettings,
+    /// The command's file name, which a report names (row 7.4, D3).
+    app: String,
     pid: u32,
     lifetime: Arc<Lifetime>,
     commands: Receiver<Command>,
@@ -277,6 +281,7 @@ fn panel_thread(thread: PanelThread) {
     let PanelThread {
         name,
         settings,
+        app,
         pid,
         lifetime,
         commands,
@@ -287,6 +292,7 @@ fn panel_thread(thread: PanelThread) {
     let panel = match Panel::open(
         &settings,
         name.clone(),
+        app,
         lifetime.bus().clone(),
         pid,
         wake,
@@ -317,13 +323,18 @@ fn panel_thread(thread: PanelThread) {
 /// Run one panel's loop under the panic guard (D5) and then report the
 /// panel's end (spec "Panic in one panel": that panel ends, other panels and
 /// the daemon keep working). The body owns the panel, so a panic drops its
-/// state on the way out, which closes the app's connections.
-fn guarded(lifetime: &Lifetime, name: &PanelName, body: impl FnOnce()) {
+/// state on the way out, which closes the app's connections. The body's
+/// `Some` is the D3 report of an app that exited without a window (row 7.4,
+/// spec "Hand-off app is reported"); a panic is never that report.
+fn guarded(lifetime: &Lifetime, name: &PanelName, body: impl FnOnce() -> Option<String>) {
     let poisoned = Poisoned::new();
-    if guard(&poisoned, body).is_err() {
+    let no_window = if let Ok(no_window) = guard(&poisoned, body) {
+        no_window
+    } else {
         eprintln!("pinwin: the panel '{name}' ended after a panic");
-    }
-    lifetime.panel_ended(name);
+        None
+    };
+    lifetime.panel_ended(name, no_window.as_deref());
 }
 
 /// What the loop does after it answers the commands that arrived.
@@ -334,6 +345,14 @@ enum Serve {
     /// The daemon dropped the panel's handle, which `quit` does (spec
     /// "Quit").
     End,
+}
+
+/// How one pass ended (D3): keep serving, or stop with the report the daemon
+/// needs. `End(Some(app))` is an app that exited without ever connecting
+/// (row 7.4, spec "Hand-off app is reported"); every other end is `None`.
+enum Step {
+    Continue,
+    End(Option<String>),
 }
 
 /// Which of the panel's descriptors woke the loop.
@@ -363,11 +382,16 @@ struct Panel {
     /// The app's open Wayland connections: the panel ends only after the app
     /// exited *and* this returned to zero (D3).
     connections: Rc<Cell<usize>>,
+    /// Whether the app ever connected. A panel that ends with this false
+    /// reports the app (row 7.4, D3, spec "Hand-off app is reported").
+    ever_connected: Rc<Cell<bool>>,
     /// The window routing and the slot its status reads (D4): it also owns
     /// the live settings a change command alters (D11).
     routing: Rc<Routing>,
     /// The panel's name, which its events name (spec "Event stream").
     name: PanelName,
+    /// The command's file name, which the D3 report names (row 7.4).
+    app: String,
     /// The daemon's event bus, which a successful live apply publishes to
     /// (spec "Event stream").
     bus: Bus,
@@ -381,6 +405,7 @@ impl Panel {
     fn open(
         settings: &PanelSettings,
         name: PanelName,
+        app: String,
         bus: Bus,
         pid: u32,
         wake: Arc<EventFd>,
@@ -391,9 +416,11 @@ impl Panel {
             .map_err(|error| state_error(&error))?;
         let destructor = state.create_destructor();
         let connections = Rc::new(Cell::new(0));
+        let ever_connected = Rc::new(Cell::new(false));
         let routing = Routing::new(settings.clone());
         state.set_handler(PanelState {
             connections: Rc::clone(&connections),
+            ever_connected: Rc::clone(&ever_connected),
             routing: Rc::clone(&routing),
         });
         // `create_acceptor` registers the socket in the state's own poll set
@@ -414,22 +441,26 @@ impl Panel {
             commands,
             pidfd,
             connections,
+            ever_connected,
             routing,
             name,
+            app,
             bus,
         })
     }
 
-    /// Serve the panel until it ends (D3, D5, D12).
-    fn run(mut self) {
+    /// Serve the panel until it ends (D3, D5, D12). The app's name is the
+    /// result when the end is the D3 report (row 7.4, spec "Hand-off app is
+    /// reported"): the app exited and the panel never had a connection.
+    fn run(mut self) -> Option<String> {
         let mut app_exited = false;
         loop {
             match self.step(&mut app_exited) {
-                Ok(false) => {}
-                Ok(true) => return,
+                Ok(Step::Continue) => {}
+                Ok(Step::End(report)) => return report,
                 Err(error) => {
                     eprintln!("pinwin: the panel ended: {error}");
-                    return;
+                    return None;
                 }
             }
         }
@@ -437,33 +468,40 @@ impl Panel {
 
     /// One pass: answer the daemon's commands, wait for the state, the
     /// command eventfd and the pidfd, dispatch what the state has, and say
-    /// whether the panel has ended (`Ok(true)`): the state is gone, the
-    /// daemon dropped the handle, or the app exited with no connection left
-    /// (D3, spec "Panel lifetime follows the app", "Quit").
-    fn step(&mut self, app_exited: &mut bool) -> io::Result<bool> {
+    /// whether the panel has ended (D3, spec "Panel lifetime follows the
+    /// app", "Quit").
+    fn step(&mut self, app_exited: &mut bool) -> io::Result<Step> {
         if self.serve() == Serve::End {
-            return Ok(true);
+            return Ok(Step::End(None));
         }
         let ready = self.wait(*app_exited)?;
         if ready.wake {
             self.wake.drain().map_err(io::Error::other)?;
             if self.serve() == Serve::End {
-                return Ok(true);
+                return Ok(Step::End(None));
             }
         }
         if ready.exited {
             *app_exited = true;
         }
         if self.state.is_destroyed() {
-            return Ok(true);
+            return Ok(Step::End(None));
         }
         self.state
             .dispatch(Some(Duration::ZERO))
             .map_err(|error| state_error(&error))?;
         if self.state.is_destroyed() {
-            return Ok(true);
+            return Ok(Step::End(None));
         }
-        Ok(ends(*app_exited, self.connections.get()))
+        if !ends(*app_exited, self.connections.get()) {
+            return Ok(Step::Continue);
+        }
+        // A panel that never had a connection reports its app (row 7.4, D3,
+        // spec "Hand-off app is reported"); one that had a connection does
+        // not.
+        let report =
+            exited_without_window(*app_exited, self.ever_connected.get()).then(|| self.app.clone());
+        Ok(Step::End(report))
     }
 
     /// Take every command the daemon sent and answer it (row 5.3's channel
@@ -568,12 +606,16 @@ impl Panel {
 /// error").
 struct PanelState {
     connections: Rc<Cell<usize>>,
+    /// Latched by the first client, so the panel knows whether the app ever
+    /// connected (row 7.4, D3).
+    ever_connected: Rc<Cell<bool>>,
     routing: Rc<Routing>,
 }
 
 impl StateHandler for PanelState {
     fn new_client(&mut self, client: &Rc<Client>) {
         self.connections.set(self.connections.get() + 1);
+        self.ever_connected.set(true);
         client.set_handler(PanelClient {
             connections: Rc::clone(&self.connections),
             routing: Rc::clone(&self.routing),

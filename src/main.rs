@@ -113,6 +113,7 @@ fn run_app(run: &cli::Run) -> ExitCode {
     let request = Request::Create {
         panel: run.name().clone(),
         pid: std::process::id(),
+        app: run::app_name(&run.command()[0]),
         options: run.options().clone(),
     };
     let answer = match create_panel(&path, &request) {

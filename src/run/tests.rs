@@ -8,7 +8,7 @@
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStringExt as _;
 
-use super::Exec;
+use super::{Exec, app_name};
 
 /// The program and its arguments reach the app unchanged, including one that
 /// is not UTF-8 (spec "Run an app in a panel").
@@ -52,4 +52,15 @@ fn the_panel_display_is_set_and_the_working_folder_is_kept() {
 fn an_empty_command_is_not_an_exec_spec() {
     let error = Exec::new(&[], "wayland-1").expect_err("no command");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+}
+
+/// The report's app name is the program's file name (row 7.4, spec
+/// "Hand-off app is reported"): directories are stripped, and a program
+/// with no file name is reported as written.
+#[test]
+fn the_app_name_is_the_program_file_name() {
+    assert_eq!(app_name(OsStr::new("/usr/bin/myeditor")), "myeditor");
+    assert_eq!(app_name(OsStr::new("myeditor")), "myeditor");
+    assert_eq!(app_name(OsStr::new("./my-editor")), "my-editor");
+    assert_eq!(app_name(OsStr::new("/")), "/");
 }

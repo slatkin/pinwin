@@ -22,7 +22,7 @@ use std::thread::{self, JoinHandle};
 use super::{WAIT, answering_panel, defaults_status, temp_dir};
 use crate::config::{Config, PanelOptions};
 use crate::daemon;
-use crate::daemon::lifetime::{Daemon, Lifetime, shutdown_signal};
+use crate::daemon::lifetime::{Daemon, Lifetime, no_window_message, shutdown_signal};
 use crate::geometry::Size;
 use crate::ipc::{self, ErrorKind, Request};
 use crate::name::PanelName;
@@ -96,7 +96,10 @@ fn the_daemon_exits_with_the_last_panel() {
         .lifetime
         .add_panel(name.clone(), handle)
         .expect("notes is free");
-    assert!(started.lifetime.panel_ended(&name), "the panel was there");
+    assert!(
+        started.lifetime.panel_ended(&name, None),
+        "the panel was there"
+    );
 
     started
         .loop_thread
@@ -126,7 +129,10 @@ fn the_daemon_stays_resident() {
         .lifetime
         .add_panel(name.clone(), handle)
         .expect("notes is free");
-    assert!(started.lifetime.panel_ended(&name), "the panel was there");
+    assert!(
+        started.lifetime.panel_ended(&name, None),
+        "the panel was there"
+    );
     panel.join().expect("the panel thread ends");
 
     let reply = status(&started.path, None);
@@ -301,6 +307,17 @@ fn an_invalid_reload_keeps_the_previous_config() {
         .expect("the loop thread ends")
         .expect("the daemon exits cleanly");
     fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// The report's warning names the app and the panel with the spec's
+/// wording (spec "Hand-off app is reported", row 7.4).
+#[test]
+fn the_no_window_report_names_the_app_and_the_panel() {
+    assert_eq!(
+        no_window_message("myeditor", &notes()),
+        "myeditor exited without opening a window in panel notes. It may have handed its \
+         window to a running copy, which pinwin cannot dock."
+    );
 }
 
 /// SIGINT and SIGTERM mean the same as `quit`, and no other signal does
