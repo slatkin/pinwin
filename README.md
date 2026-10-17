@@ -197,10 +197,11 @@ option parser arrive with the panel-control rows, so it prints the usage and
 exits 2 until then. `src/cli.rs` is the hand-written argument parser, still
 written against the removed library API; `src/instance.rs` and
 `src/instance/` hold the instance socket (identity, bind, listener and
-client); `src/layout.rs` is the display-free geometry core; `src/surfaces.rs`
-and `src/surfaces/` hold the pure held-gap rules; `src/proxy/crop.rs` is the
-width tween's crop plan, compiled by `tests/tween_crop.rs` until the proxy
-owns it; `src/anim.rs` eases the width; `src/guard.rs` is the panic guard.
+client); `src/geometry.rs` is the display-free geometry core (edges, sizes,
+gutters, the reserved strip and the held gap), compiled from `src/main.rs`;
+`src/proxy/crop.rs` is the width tween's crop plan, compiled by
+`tests/tween_crop.rs` until the proxy owns it; `src/anim.rs` eases the width;
+`src/guard.rs` is the panic guard.
 
 The behaviour spec lives in `openspec/specs/pinwin-panel/spec.md`; the
 archived design decisions code comments cite as D-numbers are under

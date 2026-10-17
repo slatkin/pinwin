@@ -7,6 +7,15 @@
 
 use std::process::ExitCode;
 
+// The geometry core lands before the rows that apply it: the option parser
+// (row 4.3) and the reserve surface (row 6.4) are its first users, and row
+// 6.4 removes this allow once the binary uses it (D15).
+#[allow(
+    dead_code,
+    reason = "rows 4.3 and 6.4 wire geometry in; row 6.4 removes this"
+)]
+mod geometry;
+
 fn main() -> ExitCode {
     eprintln!("usage: pinwin <command> [options]");
     ExitCode::from(2)

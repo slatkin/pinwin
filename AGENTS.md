@@ -26,11 +26,10 @@ and several modules wait for the rows that wire them in (D15).
 - `src/instance.rs` + `src/instance/` — the instance socket: identity, bind,
   listener and client (`InstanceSocket`, `Request`, `instance::send`); the
   daemon socket grows from it.
-- `src/layout.rs` — the display-free layout core: `Layout`/`Side`, `CellSize`,
-  `OutputSize`, `Accent`, `Keyboard`, checked geometry validation and the pty
-  yield decision.
-- `src/surfaces.rs` + `src/surfaces/` — the pure held-gap rules the panel
-  applies before it touches its layer surfaces (`gap.rs`).
+- `src/geometry.rs` — the display-free geometry core: `Edge`, `Size` (pixels
+  or percent), `Gutters`, `ReserveMode`, the layer-surface anchors, margins
+  and size, the reserved strip and the held gap (D9). `src/main.rs` compiles
+  it; the option parser and the reserve surface are its first users.
 - `src/proxy/crop.rs` — the width tween's crop plan (replace-terminal-with-app-host
   D8): the exact-rational scale rounding, the tween crop and the viewport
   source rectangle. No module compiles it yet; `tests/tween_crop.rs` includes
@@ -88,12 +87,13 @@ from (an archived change, or the design of the change that added the code:
 
 ## Testing Guidelines
 
-Run `cargo nextest run` after any change; it runs the three tests in
-`tests/tween_crop.rs`, which cover the width tween's crop plan
-(`src/proxy/crop.rs`) — the only kept module compiled now. The other kept
-modules (`anim`, `guard`, `layout`, `surfaces`, `instance`, `cli`) are not
-compiled until rows 3.1, 4.3, 5.2 and 6.1 wire them in, so they have no
-tests yet. Keep the pure parts display-free
+Run `cargo nextest run` after any change; it runs the geometry core's unit
+tests in `src/geometry.rs` — the spec's docking, gutter, reserve and
+held-gap scenarios — and the three tests in `tests/tween_crop.rs`, which
+cover the width tween's crop plan (`src/proxy/crop.rs`) until the proxy owns
+it. The other kept modules (`anim`, `guard`, `instance`, `cli`) are not
+compiled until rows 4.3, 5.2 and 6.1 wire them in, so they have no tests
+yet. Keep the pure parts display-free
 (`port-to-rust` D10): take the fd and the outputs of the environment as
 parameters, so the tests run without a display. Tests that need a real
 compositor are `#[ignore]`d and run explicitly. Once the proxy lands, exercise
