@@ -228,7 +228,7 @@ below). Its code does not enter pinwin; only the findings do.
 
 ## 9. Focus ring
 
-- [ ] 9.1 Add the ring as four desynchronized subsurfaces with shm buffers and empty input
+- [x] 9.1 Add the ring as four desynchronized subsurfaces with shm buffers and empty input
   regions, shown on `wl_keyboard.enter` (D10). Verify: unit test of the four rectangles for
   each edge and width; live, the user confirms "Accent appears while focused" and "Accent
   disabled", and that clicks on the ring reach the app.
