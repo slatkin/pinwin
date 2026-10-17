@@ -217,6 +217,13 @@ fn the_setting_forms_parse() {
             width: NonZeroU32::new(2).expect("a nonzero width"),
         })
     );
+    assert_eq!(
+        "#000000:65535".parse::<FocusRing>(),
+        Ok(FocusRing::On {
+            color: Rgb::new(0, 0, 0),
+            width: NonZeroU32::new(65535).expect("a nonzero width"),
+        })
+    );
     assert_eq!(Rgb::new(1, 2, 3).channels(), [1, 2, 3]);
 }
 
@@ -239,7 +246,15 @@ fn the_setting_forms_reject_other_values() {
     for raw in ["", "Underlay", "Top "] {
         assert!(raw.parse::<Layer>().is_err(), "layer {raw:?}");
     }
-    for raw in ["", "#dabc7", "#dabc7f:0", "dabc7f", "#dabc7f:"] {
+    for raw in [
+        "",
+        "#dabc7",
+        "#dabc7f:0",
+        "dabc7f",
+        "#dabc7f:",
+        "#dabc7f:65536",
+        "#dabc7f:70000",
+    ] {
         assert!(raw.parse::<FocusRing>().is_err(), "focus ring {raw:?}");
     }
     let error = "middle".parse::<Edge>().expect_err("not an edge");

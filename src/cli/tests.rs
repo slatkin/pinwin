@@ -148,7 +148,7 @@ fn run_without_a_command_is_a_usage_error() {
 /// error that names the option, not a panel error, and exits 2.
 #[test]
 fn an_invalid_focus_ring_is_a_usage_error() {
-    for value in ["on", "#12345", "#dabc7f:0", "dabc7f"] {
+    for value in ["on", "#12345", "#dabc7f:0", "dabc7f", "#dabc7f:70000"] {
         let error = usage(&["run", "--focus-ring", value, "--", "myeditor"]);
         assert!(
             error.to_string().starts_with("pinwin: --focus-ring:"),

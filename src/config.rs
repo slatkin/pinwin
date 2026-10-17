@@ -145,6 +145,21 @@ pub enum FocusRing {
     On { color: Rgb, width: NonZeroU32 },
 }
 
+/// The widest focus ring the spec allows, in pixels (spec "Keyboard focus by
+/// clicking": a width of `1..=65535`).
+const FOCUS_RING_MAX_WIDTH: u32 = 65535;
+
+/// A focus-ring width from its text: `1..=65535` pixels, or `None` for a
+/// width outside that range or not a number at all (spec "Keyboard focus by
+/// clicking").
+fn parse_focus_ring_width(raw: &str) -> Option<NonZeroU32> {
+    let width = parse_digits(raw)?;
+    if width > FOCUS_RING_MAX_WIDTH {
+        return None;
+    }
+    NonZeroU32::new(width)
+}
+
 impl FromStr for FocusRing {
     type Err = InvalidValue;
 
@@ -153,7 +168,7 @@ impl FromStr for FocusRing {
             return Ok(Self::Off);
         }
         let (color, width) = match raw.split_once(':') {
-            Some((color, width)) => (color, parse_digits(width).and_then(NonZeroU32::new)),
+            Some((color, width)) => (color, parse_focus_ring_width(width)),
             None => (raw, Some(NonZeroU32::MIN)),
         };
         match (parse_rgb(color), width) {
