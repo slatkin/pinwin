@@ -16,25 +16,29 @@
 //! `handle_closed` are the source. The slot test and the pass-through path
 //! are pinwin's.
 //!
-//! The handler parameters the proxy's own object would carry are unused and
-//! named `_slf`: a handler that held its own object in an `Rc` would close a
-//! reference cycle, so the display, registry and wm-base handlers keep a
-//! `Weak` instead and the surface and toplevel handlers keep the objects
-//! they act on.
+//! The handler parameters the proxy's own object would carry are named
+//! `_slf`, the trait's name with the unused-prefix the codebase's lints
+//! require, and a handler that needs its own object reaches it through a
+//! `Weak` field instead of the parameter: a handler that held its own object
+//! in an `Rc` would close a reference cycle, so the display, registry,
+//! wm-base, toplevel and layer-surface handlers keep their own object weak
+//! and keep the other objects they act on.
 //!
 //! The layer surface here is the minimal one rows 6.2 and 6.3 run with:
 //! anchors, size, margins, layer and keyboard mode from [`PanelSettings`],
 //! and a percent size resolved against a placeholder 1920x1080 output until
 //! row 6.4 reads the real output size from `zxdg_output_v1`. Popups and
-//! decorations are row 6.3: a panel window's popups cannot forward yet
-//! because its `xdg_surface` has no upstream object, so this row leaves the
-//! default handler to drop them, while a passed-through window's popups use
-//! the default forward path.
+//! decorations are row 6.3 (D5): a popup of the panel window becomes a popup
+//! of its layer surface with the anchor rectangle moved by the window
+//! geometry ([`super::popup`]), and each decoration object is routed by its
+//! toplevel — answered server-side for the panel window, forwarded to the
+//! compositor's real manager or answered client-side for a passed-through
+//! window ([`super::decoration`]).
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use wl_proxy::object::{Object, ObjectCoreApi, ObjectRcUtils};
+use wl_proxy::object::{Object, ObjectCoreApi, ObjectRcUtils, ObjectUtils};
 use wl_proxy::protocols::ObjectInterface;
 use wl_proxy::protocols::wayland::wl_display::{WlDisplay, WlDisplayHandler};
 use wl_proxy::protocols::wayland::wl_registry::{WlRegistry, WlRegistryHandler};
@@ -46,15 +50,28 @@ use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::{
     ZwlrLayerSurfaceV1, ZwlrLayerSurfaceV1Anchor, ZwlrLayerSurfaceV1Handler,
     ZwlrLayerSurfaceV1KeyboardInteractivity,
 };
+use wl_proxy::protocols::xdg_decoration_unstable_v1::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
+use wl_proxy::protocols::xdg_shell::xdg_popup::XdgPopup;
+use wl_proxy::protocols::xdg_shell::xdg_positioner::XdgPositioner;
 use wl_proxy::protocols::xdg_shell::xdg_surface::{XdgSurface, XdgSurfaceHandler};
 use wl_proxy::protocols::xdg_shell::xdg_toplevel::{
     XdgToplevel, XdgToplevelHandler, XdgToplevelState,
 };
 use wl_proxy::protocols::xdg_shell::xdg_wm_base::{XdgWmBase, XdgWmBaseHandler};
 
+use super::decoration::{ClientDecorationManager, ClientSyntheticDecorationManager};
+use super::popup::{ClientXdgPopup, ClientXdgPositioner, offset_anchor_rect};
 use super::slot::{Route, Slot};
 use crate::config::{Keyboard, Layer, PanelSettings};
 use crate::geometry::{Anchors, Edge, Geometry, OutputSize};
+
+/// Whether `toplevel` is the panel's window (D5): only the slot's toplevel
+/// carries a handler, a passed-through window uses the default forward path,
+/// and a toplevel whose panel window ended has its handler unset. This is
+/// what routes a decoration object at the time of each request.
+pub(super) fn is_panel_window(toplevel: &XdgToplevel) -> bool {
+    toplevel.try_get_handler_ref::<ClientXdgToplevel>().is_ok()
+}
 
 /// The layer-shell namespace of a panel surface. One namespace keeps every
 /// panel out of the special namespaces compositors reserve for their own
@@ -69,6 +86,16 @@ const NAMESPACE: &str = "pinwin";
 const PLACEHOLDER_OUTPUT_WIDTH: u32 = 1920;
 const PLACEHOLDER_OUTPUT_HEIGHT: u32 = 1080;
 
+/// The global name the proxy's synthetic decoration manager is announced
+/// under (D5): a compositor's global names start at 1, so the app's bind of
+/// name 0 can only be the proxy's own manager and is never forwarded
+/// upstream.
+const SYNTHETIC_GLOBAL_NAME: u32 = 0;
+
+/// The version the synthetic decoration manager is announced with: version 1
+/// is the interface's only version.
+const SYNTHETIC_DECORATION_VERSION: u32 = 1;
+
 /// The routing state one panel shares between all its app connections (D4):
 /// the slot, the settings the panel's layer surface is built from, and the
 /// compositor's layer-shell object once the proxy's registry found it. One
@@ -78,6 +105,11 @@ pub(super) struct Routing {
     settings: PanelSettings,
     slot: Cell<Slot>,
     layer_shell: RefCell<Option<Rc<ZwlrLayerShellV1>>>,
+    /// The compositor's `zxdg_decoration_manager_v1`, bound by the proxy's
+    /// own registry (D5): a passed-through window's decoration object is
+    /// forwarded to it. `None` while the compositor announces none, which is
+    /// when the app's registries hear the proxy's synthetic one instead.
+    decoration_manager: RefCell<Option<Rc<ZxdgDecorationManagerV1>>>,
 }
 
 impl Routing {
@@ -87,6 +119,7 @@ impl Routing {
             settings,
             slot: Cell::new(Slot::new()),
             layer_shell: RefCell::new(None),
+            decoration_manager: RefCell::new(None),
         })
     }
 
@@ -127,6 +160,25 @@ impl Routing {
     /// Keeps the layer-shell object the proxy registry bound.
     fn set_layer_shell(&self, layer_shell: Rc<ZwlrLayerShellV1>) {
         *self.layer_shell.borrow_mut() = Some(layer_shell);
+    }
+
+    /// Whether the compositor has a real `zxdg_decoration_manager_v1` (D5):
+    /// the proxy binds it when the compositor announces it, and only then are
+    /// a passed-through window's decoration objects forwarded instead of
+    /// answered client-side.
+    pub(super) fn has_decoration_manager(&self) -> bool {
+        self.decoration_manager.borrow().is_some()
+    }
+
+    /// The compositor's decoration manager, which a passed-through window's
+    /// decoration object is forwarded to (D5).
+    pub(super) fn decoration_manager(&self) -> Option<Rc<ZxdgDecorationManagerV1>> {
+        self.decoration_manager.borrow().clone()
+    }
+
+    /// Keeps the decoration manager the proxy's registry bound (D5).
+    fn set_decoration_manager(&self, manager: Rc<ZxdgDecorationManagerV1>) {
+        *self.decoration_manager.borrow_mut() = Some(manager);
     }
 
     /// The panel surface's geometry: its anchors, margins and size across
@@ -193,6 +245,7 @@ impl WlDisplayHandler for ClientDisplay {
         registry.set_handler(ClientRegistry {
             routing: Rc::clone(&self.routing),
             registry: Rc::downgrade(registry),
+            announced_synthetic_manager: false,
         });
     }
 }
@@ -214,41 +267,105 @@ impl WlRegistryHandler for ProxyRegistry {
         interface: ObjectInterface,
         version: u32,
     ) {
-        if interface != ObjectInterface::ZwlrLayerShellV1 {
-            return;
-        }
         let Some(registry) = self.registry.upgrade() else {
             return;
         };
-        // Version 5 is the interface's XML version and the one wl-paper
-        // binds; a compositor that implements less gets its version.
-        let layer_shell = registry
-            .state()
-            .create_object::<ZwlrLayerShellV1>(version.min(5));
-        let concrete = Rc::clone(&layer_shell);
-        let bound: Rc<dyn Object> = concrete;
-        registry.send_bind(name, bound);
-        self.routing.set_layer_shell(layer_shell);
+        if interface == ObjectInterface::ZwlrLayerShellV1 {
+            // Version 5 is the interface's XML version and the one wl-paper
+            // binds; a compositor that implements less gets its version.
+            let layer_shell = registry
+                .state()
+                .create_object::<ZwlrLayerShellV1>(version.min(5));
+            let concrete = Rc::clone(&layer_shell);
+            let bound: Rc<dyn Object> = concrete;
+            registry.send_bind(name, bound);
+            self.routing.set_layer_shell(layer_shell);
+        } else if interface == ObjectInterface::ZxdgDecorationManagerV1 {
+            // D5: the compositor's real decoration manager is kept, so a
+            // passed-through window's decoration object can be forwarded to
+            // it. Version 1 is the interface's only version.
+            let manager = registry
+                .state()
+                .create_object::<ZxdgDecorationManagerV1>(version.min(1));
+            let concrete = Rc::clone(&manager);
+            let bound: Rc<dyn Object> = concrete;
+            registry.send_bind(name, bound);
+            self.routing.set_decoration_manager(manager);
+        }
     }
 }
 
-/// The app's registry handler (D4): it installs the xdg-shell handler on the
-/// app's `xdg_wm_base` bind and forwards every other bind unchanged.
+/// The app's registry handler (D4, D5): it announces the proxy's synthetic
+/// decoration manager when the compositor has none, installs the xdg-shell
+/// handler on the app's `xdg_wm_base` bind and the per-window decoration
+/// handler on its decoration manager bind, and forwards every other bind
+/// unchanged.
 struct ClientRegistry {
     routing: Rc<Routing>,
     /// The app's registry, kept weak so the handler does not keep its own
     /// object alive.
     registry: Weak<WlRegistry>,
+    /// Whether this registry already heard the proxy's synthetic decoration
+    /// manager (D5): one announcement per registry, and only while the
+    /// compositor has no real one.
+    announced_synthetic_manager: bool,
 }
 
 impl WlRegistryHandler for ClientRegistry {
+    fn handle_global(
+        &mut self,
+        _slf: &Rc<WlRegistry>,
+        name: u32,
+        interface: ObjectInterface,
+        version: u32,
+    ) {
+        let Some(registry) = self.registry.upgrade() else {
+            return;
+        };
+        if !self.announced_synthetic_manager && !self.routing.has_decoration_manager() {
+            self.announced_synthetic_manager = true;
+            // D5: without the compositor's manager the proxy offers its own,
+            // so a panel window is still told server-side decorations. The
+            // app's first global cannot arrive before the proxy's registry
+            // saw the compositor's whole list — both lists are answered in
+            // the order their `get_registry` requests were sent — so the
+            // decision is made on the complete list.
+            registry.send_global(
+                SYNTHETIC_GLOBAL_NAME,
+                ObjectInterface::ZxdgDecorationManagerV1,
+                SYNTHETIC_DECORATION_VERSION,
+            );
+        }
+        registry.send_global(name, interface, version);
+    }
+
     fn handle_bind(&mut self, _slf: &Rc<WlRegistry>, name: u32, id: Rc<dyn Object>) {
+        if name == SYNTHETIC_GLOBAL_NAME {
+            if id.interface() == ObjectInterface::ZxdgDecorationManagerV1 {
+                // The proxy's synthetic manager (D5): its decoration objects
+                // are answered by the proxy, so the bind is never forwarded.
+                let manager = id.downcast::<ZxdgDecorationManagerV1>();
+                manager.set_handler(ClientSyntheticDecorationManager::new(&manager));
+            } else {
+                // A bind of the proxy's own name for another interface names
+                // no compositor global: the object stays local instead of
+                // erroring upstream.
+                id.set_forward_to_server(false);
+            }
+            return;
+        }
         if id.interface() == ObjectInterface::XdgWmBase {
             let xdg_wm_base = id.downcast::<XdgWmBase>();
             xdg_wm_base.set_handler(ClientXdgWmBase {
                 routing: Rc::clone(&self.routing),
                 xdg_wm_base: Rc::downgrade(&xdg_wm_base),
             });
+        }
+        if id.interface() == ObjectInterface::ZxdgDecorationManagerV1 {
+            // D5: the compositor's real manager is kept, and each decoration
+            // object it creates is routed by its toplevel.
+            let manager = id.downcast::<ZxdgDecorationManagerV1>();
+            manager.set_handler(ClientDecorationManager::new(Rc::clone(&self.routing)));
         }
         if let Some(registry) = self.registry.upgrade() {
             registry.send_bind(name, id);
@@ -266,6 +383,16 @@ struct ClientXdgWmBase {
 }
 
 impl XdgWmBaseHandler for ClientXdgWmBase {
+    fn handle_create_positioner(&mut self, _slf: &Rc<XdgWmBase>, id: &Rc<XdgPositioner>) {
+        // The popup offset needs the anchor rectangle the app set (D5): the
+        // handler records it while the request itself is forwarded (wl-paper).
+        id.set_handler(ClientXdgPositioner::new(id));
+        let Some(xdg_wm_base) = self.xdg_wm_base.upgrade() else {
+            return;
+        };
+        xdg_wm_base.send_create_positioner(id);
+    }
+
     fn handle_get_xdg_surface(
         &mut self,
         _slf: &Rc<XdgWmBase>,
@@ -282,6 +409,7 @@ impl XdgWmBaseHandler for ClientXdgWmBase {
             xdg_wm_base,
             layer_surface: None,
             has_server: false,
+            geometry: None,
         };
         id.set_handler(xdg_surface);
     }
@@ -300,6 +428,12 @@ struct ClientXdgSurface {
     /// false while the surface is held back, true after a pass-through
     /// forward.
     has_server: bool,
+    /// The window geometry the app set on this surface, `[x, y, width,
+    /// height]` (D5): a popup of the panel window offsets its anchor
+    /// rectangle by the panel window's one, and row 6.4 crops the panel
+    /// window's buffer to it (D8). A surface the app set none on keeps
+    /// `None`.
+    geometry: Option<[i32; 4]>,
 }
 
 impl ClientXdgSurface {
@@ -347,11 +481,13 @@ impl ClientXdgSurface {
         id.set_handler(ClientXdgToplevel {
             routing: Rc::clone(&self.routing),
             layer_surface: Rc::clone(&layer_surface),
+            toplevel: Rc::downgrade(id),
             window: id.unique_id(),
         });
         layer_surface.set_handler(ProxyLayerSurface {
             xdg_surface: Rc::clone(&self.xdg_surface),
             xdg_toplevel: Rc::clone(id),
+            layer_surface: Rc::downgrade(&layer_surface),
         });
         self.layer_surface = Some(layer_surface);
     }
@@ -388,11 +524,77 @@ impl XdgSurfaceHandler for ClientXdgSurface {
         width: i32,
         height: i32,
     ) {
-        // The panel surface's window geometry is kept for the viewport crop
-        // (D8) by row 6.4; a held surface has no upstream object to tell.
+        // The window geometry drives the popup anchor offset (D5) and, from
+        // row 6.4, the panel window's viewport crop (D8); every surface keeps
+        // what the app asked for, and a held surface sends nothing upstream
+        // yet.
+        self.geometry = Some([x, y, width, height]);
         if self.has_server {
             self.xdg_surface
                 .send_set_window_geometry(x, y, width, height);
+        }
+    }
+
+    fn handle_get_popup(
+        &mut self,
+        _slf: &Rc<XdgSurface>,
+        id: &Rc<XdgPopup>,
+        parent: Option<&Rc<XdgSurface>>,
+        positioner: &Rc<XdgPositioner>,
+    ) {
+        // The popup's parent decides its route (D5): a popup of the panel
+        // window becomes a popup of the panel's layer surface, moved by the
+        // window geometry, and every other popup is forwarded unchanged.
+        // Copied from wl-paper's `paper.rs`
+        // `ClientXdgSurface::handle_get_popup` (GPL-3.0); the geometry the
+        // offset moves by is the one [`Self::handle_set_window_geometry`]
+        // keeps.
+        if !self.has_server {
+            // The upstream popup is created from this surface's upstream
+            // `xdg_surface`, so the held-back surface goes first.
+            self.xdg_wm_base
+                .send_get_xdg_surface(&self.xdg_surface, &self.wl_surface);
+            self.has_server = true;
+        }
+        if let Some([x, y, width, height]) = self.geometry {
+            self.xdg_surface
+                .send_set_window_geometry(x, y, width, height);
+        }
+        let mut layer_surface = None;
+        let mut proxy_parent = parent;
+        let mut parent_geometry = None;
+        if let Some(parent) = parent
+            && let Ok(parent_handler) = parent.try_get_handler_ref::<ClientXdgSurface>()
+            && let Some(parent_layer) = &parent_handler.layer_surface
+        {
+            layer_surface = Some(Rc::clone(parent_layer));
+            proxy_parent = None;
+            parent_geometry = parent_handler.geometry;
+        }
+        let anchor = positioner
+            .try_get_handler_ref::<ClientXdgPositioner>()
+            .ok()
+            .and_then(|handler| handler.anchor_rect());
+        if let Some(geometry) = parent_geometry
+            && let Some([ax, ay, aw, ah]) = anchor
+        {
+            let [x, y, width, height] = offset_anchor_rect([ax, ay, aw, ah], Some(geometry));
+            positioner.send_set_anchor_rect(x, y, width, height);
+        }
+        self.xdg_surface
+            .send_get_popup(id, proxy_parent, positioner);
+        if parent_geometry.is_some()
+            && let Some([ax, ay, aw, ah]) = anchor
+        {
+            // The upstream positioner keeps the app's rectangle: the offset
+            // was only for this popup's creation (wl-paper).
+            positioner.send_set_anchor_rect(ax, ay, aw, ah);
+        }
+        if let Some(layer_surface) = layer_surface {
+            layer_surface.send_get_popup(id);
+        }
+        if let Some(geometry) = parent_geometry {
+            id.set_handler(ClientXdgPopup::new(id, geometry));
         }
     }
 
@@ -413,6 +615,9 @@ impl XdgSurfaceHandler for ClientXdgSurface {
 struct ClientXdgToplevel {
     routing: Rc<Routing>,
     layer_surface: Rc<ZwlrLayerSurfaceV1>,
+    /// The toplevel this handler answers, kept weak so the handler does not
+    /// keep its own object alive.
+    toplevel: Weak<XdgToplevel>,
     /// The panel window's unique id, which empties the slot when the app
     /// destroys it.
     window: u64,
@@ -420,6 +625,12 @@ struct ClientXdgToplevel {
 
 impl XdgToplevelHandler for ClientXdgToplevel {
     fn handle_destroy(&mut self, _slf: &Rc<XdgToplevel>) {
+        // The handler holds the layer surface, whose own handler holds this
+        // toplevel: unset it here, as wl-paper's does, so the two objects
+        // cannot keep each other alive past the app's destroy.
+        if let Some(toplevel) = self.toplevel.upgrade() {
+            toplevel.unset_handler();
+        }
         self.layer_surface.send_destroy();
         self.routing.release(self.window);
     }
@@ -432,14 +643,20 @@ impl XdgToplevelHandler for ClientXdgToplevel {
 struct ProxyLayerSurface {
     xdg_surface: Rc<XdgSurface>,
     xdg_toplevel: Rc<XdgToplevel>,
+    /// The layer surface this handler answers, kept weak so the handler does
+    /// not keep its own object alive.
+    layer_surface: Weak<ZwlrLayerSurfaceV1>,
 }
 
 impl ZwlrLayerSurfaceV1Handler for ProxyLayerSurface {
     fn delete_id(&mut self, _slf: &Rc<ZwlrLayerSurfaceV1>) {
-        // Break the handler cycle between the panel toplevel and its layer
-        // surface, then release the app's local toplevel id; the layer
-        // surface object drops with this handler.
-        self.xdg_toplevel.unset_handler();
+        // Drop this handler first: it holds the app's toplevel and the
+        // panel's xdg_surface, so unsetting it breaks the handler cycle
+        // (wl-paper), and then free the app's toplevel id, which died with
+        // the layer surface the compositor destroyed.
+        if let Some(layer_surface) = self.layer_surface.upgrade() {
+            layer_surface.unset_handler();
+        }
         self.xdg_toplevel.delete_id();
     }
 

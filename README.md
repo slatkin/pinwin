@@ -118,6 +118,17 @@ as a normal compositor window, as it would without pinwin. A window that
 opened this way stays a normal window when the panel's window closes: the
 panel does not take it over.
 
+Popups follow the window they belong to. A popup of the panel's window, such
+as a context menu or a tooltip, opens where the app asks for it relative to
+its window. A popup of another window behaves as it would without pinwin.
+
+The panel's window carries no title bar and no frame: the app is told that
+the compositor draws the decorations, and the compositor draws none on a
+panel. Another window of the app gets the same decorations as without
+pinwin, whether the compositor or the app draws them. An app that ignores
+the decoration protocol and paints a title bar of its own keeps painting it
+for now.
+
 An app that hands a launch to a running copy opens no window of its own, so it
 puts nothing in the panel; the running copy keeps its own window. Start such
 an app so that it opens a window in this process; Ghostty, for example, needs

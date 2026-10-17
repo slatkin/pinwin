@@ -105,9 +105,10 @@ and several modules wait for the rows that wire them in (D15).
   left, or the daemon dropped the handle), and `spawn`, which rows 7.1 to
   7.3 call for the display the app sets in `WAYLAND_DISPLAY` and the handle
   the daemon registers. Row 6.2 adds the window routing (D4) and the slot
-  its status reads; the change commands are answered without effect until
-  rows 6.4 and 6.6 give them one, and popups and decorations arrive with
-  row 6.3. `src/main.rs` compiles it; its tests are `src/proxy/tests.rs`.
+  its status reads, and row 6.3 the popups and the per-window decorations
+  (D5); the change commands are answered without effect until rows 6.4 and
+  6.6 give them one. `src/main.rs` compiles it; its tests are
+  `src/proxy/tests.rs`.
 - `src/proxy/slot.rs` — the panel's one window slot (D4, spec "First
   window", "Window comes back", "Dialog", "Passed-through window stays",
   "Empty panel shows nothing"): the pure `Slot` of no window or one held
@@ -116,13 +117,31 @@ and several modules wait for the rows that wire them in (D15).
   compositor.
 - `src/proxy/routing.rs` — the xdg-shell to layer-surface window routing (D4):
   the client display and registry handlers that bind `zwlr_layer_shell_v1`
-  and hold every `xdg_surface` back, the slot branch that makes the panel's
+  and the compositor's real `zxdg_decoration_manager_v1`, hold every
+  `xdg_surface` back, announce the proxy's synthetic decoration manager
+  (global name 0) when the compositor has none, the slot branch that makes the panel's
   first toplevel a `zwlr_layer_surface_v1` with the settings' anchors, size,
   margins, layer and keyboard mode, the pass-through branch that forwards
-  every later toplevel unchanged, and the configure/ack mapping and
+  every later toplevel unchanged, the `get_popup` that routes each popup by
+  its parent and keeps the window geometry `set_window_geometry` asked for,
+  and the configure/ack mapping and
   `closed` forwarding copied from wl-paper's `apps/wl-paper/src/paper.rs`
   (GPL-3.0). A percent size resolves against a placeholder 1920x1080 output
   until row 6.4 reads the real one.
+- `src/proxy/popup.rs` — the popups of the panel window (D5): the recorded
+  `xdg_positioner` anchor rectangle, the `offset_anchor_rect` that moves it
+  by the parent window geometry, the `translate_configure` that moves a
+  layer popup's configure back into the app's coordinates, and the
+  positioner and popup handlers copied from wl-paper's
+  `apps/wl-paper/src/paper.rs` (GPL-3.0). The helpers are display-free
+  (`port-to-rust` D10), so their six tests run without a compositor.
+- `src/proxy/decoration.rs` — the per-window decoration routing (D5): the
+  `route_decoration` decision — server-side for the panel window, forwarded
+  to the compositor's real manager or answered client-side for a
+  passed-through window — read from the toplevel's state at the time of each
+  request, and the manager and decoration handlers that apply it, with the
+  local answer shape from wl-paper (GPL-3.0). The decision is display-free,
+  so its four tests run without a compositor.
 - `src/proxy/check.rs` — the layer-shell check at daemon start (D12, spec
   "Wayland layer-shell is required"): a throwaway `State` reads the
   compositor's globals in one roundtrip and `has_layer_shell` decides over
@@ -246,7 +265,13 @@ that panics under the guard ends only that panel's handle — its name leaves
 the registry, the other panel still answers and the daemon stays up — with
 stand-in panel threads and no compositor, and the pure slot tests in
 `src/proxy/slot.rs` cover the D4 rule: "First window", "Window comes back",
-"Dialog", "Passed-through window stays" and "Empty panel shows nothing". The
+"Dialog", "Passed-through window stays" and "Empty panel shows nothing", the
+pure popup-offset tests in `src/proxy/popup.rs` cover the anchor rectangle a
+panel window's popup is created with (no geometry set, a negative CSD
+origin, saturation past `i32` and the configure moved back), and the pure
+decoration-routing tests in `src/proxy/decoration.rs` cover the D5 matrix:
+server-side for the panel window, forwarded to a real manager or answered
+client-side without one, read from the slot at the time of each request. The
 decision tests in
 `src/proxy/check.rs` cover the layer-shell global list ("No layer-shell").
 The tests in `tests/command_line_ipc.rs` run a stand-in compositor on the

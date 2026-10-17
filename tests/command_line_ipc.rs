@@ -76,8 +76,9 @@ fn pinwin(dir: &Path, args: &[&str]) -> Command {
 }
 
 /// Run one `pinwin` client to exit with a bounded wait and collect its
-/// output. A child that outlives the bound is killed and the test fails, so a
-/// wedged client cannot block the suite.
+/// output. A child that outlives the bound is killed and reaped before the
+/// test fails, so a wedged client can neither block the suite nor outlive
+/// it.
 fn client_output(mut command: Command) -> Output {
     let mut child = command
         .stdout(Stdio::piped())
@@ -89,10 +90,11 @@ fn client_output(mut command: Command) -> Output {
         if child.try_wait().expect("the client's status").is_some() {
             return child.wait_with_output().expect("the client's output");
         }
-        assert!(
-            Instant::now() < deadline,
-            "pinwin did not exit within {CLIENT_TIMEOUT:?}"
-        );
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("pinwin did not exit within {CLIENT_TIMEOUT:?}");
+        }
         thread::sleep(Duration::from_millis(10));
     }
 }

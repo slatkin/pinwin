@@ -9,9 +9,11 @@
 //! Wayland traffic and the app's exit needs no `waitpid` (D3, D12). Row 6.2
 //! adds window routing (D4): the app's first toplevel becomes the panel's
 //! layer surface, every later one passes through, and the panel's `shown` and
-//! `has_window` reflect that slot. The change commands are answered without
-//! effect until rows 6.4 and 6.6 give them one, and popups and decorations
-//! arrive with row 6.3.
+//! `has_window` reflect that slot. Row 6.3 adds popups and the per-window
+//! decorations (D5): a popup of the panel window opens as a popup of its
+//! layer surface, and each decoration object is answered by its toplevel's
+//! route. The change commands are answered without effect until rows 6.4 and
+//! 6.6 give them one.
 //!
 //! The whole loop runs under the shared panic guard (D5): a panic in one
 //! panel drops that panel's state, which closes its app's Wayland
@@ -66,6 +68,16 @@ pub mod check;
 mod routing;
 #[path = "proxy/slot.rs"]
 pub mod slot;
+
+// The D5 popup handlers: the recorded anchor rectangle and the configure a
+// layer popup reports in the app's own coordinates.
+#[path = "proxy/popup.rs"]
+mod popup;
+
+// The D5 per-window decoration routing: each decoration object is answered
+// by its toplevel's route.
+#[path = "proxy/decoration.rs"]
+mod decoration;
 
 #[cfg(test)]
 #[path = "proxy/tests.rs"]
