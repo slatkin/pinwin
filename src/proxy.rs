@@ -26,7 +26,9 @@
 //! show ([`hide`]), and row 8.3 the keyboard modes ([`keyboard`]):
 //! `set-keyboard` changes the live interactivity, `focus` shows a hidden
 //! panel so its map gives the keyboard, and an on-demand launch withholds
-//! the mode until after its first buffer so it steals no focus.
+//! the mode until after its first buffer so it steals no focus. Row 9.1 adds
+//! the focus ring ([`ring`]): four desynchronized sub-surfaces of the panel
+//! surface, shown while the panel holds the keyboard (D10).
 //!
 //! The whole loop runs under the shared panic guard (D5): a panic in one
 //! panel drops that panel's state, which closes its app's Wayland
@@ -134,6 +136,11 @@ mod hide;
 // keeps an on-demand panel from stealing the keyboard when it opens.
 #[path = "proxy/keyboard.rs"]
 mod keyboard;
+
+// The panel's focus ring (row 9.1, D10): four desynchronized subsurfaces of
+// the panel surface, shown while the panel holds the keyboard.
+#[path = "proxy/ring.rs"]
+mod ring;
 
 // Explicit synchronization (row 8.2, D6): the acquire and release points a
 // hidden panel holds until a commit carries a buffer.

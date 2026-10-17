@@ -52,6 +52,7 @@ use wl_proxy::protocols::wayland::wl_surface::WlSurface;
 
 use super::commit::PanelSurfaceCommits;
 use super::mapping::{anchor_of, keyboard_of};
+use super::ring;
 use super::routing::Routing;
 use super::syncobj::Points;
 use crate::daemon::events::{Bus, Event};
@@ -519,6 +520,9 @@ fn hide(routing: &Rc<Routing>, panel: &PanelName, bus: &Bus) -> PanelReply {
         return PanelReply::Done;
     }
     routing.hidden.set_hidden(true);
+    // D10: a hidden panel shows no ring, and the hide gives up the keyboard
+    // focus the ring followed.
+    ring::on_panel_hidden(routing);
     if let Some((surface, _, _)) = routing.panel_window()
         && let Ok(commits) = surface.try_get_handler_ref::<PanelSurfaceCommits>()
     {
@@ -551,6 +555,9 @@ pub(super) fn show(routing: &Rc<Routing>, panel: &PanelName, bus: &Bus) -> Panel
         return PanelReply::Done;
     }
     routing.hidden.set_hidden(false);
+    // D10: the show keeps the ring off until a keyboard enter reports the
+    // focus it may take (spec "Show takes focus").
+    ring::on_panel_hidden(routing);
     if let Some((surface, _, _)) = routing.panel_window()
         && let Ok(commits) = surface.try_get_handler_ref::<PanelSurfaceCommits>()
     {

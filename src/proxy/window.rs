@@ -15,6 +15,7 @@ use wl_proxy::client::Client;
 use wl_proxy::object::Object;
 use wl_proxy::protocols::xdg_shell::xdg_toplevel::{XdgToplevel, XdgToplevelHandler};
 
+use super::ring;
 use super::routing::Routing;
 
 /// The panel's local `xdg_toplevel` handler (D4): the app destroying the
@@ -56,7 +57,9 @@ impl XdgToplevelHandler for ClientXdgToplevel {
             layer_surface.send_destroy();
         }
         // D9: the reserve surface is destroyed with the panel window it was
-        // created for, which also frees the slot and the strip.
+        // created for, which also frees the slot and the strip; D10: the
+        // focus ring's sub-surfaces go with the window they were laid over.
+        ring::window_destroyed(&self.routing);
         self.routing.on_panel_window_destroyed(self.window);
     }
 }
@@ -71,5 +74,6 @@ pub(super) fn client_disconnected(routing: &Routing, client: &Weak<Client>) {
     if let Some(layer_surface) = routing.panel_layer_surface() {
         layer_surface.send_destroy();
     }
+    ring::window_destroyed(routing);
     routing.on_panel_window_destroyed(window);
 }

@@ -431,6 +431,14 @@ impl ZwlrLayerSurfaceV1Handler for ProxyLayerSurface {
         width: u32,
         height: u32,
     ) {
+        // D10: the configured size is the size the app draws at, so the focus
+        // ring's bars follow it; a size change rides the commit coordinator.
+        if let Some(routing) = self.routing.upgrade() {
+            routing
+                .globals()
+                .ring()
+                .on_configure(&routing, (width, height));
+        }
         let states = toplevel_states(&self.xdg_toplevel);
         if self.xdg_toplevel.version() >= XdgToplevel::MSG__CONFIGURE_BOUNDS__SINCE {
             self.xdg_toplevel

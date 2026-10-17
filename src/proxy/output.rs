@@ -35,6 +35,7 @@ use wl_proxy::protocols::wayland::wl_compositor::WlCompositor;
 use wl_proxy::protocols::wayland::wl_output::{WlOutput, WlOutputHandler, WlOutputMode};
 use wl_proxy::protocols::wayland::wl_registry::{WlRegistry, WlRegistryHandler};
 use wl_proxy::protocols::wayland::wl_shm::WlShm;
+use wl_proxy::protocols::wayland::wl_subcompositor::WlSubcompositor;
 use wl_proxy::protocols::wayland::wl_surface::{WlSurface, WlSurfaceHandler};
 use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wl_proxy::protocols::xdg_decoration_unstable_v1::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
@@ -43,6 +44,7 @@ use wl_proxy::protocols::xdg_output_unstable_v1::zxdg_output_v1::{
     ZxdgOutputV1, ZxdgOutputV1Handler,
 };
 
+use super::ring::RingSlot;
 use super::routing::Routing;
 use crate::geometry::OutputSize;
 
@@ -52,6 +54,7 @@ use crate::geometry::OutputSize;
 /// `set-output` flow of row 6.5 matches panels against.
 const COMPOSITOR_VERSION: u32 = 7;
 const SHM_VERSION: u32 = 3;
+const SUBCOMPOSITOR_VERSION: u32 = 1;
 const VIEWPORTER_VERSION: u32 = 1;
 const OUTPUT_VERSION: u32 = 4;
 const XDG_OUTPUT_MANAGER_VERSION: u32 = 3;
@@ -161,6 +164,7 @@ impl OutputTracker {
 pub(super) struct Globals {
     compositor: RefCell<Option<Rc<WlCompositor>>>,
     shm: RefCell<Option<Rc<WlShm>>>,
+    subcompositor: RefCell<Option<Rc<WlSubcompositor>>>,
     viewporter: RefCell<Option<Rc<WpViewporter>>>,
     output_manager: RefCell<Option<Rc<ZxdgOutputManagerV1>>>,
     /// Every `wl_output` the proxy bound, by global name.
@@ -175,6 +179,10 @@ pub(super) struct Globals {
     /// not create a second viewport on any of them, and on the panel surface
     /// it must not crop over the app's mapping either.
     viewport_surfaces: RefCell<HashSet<u64>>,
+    /// The panel window's focus ring and the configured size its bars follow
+    /// (row 9.1, D10); the ring is created with the first configure and
+    /// destroyed with the panel window.
+    ring: RingSlot,
 }
 
 impl Globals {
@@ -182,12 +190,14 @@ impl Globals {
         Self {
             compositor: RefCell::new(None),
             shm: RefCell::new(None),
+            subcompositor: RefCell::new(None),
             viewporter: RefCell::new(None),
             output_manager: RefCell::new(None),
             outputs: RefCell::new(BTreeMap::new()),
             client_output_names: RefCell::new(HashMap::new()),
             panel_output: Cell::new(None),
             viewport_surfaces: RefCell::new(HashSet::new()),
+            ring: RingSlot::new(),
         }
     }
 
@@ -197,6 +207,17 @@ impl Globals {
 
     pub(super) fn shm(&self) -> Option<Rc<WlShm>> {
         self.shm.borrow().clone()
+    }
+
+    /// The compositor's `wl_subcompositor`, which the focus ring's four
+    /// sub-surfaces of the panel surface are created from (row 9.1, D10).
+    pub(super) fn subcompositor(&self) -> Option<Rc<WlSubcompositor>> {
+        self.subcompositor.borrow().clone()
+    }
+
+    /// The panel window's focus-ring slot (row 9.1, D10).
+    pub(super) fn ring(&self) -> &RingSlot {
+        &self.ring
     }
 
     pub(super) fn viewporter(&self) -> Option<Rc<WpViewporter>> {
@@ -209,6 +230,10 @@ impl Globals {
 
     fn set_shm(&self, shm: Rc<WlShm>) {
         *self.shm.borrow_mut() = Some(shm);
+    }
+
+    fn set_subcompositor(&self, subcompositor: Rc<WlSubcompositor>) {
+        *self.subcompositor.borrow_mut() = Some(subcompositor);
     }
 
     fn set_viewporter(&self, viewporter: Rc<WpViewporter>) {
@@ -423,6 +448,17 @@ impl WlRegistryHandler for ProxyRegistry {
             let bound: Rc<dyn Object> = concrete;
             registry.send_bind(name, bound);
             self.globals.set_shm(shm);
+        } else if interface == ObjectInterface::WlSubcompositor {
+            // D10: the focus ring's bars are sub-surfaces of the panel
+            // surface, created from the proxy's own bind so the app's
+            // object list never carries them.
+            let subcompositor = registry
+                .state()
+                .create_object::<WlSubcompositor>(version.min(SUBCOMPOSITOR_VERSION));
+            let concrete = Rc::clone(&subcompositor);
+            let bound: Rc<dyn Object> = concrete;
+            registry.send_bind(name, bound);
+            self.globals.set_subcompositor(subcompositor);
         } else if interface == ObjectInterface::WpViewporter {
             // D8: the crop viewport is created from this viewporter.
             let viewporter = registry

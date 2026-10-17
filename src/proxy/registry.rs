@@ -18,6 +18,7 @@ use wl_proxy::protocols::linux_drm_syncobj_v1::wp_linux_drm_syncobj_manager_v1::
 use wl_proxy::protocols::viewporter::wp_viewporter::WpViewporter;
 use wl_proxy::protocols::wayland::wl_display::{WlDisplay, WlDisplayHandler};
 use wl_proxy::protocols::wayland::wl_registry::{WlRegistry, WlRegistryHandler};
+use wl_proxy::protocols::wayland::wl_seat::WlSeat;
 use wl_proxy::protocols::wayland::wl_surface::WlSurface;
 use wl_proxy::protocols::xdg_decoration_unstable_v1::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
 use wl_proxy::protocols::xdg_shell::xdg_positioner::XdgPositioner;
@@ -27,6 +28,7 @@ use wl_proxy::protocols::xdg_shell::xdg_wm_base::{XdgWmBase, XdgWmBaseHandler};
 use super::decoration::{ClientDecorationManager, ClientSyntheticDecorationManager};
 use super::output::ProxyRegistry;
 use super::popup::ClientXdgPositioner;
+use super::ring::ClientWlSeat;
 use super::routing::{ClientXdgSurface, Routing};
 use super::syncobj::ClientSyncobjManager;
 use super::viewport::ClientWpViewporter;
@@ -180,6 +182,13 @@ impl WlRegistryHandler for ClientRegistry {
                 Rc::clone(&self.routing),
                 &manager,
             ));
+        }
+        if id.interface() == ObjectInterface::WlSeat {
+            // D10: the proxy watches the keyboard focus of every keyboard the
+            // app asks the seat for, which is what shows the focus ring, and
+            // forwards the bind unchanged.
+            let seat = id.downcast::<WlSeat>();
+            seat.set_handler(ClientWlSeat::new(&self.routing, &seat));
         }
         if id.interface() == ObjectInterface::WlOutput {
             // D9: the app's `wl_output` binds carry the same global names the

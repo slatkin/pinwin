@@ -287,6 +287,17 @@ and several modules wait for the rows that wire them in (D15).
   launch's layer surface with it, and `src/proxy/commit.rs` applies the
   deferred mode after the first forwarded buffer. Its launch and mode
   mapping is display-free, so its six tests run without a compositor.
+- `src/proxy/ring.rs` — the panel's focus ring (row 9.1, D10, spec "Accent
+  appears while focused", "Accent disabled"): the pure four bars of a panel
+  of WxH with a ring width, each side without overlapping corners and
+  clipped to a degenerate panel, the pure visibility state (the panel holds
+  the keyboard, is not hidden and has a ring set; `off` builds nothing), the
+  four desynchronized `wl_subsurface`s of the panel surface with opaque
+  `wl_shm` bars and empty input regions, the buffer replacement and the
+  position re-send through the commit coordinator when the layer surface's
+  configure size changes, the keyboard focus watch on the app's seat, and the
+  teardown with the panel window. Its bars and state machine are
+  display-free, so its tests run without a compositor.
 - `src/proxy/syncobj.rs` — explicit synchronization for the panel surface
   (row 8.2, D6): the handler on the app's
   `wp_linux_drm_syncobj_manager_v1` bind and on each syncobj surface it
