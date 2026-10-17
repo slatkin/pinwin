@@ -92,7 +92,7 @@ below). Its code does not enter pinwin; only the findings do.
 
 ## 2. Remove the terminal and the library
 
-- [ ] 2.1 Remove the terminal code. Move the rounding and crop-rect parts of
+- [x] 2.1 Remove the terminal code. Move the rounding and crop-rect parts of
   `src/panel/wayland_side/crop.rs` to `src/proxy/crop.rs` (without `draw_wide`,
   `upload_wide`, `copy_crop` and their tests); keep `src/anim.rs`. Delete `src/term*`,
   `src/render*`, `src/pty*`, `src/fontconfig*`, `src/nerd_font.rs`, `src/panel*`,
