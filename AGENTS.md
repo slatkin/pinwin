@@ -88,10 +88,11 @@ from (an archived change, or the design of the change that added the code:
 ## Testing Guidelines
 
 Run `cargo nextest run` after any change; it runs the geometry core's unit
-tests in `src/geometry.rs` — the spec's docking, gutter, reserve and
-held-gap scenarios — and the three tests in `tests/tween_crop.rs`, which
-cover the width tween's crop plan (`src/proxy/crop.rs`) until the proxy owns
-it. The other kept modules (`anim`, `guard`, `instance`, `cli`) are not
+tests in `src/geometry/tests.rs` — the spec's docking, gutter, reserve,
+held-gap, validation and size scenarios — and the three tests in
+`tests/tween_crop.rs`, which cover the width tween's crop plan
+(`src/proxy/crop.rs`) until the proxy owns it. The other kept modules
+(`anim`, `guard`, `instance`, `cli`) are not
 compiled until rows 4.3, 5.2 and 6.1 wire them in, so they have no tests
 yet. Keep the pure parts display-free
 (`port-to-rust` D10): take the fd and the outputs of the environment as

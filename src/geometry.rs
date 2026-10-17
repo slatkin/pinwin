@@ -5,8 +5,9 @@
 //! This is one pure module where the terminal's `layout.rs` and
 //! `surfaces/gap.rs` were two: it computes the layer surface's anchors,
 //! margins and size, the strip a pushing panel reserves and how the held gap
-//! moves, and it names no Wayland object (`port-to-rust` D10), so every
-//! decision is unit tested with no compositor.
+//! moves, it resolves a percent size against the output and validates a
+//! change before it applies, and it names no Wayland object (`port-to-rust`
+//! D10), so every decision is unit tested with no compositor.
 //!
 //! The reservation rules, stated once: pushing moves the gap to the panel's
 //! own strip, `near + across + far`; covering leaves the gap where the last
@@ -14,6 +15,7 @@
 //! draws over the tiled windows; an edge change always moves the gap to the
 //! new edge.
 
+use std::fmt;
 use std::num::NonZeroU32;
 
 /// The output edge a panel docks to.
@@ -247,7 +249,121 @@ impl Size {
     pub fn percent(percent: u32) -> Option<Self> {
         Percent::new(percent).map(Self::Percent)
     }
+
+    /// The size in logical pixels on `edge` of `output` (spec "Size
+    /// values"): a pixel size as it is, a percent of the output's width on a
+    /// side edge and of its height on a top or bottom edge.
+    ///
+    /// A percent rounds down and never resolves below one pixel, because
+    /// every size is at least one pixel: 1% of a 60 pixel output is 1, not
+    /// the zero that [`Size::pixels`] refuses.
+    #[must_use]
+    pub const fn resolve(self, edge: Edge, output: OutputSize) -> u32 {
+        match self {
+            Self::Pixels(px) => px.get(),
+            Self::Percent(percent) => {
+                let across = output.across(edge);
+                let rate = percent.get();
+                // `across * rate / 100`, floored, in 32 bits: the whole
+                // hundreds never exceed `across`, and the remainder's
+                // product stays below ten thousand.
+                let hundreds = across / 100 * rate;
+                let remainder = across % 100 * rate / 100;
+                let resolved = hundreds + remainder;
+                if resolved < 1 { 1 } else { resolved }
+            }
+        }
+    }
 }
+
+/// A monitor's logical size in pixels, at least one along each axis.
+///
+/// The proxy reads it from `zxdg_output_v1` (or the `wl_output` mode and
+/// scale when that protocol is missing) on the panel's upstream connection
+/// and passes the two numbers here, so this module stays display-free
+/// (`port-to-rust` D10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutputSize {
+    width: NonZeroU32,
+    height: NonZeroU32,
+}
+
+impl OutputSize {
+    /// An output `width` by `height` logical pixels; zero along either axis
+    /// is `None`.
+    #[must_use]
+    pub fn new(width: u32, height: u32) -> Option<Self> {
+        Some(Self {
+            width: NonZeroU32::new(width)?,
+            height: NonZeroU32::new(height)?,
+        })
+    }
+
+    #[must_use]
+    pub const fn width(self) -> u32 {
+        self.width.get()
+    }
+
+    #[must_use]
+    pub const fn height(self) -> u32 {
+        self.height.get()
+    }
+
+    /// The output's dimension across a panel on `edge`: its width on a side
+    /// edge and its height on a top or bottom edge.
+    #[must_use]
+    pub const fn across(self, edge: Edge) -> u32 {
+        if edge.across_is_width() {
+            self.width.get()
+        } else {
+            self.height.get()
+        }
+    }
+
+    /// The output's dimension along a panel on `edge`: its height on a side
+    /// edge and its width on a top or bottom edge.
+    #[must_use]
+    pub const fn length(self, edge: Edge) -> u32 {
+        if edge.across_is_width() {
+            self.height.get()
+        } else {
+            self.width.get()
+        }
+    }
+}
+
+/// A geometry the panel refuses (spec "Validate a change before applying
+/// it").
+///
+/// The argument types make the remaining failures unrepresentable: a zero
+/// size, an unknown edge and a percent outside 1..=100 cannot exist at run
+/// time (`port-to-rust` D6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InvalidLayout {
+    /// Checked arithmetic overflowed while sizing the panel.
+    Overflow,
+    /// A pushing panel's strip `near + across + far` is below zero.
+    NoReserve,
+    /// A pushing strip leaves no output space for other windows, or a
+    /// covering panel is wider than its output.
+    NoWidth,
+    /// The output's length at the panel's edge, less the two side gutters,
+    /// is below one pixel.
+    NoLength,
+}
+
+impl fmt::Display for InvalidLayout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Overflow => f.write_str("layout geometry overflows"),
+            Self::NoReserve => f.write_str("layout reservation is negative"),
+            Self::NoWidth => f.write_str("layout leaves no output space beside the panel"),
+            Self::NoLength => f.write_str("layout leaves less than one pixel of length"),
+        }
+    }
+}
+
+impl std::error::Error for InvalidLayout {}
 
 /// A panel's resolved geometry: the edge it docks to, its size across that
 /// edge in logical pixels, the four gutters and the reserve mode.
@@ -371,6 +487,46 @@ impl Geometry {
             + i64::from(self.gutters.far(self.edge));
         i32::try_from(sum).ok()
     }
+
+    /// Whether this geometry can apply to `output` (spec "Validate a change
+    /// before applying it").
+    ///
+    /// Both reserve modes refuse checked-arithmetic overflow in the strip and
+    /// a visible length below one pixel. Pushing also refuses a negative
+    /// strip and a strip that leaves no output space for other windows.
+    /// Covering refuses only a panel wider than the output: the held strip
+    /// is the last pushing setting's, not this panel's, so it cannot fail a
+    /// covering change.
+    pub fn validate(self, output: OutputSize) -> Result<(), InvalidLayout> {
+        let strip = self.strip().ok_or(InvalidLayout::Overflow)?;
+        if self.visible_length(output) < 1 {
+            return Err(InvalidLayout::NoLength);
+        }
+        match self.reserve {
+            ReserveMode::Push => {
+                if strip < 0 {
+                    return Err(InvalidLayout::NoReserve);
+                }
+                if i64::from(strip) >= i64::from(output.across(self.edge)) {
+                    return Err(InvalidLayout::NoWidth);
+                }
+            }
+            ReserveMode::Cover if self.across > output.across(self.edge) => {
+                return Err(InvalidLayout::NoWidth);
+            }
+            ReserveMode::Cover => {}
+        }
+        Ok(())
+    }
+
+    /// The panel's visible length on `output`: the output's length at the
+    /// panel's edge, less the two side gutters. Validation refuses a value
+    /// below one pixel.
+    fn visible_length(self, output: OutputSize) -> i64 {
+        i64::from(output.length(self.edge))
+            - i64::from(self.gutters.along_start(self.edge))
+            - i64::from(self.gutters.along_end(self.edge))
+    }
 }
 
 /// The gap the reserve surface holds: its edge and exclusive zone in pixels.
@@ -486,294 +642,4 @@ impl HeldGap {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn geometry(edge: Edge, across: u32, gutters: Gutters) -> Geometry {
-        Geometry::new(edge, across, gutters, ReserveMode::Push)
-    }
-
-    fn covering(edge: Edge, across: u32, gutters: Gutters) -> Geometry {
-        Geometry::new(edge, across, gutters, ReserveMode::Cover)
-    }
-
-    fn held(gap: HeldGap) -> (Edge, i32) {
-        (gap.edge(), gap.zone())
-    }
-
-    #[test]
-    fn left_docking() {
-        let docked = geometry(Edge::Left, 320, Gutters::new(8, 12, 0, 0));
-        assert_eq!(
-            docked.margins(),
-            Margins::new(0, 0, 0, 8),
-            "the panel starts 8 pixels from the left output edge"
-        );
-        assert_eq!(
-            docked.strip(),
-            Some(340),
-            "the strip reserves 8 + 320 + 12 at the left edge"
-        );
-        assert_eq!(docked.size(), (320, 0));
-        assert_eq!(
-            docked.anchors(),
-            Anchors::at(Edge::Left),
-            "the panel anchors to its edge and both ends of its length"
-        );
-        assert!(docked.anchors().contains(Edge::Top));
-        assert!(docked.anchors().contains(Edge::Bottom));
-        assert!(!docked.anchors().contains(Edge::Right));
-    }
-
-    #[test]
-    fn right_docking() {
-        let docked = geometry(Edge::Right, 320, Gutters::new(8, 12, 0, 0));
-        assert_eq!(
-            docked.margins(),
-            Margins::new(0, 12, 0, 0),
-            "the panel ends 12 pixels before the right output edge"
-        );
-        assert_eq!(docked.strip(), Some(340));
-
-        // A pushing apply releases the left reservation: the held gap moves
-        // to the right edge at the pushing size resolved there.
-        let left = HeldGap::start(geometry(Edge::Left, 320, Gutters::new(8, 12, 0, 0)));
-        assert_eq!(held(left), (Edge::Left, 340));
-        assert_eq!(held(left.after_publish(docked)), (Edge::Right, 340));
-    }
-
-    #[test]
-    fn top_docking() {
-        let docked = geometry(Edge::Top, 400, Gutters::new(20, 30, 10, 6));
-        assert_eq!(
-            docked.margins(),
-            Margins::new(10, 30, 0, 20),
-            "10 below the top edge, 20 from the left edge and 30 before the right edge"
-        );
-        assert_eq!(docked.size(), (0, 400), "the panel is 400 pixels high");
-        assert_eq!(
-            docked.strip(),
-            Some(416),
-            "the strip reserves 10 + 400 + 6 at the top edge"
-        );
-
-        // The reserved strip spans the output's full length: the reserve
-        // surface anchors to the top edge and both ends with no margins, so
-        // the side gutters inset only the panel and the strip is 416 deep
-        // across the full output width.
-        let gap = HeldGap::start(docked);
-        assert!(gap.anchors().contains(Edge::Top));
-        assert!(gap.anchors().contains(Edge::Left));
-        assert!(gap.anchors().contains(Edge::Right));
-        assert!(!gap.anchors().contains(Edge::Bottom));
-        assert_eq!(gap.size(), (0, 416));
-        assert_eq!(held(gap), (Edge::Top, 416));
-    }
-
-    #[test]
-    fn vertical_insets() {
-        let docked = geometry(Edge::Left, 320, Gutters::new(8, 12, 24, 10));
-        assert_eq!(
-            docked.margins(),
-            Margins::new(24, 0, 10, 8),
-            "the panel begins 24 below the output top and ends 10 above its bottom"
-        );
-        assert_eq!(
-            docked.size(),
-            (320, 0),
-            "the height is what the insets leave"
-        );
-        assert_eq!(
-            docked.strip(),
-            Some(340),
-            "the side gutters leave the reservation a full-height strip"
-        );
-        assert_eq!(
-            HeldGap::start(docked).size(),
-            (340, 0),
-            "the strip is 340 deep and spans the full output height"
-        );
-    }
-
-    #[test]
-    fn negative_gutter() {
-        let docked = geometry(Edge::Left, 320, Gutters::new(-40, 12, 0, 0));
-        assert_eq!(
-            docked.margins(),
-            Margins::new(0, 0, 0, -40),
-            "the panel starts 40 pixels beyond the left output edge"
-        );
-        assert_eq!(
-            docked.strip(),
-            Some(292),
-            "the reservation is -40 + 320 + 12"
-        );
-    }
-
-    #[test]
-    fn covering_layout_holds_the_gap() {
-        let push = geometry(Edge::Left, 320, Gutters::new(8, 12, 0, 0));
-        let gap = HeldGap::start(push);
-        assert_eq!(held(gap), (Edge::Left, 340));
-
-        let cover = covering(Edge::Left, 1000, Gutters::new(8, 12, 0, 0));
-        assert_eq!(cover.size(), (1000, 0), "the panel is 1000 pixels wide");
-        assert_eq!(
-            held(gap.after_publish(cover)),
-            (Edge::Left, 340),
-            "a covering apply leaves the reserved strip alone"
-        );
-    }
-
-    #[test]
-    fn side_switch_moves_the_gap() {
-        // The pushing size is `25%` of a 1920 pixel wide output, which is 480
-        // pixels; the held gap keeps the resolved pixels, not the percent.
-        let push = geometry(Edge::Right, 480, Gutters::new(0, 0, 0, 0));
-        let gap = HeldGap::start(push);
-        assert_eq!(held(gap), (Edge::Right, 480));
-
-        let moved = gap.after_publish(covering(Edge::Left, 480, Gutters::new(0, 0, 0, 0)));
-        assert_eq!(
-            held(moved),
-            (Edge::Left, 480),
-            "a covering side switch moves the reservation to the new edge"
-        );
-    }
-
-    #[test]
-    fn the_reserve_draws_from_the_held_gap_not_the_geometry() {
-        // A pushing 360 pixel panel with a 12 pixel far gutter holds 372.
-        let gap = HeldGap::start(geometry(Edge::Left, 360, Gutters::new(0, 12, 0, 0)));
-        assert_eq!(held(gap), (Edge::Left, 372));
-
-        // A covering geometry on the same edge with a tween idle draws the
-        // held strip, not its own wider strip.
-        let cover = covering(Edge::Left, 1080, Gutters::new(0, 12, 0, 0));
-        assert_eq!(held(gap.reserve(false, cover, 1080)), (Edge::Left, 372));
-
-        // A pushing geometry with no tween running agrees with the held gap:
-        // the apply has already reset it to the geometry's own strip.
-        let push = geometry(Edge::Left, 360, Gutters::new(0, 12, 0, 0));
-        assert_eq!(held(gap.reserve(false, push, 360)), (Edge::Left, 372));
-    }
-
-    #[test]
-    fn a_flagged_gap_tween_moves_the_gap_with_the_panel() {
-        let gap = HeldGap::start(geometry(Edge::Left, 360, Gutters::new(0, 12, 0, 0)));
-        assert_eq!(held(gap), (Edge::Left, 372));
-
-        // Mid-tween at a 700 pixel panel: the gap shows the strip at the
-        // eased width, 0 + 700 + 12.
-        let tweening = geometry(Edge::Left, 1080, Gutters::new(0, 12, 0, 0));
-        assert_eq!(held(gap.reserve(true, tweening, 700)), (Edge::Left, 712));
-
-        // The gap follows the tweening geometry's edge.
-        let tweening = geometry(Edge::Right, 1080, Gutters::new(0, 12, 0, 0));
-        assert_eq!(held(gap.reserve(true, tweening, 700)), (Edge::Right, 712));
-    }
-
-    #[test]
-    fn a_covering_tween_holds_the_gap() {
-        let gap = HeldGap::start(geometry(Edge::Left, 360, Gutters::new(0, 12, 0, 0)));
-        let tweening = covering(Edge::Left, 1080, Gutters::new(0, 12, 0, 0));
-        assert_eq!(
-            held(gap.reserve(true, tweening, 700)),
-            (Edge::Left, 372),
-            "a covering target never moves the gap, flag or not"
-        );
-    }
-
-    #[test]
-    fn the_gap_tween_decision_compares_against_the_strip_the_gap_rests_at() {
-        // Pushing 360 -> 1080 pixels: the gap rests at 372 and the target
-        // strip is 1092, so the gap tweens.
-        let expanding = geometry(Edge::Left, 1080, Gutters::new(0, 12, 0, 0));
-        assert!(HeldGap::tweens_with_panel(372, true, expanding, 1080));
-
-        // Shrinking a covering excursion back to the original pushing width:
-        // the target strip is the strip the gap rests at, so it holds still.
-        let shrinking_back = geometry(Edge::Left, 360, Gutters::new(0, 12, 0, 0));
-        assert!(!HeldGap::tweens_with_panel(372, true, shrinking_back, 360));
-
-        // A covering target never tweens the gap.
-        let cover = covering(Edge::Left, 1080, Gutters::new(0, 12, 0, 0));
-        assert!(!HeldGap::tweens_with_panel(372, true, cover, 1080));
-
-        // A snap apply (zero duration, no animation, a side or gutter change)
-        // applies the strip in one step.
-        assert!(!HeldGap::tweens_with_panel(372, false, expanding, 1080));
-
-        // A pushing target whose strip the gap already rests at does not tween.
-        assert!(!HeldGap::tweens_with_panel(1092, true, expanding, 1080));
-    }
-
-    #[test]
-    fn the_starting_held_gap_follows_the_reserve_mode() {
-        let push = geometry(Edge::Left, 360, Gutters::new(0, 12, 0, 0));
-        assert_eq!(held(HeldGap::start(push)), (Edge::Left, 372));
-
-        // A covering start reserves nothing: no earlier pushing width to hold.
-        let cover = covering(Edge::Left, 1080, Gutters::new(0, 12, 0, 0));
-        assert_eq!(held(HeldGap::start(cover)), (Edge::Left, 0));
-    }
-
-    #[test]
-    fn the_held_gap_follows_a_publish_by_reserve_mode() {
-        let gap = HeldGap::start(geometry(Edge::Left, 360, Gutters::new(0, 12, 0, 0)));
-        assert_eq!(held(gap), (Edge::Left, 372));
-
-        // A pushing publish on the same edge resets the zone to its own strip.
-        let wider = geometry(Edge::Left, 1080, Gutters::new(0, 12, 0, 0));
-        assert_eq!(held(gap.after_publish(wider)), (Edge::Left, 1092));
-
-        // A pushing publish on the other edge moves both, at the strip that
-        // edge resolves.
-        let other = geometry(Edge::Right, 360, Gutters::new(0, 12, 0, 0));
-        assert_eq!(held(gap.after_publish(other)), (Edge::Right, 372));
-
-        // A covering publish on the same edge touches nothing.
-        let cover = covering(Edge::Left, 1080, Gutters::new(0, 12, 0, 0));
-        assert_eq!(held(gap.after_publish(cover)), (Edge::Left, 372));
-
-        // A covering publish on the other edge moves only the edge.
-        let cover = covering(Edge::Right, 1080, Gutters::new(0, 12, 0, 0));
-        assert_eq!(held(gap.after_publish(cover)), (Edge::Right, 372));
-    }
-
-    #[test]
-    fn a_size_is_whole_pixels_or_one_to_a_hundred_percent() {
-        assert_eq!(Size::pixels(0), None);
-        assert_eq!(Size::percent(0), None);
-        assert_eq!(Size::percent(101), None);
-        assert_eq!(Percent::new(25).map(Percent::get), Some(25));
-        assert!(matches!(
-            Size::pixels(320),
-            Some(Size::Pixels(px)) if px.get() == 320
-        ));
-        assert!(matches!(
-            Size::percent(25),
-            Some(Size::Percent(percent)) if percent.get() == 25
-        ));
-    }
-
-    #[test]
-    fn the_gutters_follow_the_screen_directions() {
-        let gutters = Gutters::new(8, 12, 24, 10);
-        assert_eq!(gutters.near(Edge::Left), 8);
-        assert_eq!(gutters.far(Edge::Left), 12);
-        assert_eq!(gutters.near(Edge::Right), 12);
-        assert_eq!(gutters.far(Edge::Right), 8);
-        assert_eq!(gutters.near(Edge::Top), 24);
-        assert_eq!(gutters.far(Edge::Top), 10);
-        assert_eq!(gutters.near(Edge::Bottom), 10);
-        assert_eq!(gutters.far(Edge::Bottom), 24);
-
-        // The length runs down the output on a side edge and across it on a
-        // top or bottom edge, so its ends are Top/Bottom and Left/Right.
-        assert_eq!(gutters.along_start(Edge::Left), 24);
-        assert_eq!(gutters.along_end(Edge::Left), 10);
-        assert_eq!(gutters.along_start(Edge::Top), 8);
-        assert_eq!(gutters.along_end(Edge::Top), 12);
-    }
-}
+mod tests;
