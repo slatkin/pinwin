@@ -488,6 +488,9 @@ impl ClientXdgSurface {
         layer_surface.send_set_anchor(anchor_of(geometry.anchors()));
         layer_surface
             .send_set_keyboard_interactivity(keyboard_of(self.routing.settings().keyboard()));
+        // D9: the panel surface claims no zone of its own; the reserve surface
+        // owns the strip.
+        layer_surface.send_set_exclusive_zone(-1);
         if id.version() >= XdgToplevel::MSG__WM_CAPABILITIES__SINCE {
             id.send_wm_capabilities(&[]);
         }
