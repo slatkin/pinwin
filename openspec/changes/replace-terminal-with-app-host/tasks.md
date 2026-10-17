@@ -196,7 +196,7 @@ below). Its code does not enter pinwin; only the findings do.
 
 ## 7. `pinwin run` and panel lifetime
 
-- [ ] 7.1 Add the `create` request and the `run` flow (D2): resolve options, ask the daemon,
+- [x] 7.1 Add the `create` request and the `run` flow (D2): resolve options, ask the daemon,
   set `WAYLAND_DISPLAY`, `exec`; exit 127 when `exec` fails. Verify: unit test of the
   environment and argument hand-over; live, the user confirms "Run an app" (working folder and
   environment kept) and "Command not found".
