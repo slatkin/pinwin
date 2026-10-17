@@ -219,7 +219,7 @@ below). Its code does not enter pinwin; only the findings do.
 - [x] 8.1 Add the commit coordinator (D7): dirty flag, queued requests, inject or piggyback.
   Verify: unit tests pass for a clean surface (inject), a dirty surface (queue until the app's
   commit) and two queued changes in order.
-- [ ] 8.2 Add hide and show (D6) with buffer release while hidden, and `--hidden`. Verify:
+- [x] 8.2 Add hide and show (D6) with buffer release while hidden, and `--hidden`. Verify:
   live, the user confirms "Hide", "Show a shown panel", "Hide releases the reservation",
   "Size untouched", "Change while hidden" and "Start hidden".
 - [ ] 8.3 Add keyboard modes, `set-keyboard` and `focus`. Verify: live, the user confirms
