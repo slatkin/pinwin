@@ -458,6 +458,56 @@ impl PanelSettings {
         settings
     }
 
+    /// The same settings at another edge (row 6.6): a successful `set-edge`
+    /// changes the live edge a panel docks to and leaves every other setting
+    /// alone.
+    #[must_use]
+    pub fn with_edge(&self, edge: Edge) -> Self {
+        let mut settings = self.clone();
+        settings.edge = edge;
+        settings
+    }
+
+    /// The same settings with another size (row 6.6): a successful
+    /// `set-size` or `resize` changes the live size a panel is laid out with
+    /// and leaves every other setting alone.
+    #[must_use]
+    pub fn with_size(&self, size: Size) -> Self {
+        let mut settings = self.clone();
+        settings.size = size;
+        settings
+    }
+
+    /// The same settings with another reserve mode (row 6.6): a successful
+    /// `set-reserve` changes how the live panel treats the strip it covers
+    /// and leaves every other setting alone.
+    #[must_use]
+    pub fn with_reserve(&self, reserve: ReserveMode) -> Self {
+        let mut settings = self.clone();
+        settings.reserve = reserve;
+        settings
+    }
+
+    /// The same settings in another layer (row 6.6): a successful
+    /// `set-layer` changes the layer the live panel draws in and leaves every
+    /// other setting alone.
+    #[must_use]
+    pub fn with_layer(&self, layer: Layer) -> Self {
+        let mut settings = self.clone();
+        settings.layer = layer;
+        settings
+    }
+
+    /// The same settings with other gutters (row 6.6): the gutters a live
+    /// panel is laid out with, as the apply path re-resolves a geometry from
+    /// a changed settings merge.
+    #[must_use]
+    pub fn with_gutters(&self, gutters: Gutters) -> Self {
+        let mut settings = self.clone();
+        settings.gutters = gutters;
+        settings
+    }
+
     #[must_use]
     pub const fn hidden(&self) -> bool {
         self.hidden

@@ -111,9 +111,18 @@ and several modules wait for the rows that wire them in (D15).
   handling (D11): the panel docks on the output its settings name, a
   `set-output` re-docks the panel window on the chosen output, and a
   `closed` layer surface is replaced with a new one instead of closing the
-  app's window. The other change commands are answered without effect until
-  row 6.6 gives them one. `src/main.rs`
+  app's window. Row 6.6 adds the live apply of the layout commands, which
+  `src/proxy/apply.rs` owns. `src/main.rs`
   compiles it; its tests are `src/proxy/tests.rs`.
+- `src/proxy/apply.rs` — the live apply of a layout change (row 6.6, spec
+  "Apply layout without restarting the app", "Validate a change before
+  applying it"): the plan that resolves a change's settings against the
+  panel's output and validates them, the app-size rule (a pure edge move
+  sends no new size, a size change exactly one), the re-send of the layer
+  surface's size, anchors and margins on the surface the window already
+  docks with, the `set-layer` re-dock, the resize arithmetic and the gap
+  publish, plus the output-driven re-apply the routing calls. Its pure part
+  is display-free, so its tests run without a compositor.
 - `src/proxy/slot.rs` — the panel's one window slot (D4, spec "First
   window", "Window comes back", "Dialog", "Passed-through window stays",
   "Empty panel shows nothing"): the pure `Slot` of no window or one held
@@ -338,10 +347,11 @@ names, under a `dead_code` allow whose reason names the rows that use the
 accessors it does not. `src/anim.rs` is not compiled until the tween rows
 wire it in, so it has no tests yet. The parts of `src/geometry.rs` that wait
 for later rows stay unreported as dead code because `src/main.rs` keeps the
-module public until row 12.x: `Margins::new` and the `Geometry::across`
-and `Geometry::gutters` accessors wait for row 6.6's apply path, and
-`HeldGap::reserve`, `HeldGap::tweens_with_panel` and `HeldGap::edge` for the
-row 10.x tween. Keep the pure parts display-free
+module public until row 12.x: `Margins::new` and the `Geometry::across` and
+`Geometry::gutters` accessors have their row 6.6 callers in
+`src/proxy/apply.rs`, and `HeldGap::reserve`, `HeldGap::tweens_with_panel`
+and `HeldGap::edge` wait for the row 10.x tween. Keep the pure parts
+display-free
 (`port-to-rust` D10): take the fd and the outputs of the environment as
 parameters, so the tests run without a display. Tests that need a real
 compositor are `#[ignore]`d and run explicitly. Once the proxy lands, exercise

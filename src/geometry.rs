@@ -162,9 +162,9 @@ pub struct Margins {
 }
 
 impl Margins {
-    // Row 6.6's apply path rebuilds the margins from a changed settings
-    // merge; until then the struct literal in [`Geometry::margins`] is the
-    // only construction.
+    // The only construction of a `Margins`: [`Geometry::margins`] builds the
+    // panel's from its edge and gutters, and the apply path of row 6.6
+    // re-sends the margins it gets from there.
     #[must_use]
     pub const fn new(top: i32, right: i32, bottom: i32, left: i32) -> Self {
         Self {
@@ -432,30 +432,10 @@ impl Geometry {
     pub const fn margins(self) -> Margins {
         let gutters = self.gutters;
         match self.edge {
-            Edge::Left => Margins {
-                top: gutters.top,
-                right: 0,
-                bottom: gutters.bottom,
-                left: gutters.left,
-            },
-            Edge::Right => Margins {
-                top: gutters.top,
-                right: gutters.right,
-                bottom: gutters.bottom,
-                left: 0,
-            },
-            Edge::Top => Margins {
-                top: gutters.top,
-                right: gutters.right,
-                bottom: 0,
-                left: gutters.left,
-            },
-            Edge::Bottom => Margins {
-                top: 0,
-                right: gutters.right,
-                bottom: gutters.bottom,
-                left: gutters.left,
-            },
+            Edge::Left => Margins::new(gutters.top, 0, gutters.bottom, gutters.left),
+            Edge::Right => Margins::new(gutters.top, gutters.right, gutters.bottom, 0),
+            Edge::Top => Margins::new(gutters.top, gutters.right, 0, gutters.left),
+            Edge::Bottom => Margins::new(0, gutters.right, gutters.bottom, gutters.left),
         }
     }
 

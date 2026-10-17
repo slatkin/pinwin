@@ -58,6 +58,7 @@ use wl_proxy::protocols::xdg_shell::xdg_surface::{XdgSurface, XdgSurfaceHandler}
 use wl_proxy::protocols::xdg_shell::xdg_toplevel::{XdgToplevel, XdgToplevelHandler};
 use wl_proxy::protocols::xdg_shell::xdg_wm_base::XdgWmBase;
 
+use super::apply;
 use super::dock;
 use super::mapping::layer_of;
 use super::output::{Globals, PanelSurfaceWatch, placeholder_output};
@@ -86,7 +87,10 @@ pub(super) struct Routing {
     /// A weak handle to this routing itself, so handlers the routing
     /// creates do not close a reference cycle through it (D11).
     self_weak: Weak<Routing>,
-    settings: PanelSettings,
+    /// The panel's live settings (D11, row 6.6): the settings its layer
+    /// surface is built from, changed in place by a live apply, so a status
+    /// reply reports what the panel runs at and the next dock builds from it.
+    settings: RefCell<PanelSettings>,
     /// The output the panel is pinned to, by name (D11): the settings'
     /// value until a `set-output` changes it. `None` lets the compositor
     /// choose.
@@ -145,7 +149,7 @@ impl Routing {
         let output = settings.output().map(str::to_owned);
         Rc::new_cyclic(|self_ref| Self {
             self_weak: Weak::clone(self_ref),
-            settings,
+            settings: RefCell::new(settings),
             output: RefCell::new(output),
             slot: Cell::new(Slot::new()),
             layer_shell: RefCell::new(None),
@@ -177,9 +181,16 @@ impl Routing {
         self.slot.get().has_window()
     }
 
-    /// The panel's settings, which its layer surface is built from.
-    pub(super) fn settings(&self) -> &PanelSettings {
-        &self.settings
+    /// The panel's live settings, which its layer surface is built from
+    /// (D11, row 6.6).
+    pub(super) fn settings(&self) -> PanelSettings {
+        self.settings.borrow().clone()
+    }
+
+    /// Changes the panel's live settings (row 6.6): a validated apply stores
+    /// the settings the panel now runs at.
+    pub(super) fn set_settings(&self, settings: PanelSettings) {
+        *self.settings.borrow_mut() = settings;
     }
 
     /// A weak handle to this routing, so handlers it creates do not close
@@ -211,7 +222,7 @@ impl Routing {
     /// The settings a status reply reports (spec "Status"): the panel's
     /// settings with the live output a `set-output` may have changed (D11).
     pub(super) fn status_settings(&self) -> PanelSettings {
-        self.settings.with_output(self.output())
+        self.settings().with_output(self.output())
     }
 
     /// The app-side objects of the panel window, when it holds one (D4):
@@ -382,6 +393,29 @@ impl Routing {
         self.held_gap.borrow().as_ref().copied()
     }
 
+    /// The reserve the panel holds, for the apply path to re-zone (D9, row
+    /// 6.6).
+    pub(super) fn reserve(&self) -> Option<Rc<Reserve>> {
+        self.reserve.borrow().clone()
+    }
+
+    /// Stores the gap a validated apply or re-apply left the strip at (D9,
+    /// row 6.6).
+    pub(super) fn set_held_gap(&self, gap: HeldGap) {
+        *self.held_gap.borrow_mut() = Some(gap);
+    }
+
+    /// The across size the panel last applied (D9, row 6.6): the re-apply an
+    /// output event triggers sends nothing while the resolution is the same.
+    pub(super) fn last_resolved_across(&self) -> Option<u32> {
+        self.last_resolved_across.get()
+    }
+
+    /// Records the across size the panel last applied (D9, row 6.6).
+    pub(super) fn set_last_resolved_across(&self, across: Option<u32>) {
+        self.last_resolved_across.set(across);
+    }
+
     /// The global name of the output the reserve is on (D11): the creation
     /// pin, or the output its surface entered.
     pub(super) fn reserve_output(&self) -> Option<u32> {
@@ -449,7 +483,7 @@ impl Routing {
         if self.globals.panel_output() != Some(global_name) {
             return;
         }
-        self.reapply_geometry();
+        apply::reapply(self);
     }
 
     /// The panel surface entered an output: record it, re-apply if a size
@@ -461,47 +495,8 @@ impl Routing {
         if !self.globals.set_panel_output(client_output_id) {
             return;
         }
-        self.reapply_geometry();
+        apply::reapply(self);
         dock::follow_reserve(self);
-    }
-
-    /// Re-applies the geometry once the panel's output size is known (D9):
-    /// a percent size resolves against the real output, the layer surface
-    /// gets the fresh size and the held gap and the reserve follow. A
-    /// geometry the real output cannot hold keeps the size the panel already
-    /// runs at until row 6.6's apply path owns refusals on a live panel.
-    fn reapply_geometry(&self) {
-        let Some(output) = self.globals.panel_output_size() else {
-            return;
-        };
-        let settings = self.settings();
-        let across = settings.size().resolve(settings.edge(), output);
-        if self.last_resolved_across.get() == Some(across) {
-            return;
-        }
-        let geometry = Geometry::new(
-            settings.edge(),
-            across,
-            settings.gutters(),
-            settings.reserve(),
-        );
-        if let Err(error) = geometry.validate(output) {
-            eprintln!("pinwin: the panel geometry does not fit its output: {error}");
-            return;
-        }
-        self.last_resolved_across.set(Some(across));
-        let (width, height) = geometry.size();
-        if let Some(layer_surface) = self.panel_layer_surface() {
-            layer_surface.send_set_size(width, height);
-        }
-        let gap = match self.held_gap.borrow().as_ref() {
-            Some(gap) => gap.after_publish(geometry),
-            None => HeldGap::start(geometry),
-        };
-        if let Some(reserve) = self.reserve.borrow().as_ref() {
-            reserve.apply_gap(gap);
-        }
-        *self.held_gap.borrow_mut() = Some(gap);
     }
 
     /// Ends the panel window's footprint (D4, D9, D11): the slot empties,

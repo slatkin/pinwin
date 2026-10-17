@@ -19,8 +19,11 @@
 //! adds output handling (D11): the panel docks on the output its settings
 //! name, a `set-output` re-docks the panel window on the chosen output, and
 //! a `closed` layer surface is replaced with a new one instead of closing
-//! the app's window. The other change commands are answered without effect
-//! until row 6.6 gives them one.
+//! the app's window. Row 6.6 gives the layout commands their live apply
+//! ([`apply`]): edge, size, reserve mode and layer change a running panel in
+//! place, on the layer surface it already docks with. The other change
+//! commands are answered without effect until their rows give them one
+//! (hide and show are row 8.2, the keyboard modes row 8.3).
 //!
 //! The whole loop runs under the shared panic guard (D5): a panic in one
 //! panel drops that panel's state, which closes its app's Wayland
@@ -78,6 +81,12 @@ mod routing;
 // handler, the `set-output` decision and the re-docks.
 #[path = "proxy/dock.rs"]
 mod dock;
+
+// The live apply of the layout commands (row 6.6): edge, size, reserve mode
+// and layer change a running panel in place, on the layer surface it already
+// docks with.
+#[path = "proxy/apply.rs"]
+mod apply;
 
 #[path = "proxy/slot.rs"]
 pub mod slot;
@@ -387,11 +396,12 @@ impl Panel {
         }
     }
 
-    /// The answer to one command (spec "Status", "Unknown output").
-    /// `Status` reports the settings and the view state, `set-output`
+    /// The answer to one command (spec "Status", "Unknown output", row
+    /// 6.6). `Status` reports the settings and the view state, `set-output`
     /// validates the name and re-docks the panel window on the chosen
-    /// output (D11); every other command succeeds without effect until row
-    /// 6.6 gives it one.
+    /// output (D11), and the layout commands are the live apply of row 6.6;
+    /// every other command succeeds without effect until its row gives it
+    /// one (hide and show are row 8.2, the keyboard modes row 8.3).
     fn answer(&self, request: &PanelRequest) -> PanelReply {
         match request {
             PanelRequest::Status => PanelReply::Status(self.status()),
@@ -399,7 +409,7 @@ impl Panel {
                 Ok(()) => PanelReply::Done,
                 Err(error) => PanelReply::Refused(error),
             },
-            _ => PanelReply::Done,
+            other => apply::answer(&self.routing, other).unwrap_or(PanelReply::Done),
         }
     }
 

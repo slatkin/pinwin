@@ -139,11 +139,12 @@ fn dock_window(
     output_global: Option<u32>,
 ) {
     let output = output_global.and_then(|global| routing.globals().output_by_global(global));
+    let settings = routing.settings();
     let layer_surface = create_layer_surface(
         layer_shell,
         &window.surface,
         output.as_ref(),
-        routing.settings(),
+        &settings,
         geometry,
     );
     layer_surface.set_handler(ProxyLayerSurface {
