@@ -296,7 +296,7 @@ below). Its code does not enter pinwin; only the findings do.
 
 ## 11. Tray
 
-- [ ] 11.1 Add `src/tray.rs` with ksni (`blocking`, `async-io`, no tokio) (D14): one item while
+- [x] 11.1 Add `src/tray.rs` with ksni (`blocking`, `async-io`, no tokio) (D14): one item while
   panels exist, a submenu per panel, "Quit pinwin". Document the icon, its menu and that it
   hides without panels in README.md. Verify: unit test that the menu model lists panels in
   start order with the current state; the daemon runs and answers `pinwin status` with
