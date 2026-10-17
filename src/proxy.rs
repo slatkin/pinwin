@@ -122,6 +122,17 @@ mod output;
 #[path = "proxy/commit.rs"]
 pub mod commit;
 
+// Hide and show (row 8.2, D6): the shown/hidden state, the buffer the next
+// show attaches, the releases a hidden panel owes its app and the commits
+// that carry them.
+#[path = "proxy/hide.rs"]
+mod hide;
+
+// Explicit synchronization (row 8.2, D6): the acquire and release points a
+// hidden panel holds until a commit carries a buffer.
+#[path = "proxy/syncobj.rs"]
+mod syncobj;
+
 // The reserve surface: the transparent layer surface that owns the
 // exclusive zone (D9).
 #[path = "proxy/reserve.rs"]
@@ -528,9 +539,10 @@ impl Panel {
     /// The answer to one command (spec "Status", "Unknown output", row
     /// 6.6). `Status` reports the settings and the view state, `set-output`
     /// validates the name and re-docks the panel window on the chosen
-    /// output (D11), and the layout commands are the live apply of row 6.6;
-    /// every other command succeeds without effect until its row gives it
-    /// one (hide and show are row 8.2, the keyboard modes row 8.3).
+    /// output (D11), the layout commands are the live apply of row 6.6, and
+    /// `toggle`, `show` and `hide` are row 8.2's state changes (D6); every
+    /// other command succeeds without effect until its row gives it one
+    /// (the keyboard modes are row 8.3).
     fn answer(&self, request: &PanelRequest) -> PanelReply {
         match request {
             PanelRequest::Status => PanelReply::Status(self.status()),
@@ -540,19 +552,20 @@ impl Panel {
                     Err(error) => PanelReply::Refused(error),
                 }
             }
-            other => apply::answer(&self.routing, other, &self.name, &self.bus)
+            other => hide::answer(&self.routing, other, &self.name, &self.bus)
+                .or_else(|| apply::answer(&self.routing, other, &self.name, &self.bus))
                 .unwrap_or(PanelReply::Done),
         }
     }
 
     /// The panel's settings and view state (spec "Status"): `has_window` is
-    /// the D4 slot's own answer, `shown` is the settings' hidden flag, which
-    /// row 8.2 applies, and a percent size resolves once the panel's output
-    /// size is known (row 6.4, D9). The settings come from the routing, so
-    /// a `set-output` shows in the reply (D11).
+    /// the D4 slot's own answer, `shown` is the hidden state row 8.2 applies
+    /// (D6), and a percent size resolves once the panel's output size is
+    /// known (row 6.4, D9). The settings come from the routing, so a
+    /// `set-output` shows in the reply (D11).
     fn status(&self) -> PanelStatus {
         let settings = self.routing.status_settings();
-        let shown = !settings.hidden();
+        let shown = !self.routing.hidden.is_hidden();
         let has_window = self.routing.has_window();
         let width = self.routing.resolved_width();
         PanelStatus::new(settings, shown, has_window, width)

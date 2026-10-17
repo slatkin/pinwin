@@ -294,6 +294,7 @@ fn dock_reserve(
         gap,
         layer,
         pin.map(|(output, _)| output),
+        routing.hidden.is_hidden(),
         routing.weak(),
     );
     routing.register_reserve(reserve, gap, pin.map(|(_, global)| *global));

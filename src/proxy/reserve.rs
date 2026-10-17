@@ -87,6 +87,7 @@ impl Reserve {
         gap: HeldGap,
         layer: ZwlrLayerShellV1Layer,
         output: Option<&Rc<WlOutput>>,
+        hidden: bool,
         routing: Weak<Routing>,
     ) -> Rc<Self> {
         let surface = compositor.new_send_create_surface();
@@ -116,7 +117,9 @@ impl Reserve {
         layer_surface.send_set_anchor(anchor_of(gap.anchors()));
         // The strip starts at the output edge: no margins (spike reserve).
         layer_surface.send_set_margin(0, 0, 0, 0);
-        layer_surface.send_set_exclusive_zone(gap.zone());
+        // D6: a panel that starts hidden holds its gap but reserves nothing
+        // until it is shown.
+        layer_surface.send_set_exclusive_zone(if hidden { 0 } else { gap.zone() });
         // The reserve never takes keyboard focus, whatever the panel asks for.
         layer_surface
             .send_set_keyboard_interactivity(ZwlrLayerSurfaceV1KeyboardInteractivity::NONE);
@@ -132,6 +135,29 @@ impl Reserve {
     /// geometry": an edge change moves the reservation to the new edge).
     pub(super) fn apply_gap(&self, gap: HeldGap) {
         let (size, anchor, zone) = gap_state(gap);
+        self.send_gap_state(size, anchor, zone);
+    }
+
+    /// Releases the strip while the panel is hidden (D6, spec "Hide releases
+    /// the reservation"): the zone moves to zero and the held gap stays in
+    /// the routing for the next show. The strip's size and anchors do not
+    /// change, so a show restores the same strip.
+    pub(super) fn release(&self) {
+        self.layer_surface.send_set_exclusive_zone(0);
+        self.surface.send_commit();
+    }
+
+    /// Applies a held gap's size and anchors with the zone released (D6): a
+    /// layout change while hidden moves the strip where it will be, without
+    /// reserving anything until the next show.
+    pub(super) fn apply_gap_hidden(&self, gap: HeldGap) {
+        let (size, anchor, _zone) = gap_state(gap);
+        self.send_gap_state(size, anchor, 0);
+    }
+
+    /// Sends one strip state and commits the reserve surface, so the
+    /// compositor applies size, anchors and zone in one frame.
+    fn send_gap_state(&self, size: (u32, u32), anchor: ZwlrLayerSurfaceV1Anchor, zone: i32) {
         self.layer_surface.send_set_size(size.0, size.1);
         self.layer_surface.send_set_anchor(anchor);
         self.layer_surface.send_set_exclusive_zone(zone);

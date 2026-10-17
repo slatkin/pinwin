@@ -258,9 +258,28 @@ and several modules wait for the rows that wire them in (D15).
   before it is forwarded. `PanelSurfaceCommits` is the `wl_surface` handler
   the routing installs on the panel surface: it watches those requests and
   the app's commit on top of the D9 output watch and forwards each request
-  as the generated default handler does. No row requests a change yet (hide
-  and show are row 8.2, the tween is row 10.x), and the module stays public
+  as the generated default handler does. Hide and show (row 8.2) request
+  their commits through it; the tween is row 10.x. The module stays public
   until row 12.x. Display-free, so its five tests run without a compositor.
+- `src/proxy/hide.rs` — hide and show (row 8.2, D6, spec "Hide", "Show a
+  shown panel", "Hide releases the reservation", "Size untouched" and
+  "Change while hidden"): the shown/hidden state the routing keeps across a
+  re-take and every re-dock, the null-buffer commit and released reserve
+  zone a hide applies, the layer-surface state re-send and kept-buffer
+  attach a show applies once the app acks its configure, the buffer release
+  a hidden panel owes its app, the release bookkeeping of a proxy-made
+  attach, and the `shown` and `hidden` events published once per real
+  change. `src/proxy.rs` dispatches `toggle`, `show` and `hide` to it,
+  `src/proxy/commit.rs` reads the state on every app attach and commit, and
+  `src/proxy/reserve.rs` carries the released zone a hide applies. Its state
+  machine is display-free, so its six tests run without a compositor.
+- `src/proxy/syncobj.rs` — explicit synchronization for the panel surface
+  (row 8.2, D6): the handler on the app's
+  `wp_linux_drm_syncobj_manager_v1` bind and on each syncobj surface it
+  creates, which holds the panel surface's acquire and release points until
+  a commit carries a buffer (a hidden commit drops the attach, so the
+  points must not go out with it), and the pure `Points` carrier the hide
+  tests use. The app's other syncobj surfaces keep the default forward path.
 - `src/run.rs` — the app `pinwin run` becomes (row 7.1, D2, spec "Run an app
   in a panel"): the pure exec spec of the program, its arguments and the
   environment the app inherits, with `WAYLAND_DISPLAY` set to the new panel's

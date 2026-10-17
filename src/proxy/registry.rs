@@ -14,6 +14,7 @@ use std::rc::{Rc, Weak};
 
 use wl_proxy::object::{Object, ObjectCoreApi, ObjectRcUtils};
 use wl_proxy::protocols::ObjectInterface;
+use wl_proxy::protocols::linux_drm_syncobj_v1::wp_linux_drm_syncobj_manager_v1::WpLinuxDrmSyncobjManagerV1;
 use wl_proxy::protocols::viewporter::wp_viewporter::WpViewporter;
 use wl_proxy::protocols::wayland::wl_display::{WlDisplay, WlDisplayHandler};
 use wl_proxy::protocols::wayland::wl_registry::{WlRegistry, WlRegistryHandler};
@@ -27,6 +28,7 @@ use super::decoration::{ClientDecorationManager, ClientSyntheticDecorationManage
 use super::output::ProxyRegistry;
 use super::popup::ClientXdgPositioner;
 use super::routing::{ClientXdgSurface, Routing};
+use super::syncobj::ClientSyncobjManager;
 use super::viewport::ClientWpViewporter;
 
 /// The global name the proxy's synthetic decoration manager is announced
@@ -168,6 +170,16 @@ impl WlRegistryHandler for ClientRegistry {
             // surface's crop decision is made per viewport.
             let viewporter = id.downcast::<WpViewporter>();
             viewporter.set_handler(ClientWpViewporter::new(&viewporter, &self.routing));
+        }
+        if id.interface() == ObjectInterface::WpLinuxDrmSyncobjManagerV1 {
+            // D6: the app's explicit-sync surfaces are observed, so the
+            // panel surface's acquire and release points can be held while
+            // it is hidden and emitted with a buffer-carrying commit.
+            let manager = id.downcast::<WpLinuxDrmSyncobjManagerV1>();
+            manager.set_handler(ClientSyncobjManager::new(
+                Rc::clone(&self.routing),
+                &manager,
+            ));
         }
         if id.interface() == ObjectInterface::WlOutput {
             // D9: the app's `wl_output` binds carry the same global names the

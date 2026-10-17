@@ -37,6 +37,7 @@ use wl_proxy::protocols::wayland::wl_buffer::WlBuffer;
 use wl_proxy::protocols::wayland::wl_output::WlOutput;
 use wl_proxy::protocols::wayland::wl_surface::{WlSurface, WlSurfaceHandler};
 
+use super::hide::{Attach, BufferRelease};
 use super::output::PanelSurfaceWatch;
 use super::routing::Routing;
 
@@ -118,6 +119,9 @@ pub struct PanelSurfaceCommits {
     /// The app's panel surface, kept weak so the handler does not keep its
     /// own object alive (the routing's handler convention).
     surface: Weak<WlSurface>,
+    /// The panel's routing: the hidden state and the buffer handlers read it
+    /// (row 8.2, D6).
+    routing: Rc<Routing>,
     /// The D9 output watch the panel surface carried before this handler: a
     /// handler that dropped it would lose the panel's output.
     watch: PanelSurfaceWatch,
@@ -129,6 +133,7 @@ impl PanelSurfaceCommits {
     pub(super) fn new(routing: &Rc<Routing>, surface: &Rc<WlSurface>) -> Self {
         Self {
             surface: Rc::downgrade(surface),
+            routing: Rc::clone(routing),
             watch: PanelSurfaceWatch::new(routing, surface),
             coordinator: CommitCoordinator::new(),
         }
@@ -177,7 +182,17 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
         y: i32,
     ) {
         self.coordinator.mark_dirty();
-        if let Some(surface) = self.surface() {
+        let Some(surface) = self.surface() else {
+            return;
+        };
+        // D6: a hidden panel forwards no attach and returns every buffer it
+        // removed to the app, so the app does not run out of buffers.
+        let decision = self.routing.hidden.on_app_attach(buffer);
+        if let Some(buffer) = buffer {
+            // D6 amendment 3: a release for a proxy-made attach is swallowed.
+            buffer.set_handler(BufferRelease::new(&self.routing, buffer));
+        }
+        if decision == Attach::Forward {
             ForwardToServer.handle_attach(&surface, buffer, x, y);
         }
     }
@@ -213,10 +228,20 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
     fn handle_commit(&mut self, _slf: &Rc<WlSurface>) {
         // The queued changes apply just before the app's own commit is
         // forwarded (D7): one commit carries both, and the dirty flag clears
-        // with it.
+        // with it. The hidden state decides what the commit carries (D6):
+        // held syncobj points only with a buffer, and the releases the
+        // dropped attaches owe the app after it.
+        let Some(surface) = self.surface() else {
+            return;
+        };
         self.coordinator.on_app_commit(|| {
-            if let Some(surface) = self.surface() {
-                ForwardToServer.handle_commit(&surface);
+            let plan = self.routing.hidden.commit_plan();
+            if let Some(points) = plan.points {
+                self.routing.hidden.emit_points(&points);
+            }
+            ForwardToServer.handle_commit(&surface);
+            for buffer in plan.release {
+                buffer.send_release();
             }
         });
     }

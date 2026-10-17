@@ -286,7 +286,11 @@ fn publish_gap(routing: &Routing, geometry: &Geometry) {
         None => HeldGap::start(*geometry),
     };
     if let Some(reserve) = routing.reserve() {
-        reserve.apply_gap(gap);
+        if routing.hidden.is_hidden() {
+            reserve.apply_gap_hidden(gap);
+        } else {
+            reserve.apply_gap(gap);
+        }
     }
     routing.set_held_gap(gap);
 }

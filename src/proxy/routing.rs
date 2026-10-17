@@ -91,9 +91,11 @@ pub(super) struct Routing {
     /// creates do not close a reference cycle through it (D11).
     self_weak: Weak<Routing>,
     /// The panel's live settings (D11, row 6.6): the settings its layer
-    /// surface is built from, changed in place by a live apply, so a status
-    /// reply reports what the panel runs at and the next dock builds from it.
+    /// surface is built from, changed in place by a live apply.
     settings: RefCell<PanelSettings>,
+    /// The panel's shown/hidden state (row 8.2, D6): kept here so it survives
+    /// a second `take_slot` and every re-dock; the status reply reads it.
+    pub(super) hidden: super::hide::Hidden,
     /// The output the panel is pinned to, by name (D11): the settings'
     /// value until a `set-output` changes it. `None` lets the compositor
     /// choose.
@@ -154,9 +156,11 @@ impl Routing {
     /// The routing state for a panel with `settings`.
     pub(super) fn new(settings: PanelSettings) -> Rc<Self> {
         let output = settings.output().map(str::to_owned);
+        let hidden = settings.hidden();
         Rc::new_cyclic(|self_ref| Self {
             self_weak: Weak::clone(self_ref),
             settings: RefCell::new(settings),
+            hidden: super::hide::Hidden::new(hidden),
             output: RefCell::new(output),
             slot: Cell::new(Slot::new()),
             slot_owner: RefCell::new(None),
@@ -528,11 +532,11 @@ impl Routing {
     }
 
     /// Ends the panel window's footprint (D4, D9, D11): the slot empties,
-    /// the reserve is destroyed with the window it was created for and the
-    /// surface references clear.
+    /// the reserve and the hidden buffers go, and the surface references clear.
     pub(super) fn on_panel_window_destroyed(&self, window: u64) {
         self.release(window);
         self.slot_owner.borrow_mut().take();
+        self.hidden.reset();
         if let Some(reserve) = self.reserve.borrow_mut().take() {
             reserve.destroy();
         }
@@ -787,6 +791,8 @@ impl XdgSurfaceHandler for ClientXdgSurface {
             // xdg_surface (D4); after a re-dock it reaches the live surface
             // (D11).
             layer.send_ack_configure(serial);
+            // D6: a show waits for this ack to attach the kept buffer.
+            super::hide::on_ack(&self.routing, &self.wl_surface);
         } else if self.has_server {
             self.xdg_surface.send_ack_configure(serial);
         }
