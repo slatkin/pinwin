@@ -22,7 +22,7 @@ use std::thread::{self, JoinHandle};
 use super::{WAIT, answering_panel, defaults_status, temp_dir};
 use crate::config::{Config, PanelOptions};
 use crate::daemon;
-use crate::daemon::lifetime::{Daemon, Lifetime, no_window_message, shutdown_signal};
+use crate::daemon::lifetime::{Daemon, Lifetime, SignalFd, no_window_message, shutdown_signal};
 use crate::geometry::Size;
 use crate::ipc::{self, ErrorKind, Request};
 use crate::name::PanelName;
@@ -321,12 +321,32 @@ fn the_no_window_report_names_the_app_and_the_panel() {
 }
 
 /// SIGINT and SIGTERM mean the same as `quit`, and no other signal does
-/// (spec "Quit"). No test sends a real signal: the accept loop reads the
-/// shutdown trigger, so only the signal-to-trigger mapping is checked here.
+/// (spec "Quit"). The accept loop reads the shutdown trigger rather than a
+/// signal, so only the signal-to-trigger mapping is checked here.
 #[test]
 fn sigint_and_sigterm_mean_quit() {
     assert!(shutdown_signal(libc::SIGINT));
     assert!(shutdown_signal(libc::SIGTERM));
     assert!(!shutdown_signal(libc::SIGHUP));
     assert!(!shutdown_signal(libc::SIGUSR1));
+}
+
+/// The signalfd reads a signal the thread blocks and keeps pending, so the
+/// test process never takes it (spec "Quit").
+#[test]
+fn the_signal_fd_reads_one_queued_signal() {
+    thread::spawn(|| {
+        let signals = SignalFd::open().expect("a signalfd");
+        // SAFETY: `pthread_kill` only sends the signal that `open` blocked
+        // to this thread, which reads it through the signalfd.
+        let sent = unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGTERM) };
+        assert_eq!(sent, 0, "the signal is queued for this thread");
+        assert_eq!(
+            signals.next().expect("the signalfd read"),
+            Some(libc::SIGTERM)
+        );
+        assert_eq!(signals.next().expect("the signalfd read"), None);
+    })
+    .join()
+    .expect("the signal thread finishes");
 }

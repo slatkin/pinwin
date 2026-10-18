@@ -26,8 +26,9 @@
 //! file (spec "Daemon socket"). The waits and the queue depth are
 //! parameters, so a test runs fast (`port-to-rust` D10).
 
-use std::io;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::fs::File;
+use std::io::{self, Read};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -406,7 +407,7 @@ impl Shutdown {
 ///
 /// [`open`]: Self::open
 #[derive(Debug)]
-pub struct SignalFd(OwnedFd);
+pub struct SignalFd(File);
 
 impl SignalFd {
     /// Block SIGINT and SIGTERM in this thread and open a signalfd for them.
@@ -453,46 +454,30 @@ impl SignalFd {
         };
         // SAFETY: `fd` is a fresh descriptor from the call above or
         // negative, and nothing else owns a fresh one.
-        Ok(Self(unsafe { owned_fd(fd.into()) }?))
+        Ok(Self(File::from(unsafe { owned_fd(fd.into()) }?)))
     }
 
     /// The next pending signal, or `None` when none is queued. A signal
     /// number the C `int` cannot hold is ignored.
-    fn next(&self) -> io::Result<Option<i32>> {
-        // `signal_info` is uninitialized memory of the size and alignment
-        // `read` writes; it is only assumed initialized after a full-size
-        // read.
-        let mut signal_info = std::mem::MaybeUninit::<libc::signalfd_siginfo>::uninit();
-        // SAFETY: the buffer is `size_of::<signalfd_siginfo>()` bytes long,
-        // which is the length `signalfd` reads, and the descriptor belongs to
-        // `self`.
-        let read = unsafe {
-            libc::read(
-                self.0.as_raw_fd(),
-                signal_info.as_mut_ptr().cast(),
-                size_of::<libc::signalfd_siginfo>(),
-            )
-        };
-        if read < 0 {
-            let error = io::Error::last_os_error();
-            return match error.kind() {
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => Ok(None),
-                _ => Err(error),
-            };
+    pub(super) fn next(&self) -> io::Result<Option<i32>> {
+        // A signalfd read is always one whole `signalfd_siginfo` and
+        // `read_exact` retries `EINTR` itself, so a short read cannot
+        // happen.
+        let mut signal_info = [0_u8; size_of::<libc::signalfd_siginfo>()];
+        match (&self.0).read_exact(&mut signal_info) {
+            Ok(()) => {
+                // `ssi_signo` is the first field of `signalfd_siginfo`.
+                let signo = u32::from_ne_bytes([
+                    signal_info[0],
+                    signal_info[1],
+                    signal_info[2],
+                    signal_info[3],
+                ]);
+                Ok(i32::try_from(signo).ok())
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error),
         }
-        let Ok(read) = usize::try_from(read) else {
-            return Ok(None);
-        };
-        if read != size_of::<libc::signalfd_siginfo>() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "a signalfd read returned less than one signal",
-            ));
-        }
-        // SAFETY: the read returned the whole struct, so every field is
-        // initialized.
-        let signal_info = unsafe { signal_info.assume_init() };
-        Ok(i32::try_from(signal_info.ssi_signo).ok())
     }
 }
 
