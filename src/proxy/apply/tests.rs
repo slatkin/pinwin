@@ -118,6 +118,7 @@ fn a_size_change_with_a_duration_animates_from_the_current_width() {
         &Request::SetSize {
             panel: notes(),
             size: pixels(800),
+            reserve: None,
             ms: Some(200),
         },
         output(1920, 1080),
@@ -137,6 +138,7 @@ fn a_resize_with_a_duration_animates() {
         &Request::Resize {
             panel: notes(),
             by: grow(pixels(120)),
+            reserve: None,
             ms: Some(150),
         },
         output(1920, 1080),
@@ -157,6 +159,7 @@ fn a_zero_duration_snaps_and_interrupts() {
         &Request::SetSize {
             panel: notes(),
             size: pixels(800),
+            reserve: None,
             ms: Some(0),
         },
         output(1920, 1080),
@@ -177,6 +180,7 @@ fn an_absent_ms_uses_the_panel_tween_ms() {
         &Request::SetSize {
             panel: notes(),
             size: pixels(800),
+            reserve: None,
             ms: None,
         },
         output(1920, 1080),
@@ -195,11 +199,169 @@ fn a_long_duration_is_clamped() {
         &Request::SetSize {
             panel: notes(),
             size: pixels(800),
+            reserve: None,
             ms: Some(60_000),
         },
         output(1920, 1080),
     );
     assert_eq!(plan.animate, Some(1000));
+}
+
+/// A `set-size` with a `reserve` mode changes both in one plan (D4, spec
+/// "Covering expand in one request"): the next settings, the resolved
+/// geometry and the animation all carry them together.
+#[test]
+fn a_size_and_reserve_change_is_one_plan() {
+    let current = PanelSettings {
+        size: pixels(400),
+        reserve: ReserveMode::Push,
+        ..settings()
+    };
+    let plan = planned(
+        &current,
+        &Request::SetSize {
+            panel: notes(),
+            size: pixels(1100),
+            reserve: Some(ReserveMode::Cover),
+            ms: Some(200),
+        },
+        output(1920, 1080),
+    );
+    assert_eq!(plan.settings.size(), pixels(1100));
+    assert_eq!(plan.settings.reserve(), ReserveMode::Cover);
+    assert_eq!(plan.geometry.across(), 1100);
+    assert_eq!(plan.geometry.reserve(), ReserveMode::Cover);
+    assert_eq!(plan.animate, Some(200), "one plan carries both fields");
+}
+
+/// A combined change whose pushing strip leaves no output space is refused
+/// as a whole (spec "Refused together"): the settings stay and no event is
+/// sent.
+#[test]
+fn a_refused_size_and_reserve_change_leaves_the_settings_alone() {
+    let bus = Bus::new();
+    let events = bus.subscribe();
+    let routing = routing();
+    let current = PanelSettings {
+        size: pixels(400),
+        reserve: ReserveMode::Cover,
+        ..settings()
+    };
+    routing.set_settings(current.clone());
+    let panel = notes();
+    let reply = super::answer(
+        &routing,
+        &Request::SetSize {
+            panel: notes(),
+            size: pixels(1920),
+            reserve: Some(ReserveMode::Push),
+            ms: None,
+        },
+        &panel,
+        &bus,
+    );
+    let Some(PanelReply::Refused(error)) = reply else {
+        panic!("the combined change is refused: {reply:?}");
+    };
+    assert_eq!(error.kind(), ErrorKind::InvalidLayout);
+    assert_eq!(routing.settings(), current, "the size and mode stay");
+    assert_eq!(
+        events.next(Duration::from_millis(50)),
+        Err(RecvTimeoutError::Timeout),
+        "a refusal sends no event"
+    );
+}
+
+/// A `reserve` equal to the panel's current mode gives the same plan as no
+/// `reserve` at all (spec "Same reserve mode").
+#[test]
+fn a_reserve_equal_to_the_current_mode_is_the_same_plan() {
+    let current = PanelSettings {
+        size: pixels(640),
+        reserve: ReserveMode::Cover,
+        ..settings()
+    };
+    let with = planned(
+        &current,
+        &Request::SetSize {
+            panel: notes(),
+            size: pixels(800),
+            reserve: Some(ReserveMode::Cover),
+            ms: Some(150),
+        },
+        output(1920, 1080),
+    );
+    let without = planned(
+        &current,
+        &Request::SetSize {
+            panel: notes(),
+            size: pixels(800),
+            reserve: None,
+            ms: Some(150),
+        },
+        output(1920, 1080),
+    );
+    assert_eq!(with, without, "the same mode changes only the size");
+}
+
+/// A relative `resize` with a `reserve` mode applies both (spec "Relative
+/// resize with a mode"): a covering 1100 pixel panel shrunk by 700 pixels
+/// becomes a pushing 400 pixel panel.
+#[test]
+fn a_relative_resize_carries_the_reserve_mode() {
+    let current = PanelSettings {
+        size: pixels(1100),
+        reserve: ReserveMode::Cover,
+        ..settings()
+    };
+    let plan = planned(
+        &current,
+        &Request::Resize {
+            panel: notes(),
+            by: shrink(pixels(700)),
+            reserve: Some(ReserveMode::Push),
+            ms: None,
+        },
+        output(1920, 1080),
+    );
+    assert_eq!(plan.settings.size(), pixels(400));
+    assert_eq!(plan.settings.reserve(), ReserveMode::Push);
+    assert_eq!(plan.geometry.across(), 400);
+    assert_eq!(plan.geometry.reserve(), ReserveMode::Push);
+}
+
+/// A size change and its reserve mode publish one `geometry-changed` event
+/// (spec "One event"): a subscriber never sees the size without the mode.
+#[test]
+fn a_size_and_reserve_change_publishes_one_event() {
+    let bus = Bus::new();
+    let events = bus.subscribe();
+    let routing = routing();
+    let panel = notes();
+    let reply = super::answer(
+        &routing,
+        &Request::SetSize {
+            panel: notes(),
+            size: pixels(1100),
+            reserve: Some(ReserveMode::Cover),
+            ms: Some(200),
+        },
+        &panel,
+        &bus,
+    );
+    assert_eq!(reply, Some(PanelReply::Done));
+    assert_eq!(routing.settings().size(), pixels(1100));
+    assert_eq!(routing.settings().reserve(), ReserveMode::Cover);
+    assert_eq!(
+        events.next(Duration::from_millis(100)),
+        Ok(Event::GeometryChanged { panel }.line()),
+        "one geometry-changed event for the panel"
+    );
+    assert_eq!(
+        events.next(Duration::from_millis(50)),
+        Err(RecvTimeoutError::Timeout),
+        "one event per request"
+    );
 }
 
 /// A size change (spec "Change the size"): one new window size of the
@@ -212,6 +374,7 @@ fn a_size_change_sends_one_new_size() {
         &Request::SetSize {
             panel: notes(),
             size: pixels(800),
+            reserve: None,
             ms: None,
         },
         output(1920, 1080),
@@ -231,6 +394,7 @@ fn a_size_that_resolves_the_same_sends_no_new_size() {
         &Request::SetSize {
             panel: notes(),
             size: pixels(480),
+            reserve: None,
             ms: None,
         },
         output(1920, 1080),
@@ -354,6 +518,7 @@ fn a_resize_outside_the_size_grammar_is_refused() {
             &Request::Resize {
                 panel: notes(),
                 by: shrink(pixels(480)),
+                reserve: None,
                 ms: None,
             },
             output(1920, 1080)
@@ -370,6 +535,7 @@ fn a_size_too_large_for_the_output_is_refused() {
     let request = Request::SetSize {
         panel: notes(),
         size: pixels(1000),
+        reserve: None,
         ms: None,
     };
     assert_eq!(
@@ -393,6 +559,7 @@ fn gutters_that_leave_no_visible_length_are_refused() {
     let request = Request::SetSize {
         panel: notes(),
         size: pixels(640),
+        reserve: None,
         ms: None,
     };
     assert_eq!(
@@ -413,6 +580,7 @@ fn a_negative_reservation_is_refused() {
     let request = Request::SetSize {
         panel: notes(),
         size: pixels(640),
+        reserve: None,
         ms: None,
     };
     assert_eq!(
@@ -458,6 +626,7 @@ fn a_refused_apply_publishes_no_geometry_change() {
         &Request::SetSize {
             panel: notes(),
             size: pixels(10_000),
+            reserve: None,
             ms: None,
         },
         &panel,

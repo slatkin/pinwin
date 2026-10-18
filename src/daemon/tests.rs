@@ -644,6 +644,7 @@ fn a_panel_refusal_keeps_its_kind() {
             &Request::SetSize {
                 panel: name,
                 size: Size::pixels(4000).expect("4000 pixels"),
+                reserve: None,
                 ms: Some(0),
             },
             WAIT,

@@ -156,8 +156,9 @@ binary-only now and every row of its tasks is landed.
   `src/config/tests.rs`.
 - `src/geometry.rs` — the display-free geometry core: `Edge`, `Size` (pixels
   or percent), `Gutters`, `ReserveMode`, the layer-surface anchors, margins
-  and size, the reserved strip and the held gap (D9). `src/main.rs` compiles
-  it; the option parser and the reserve surface are its first users.
+  and size, the reserved strip and the held gap (D9), whose strip follows an
+  animation only when the panel pushed before the change. `src/main.rs`
+  compiles it; the option parser and the reserve surface are its first users.
 - `src/proxy.rs` — the panel thread (D1, D2, D3, D5, D12): one wl-proxy
   `State` with its acceptor, the loop that polls the state's `poll_fd`, the
   command eventfd and the app's pidfd, the pass-through dispatch under the
@@ -193,7 +194,8 @@ binary-only now and every row of its tasks is landed.
 - `src/proxy/apply.rs` — the live apply of a layout change (row 6.6, spec
   "Apply layout without restarting the app", "Validate a change before
   applying it"): the plan that resolves a change's settings against the
-  panel's output and validates them, the app-size rule (a pure edge move
+  panel's output and validates them, the size and the optional reserve mode
+  as one plan, the app-size rule (a pure edge move
   sends no new size, a size change exactly one), the re-send of the layer
   surface's size, anchors and margins on the surface the window already
   docks with, the in-place `set-layer` layer change, the resize arithmetic,
@@ -285,7 +287,9 @@ binary-only now and every row of its tasks is landed.
 - `src/proxy/tween.rs` — the animated width transition (row 10.1, D8): the
   pure grow/shrink state machine (`Phase`, `Step`, `Frame`) that crops a
   shrink's wide buffer down each frame and yields each frame's visible
-  length, layer size, margins, held-gap zone and viewport fraction, plus
+  length, layer size, margins, held-gap zone and viewport fraction, whose
+  strip holds still when the panel covered before the change and whose end
+  gap the target mode decides, plus
   the `GrowHandshake` that owns a grow's wait as a first-class result: it
   sends one configure and settles `Answered` when the app commits a buffer
   whose reported size reaches the target, or `Unanswered` at 500 ms, which

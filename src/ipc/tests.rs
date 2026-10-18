@@ -49,6 +49,7 @@ fn the_wire_size_forms_parse() {
             Request::SetSize {
                 panel: notes(),
                 size: crate::geometry::Size::pixels(640).expect("640 pixels"),
+                reserve: None,
                 ms: None,
             },
         ),
@@ -57,6 +58,7 @@ fn the_wire_size_forms_parse() {
             Request::SetSize {
                 panel: notes(),
                 size: crate::geometry::Size::pixels(640).expect("640 pixels"),
+                reserve: None,
                 ms: None,
             },
         ),
@@ -65,6 +67,7 @@ fn the_wire_size_forms_parse() {
             Request::SetSize {
                 panel: notes(),
                 size: crate::geometry::Size::percent(30).expect("30 percent"),
+                reserve: None,
                 ms: Some(0),
             },
         ),
@@ -75,6 +78,7 @@ fn the_wire_size_forms_parse() {
                 by: crate::cli::Amount::shrink(
                     crate::geometry::Size::pixels(40).expect("40 pixels"),
                 ),
+                reserve: None,
                 ms: None,
             },
         ),
@@ -85,6 +89,7 @@ fn the_wire_size_forms_parse() {
                 by: crate::cli::Amount::shrink(
                     crate::geometry::Size::pixels(40).expect("40 pixels"),
                 ),
+                reserve: None,
                 ms: None,
             },
         ),
@@ -95,6 +100,7 @@ fn the_wire_size_forms_parse() {
                 by: crate::cli::Amount::grow(
                     crate::geometry::Size::percent(10).expect("10 percent"),
                 ),
+                reserve: None,
                 ms: Some(200),
             },
         ),
@@ -111,6 +117,53 @@ fn the_wire_size_forms_parse() {
             request
         );
     }
+}
+
+/// `set-size` and `resize` take an optional `reserve` (D4, spec "Size and
+/// reserve in one request"): an absent field parses as no change, so a
+/// 0.4.0 line round-trips unchanged, and a present one parses with the
+/// setting grammar.
+#[test]
+fn the_optional_reserve_parses_with_the_size_commands() {
+    let legacy = br#"{"cmd":"set-size","panel":"notes","size":"640px","ms":200}"#;
+    let request = Request::parse(legacy).expect("a 0.4.0 set-size line");
+    assert_eq!(
+        request,
+        Request::SetSize {
+            panel: notes(),
+            size: crate::geometry::Size::pixels(640).expect("640 pixels"),
+            reserve: None,
+            ms: Some(200),
+        }
+    );
+    assert_eq!(
+        request.to_line(),
+        "{\"cmd\":\"set-size\",\"panel\":\"notes\",\"size\":\"640px\",\"ms\":200}\n",
+        "a 0.4.0 line round-trips without the new field"
+    );
+
+    assert_eq!(
+        Request::parse(
+            br#"{"cmd":"set-size","panel":"notes","size":"1100px","reserve":"cover","ms":200}"#
+        )
+        .expect("a set-size with a reserve mode"),
+        Request::SetSize {
+            panel: notes(),
+            size: crate::geometry::Size::pixels(1100).expect("1100 pixels"),
+            reserve: Some(crate::geometry::ReserveMode::Cover),
+            ms: Some(200),
+        }
+    );
+    assert_eq!(
+        Request::parse(br#"{"cmd":"resize","panel":"notes","by":"-700px","reserve":"push"}"#)
+            .expect("a resize with a reserve mode"),
+        Request::Resize {
+            panel: notes(),
+            by: crate::cli::Amount::shrink(crate::geometry::Size::pixels(700).expect("700 pixels"),),
+            reserve: Some(crate::geometry::ReserveMode::Push),
+            ms: None,
+        }
+    );
 }
 
 /// A line that is not JSON is `invalid_request`, and the reply names it
@@ -149,6 +202,8 @@ fn an_invalid_value_is_invalid_value() {
         br#"{"cmd":"set-size","panel":"notes","size":"wide"}"#,
         br#"{"cmd":"resize","panel":"notes","by":"40px"}"#,
         br#"{"cmd":"set-size","panel":"notes","size":"640px","ms":-1}"#,
+        br#"{"cmd":"set-size","panel":"notes","size":"1100px","reserve":"middle"}"#,
+        br#"{"cmd":"resize","panel":"notes","by":"-40px","reserve":"middle"}"#,
     ] {
         let error = Request::parse(line).expect_err("an invalid value");
         assert_eq!(

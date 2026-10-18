@@ -19,7 +19,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::str::FromStr;
 
 use crate::config::{InvalidValue, PanelOptions, parse_digits};
-use crate::geometry::Size;
+use crate::geometry::{ReserveMode, Size};
 use crate::ipc::Request;
 use crate::name::PanelName;
 
@@ -373,22 +373,24 @@ where
     Ok(build(panel, setting(subcommand, raw)?))
 }
 
-/// `set-size <name> <size> [--ms N]`.
+/// `set-size <name> <size> [--reserve push|cover] [--ms N]`.
 fn set_size(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
-    let (panel, raw, ms) = panel_value_ms(subcommand, args, "a size")?;
+    let (panel, raw, reserve, ms) = panel_value_options(subcommand, args, "a size")?;
     Ok(Request::SetSize {
         panel,
         size: setting(subcommand, &raw)?,
+        reserve,
         ms,
     })
 }
 
-/// `resize <name> <amount> [--ms N]`.
+/// `resize <name> <amount> [--reserve push|cover] [--ms N]`.
 fn resize(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
-    let (panel, raw, ms) = panel_value_ms(subcommand, args, "an amount")?;
+    let (panel, raw, reserve, ms) = panel_value_options(subcommand, args, "an amount")?;
     Ok(Request::Resize {
         panel,
         by: setting(subcommand, &raw)?,
+        reserve,
         ms,
     })
 }
@@ -479,29 +481,33 @@ fn panel_and_value<'a>(
     }
 }
 
-/// A panel name, a value and the optional `--ms N`.
-fn panel_value_ms(
+/// A panel name, a value, and the optional `--reserve push|cover` and
+/// `--ms N` in any order after them (D4).
+fn panel_value_options(
     subcommand: &str,
     args: &[OsString],
     value: &str,
-) -> Result<(PanelName, OsString, Option<u32>), UsageError> {
-    let (raw_panel, rest) = args.split_first().ok_or_else(|| {
-        UsageError::new(format!("{subcommand}: expected <name> {value} [--ms N]"))
-    })?;
-    let (raw_value, rest) = rest.split_first().ok_or_else(|| {
-        UsageError::new(format!("{subcommand}: expected <name> {value} [--ms N]"))
-    })?;
-    let panel = panel(subcommand, raw_panel)?;
-    let ms = match rest {
-        [] => None,
-        [option, raw] if option.as_os_str().as_bytes() == b"--ms" => Some(millis(raw)?),
-        _ => {
-            return Err(UsageError::new(format!(
-                "{subcommand}: expected <name> {value} [--ms N]"
-            )));
-        }
+) -> Result<(PanelName, OsString, Option<ReserveMode>, Option<u32>), UsageError> {
+    let expected = || {
+        UsageError::new(format!(
+            "{subcommand}: expected <name> {value} [--reserve push|cover] [--ms N]"
+        ))
     };
-    Ok((panel, raw_value.clone(), ms))
+    let (raw_panel, rest) = args.split_first().ok_or_else(expected)?;
+    let (raw_value, mut rest) = rest.split_first().ok_or_else(expected)?;
+    let panel = panel(subcommand, raw_panel)?;
+    let mut reserve = None;
+    let mut ms = None;
+    while let Some((option, tail)) = rest.split_first() {
+        let (raw, next) = tail.split_first().ok_or_else(expected)?;
+        match text("option", option)? {
+            "--reserve" => reserve = Some(setting("--reserve", raw)?),
+            "--ms" => ms = Some(millis(raw)?),
+            _ => return Err(expected()),
+        }
+        rest = next;
+    }
+    Ok((panel, raw_value.clone(), reserve, ms))
 }
 
 /// A whole number of milliseconds; `0` is the snap animation (spec

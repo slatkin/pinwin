@@ -44,7 +44,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
 use super::anim::{Advance, Tween as Anim};
-use crate::geometry::{Edge, Geometry, HeldGap, Margins};
+use crate::geometry::{Edge, Geometry, HeldGap, Margins, ReserveMode};
 
 use super::compose::Fraction;
 
@@ -132,6 +132,9 @@ pub(super) struct GrowHandshake {
     surface: (u32, u32),
     /// The gap the panel held before the change.
     resting_gap: HeldGap,
+    /// The reserve mode before the change (D5): only a panel that pushed
+    /// before the change moves its strip with the animation.
+    current_reserve: ReserveMode,
     /// The duration the answered grow animates over.
     duration_ms: u32,
 }
@@ -144,6 +147,7 @@ impl GrowHandshake {
         from: u32,
         surface: (u32, u32),
         resting_gap: HeldGap,
+        current_reserve: ReserveMode,
         duration_ms: u32,
     ) -> Self {
         Self {
@@ -151,6 +155,7 @@ impl GrowHandshake {
             from,
             surface: (surface.0.max(1), surface.1.max(1)),
             resting_gap,
+            current_reserve,
             duration_ms,
         }
     }
@@ -184,12 +189,16 @@ impl GrowHandshake {
             .unwrap_or_else(Fraction::whole)
     }
 
-    /// The gap the reserve holds once the grow ends (D8): a pushing target's
+    /// The reserve mode before the change (D5): a retarget keeps it, so the
+    /// strip a covering panel holds stays held.
+    pub(super) const fn current_reserve(self) -> ReserveMode {
+        self.current_reserve
+    }
+
+    /// The gap the reserve holds once the grow ends (D5): a pushing target's
     /// own strip at the target length, a covering target's resting gap.
     pub(super) fn final_gap(self) -> HeldGap {
-        let to = self.geometry.across();
-        let tweens = HeldGap::tweens_with_panel(self.resting_gap.zone(), true, self.geometry, to);
-        self.resting_gap.reserve(tweens, self.geometry, to)
+        final_gap(self.resting_gap, self.geometry)
     }
 
     /// The handshake's answer to the app's commit (D8 finding 4): `Answered`
@@ -225,6 +234,7 @@ impl GrowHandshake {
             self.from,
             surface,
             self.resting_gap,
+            self.current_reserve,
             self.duration_ms,
         )
     }
@@ -419,6 +429,9 @@ pub(super) struct Tween {
     /// Whether the gap moves with the panel (D9): only a pushing target whose
     /// strip differs from the resting strip.
     gap_tweening: bool,
+    /// The reserve mode before the change (D5): a retarget continues with
+    /// it, so a covering panel keeps holding its strip.
+    current_reserve: ReserveMode,
     visible: u32,
 }
 
@@ -426,8 +439,10 @@ impl Tween {
     /// The tween of a change from `from` to `geometry.across()` over
     /// `duration_ms`. `surface` is the app's current extent in surface-local
     /// pixels, width first, the source of the visible fraction's denominator.
-    /// `None` for a change with no distance, no duration or a size the
-    /// easing's integer step cannot carry.
+    /// `current_reserve` is the panel's mode before the change, which decides
+    /// whether the strip moves with the frames (D5). `None` for a change with
+    /// no distance, no duration or a size the easing's integer step cannot
+    /// carry.
     ///
     /// A grow starts here only after its configure handshake answered
     /// ([`GrowHandshake::start`]); a shrink starts moving at once.
@@ -436,6 +451,7 @@ impl Tween {
         from: u32,
         surface: (u32, u32),
         resting_gap: HeldGap,
+        current_reserve: ReserveMode,
         duration_ms: u32,
     ) -> Option<Self> {
         let to = geometry.across();
@@ -459,7 +475,14 @@ impl Tween {
             phase: Phase::Running,
             anim,
             resting_gap,
-            gap_tweening: HeldGap::tweens_with_panel(resting_gap.zone(), true, geometry, to),
+            gap_tweening: HeldGap::tweens_with_panel(
+                resting_gap.zone(),
+                current_reserve,
+                true,
+                geometry,
+                to,
+            ),
+            current_reserve,
             visible: from,
         })
     }
@@ -494,6 +517,12 @@ impl Tween {
         self.visible
     }
 
+    /// The reserve mode before the change (D5): a retarget continues with
+    /// it, so a covering panel keeps holding its strip.
+    pub(super) const fn current_reserve(self) -> ReserveMode {
+        self.current_reserve
+    }
+
     /// The gap the panel holds now (D8): what a retarget to a covering target
     /// keeps still.
     pub(super) fn current_gap(self) -> HeldGap {
@@ -526,11 +555,10 @@ impl Tween {
         Fraction::of(self.visible, self.across()).unwrap_or_else(Fraction::whole)
     }
 
-    /// The gap the reserve holds once the tween ends: a pushing target's own
-    /// strip at the target length, a covering target's resting gap.
+    /// The gap the reserve holds once the tween ends (D5): a pushing target's
+    /// own strip at the target length, a covering target's resting gap.
     pub(super) fn final_gap(self) -> HeldGap {
-        self.resting_gap
-            .reserve(self.gap_tweening, self.geometry, self.to)
+        final_gap(self.resting_gap, self.geometry)
     }
 
     /// One step at `elapsed_us` microseconds after the tween began (D8).
@@ -558,17 +586,34 @@ impl Tween {
         }
     }
 
-    /// This frame's values (D8).
+    /// This frame's values (D8). The last frame carries the end gap, which
+    /// the target mode decides (D5): a collapse to a pushing width sets the
+    /// strip on that frame even though the frames before it held it.
     fn frame(self) -> Frame {
+        let gap = if matches!(self.phase, Phase::Finished) {
+            self.final_gap()
+        } else {
+            self.resting_gap
+                .reserve(self.gap_tweening, self.geometry, self.visible)
+        };
         Frame {
             visible: self.visible,
             layer: self.geometry.size_at(self.visible),
             margins: self.geometry.margins(),
-            gap: self
-                .resting_gap
-                .reserve(self.gap_tweening, self.geometry, self.visible),
+            gap,
             fraction: self.fraction(),
         }
+    }
+}
+
+/// The gap a change leaves at its target (D5): a pushing target lands on its
+/// own strip, so a collapse from a covering panel still moves the strip once
+/// the animation ends; a covering target holds the resting gap.
+fn final_gap(resting_gap: HeldGap, geometry: Geometry) -> HeldGap {
+    if geometry.reserve() == ReserveMode::Push {
+        resting_gap.reserve(true, geometry, geometry.across())
+    } else {
+        resting_gap
     }
 }
 

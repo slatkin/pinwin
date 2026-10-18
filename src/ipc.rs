@@ -141,18 +141,24 @@ pub enum Request {
     Focus { panel: PanelName },
     /// Dock the panel at another edge.
     SetEdge { panel: PanelName, edge: Edge },
-    /// Set the panel's size, over `ms` milliseconds or its `tween_ms`.
+    /// Set the panel's size and, when given, its reserve mode, over `ms`
+    /// milliseconds or its `tween_ms` (spec "Size and reserve in one
+    /// request").
     SetSize {
         panel: PanelName,
         size: Size,
         #[serde(skip_serializing_if = "Option::is_none")]
+        reserve: Option<ReserveMode>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         ms: Option<u32>,
     },
-    /// Change the panel's size by `by`, over `ms` milliseconds or its
-    /// `tween_ms`.
+    /// Change the panel's size by `by` and, when given, its reserve mode,
+    /// over `ms` milliseconds or its `tween_ms`.
     Resize {
         panel: PanelName,
         by: Amount,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reserve: Option<ReserveMode>,
         #[serde(skip_serializing_if = "Option::is_none")]
         ms: Option<u32>,
     },
@@ -243,14 +249,26 @@ impl Request {
                 panel: panel_name(&panel)?,
                 edge: setting("edge", &edge)?,
             },
-            RawRequest::SetSize { panel, size, ms } => Self::SetSize {
+            RawRequest::SetSize {
+                panel,
+                size,
+                reserve,
+                ms,
+            } => Self::SetSize {
                 panel: panel_name(&panel)?,
                 size: wire_size(size)?,
+                reserve: optional_setting("reserve", reserve.as_deref())?,
                 ms: millis(ms)?,
             },
-            RawRequest::Resize { panel, by, ms } => Self::Resize {
+            RawRequest::Resize {
+                panel,
+                by,
+                reserve,
+                ms,
+            } => Self::Resize {
                 panel: panel_name(&panel)?,
                 by: amount(by)?,
+                reserve: optional_setting("reserve", reserve.as_deref())?,
                 ms: millis(ms)?,
             },
             RawRequest::SetOutput { panel, output } => Self::SetOutput {
@@ -316,11 +334,15 @@ enum RawRequest {
         panel: String,
         size: RawSize,
         #[serde(default)]
+        reserve: Option<String>,
+        #[serde(default)]
         ms: Option<Number>,
     },
     Resize {
         panel: String,
         by: RawAmount,
+        #[serde(default)]
+        reserve: Option<String>,
         #[serde(default)]
         ms: Option<Number>,
     },
@@ -391,6 +413,16 @@ where
 {
     raw.parse()
         .map_err(|error| RequestError::InvalidValue(format!("{field}: {error}")))
+}
+
+/// An optional setting: an absent field keeps the panel's value, a present
+/// one goes through the same grammar (D4).
+fn optional_setting<T>(field: &str, raw: Option<&str>) -> Result<Option<T>, RequestError>
+where
+    T: FromStr,
+    T::Err: fmt::Display,
+{
+    raw.map(|raw| setting(field, raw)).transpose()
 }
 
 /// A wire number as a whole number of its field's unit: a fractional or an

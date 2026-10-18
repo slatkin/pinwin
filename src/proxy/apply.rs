@@ -44,13 +44,13 @@ use crate::cli::Amount;
 use crate::config::PanelSettings;
 use crate::daemon::events::Bus;
 use crate::daemon::panel::PanelReply;
-use crate::geometry::{Geometry, HeldGap, OutputSize, Size};
+use crate::geometry::{Geometry, HeldGap, OutputSize, ReserveMode, Size};
 use crate::ipc::{ErrorKind, ErrorReply, Request};
 use crate::name::PanelName;
 
 /// What a validated change does to the panel (row 6.6). Built only by
 /// [`plan_change`] (`port-to-rust` D6).
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct Plan {
     /// The settings the panel runs at after the change: what a status reply
     /// reports and what the next dock builds from.
@@ -71,6 +71,9 @@ struct Plan {
     /// The panel's length across the edge before the change, which an
     /// animated change starts from (D8).
     from_across: u32,
+    /// The reserve mode before the change (D5): only a panel that pushed
+    /// before the change moves its strip with the animation.
+    current_reserve: ReserveMode,
     /// The duration of an animated change that only moves the width: the
     /// request's `ms` or the panel's `tween_ms`, clamped (D8). `None` snaps.
     animate: Option<u32>,
@@ -143,12 +146,14 @@ fn plan_change(
             edge: *edge,
             ..current.clone()
         },
-        Request::SetSize { size, .. } => PanelSettings {
+        Request::SetSize { size, reserve, .. } => PanelSettings {
             size: *size,
+            reserve: reserve.unwrap_or(current.reserve()),
             ..current.clone()
         },
-        Request::Resize { by, .. } => PanelSettings {
+        Request::Resize { by, reserve, .. } => PanelSettings {
             size: resize_size(current, *by, output).ok_or_else(resize_refused)?,
+            reserve: reserve.unwrap_or(current.reserve()),
             ..current.clone()
         },
         Request::SetReserve { reserve, .. } => PanelSettings {
@@ -186,6 +191,7 @@ fn plan_change(
         size: needs_size.then(|| geometry.size()),
         layer_changed,
         from_across: current_geometry.across(),
+        current_reserve: current.reserve(),
         animate,
         snaps,
     }))
@@ -311,7 +317,13 @@ fn apply_plan(routing: &Rc<Routing>, plan: Plan, panel: &PanelName, bus: &Bus) {
     // D8: an animated change starts its tween instead of re-sending the
     // target size; the tween's frames re-send the layer state each frame.
     if let Some(ms) = plan.animate
-        && super::tween::start(routing, plan.from_across, plan.geometry, ms)
+        && super::tween::start(
+            routing,
+            plan.from_across,
+            plan.current_reserve,
+            plan.geometry,
+            ms,
+        )
     {
         bus.publish_geometry_changed(panel);
         return;

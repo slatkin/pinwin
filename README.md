@@ -70,8 +70,8 @@ foreground. The other subcommands send one request to the daemon and exit:
 | `hide` | Hide a shown panel. |
 | `focus` | Show a hidden panel and give it the keyboard. |
 | `set-edge` | Move a panel to another edge. |
-| `set-size` | Set a panel's size, optionally with `--ms <N>`. |
-| `resize` | Change a panel's size by a signed amount, optionally with `--ms <N>`. |
+| `set-size` | Set a panel's size, optionally with `--reserve push\|cover` and `--ms <N>`. |
+| `resize` | Change a panel's size by a signed amount, optionally with `--reserve push\|cover` and `--ms <N>`. |
 | `set-output` | Move a panel to another output. |
 | `set-layer` | Change the layer-shell layer of a panel. |
 | `set-reserve` | Change whether a panel pushes or covers tiled windows. |

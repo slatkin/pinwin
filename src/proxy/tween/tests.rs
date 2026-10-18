@@ -1,5 +1,5 @@
 use super::*;
-use crate::geometry::{Gutters, ReserveMode};
+use crate::geometry::Gutters;
 
 /// A panel geometry of `across` logical pixels on `edge`, with no
 /// gutters (D9).
@@ -35,6 +35,7 @@ fn growing(edge: Edge, from: u32, to: u32) -> GrowHandshake {
         from,
         surface(edge, from),
         HeldGap::start(push(edge, from)),
+        ReserveMode::Push,
         200,
     )
 }
@@ -53,9 +54,24 @@ fn shrinking(edge: Edge, from: u32, to: u32) -> Tween {
         from,
         surface(edge, from),
         HeldGap::start(push(edge, from)),
+        ReserveMode::Push,
         200,
     )
     .expect("a 200 ms shrink")
+}
+
+/// A 200 ms collapse of a covering panel from `from` to `to`, holding the
+/// strip of the last pushing width of 400 pixels (D5).
+fn collapsing(from: u32, to: u32) -> Tween {
+    Tween::start(
+        push(Edge::Left, to),
+        from,
+        surface(Edge::Left, from),
+        HeldGap::start(push(Edge::Left, 400)),
+        ReserveMode::Cover,
+        200,
+    )
+    .expect("a 200 ms collapse")
 }
 
 /// The frame of a step.
@@ -283,7 +299,14 @@ fn a_pushing_gap_moves_with_the_panel() {
 #[test]
 fn a_covering_gap_holds_still() {
     let resting = HeldGap::start(push(Edge::Left, 400));
-    let handshake = GrowHandshake::new(cover(Edge::Left, 600), 400, (400, 1080), resting, 200);
+    let handshake = GrowHandshake::new(
+        cover(Edge::Left, 600),
+        400,
+        (400, 1080),
+        resting,
+        ReserveMode::Push,
+        200,
+    );
     let Some(GrowResult::Answered { surface }) = handshake.on_commit(Some(600)) else {
         panic!("the target answers the handshake");
     };
@@ -296,6 +319,57 @@ fn a_covering_gap_holds_still() {
     let last = frame(tween.step(200_000));
     assert_eq!(last.visible, 600);
     assert_eq!(last.gap.zone(), 400, "the final frame leaves the strip");
+    assert_eq!(tween.final_gap(), resting, "a covering target ends held");
+}
+
+/// A collapse from a covering panel to the held strip keeps the strip in
+/// every frame and at the end (D5, spec "Collapse back to the held
+/// strip").
+#[test]
+fn a_collapse_to_the_held_strip_holds_it_in_every_frame() {
+    let mut tween = collapsing(1100, 400);
+    assert_eq!(
+        tween.final_gap().zone(),
+        400,
+        "the end stays at the held strip"
+    );
+    for elapsed in [0, 50_000, 100_000, 150_000, 200_000] {
+        let frame = frame(tween.step(elapsed));
+        assert_eq!(
+            frame.gap.zone(),
+            400,
+            "the strip holds at {elapsed} microseconds"
+        );
+    }
+    assert_eq!(tween.phase(), Phase::Finished);
+}
+
+/// A collapse from a covering panel to a new pushing width holds the strip
+/// during the animation and sets it when the animation ends (D5, spec
+/// "Collapse to a new pushing width").
+#[test]
+fn a_collapse_to_a_new_pushing_width_lands_on_it_at_the_end() {
+    let mut tween = collapsing(1100, 500);
+    assert_eq!(
+        tween.final_gap().zone(),
+        500,
+        "the target strip is the new width"
+    );
+    let _ = tween.step(0);
+    let mid = frame(tween.step(100_000));
+    assert!(
+        mid.visible > 500 && mid.visible < 1100,
+        "the panel is still collapsing at {}",
+        mid.visible
+    );
+    assert_eq!(mid.gap.zone(), 400, "the strip holds during the animation");
+    let last = frame(tween.step(200_000));
+    assert_eq!(last.visible, 500);
+    assert_eq!(
+        last.gap.zone(),
+        500,
+        "the strip becomes the new width at the end"
+    );
 }
 
 /// While a tween runs every compositor configure is acked by the proxy
@@ -428,7 +502,14 @@ fn the_final_gap_matches_a_plain_apply() {
         HeldGap::start(push(Edge::Left, 400)).after_publish(push(Edge::Left, 600))
     );
     let resting = HeldGap::start(push(Edge::Left, 400));
-    let covering = GrowHandshake::new(cover(Edge::Left, 600), 400, (400, 1080), resting, 200);
+    let covering = GrowHandshake::new(
+        cover(Edge::Left, 600),
+        400,
+        (400, 1080),
+        resting,
+        ReserveMode::Push,
+        200,
+    );
     assert_eq!(covering.final_gap(), resting);
 }
 
@@ -442,6 +523,7 @@ fn a_change_that_cannot_animate_starts_no_tween() {
             400,
             (400, 1080),
             HeldGap::start(push(Edge::Left, 400)),
+            ReserveMode::Push,
             0
         )
         .is_none()
@@ -452,6 +534,7 @@ fn a_change_that_cannot_animate_starts_no_tween() {
             400,
             (400, 1080),
             HeldGap::start(push(Edge::Left, 400)),
+            ReserveMode::Push,
             200
         )
         .is_none()
@@ -461,6 +544,7 @@ fn a_change_that_cannot_animate_starts_no_tween() {
         400,
         (0, 0),
         HeldGap::start(push(Edge::Left, 400)),
+        ReserveMode::Push,
         200,
     )
     .expect("a shrink");
@@ -501,6 +585,7 @@ fn a_clamped_tween_ends_after_one_second() {
         400,
         surface(Edge::Left, 400),
         HeldGap::start(push(Edge::Left, 400)),
+        ReserveMode::Push,
         60_000,
     );
     let Some(GrowResult::Answered { surface }) = handshake.on_commit(Some(600)) else {
@@ -547,6 +632,7 @@ fn a_retarget_continues_from_the_current_length() {
         shrink.visible(),
         surface,
         shrink.current_gap(),
+        ReserveMode::Push,
         200,
     )
     .expect("a retarget");
@@ -571,6 +657,7 @@ fn a_snap_starts_no_frames() {
             425,
             surface(Edge::Left, 600),
             HeldGap::start(push(Edge::Left, 425)),
+            ReserveMode::Push,
             0
         )
         .is_none(),

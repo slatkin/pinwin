@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::config::{FocusRing, Keyboard, Layer, Rgb};
-use crate::geometry::{Edge, ReserveMode};
+use crate::geometry::Edge;
 use std::num::NonZeroU32;
 
 fn os(raw: &[&str]) -> Vec<OsString> {
@@ -241,6 +241,7 @@ fn the_client_subcommands_parse_their_values() {
         Request::SetSize {
             panel: name("notes"),
             size: px(640),
+            reserve: None,
             ms: None,
         }
     );
@@ -249,25 +250,10 @@ fn the_client_subcommands_parse_their_values() {
         Request::SetSize {
             panel: name("notes"),
             size: size("30%"),
+            reserve: None,
             ms: Some(0),
         }
     );
-
-    let Request::Resize { panel, by, ms } = client(&["resize", "notes", "-40px", "--ms", "150"])
-    else {
-        panic!("expected resize");
-    };
-    assert_eq!(panel, name("notes"));
-    assert_eq!(by.size(), px(40));
-    assert!(by.shrinks());
-    assert_eq!(ms, Some(150));
-
-    let Request::Resize { by, .. } = client(&["resize", "notes", "+10%"]) else {
-        panic!("expected resize");
-    };
-    assert_eq!(by.size(), size("10%"));
-    assert!(!by.shrinks());
-
     assert_eq!(
         client(&["set-output", "notes", "DP-1"]),
         Request::SetOutput {
@@ -309,6 +295,68 @@ fn the_client_subcommands_parse_their_values() {
     assert_eq!(client(&["reload"]), Request::Reload);
 }
 
+/// `set-size` and `resize` take `--reserve push|cover` beside `--ms`, in
+/// any order, and send it with the size (spec "Size with a reserve mode").
+#[test]
+fn the_size_commands_take_a_reserve_mode() {
+    assert_eq!(
+        client(&[
+            "set-size",
+            "notes",
+            "1100px",
+            "--reserve",
+            "cover",
+            "--ms",
+            "200",
+        ]),
+        Request::SetSize {
+            panel: name("notes"),
+            size: px(1100),
+            reserve: Some(ReserveMode::Cover),
+            ms: Some(200),
+        },
+        "the reserve option rides with the size in one request"
+    );
+    assert_eq!(
+        client(&[
+            "resize",
+            "notes",
+            "-700px",
+            "--ms",
+            "200",
+            "--reserve",
+            "push",
+        ]),
+        Request::Resize {
+            panel: name("notes"),
+            by: Amount::shrink(px(700)),
+            reserve: Some(ReserveMode::Push),
+            ms: Some(200),
+        },
+        "the options are accepted in either order"
+    );
+    let Request::Resize {
+        panel,
+        by,
+        reserve,
+        ms,
+    } = client(&["resize", "notes", "-40px", "--ms", "150"])
+    else {
+        panic!("expected resize");
+    };
+    assert_eq!(panel, name("notes"));
+    assert_eq!(by.size(), px(40));
+    assert!(by.shrinks());
+    assert_eq!(reserve, None);
+    assert_eq!(ms, Some(150));
+
+    let Request::Resize { by, .. } = client(&["resize", "notes", "+10%"]) else {
+        panic!("expected resize");
+    };
+    assert_eq!(by.size(), size("10%"));
+    assert!(!by.shrinks());
+}
+
 /// A missing, extra or unreadable client argument is a usage error that
 /// names the subcommand and exits 2 (spec "Command-line exit codes").
 #[test]
@@ -333,11 +381,15 @@ fn client_usage_errors_name_the_subcommand() {
         ),
         (
             &["set-size", "notes"][..],
-            "pinwin: set-size: expected <name> a size [--ms N]",
+            "pinwin: set-size: expected <name> a size [--reserve push|cover] [--ms N]",
         ),
         (
             &["set-size", "notes", "640px", "--ms", "wide"][..],
             "pinwin: --ms: expected a whole number of milliseconds, got 'wide'",
+        ),
+        (
+            &["set-size", "notes", "1100px", "--reserve", "middle"][..],
+            "pinwin: --reserve: expected push or cover, got 'middle'",
         ),
         (
             &["resize", "notes", "40px"][..],

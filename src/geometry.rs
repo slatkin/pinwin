@@ -589,19 +589,24 @@ impl HeldGap {
         self
     }
 
-    /// Whether an animated apply tweens the gap with the panel: only a pushing
-    /// target whose strip differs from the strip the gap rests at right now.
-    /// The caller reads that strip before the apply moves the held gap, so a
-    /// covering excursion's shrink-back holds the gap still.
+    /// Whether an animated apply tweens the gap with the panel: only a panel
+    /// that pushed before the change and has a pushing target whose strip
+    /// differs from the strip the gap rests at right now. A panel that covered
+    /// before the change holds the strip still, even when the target pushes
+    /// (D5, spec "Collapse back to the held strip", "Collapse to a new
+    /// pushing width"). The caller reads that strip before the apply moves the
+    /// held gap, so a covering excursion's shrink-back holds the gap still.
     // Called by the width tween's start rule (row 10.1, D8).
     #[must_use]
     pub fn tweens_with_panel(
         gap_rests_at: i32,
+        current: ReserveMode,
         animate: bool,
         geometry: Geometry,
         across_px: u32,
     ) -> bool {
         animate
+            && current == ReserveMode::Push
             && geometry.reserve() == ReserveMode::Push
             && geometry
                 .strip_at(across_px)
