@@ -87,14 +87,13 @@ and several modules wait for the rows that wire them in (D15).
   behind (spec "Event stream", "Silent client"), and the daemon-owned
   `create`, `quit` and `reload` requests, whose replies it writes before the
   new panel, the end of the daemon or the config change. `src/main.rs`
-  compiles it.
-- `src/daemon/create.rs` — the daemon's `create` request (row 7.1, D2, spec
-  "Run an app in a panel"): it resolves the new panel's settings from the run
-  options, the config file and the built-in defaults, starts the panel thread
-  for the caller's process ID and answers with the display the app connects
-  with, through `Lifetime::add_panel`, so the registry and the
-  `exit_when_idle` rule see the panel. A name another panel uses is refused
-  and the existing panel stays (spec "Duplicate name").
+  compiles it. The `create` arm (row 7.1, D2, spec "Run an app in a
+  panel") resolves the new panel's settings from the run options, the
+  config file and the built-in defaults, starts the panel thread for the
+  caller's process ID and answers with the display the app connects with,
+  through `Lifetime::add_panel`, so the registry and the `exit_when_idle`
+  rule see the panel. A name another panel uses is refused and the existing
+  panel stays (spec "Duplicate name").
 - `src/daemon/lifetime.rs` — the daemon's lifetime (spec "Daemon lifetime
   preference", "Quit", "Reload", D12): the shared state of the daemon (the
   registry, the event bus, the config it holds and the shutdown trigger),
