@@ -185,10 +185,20 @@ jobs:
       - name: Stage release files and checksum
         if: startsWith(github.ref, 'refs/tags/')
         run: |
+          version=${GITHUB_REF_NAME#v}
+          # The tarball is the AUR package's source (PKGBUILD): the pinned
+          # top-level folder carries the binary and the license text.
+          mkdir -p "pinwin-${version}"
+          cp target/release/pinwin "pinwin-${version}/pinwin"
+          cp LICENSE "pinwin-${version}/LICENSE"
+          tar czf "pinwin-${version}-linux-x86_64.tar.gz" "pinwin-${version}"
           mkdir -p dist
           cp target/release/pinwin dist/pinwin-linux-x86_64
+          cp "pinwin-${version}-linux-x86_64.tar.gz" dist/
           cd dist
           sha256sum pinwin-linux-x86_64 > pinwin-linux-x86_64.sha256
+          sha256sum "pinwin-${version}-linux-x86_64.tar.gz" \
+            > "pinwin-${version}-linux-x86_64.tar.gz.sha256"
 
       - name: Upload release artifacts
         if: startsWith(github.ref, 'refs/tags/')
@@ -198,6 +208,8 @@ jobs:
           path: |
             dist/pinwin-linux-x86_64
             dist/pinwin-linux-x86_64.sha256
+            dist/pinwin-*-linux-x86_64.tar.gz
+            dist/pinwin-*-linux-x86_64.tar.gz.sha256
           if-no-files-found: error
 
   release:
@@ -229,10 +241,14 @@ jobs:
           esac
           if view_output=$(gh release view "$GITHUB_REF_NAME" 2>&1); then
             gh release upload "$GITHUB_REF_NAME" \
-              dist/pinwin-linux-x86_64 dist/pinwin-linux-x86_64.sha256 --clobber
+              dist/pinwin-linux-x86_64 dist/pinwin-linux-x86_64.sha256 \
+              dist/pinwin-*-linux-x86_64.tar.gz \
+              dist/pinwin-*-linux-x86_64.tar.gz.sha256 --clobber
           elif grep -qi 'release not found' <<< "$view_output"; then
             gh release create "$GITHUB_REF_NAME" \
               dist/pinwin-linux-x86_64 dist/pinwin-linux-x86_64.sha256 \
+              dist/pinwin-*-linux-x86_64.tar.gz \
+              dist/pinwin-*-linux-x86_64.tar.gz.sha256 \
               --generate-notes --verify-tag "${prerelease[@]}"
           else
             printf '::error::Could not check for an existing release: %s\n' \
