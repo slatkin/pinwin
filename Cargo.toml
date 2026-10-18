@@ -1,6 +1,6 @@
 [package]
 name = "pinwin"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.90"
 description = "Dock a Wayland app to the edge of an output as a panel."
