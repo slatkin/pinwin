@@ -110,7 +110,7 @@ wrong.
   change sends no new app size while a side-gutter change sends exactly one (spec "Set
   gutters", "Panel commands", "Change while hidden", "Other fields snap", "Validate a
   change before applying it").
-- [ ] 5.3 Run the gates: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D
+- [x] 5.3 Run the gates: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D
   warnings`, `cargo audit`, `cargo nextest run` and `make check-code-file-lines`. Verify:
   all pass.
 - [ ] 5.4 Live check, run by the user: a running panel with Top 0; then
