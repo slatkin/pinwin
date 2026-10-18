@@ -9,13 +9,14 @@
 //! serialization here is the one place a value gets its wire text, so the
 //! options and the panel commands cannot drift apart.
 
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Number;
 
 use super::{RequestError, gutter, optional_setting};
 use crate::cli::Amount;
 use crate::config::{FocusRing, Keyboard, Layer, PanelOptions};
-use crate::geometry::{Edge, ReserveMode, Size};
+use crate::geometry::{Edge, GutterChange, ReserveMode, Size};
 use crate::name::PanelName;
 
 /// The run options on the wire (spec "Run options", D2, D13): the same text
@@ -137,6 +138,25 @@ fn focus_ring_text(ring: FocusRing) -> String {
             let [red, green, blue] = color.channels();
             format!("#{red:02x}{green:02x}{blue:02x}:{}", width.get())
         }
+    }
+}
+
+impl Serialize for GutterChange {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(top) = self.top {
+            map.serialize_entry("top", &top)?;
+        }
+        if let Some(bottom) = self.bottom {
+            map.serialize_entry("bottom", &bottom)?;
+        }
+        if let Some(left) = self.left {
+            map.serialize_entry("left", &left)?;
+        }
+        if let Some(right) = self.right {
+            map.serialize_entry("right", &right)?;
+        }
+        map.end()
     }
 }
 

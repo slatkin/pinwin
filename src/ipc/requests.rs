@@ -14,9 +14,10 @@ use serde_json::Number;
 
 use super::options::WireOptions;
 use super::{
-    RawAmount, RawSize, Request, RequestError, amount, gutter, millis, no_gutter_field,
+    RawAmount, RawGutters, RawSize, Request, RequestError, amount, gutter, millis, no_gutter_field,
     optional_setting, panel_name, setting, wire_size,
 };
+use crate::geometry::GutterChange;
 use crate::name::PanelName;
 
 /// The four client commands that name one panel and no value (`toggle`,
@@ -97,26 +98,19 @@ pub(super) fn resize(
 
 /// A `set-gutters` request: at least one whole-number gutter, each
 /// parsed on its own (spec "Gutter request fields", D7).
-pub(super) fn gutters(
-    panel: &str,
-    top: Option<Number>,
-    bottom: Option<Number>,
-    left: Option<Number>,
-    right: Option<Number>,
-) -> Result<Request, RequestError> {
-    let top = gutter("top", top)?;
-    let bottom = gutter("bottom", bottom)?;
-    let left = gutter("left", left)?;
-    let right = gutter("right", right)?;
-    if [top, bottom, left, right].iter().all(Option::is_none) {
+pub(super) fn gutters(panel: &str, raw: RawGutters) -> Result<Request, RequestError> {
+    let change = GutterChange {
+        top: gutter("top", raw.top)?,
+        bottom: gutter("bottom", raw.bottom)?,
+        left: gutter("left", raw.left)?,
+        right: gutter("right", raw.right)?,
+    };
+    if change.is_empty() {
         return Err(no_gutter_field());
     }
     Ok(Request::SetGutters {
         panel: panel_name(panel)?,
-        top,
-        bottom,
-        left,
-        right,
+        change,
     })
 }
 

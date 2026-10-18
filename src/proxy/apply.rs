@@ -48,7 +48,7 @@ use crate::cli::Amount;
 use crate::config::PanelSettings;
 use crate::daemon::events::Bus;
 use crate::daemon::panel::PanelReply;
-use crate::geometry::{Geometry, Gutters, HeldGap, OutputSize, ReserveMode, Size};
+use crate::geometry::{Geometry, HeldGap, OutputSize, ReserveMode, Size};
 use crate::ipc::{ErrorKind, ErrorReply, Request};
 use crate::name::PanelName;
 
@@ -161,24 +161,10 @@ fn plan_change(
             reserve: reserve.unwrap_or(current.reserve()),
             ..current.clone()
         },
-        Request::SetGutters {
-            top,
-            bottom,
-            left,
-            right,
-            ..
-        } => {
-            let gutters = current.gutters();
-            PanelSettings {
-                gutters: Gutters::new(
-                    left.unwrap_or(gutters.left()),
-                    right.unwrap_or(gutters.right()),
-                    top.unwrap_or(gutters.top()),
-                    bottom.unwrap_or(gutters.bottom()),
-                ),
-                ..current.clone()
-            }
-        }
+        Request::SetGutters { change, .. } => PanelSettings {
+            gutters: change.merge(current.gutters()),
+            ..current.clone()
+        },
         Request::SetReserve { reserve, .. } => PanelSettings {
             reserve: *reserve,
             ..current.clone()

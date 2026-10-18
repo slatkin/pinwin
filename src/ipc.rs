@@ -36,7 +36,7 @@ use serde_json::Number;
 
 use crate::cli::Amount;
 use crate::config::{Keyboard, Layer, PanelOptions};
-use crate::geometry::{Edge, ReserveMode, Size};
+use crate::geometry::{Edge, GutterChange, ReserveMode, Size};
 use crate::name::PanelName;
 
 mod client;
@@ -169,14 +169,8 @@ pub enum Request {
     /// fields", D7).
     SetGutters {
         panel: PanelName,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        top: Option<i32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        bottom: Option<i32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        left: Option<i32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        right: Option<i32>,
+        #[serde(flatten)]
+        change: GutterChange,
     },
     /// Open the panel on another output.
     SetOutput { panel: PanelName, output: String },
@@ -293,7 +287,15 @@ impl Request {
                 bottom,
                 left,
                 right,
-            } => requests::gutters(&panel, top, bottom, left, right),
+            } => requests::gutters(
+                &panel,
+                RawGutters {
+                    top,
+                    bottom,
+                    left,
+                    right,
+                },
+            ),
             RawRequest::SetOutput { panel, output } => requests::output(&panel, output),
             RawRequest::SetLayer { panel, layer } => {
                 requests::setting_value(&panel, &layer, "layer", |panel, layer| Self::SetLayer {
@@ -324,6 +326,16 @@ impl Request {
             RawRequest::Reload => Ok(Self::Reload),
         }
     }
+}
+
+/// The four optional gutters of a `set-gutters` line as the wire carries
+/// them (D7): each is still a JSON number, so a fractional or over-`i32`
+/// value is the known command's `invalid_value` when the request is built.
+struct RawGutters {
+    top: Option<Number>,
+    bottom: Option<Number>,
+    left: Option<Number>,
+    right: Option<Number>,
 }
 
 /// A request line before its values are checked: every setting keeps the

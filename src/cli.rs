@@ -19,7 +19,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::str::FromStr;
 
 use crate::config::{InvalidValue, PanelOptions, parse_digits};
-use crate::geometry::{ReserveMode, Size};
+use crate::geometry::{GutterChange, ReserveMode, Size};
 use crate::ipc::Request;
 use crate::name::PanelName;
 
@@ -481,33 +481,24 @@ fn set_gutters(subcommand: &str, args: &[OsString]) -> Result<Request, UsageErro
     };
     let (raw_panel, mut rest) = args.split_first().ok_or_else(expected)?;
     let panel = panel(subcommand, raw_panel)?;
-    let mut top = None;
-    let mut bottom = None;
-    let mut left = None;
-    let mut right = None;
+    let mut change = GutterChange::default();
     while let Some((option, tail)) = rest.split_first() {
         let (raw, next) = tail.split_first().ok_or_else(expected)?;
         match text("option", option)? {
-            "--top" => top = Some(gutter("--top", raw)?),
-            "--bottom" => bottom = Some(gutter("--bottom", raw)?),
-            "--left" => left = Some(gutter("--left", raw)?),
-            "--right" => right = Some(gutter("--right", raw)?),
+            "--top" => change.top = Some(gutter("--top", raw)?),
+            "--bottom" => change.bottom = Some(gutter("--bottom", raw)?),
+            "--left" => change.left = Some(gutter("--left", raw)?),
+            "--right" => change.right = Some(gutter("--right", raw)?),
             _ => return Err(expected()),
         }
         rest = next;
     }
-    if [top, bottom, left, right].iter().all(Option::is_none) {
+    if change.is_empty() {
         return Err(UsageError::new(format!(
             "{subcommand}: expected at least one of --top, --bottom, --left or --right"
         )));
     }
-    Ok(Request::SetGutters {
-        panel,
-        top,
-        bottom,
-        left,
-        right,
-    })
+    Ok(Request::SetGutters { panel, change })
 }
 
 /// `set-output <name> <output>`.

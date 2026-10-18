@@ -54,7 +54,8 @@ binary-only now and every row of its tasks is landed.
 - `src/ipc.rs` — the daemon's wire format (D13): the request enum with one
   variant for each client subcommand and the `create` request `pinwin run`
   sends (D2), with its `show_existing` flag absent when false (D6), the
-  `set-gutters` request with its optional whole-number gutters (D7), the
+  `set-gutters` request with its `GutterChange` of optional whole-number
+  gutters (D7), the
   reply with its error kinds, its display for a new panel, its `existing`
   marker for a panel that was already there and its status reply's panel
   fields (spec "Status", "Run an app in a panel", "Show an existing
@@ -175,7 +176,9 @@ binary-only now and every row of its tasks is landed.
   the same grammar and `src/main.rs` reads the file; its unit tests are
   `src/config/tests.rs`.
 - `src/geometry.rs` — the display-free geometry core: `Edge`, `Size` (pixels
-  or percent), `Gutters` with its four per-edge accessors, `ReserveMode`, the
+  or percent), `Gutters` with its four per-edge accessors, the partial
+  `GutterChange` a `set-gutters` request carries with the merge that applies
+  it to the panel's gutters, `ReserveMode`, the
   layer-surface anchors, margins and size, the reserved strip and the held
   gap (D9), whose strip follows an animation only when the panel pushed
   before the change. `src/main.rs` compiles it; the option parser, the apply

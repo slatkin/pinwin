@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use super::{CallError, ErrorKind, LineError, MAX_LINE, Reply, Request, read_line, write_line};
 use crate::cli::{self, Command};
+use crate::geometry::GutterChange;
 use crate::name::PanelName;
 
 /// The panel name the request tests use.
@@ -697,10 +698,12 @@ fn the_set_gutters_request_round_trips_its_fields() {
         one,
         Request::SetGutters {
             panel: notes(),
-            top: None,
-            bottom: None,
-            left: Some(-12),
-            right: None,
+            change: GutterChange {
+                top: None,
+                bottom: None,
+                left: Some(-12),
+                right: None,
+            },
         }
     );
     assert_eq!(

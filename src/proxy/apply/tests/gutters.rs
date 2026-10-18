@@ -14,7 +14,7 @@ use super::super::{geometry_of, needs_new_app_size};
 use super::{notes, output, planned, routing, settings};
 use crate::daemon::events::{Bus, Event};
 use crate::daemon::panel::PanelReply;
-use crate::geometry::{Geometry, Gutters, HeldGap, Margins};
+use crate::geometry::{Geometry, GutterChange, Gutters, HeldGap, Margins};
 use crate::ipc::{ErrorKind, Request};
 
 /// `set-gutters` changes the gutters a request names and keeps the rest as
@@ -29,10 +29,12 @@ fn a_gutter_change_is_one_plan_with_the_new_margins() {
         &current,
         &Request::SetGutters {
             panel: notes(),
-            top: Some(8),
-            bottom: Some(8),
-            left: None,
-            right: None,
+            change: GutterChange {
+                top: Some(8),
+                bottom: Some(8),
+                left: None,
+                right: None,
+            },
         },
         output(1920, 1080),
     );
@@ -64,10 +66,12 @@ fn a_refused_gutter_change_leaves_the_settings_and_the_gap_alone() {
         &routing,
         &Request::SetGutters {
             panel: notes(),
-            top: None,
-            bottom: None,
-            left: None,
-            right: Some(1500),
+            change: GutterChange {
+                top: None,
+                bottom: None,
+                left: None,
+                right: Some(1500),
+            },
         },
         &panel,
         &bus,
@@ -99,10 +103,12 @@ fn a_hidden_panel_stores_the_gutters_for_its_next_show() {
         &routing,
         &Request::SetGutters {
             panel: notes(),
-            top: Some(8),
-            bottom: Some(8),
-            left: None,
-            right: None,
+            change: GutterChange {
+                top: Some(8),
+                bottom: Some(8),
+                left: None,
+                right: None,
+            },
         },
         &panel,
         &bus,
@@ -132,10 +138,12 @@ fn a_side_gutter_sends_one_new_size_and_a_near_gutter_none() {
         &current,
         &Request::SetGutters {
             panel: notes(),
-            top: Some(8),
-            bottom: Some(8),
-            left: None,
-            right: None,
+            change: GutterChange {
+                top: Some(8),
+                bottom: Some(8),
+                left: None,
+                right: None,
+            },
         },
         output,
     );
@@ -153,10 +161,12 @@ fn a_side_gutter_sends_one_new_size_and_a_near_gutter_none() {
         &side.settings,
         &Request::SetGutters {
             panel: notes(),
-            top: None,
-            bottom: None,
-            left: Some(12),
-            right: None,
+            change: GutterChange {
+                top: None,
+                bottom: None,
+                left: Some(12),
+                right: None,
+            },
         },
         output,
     );
@@ -179,10 +189,12 @@ fn a_gutter_change_that_names_the_current_gutters_publishes_nothing() {
         &routing,
         &Request::SetGutters {
             panel: notes(),
-            top: None,
-            bottom: None,
-            left: Some(0),
-            right: None,
+            change: GutterChange {
+                top: None,
+                bottom: None,
+                left: Some(0),
+                right: None,
+            },
         },
         &panel,
         &bus,

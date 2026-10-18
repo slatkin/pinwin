@@ -340,10 +340,12 @@ fn the_client_subcommands_parse_their_values() {
         client(&["set-gutters", "notes", "--top", "8", "--bottom", "8"]),
         Request::SetGutters {
             panel: name("notes"),
-            top: Some(8),
-            bottom: Some(8),
-            left: None,
-            right: None,
+            change: GutterChange {
+                top: Some(8),
+                bottom: Some(8),
+                left: None,
+                right: None,
+            },
         }
     );
     assert_eq!(
@@ -466,10 +468,12 @@ fn the_gutter_command_takes_whole_pixels() {
         ]),
         Request::SetGutters {
             panel: name("notes"),
-            top: None,
-            bottom: None,
-            left: Some(12),
-            right: Some(6),
+            change: GutterChange {
+                top: None,
+                bottom: None,
+                left: Some(12),
+                right: Some(6),
+            },
         },
         "the options come in any order and a repeated one keeps its last value"
     );

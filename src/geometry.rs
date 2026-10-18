@@ -186,6 +186,43 @@ impl Gutters {
     }
 }
 
+/// A change to some of the panel's four gutters (spec "Gutter request
+/// fields", D7): a named gutter replaces the panel's current one, and an
+/// absent one keeps it, so a client changes one gutter without naming the
+/// other three.
+///
+/// The four values travel as one named value, so no caller has to order four
+/// same-typed integers by position; [`GutterChange::merge`] applies the
+/// change to the gutters the panel already has.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GutterChange {
+    pub top: Option<i32>,
+    pub bottom: Option<i32>,
+    pub left: Option<i32>,
+    pub right: Option<i32>,
+}
+
+impl GutterChange {
+    /// Whether the change names no gutter, which the `set-gutters` command
+    /// refuses (spec "No gutter field", D7).
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.top.is_none() && self.bottom.is_none() && self.left.is_none() && self.right.is_none()
+    }
+
+    /// The gutters this change leaves: each named gutter replaces `current`,
+    /// each absent one keeps it.
+    #[must_use]
+    pub fn merge(self, current: Gutters) -> Gutters {
+        Gutters {
+            left: self.left.unwrap_or(current.left()),
+            right: self.right.unwrap_or(current.right()),
+            top: self.top.unwrap_or(current.top()),
+            bottom: self.bottom.unwrap_or(current.bottom()),
+        }
+    }
+}
+
 /// The layer surface's margins, in logical pixels, named after the output
 /// edges they measure from. A negative margin moves the panel past its edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
