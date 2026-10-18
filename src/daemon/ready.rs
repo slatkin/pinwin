@@ -2,7 +2,9 @@
 //! (replace-terminal-with-app-host D12, spec "Run starts the daemon"): both
 //! ends start close-on-exec, the parent names the write end in
 //! [`READY_FD_ENV`], and the daemon adopts it at start to report one `R` byte
-//! or its error message.
+//! once it accepts requests, or an `F` byte and then its error message before
+//! it exits. The marker and the parent's read to EOF keep the two apart, so a
+//! message whose first byte is `R` cannot read as ready.
 //!
 //! [`ReadyPipe::from_env`] accepts only an inherited pipe above the three
 //! standard streams, so a manual `pinwin daemon`, a missing variable or a
@@ -23,6 +25,13 @@ use crate::fd::owned_fd;
 /// environment. It is set on the spawned command only, so the app `pinwin run`
 /// later `exec`s never sees it.
 pub const READY_FD_ENV: &str = "PINWIN_READY_FD";
+
+/// The byte the daemon writes when it accepts requests (D12).
+pub const READY_BYTE: u8 = b'R';
+
+/// The byte that introduces a failure report, so a message whose first byte
+/// is `R` cannot read as ready (D12).
+pub const FAILURE_BYTE: u8 = b'F';
 
 /// A fresh pipe whose two ends are both close-on-exec: `pinwin run` keeps the
 /// read end and passes the write end to the daemon.
@@ -91,14 +100,18 @@ impl ReadyPipe {
     /// daemon"). A caller that gave up reading the pipe is not an error: the
     /// daemon keeps running for the next request.
     pub fn report_ready(&self) {
-        self.write(b"R");
+        self.write(&[READY_BYTE]);
     }
 
-    /// Report why the daemon cannot start, without the ready byte, so
-    /// `pinwin run` prints the message and exits 1 at once (spec "Daemon
-    /// cannot start").
+    /// Report why the daemon cannot start (spec "Daemon cannot start"):
+    /// [`FAILURE_BYTE`] and then the message, so `pinwin run` prints the
+    /// message and exits 1 at once, and a message whose first byte is `R`
+    /// cannot read as the ready byte.
     pub fn report_failure(&self, message: &str) {
-        self.write(message.as_bytes());
+        let mut report = Vec::with_capacity(1 + message.len());
+        report.push(FAILURE_BYTE);
+        report.extend_from_slice(message.as_bytes());
+        self.write(&report);
     }
 
     /// Write one report and ignore a reader that already went away.
@@ -179,5 +192,28 @@ mod tests {
         read.read_to_string(&mut report)
             .expect("read the readiness report");
         assert_eq!(report, "R", "the ready byte reaches the parent");
+    }
+
+    /// A failure report carries the marker before its message, so the parent
+    /// can tell it from the ready byte even when the message starts with `R`
+    /// (spec "Daemon cannot start").
+    #[test]
+    fn a_failure_report_is_framed() {
+        let (mut read, write) = pipe().expect("a readiness pipe");
+        let fd = write.as_raw_fd();
+        let adopted = ReadyPipe::from_env(Some(OsStr::new(&value(fd))));
+        // The test's `write` handle names the descriptor the adopted pipe
+        // owns, so it must not close it a second time.
+        std::mem::forget(write);
+        let adopted = adopted.expect("a pipe is adopted");
+        adopted.report_failure("Read-only file system (os error 30)");
+        drop(adopted);
+        let mut report = String::new();
+        read.read_to_string(&mut report)
+            .expect("read the readiness report");
+        assert_eq!(
+            report, "FRead-only file system (os error 30)",
+            "the failure marker precedes the daemon's message"
+        );
     }
 }

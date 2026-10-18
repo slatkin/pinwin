@@ -306,11 +306,14 @@ surface with no output instead of forwarding a close to the app.
 
 `pinwin run` starts a daemon with `pinwin daemon` in a new session (`setsid`), with its three
 standard streams on `/dev/null`, and gives it one inherited, close-on-exec readiness pipe. The
-daemon adapts the write end it names in `PINWIN_READY_FD` at start, writes `R` once it accepts
-requests, or writes its error message and exits, and it writes `R` too when another daemon
-already owns the display. `pinwin run` waits up to 2 s for that report: `R` means it sends its
-request, a message means it prints `the daemon could not start: <message>` and exits 1 at once,
-and a pipe that closes with no byte means the daemon ended before it was ready. A daemon that
+daemon adapts the write end it names in `PINWIN_READY_FD` at start. It writes exactly one `R`
+once it accepts requests, or writes `F` followed by its error message and exits, and it writes
+`R` too when another daemon already owns the display. `pinwin run` reads that pipe to EOF
+within 2 s and classifies the whole report: exactly `R` means it sends its request; `F` followed
+by a message means it prints `the daemon could not start: <message>` and exits 1 at once; and a
+pipe that closes with no byte means the daemon ended before it was ready. Reading to EOF and the
+`F` marker keep a failure message whose first byte is `R` (such as a read-only socket path)
+from reading as ready; any other report is a failure with its trimmed text. A daemon that
 reports nothing in the bound is reported as no answer, so a compositor roundtrip that never
 ends cannot hang `pinwin run`. Two daemons that start at the same time race on the socket bind;
 the loser sees a live daemon, reports `R`, and exits 0, and both `pinwin run` calls connect to

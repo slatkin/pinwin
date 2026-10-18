@@ -14,10 +14,12 @@
 //! the winner (spec "Two first runs").
 //!
 //! The daemon reports over the write end of a pipe whose read end stays with
-//! `pinwin run`: one `R` byte once it accepts requests, or its error message
-//! before it exits. EOF with nothing means it died without a report. The wait
-//! is bounded by [`START_TIMEOUT`], so a daemon that hangs cannot hang
-//! `pinwin run`. The read takes its descriptor and deadline as parameters, so
+//! `pinwin run`: exactly one `R` byte once it accepts requests, or an `F` byte
+//! and then its error message before it exits. EOF with nothing means it died
+//! without a report. The parent reads the whole report to EOF before it
+//! classifies it, so a message whose first byte is `R` cannot read as ready.
+//! The wait is bounded by [`START_TIMEOUT`], so a daemon that hangs cannot
+//! hang `pinwin run`. The read takes its descriptor and deadline as parameters, so
 //! its tests run without a display or a daemon (`port-to-rust` D10).
 
 use std::fmt;
@@ -133,16 +135,16 @@ pub fn start_and_wait(path: &Path) -> Result<(), StartError> {
     }
 }
 
-/// Read the daemon's readiness report from `fd` until EOF or `deadline`:
-/// `R` for ready, any other bytes as its failure message, and EOF with no
-/// bytes as a daemon that ended before it was ready. At most
-/// [`MAX_READY_MESSAGE`] bytes are read, so a daemon cannot make `pinwin run`
-/// keep reading or allocate without a bound.
+/// Read the daemon's readiness report from `fd` until EOF or `deadline`,
+/// then classify the whole report. At most [`MAX_READY_MESSAGE`] bytes are
+/// read, so a daemon cannot make `pinwin run` keep reading or allocate without
+/// a bound; a pipe that stays open and silent reaches `deadline` as
+/// [`Readiness::Silent`].
 fn read_readiness(fd: &File, deadline: Instant) -> Readiness {
-    let mut message = Vec::new();
+    let mut report = Vec::new();
     loop {
-        if message.len() >= MAX_READY_MESSAGE {
-            return ended(&message);
+        if report.len() >= MAX_READY_MESSAGE {
+            return classify(&report);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -160,30 +162,34 @@ fn read_readiness(fd: &File, deadline: Instant) -> Readiness {
         let mut chunk = [0_u8; 1024];
         let mut reader = fd;
         match reader.read(&mut chunk) {
-            Ok(0) => return ended(&message),
-            Ok(count) => {
-                if message.is_empty() && chunk[0] == b'R' {
-                    return Readiness::Ready;
-                }
-                message.extend_from_slice(&chunk[..count]);
-            }
+            Ok(0) => return classify(&report),
+            Ok(count) => report.extend_from_slice(&chunk[..count]),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(_) => return ended(&message),
+            Err(_) => return classify(&report),
         }
     }
 }
 
-/// What the report `message` says: the daemon's trimmed message, or the
-/// report of a daemon that ended without one.
-fn ended(message: &[u8]) -> Readiness {
-    let text = String::from_utf8_lossy(message);
-    let text = text.trim();
-    if text.is_empty() {
-        Readiness::Failed("it exited before it was ready".to_owned())
-    } else {
-        Readiness::Failed(text.to_owned())
+/// What the complete report `report` says (D12): the one ready byte, a
+/// failure marker followed by the daemon's message, or the text a daemon that
+/// wrote no marker left behind. The report is classified only after EOF, so a
+/// failure message whose first byte is `R` is never mistaken for ready.
+fn classify(report: &[u8]) -> Readiness {
+    match report {
+        [] => Readiness::Failed("it exited before it was ready".to_owned()),
+        [byte] if *byte == ready::READY_BYTE => Readiness::Ready,
+        [marker, message @ ..] if *marker == ready::FAILURE_BYTE => {
+            Readiness::Failed(trimmed(message))
+        }
+        _ => Readiness::Failed(trimmed(report)),
     }
+}
+
+/// The trimmed text of `bytes`, so the parent prints the daemon's message
+/// without its trailing newline.
+fn trimmed(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).trim().to_owned()
 }
 
 /// Detach the spawned command from the caller with a second fork (D12): the
@@ -246,18 +252,51 @@ mod tests {
         ));
     }
 
-    /// The daemon's message before EOF is reported trimmed, so `pinwin run`
-    /// shows why it could not start (spec "Daemon cannot start").
+    /// The daemon's framed message before EOF is reported trimmed, so
+    /// `pinwin run` shows why it could not start (spec "Daemon cannot start").
     #[test]
     fn a_message_before_eof_is_a_failure() {
         let (read, mut write) = pipe().expect("a readiness pipe");
         write
-            .write_all(b"pinwin: bad\n")
+            .write_all(b"Fpinwin: bad\n")
             .expect("write the daemon's message");
         drop(write);
         match read_within(&read, Duration::from_secs(1)) {
             Readiness::Failed(message) => assert_eq!(message, "pinwin: bad"),
             readiness => panic!("expected the daemon's message, got {readiness:?}"),
+        }
+    }
+
+    /// A failure message whose first byte is `R` is not the ready byte, so
+    /// `pinwin run` reports the real cause instead of a connect error (spec
+    /// "Daemon cannot start").
+    #[test]
+    fn a_failure_that_starts_with_the_ready_byte_is_a_failure() {
+        let (read, mut write) = pipe().expect("a readiness pipe");
+        write
+            .write_all(b"FRead-only file system (os error 30)\n")
+            .expect("write the daemon's message");
+        drop(write);
+        match read_within(&read, Duration::from_secs(1)) {
+            Readiness::Failed(message) => {
+                assert_eq!(message, "Read-only file system (os error 30)");
+            }
+            readiness => panic!("expected the daemon's message, got {readiness:?}"),
+        }
+    }
+
+    /// The ready byte followed by anything else is not a ready report, so a
+    /// message that happens to start with `R` cannot pass as ready.
+    #[test]
+    fn the_ready_byte_with_more_bytes_is_a_failure() {
+        let (read, mut write) = pipe().expect("a readiness pipe");
+        write
+            .write_all(b"Rmore")
+            .expect("write the daemon's report");
+        drop(write);
+        match read_within(&read, Duration::from_secs(1)) {
+            Readiness::Failed(message) => assert_eq!(message, "Rmore"),
+            readiness => panic!("expected the whole report, got {readiness:?}"),
         }
     }
 
@@ -289,18 +328,22 @@ mod tests {
         );
     }
 
-    /// A message longer than the bound is trimmed, so a daemon cannot make
+    /// A report longer than the bound is trimmed, so a daemon cannot make
     /// `pinwin run` read without a bound.
     #[test]
     fn a_long_message_is_trimmed() {
         let (read, mut write) = pipe().expect("a readiness pipe");
-        write
-            .write_all(&vec![b'x'; MAX_READY_MESSAGE + 128])
-            .expect("write the long message");
+        let mut report = vec![b'x'; MAX_READY_MESSAGE + 128];
+        report[0] = b'F';
+        write.write_all(&report).expect("write the long message");
         drop(write);
         match read_within(&read, Duration::from_secs(1)) {
             Readiness::Failed(message) => {
-                assert_eq!(message.len(), MAX_READY_MESSAGE, "the message is trimmed");
+                assert_eq!(
+                    message.len(),
+                    MAX_READY_MESSAGE - 1,
+                    "the message is trimmed"
+                );
             }
             readiness => panic!("expected the trimmed message, got {readiness:?}"),
         }
