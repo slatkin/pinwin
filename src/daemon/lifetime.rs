@@ -30,7 +30,7 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::Duration;
@@ -68,6 +68,10 @@ pub struct Lifetime {
     /// The tray icon and its lifecycle (D14, spec "One tray icon while
     /// panels exist").
     tray: Mutex<TrayState>,
+    /// The epoch of the next tray start, so a start that finishes after its
+    /// panels ended cannot store its service over a later start's state
+    /// (D14).
+    tray_epoch: AtomicU64,
     /// The daemon as the tray sees it, set once by [`Lifetime::enable_tray`].
     /// A lifetime a test builds never enables the tray, so its stand-in
     /// panels cannot register an icon on a real session bus.
@@ -81,6 +85,10 @@ enum TrayState {
     /// The tray is off: no caller enabled it, or the last panel ended.
     #[default]
     Off,
+    /// The tray service starts on its own thread, named by an epoch so a
+    /// start that the last panel's end cancelled cannot store its service
+    /// (D14).
+    Starting(u64),
     /// The tray service runs and shows one icon.
     Running(TrayService),
     /// The session bus was unreachable on the first panel, so the daemon
@@ -112,6 +120,7 @@ impl Lifetime {
             shutdown: Shutdown::new()?,
             wait,
             tray: Mutex::new(TrayState::Off),
+            tray_epoch: AtomicU64::new(0),
             tray_daemon: OnceLock::new(),
         })
     }
@@ -155,7 +164,8 @@ impl Lifetime {
         self.registry.add(name.clone(), handle)?;
         self.bus.publish(&Event::Added { panel: name });
         // The first panel brings the tray icon (D14, spec "Icon with
-        // panels"); later panels keep the one icon.
+        // panels"); later panels keep the one icon. The start runs off this
+        // thread, so the `create` reply never waits for the session bus.
         self.show_tray();
         Ok(())
     }
@@ -213,7 +223,7 @@ impl Lifetime {
             let tray = locked(&self.tray);
             match &*tray {
                 TrayState::Running(service) => service.handle(),
-                TrayState::Off | TrayState::Unavailable => return,
+                TrayState::Off | TrayState::Starting(_) | TrayState::Unavailable => return,
             }
         };
         let _ = handle.update(|_| ());
@@ -233,14 +243,63 @@ impl Lifetime {
     /// Start the tray service for the first panel (D14). The tray is off
     /// until [`Lifetime::enable_tray`] ran; a session bus that cannot be
     /// reached is reported once by [`TrayService::start`] and not retried.
+    ///
+    /// `TrayService::start` waits on D-Bus, so the start runs on a
+    /// short-lived thread and the tray lock is held only to record the start
+    /// and its result: the `create` request that registered the first panel
+    /// answers its client without that wait.
     fn show_tray(&self) {
         let Some(lifetime) = self.tray_daemon.get() else {
             return;
         };
-        let mut tray = locked(&self.tray);
-        if matches!(*tray, TrayState::Off) {
-            *tray = TrayService::start(Weak::clone(lifetime), self.wait)
-                .map_or(TrayState::Unavailable, TrayState::Running);
+        let epoch = {
+            let mut tray = locked(&self.tray);
+            if !matches!(*tray, TrayState::Off) {
+                return;
+            }
+            let epoch = self.tray_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+            *tray = TrayState::Starting(epoch);
+            epoch
+        };
+        let daemon = Weak::clone(lifetime);
+        let wait = self.wait;
+        let spawned = thread::Builder::new()
+            .name("pinwin-tray".to_owned())
+            .spawn(move || {
+                let service = TrayService::start(Weak::clone(&daemon), wait);
+                Self::finish_tray_start(&daemon, epoch, service);
+            });
+        if let Err(error) = spawned {
+            {
+                let mut tray = locked(&self.tray);
+                if matches!(*tray, TrayState::Starting(starting) if starting == epoch) {
+                    *tray = TrayState::Unavailable;
+                }
+            }
+            eprintln!("pinwin: no tray icon: {error}");
+        }
+    }
+
+    /// Record a tray service that [`Lifetime::show_tray`] started on its own
+    /// thread (D14). The last panel may have ended while the service was
+    /// starting: then this start is stale, so its service is stopped and the
+    /// state a later start wrote stays (spec "No icon without panels"). A
+    /// daemon that already ended needs no service either.
+    fn finish_tray_start(daemon: &Weak<Self>, epoch: u64, service: Option<TrayService>) {
+        let Some(lifetime) = daemon.upgrade() else {
+            if let Some(service) = service {
+                service.stop();
+            }
+            return;
+        };
+        let mut tray = locked(&lifetime.tray);
+        if matches!(*tray, TrayState::Starting(starting) if starting == epoch) {
+            *tray = service.map_or(TrayState::Unavailable, TrayState::Running);
+            return;
+        }
+        drop(tray);
+        if let Some(service) = service {
+            service.stop();
         }
     }
 
@@ -256,9 +315,11 @@ impl Lifetime {
         if !self.registry.is_empty() {
             return;
         }
-        let previous = std::mem::take(&mut *tray);
-        if let TrayState::Running(service) = previous {
-            service.stop();
+        match std::mem::take(&mut *tray) {
+            TrayState::Running(service) => service.stop(),
+            // A start's own thread stops the service this end cancels; off
+            // and unavailable have no service to stop.
+            TrayState::Starting(_) | TrayState::Off | TrayState::Unavailable => {}
         }
     }
 
