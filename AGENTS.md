@@ -78,10 +78,17 @@ and several modules wait for the rows that wire them in (D15).
   (row 7.2, D12, spec "Run starts the daemon"): the double fork that leaves
   the `pinwin daemon` process in a new session with its three standard
   streams on `/dev/null`, reparented to init so no zombie outlives the app
-  `pinwin run` becomes, so the caller's terminal can close, and the bounded
-  probe of the display's socket. Two starts that race are settled by the daemon socket's bind; the
-  loser's process exits 0 and both `run` calls use the winner. `src/main.rs`
-  compiles it.
+  `pinwin run` becomes, so the caller's terminal can close, the inherited
+  readiness pipe whose write end only the daemon keeps, and the bounded read
+  of the single `R` byte or the daemon's error message. Two starts that race
+  are settled by the daemon socket's bind; the loser reports readiness too
+  and exits 0, and both `run` calls use the winner. `src/main.rs` compiles
+  it.
+- `src/daemon/ready.rs` — the readiness pipe of `pinwin run` (row 7.5, D12,
+  spec "Run starts the daemon"): the close-on-exec pipe the parent creates and
+  the daemon adopts from `PINWIN_READY_FD`, accepting only an inherited pipe
+  above the three standard streams, and the one `R` byte or error message it
+  writes. A manual `pinwin daemon` has no pipe and behaves as before.
 - `src/daemon/events.rs` — the daemon's event bus (spec "Event stream", D12):
   the `Event` kinds a panel publishes (added, removed, shown, hidden and
   geometry changed, each naming the panel), one bounded queue for each

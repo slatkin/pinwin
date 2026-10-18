@@ -43,6 +43,7 @@ pub mod connection;
 pub mod events;
 pub mod lifetime;
 pub mod panel;
+pub mod ready;
 pub mod registry;
 pub mod spawn;
 

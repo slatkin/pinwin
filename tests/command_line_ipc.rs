@@ -527,6 +527,62 @@ fn two_first_runs_leave_one_daemon() {
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 
+/// With a valid config, `pinwin run` waits for the daemon's ready report and
+/// then creates its panel (spec "Run starts the daemon": "First run", D12).
+#[test]
+fn a_run_creates_its_panel_on_a_started_daemon() {
+    let dir = temp_dir("run-starts-daemon");
+    let config = dir.join("config").join("pinwin").join("config.toml");
+    fs::create_dir_all(config.parent().expect("a config directory"))
+        .expect("create the config dir");
+    fs::write(&config, "[daemon]\nexit_when_idle = false\n").expect("write the config file");
+    let _compositor = FakeCompositor::start(&dir);
+    let mut runs = FirstRuns::new(&dir);
+    runs.start("notes");
+    let reply = wait_for_panels(&dir, &["notes"]);
+    assert_eq!(
+        panel_names(&reply),
+        vec!["notes"],
+        "the run created its panel: {reply}"
+    );
+    assert!(
+        socket_path(&dir).exists(),
+        "the started daemon owns the socket"
+    );
+    drop(runs);
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// A daemon that cannot start makes `pinwin run` report its message and exit
+/// 1 at once, well inside the start bound, without taking a socket (spec
+/// "Run starts the daemon": "Daemon cannot start").
+#[test]
+fn run_reports_a_daemon_that_cannot_start_at_once() {
+    let dir = temp_dir("run-start-fails");
+    let config = dir.join("config").join("pinwin").join("config.toml");
+    fs::create_dir_all(config.parent().expect("a config directory"))
+        .expect("create the config dir");
+    fs::write(&config, "[panel.defaults]\nedge = \"middle\"\n").expect("write the broken file");
+    let started = Instant::now();
+    let output = client_output(pinwin(&dir, &["run", "--name", "notes", "--", "true"]));
+    let elapsed = started.elapsed();
+    assert_eq!(output.status.code(), Some(1), "the run failed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the daemon could not start") && stderr.contains("config.toml:2:"),
+        "the daemon's message names the file and line: {stderr}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "the failure is reported before the start bound: {elapsed:?}"
+    );
+    assert!(
+        !socket_path(&dir).exists(),
+        "no daemon took a socket for the invalid file"
+    );
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
 /// With a session bus that does not exist, a panel still starts, the daemon
 /// keeps running and the IPC answers, with no tray icon and one reported
 /// line (spec "No tray is not an error": "No tray host", D14).

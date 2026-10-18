@@ -55,6 +55,42 @@ const INVALID_CONFIG: u8 = 2;
 /// ends).
 const COMMAND_NOT_FOUND: u8 = 127;
 
+/// The exit code of a daemon that cannot start (spec "Command-line exit
+/// codes": a daemon error exits 1).
+const DAEMON_FAILURE: u8 = 1;
+
+/// Why `pinwin daemon` did not start (spec "Run starts the daemon"): the
+/// message the daemon prints and reports to a `pinwin run` that started it,
+/// and the exit code the caller uses.
+struct Failure {
+    code: u8,
+    message: String,
+    /// Another daemon already serves the display, so a `pinwin run` that
+    /// started this one must use the winner (spec "Two first runs").
+    lost_race: bool,
+}
+
+impl Failure {
+    /// A start that reports `message` and exits with `code`.
+    fn fatal(code: u8, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            lost_race: false,
+        }
+    }
+
+    /// A start that lost the bind race: the caller reports readiness and
+    /// exits 0 without changing the winner (spec "Two first runs").
+    fn lost_race(message: impl Into<String>) -> Self {
+        Self {
+            code: 0,
+            message: message.into(),
+            lost_race: true,
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let poisoned = Poisoned::new();
     let Ok(code) = guard(&poisoned, dispatch) else {
@@ -150,76 +186,87 @@ fn create_panel(path: &Path, request: &Request) -> Result<Answer, String> {
 }
 
 /// Run the daemon in the foreground (spec "One daemon for each Wayland
-/// display", D12). The config file is read first, so an invalid file exits 2
-/// before the daemon takes the display's socket and creates anything (spec
-/// "Invalid config file").
+/// display", D12). The readiness pipe a `pinwin run` gave this daemon is
+/// adopted before any work can fail, so every start result reaches that
+/// caller; a manual daemon has no pipe and behaves as before (spec "Run
+/// starts the daemon").
 fn daemon() -> ExitCode {
-    let Some(config_path) = config::config_path_from_env() else {
-        eprintln!("pinwin: XDG_CONFIG_HOME and HOME are unset: no config file path");
-        return ExitCode::FAILURE;
-    };
-    let config = match Config::load(&config_path) {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("pinwin: {error}");
-            return ExitCode::from(INVALID_CONFIG);
+    let ready = daemon::ready::ReadyPipe::from_env(
+        std::env::var_os(daemon::ready::READY_FD_ENV).as_deref(),
+    );
+    match start() {
+        Ok((daemon, signals)) => {
+            // Readiness comes after the lifetime and its tray, just before
+            // the accept loop: the socket's listen backlog already holds a
+            // caller's connection, and a failure in the signalfd, the
+            // lifetime or the tray still reports as a start failure (D12).
+            if let Some(pipe) = ready {
+                pipe.report_ready();
+            }
+            // The socket file is removed by the socket's drop when the loop
+            // returns (spec "Daemon socket").
+            match daemon.run(Some(&signals)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("pinwin: the daemon ended: {error}");
+                    ExitCode::FAILURE
+                }
+            }
         }
-    };
+        Err(failure) => {
+            eprintln!("pinwin: {}", failure.message);
+            if let Some(pipe) = ready {
+                if failure.lost_race {
+                    pipe.report_ready();
+                } else {
+                    pipe.report_failure(&failure.message);
+                }
+            }
+            ExitCode::from(failure.code)
+        }
+    }
+}
+
+/// Set the daemon up and return it with its signalfd, or the reason it
+/// cannot start (spec "Run starts the daemon"). The config file is read
+/// first, so an invalid file exits 2 before the daemon takes the display's
+/// socket and creates anything (spec "Invalid config file").
+fn start() -> Result<(Daemon, SignalFd), Failure> {
+    let config_path = config::config_path_from_env().ok_or_else(|| {
+        Failure::fatal(
+            DAEMON_FAILURE,
+            "XDG_CONFIG_HOME and HOME are unset: no config file path",
+        )
+    })?;
+    let config = Config::load(&config_path)
+        .map_err(|error| Failure::fatal(INVALID_CONFIG, error.to_string()))?;
     // D12: the compositor must offer layer-shell before the daemon takes the
     // display's socket, so a compositor that lacks it leaves no daemon and no
     // panel behind (spec "Wayland layer-shell is required", "No
     // layer-shell").
-    if let Err(error) = crate::proxy::check::check_layer_shell() {
-        eprintln!("pinwin: {error}");
-        return ExitCode::FAILURE;
-    }
-    let socket = match DaemonSocket::bind_from_env() {
-        Ok(socket) => socket,
-        Err(error) => {
-            eprintln!("pinwin: {error}");
-            // A live daemon keeps its display: the second start reports it
-            // and exits 0 without changing it (spec "Second daemon"). Every
-            // other bind failure (no runtime directory, an unusable display,
-            // an I/O error) exits 1 and creates nothing (spec "No runtime
-            // directory").
-            return if matches!(error, SocketError::Live) {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            };
-        }
-    };
+    crate::proxy::check::check_layer_shell()
+        .map_err(|error| Failure::fatal(DAEMON_FAILURE, error.to_string()))?;
+    // A live daemon keeps its display: the second start reports it and exits
+    // 0 without changing it (spec "Second daemon"). Every other bind failure
+    // (no runtime directory, an unusable display, an I/O error) exits 1 and
+    // creates nothing (spec "No runtime directory").
+    let socket = DaemonSocket::bind_from_env().map_err(|error| match error {
+        SocketError::Live => Failure::lost_race(error.to_string()),
+        _ => Failure::fatal(DAEMON_FAILURE, error.to_string()),
+    })?;
     // D12: SIGINT and SIGTERM are blocked and read through one signalfd on
     // the thread that runs the accept loop, before it starts a connection or
     // panel thread, so those threads inherit the mask and no signal handler
     // races them.
-    let signals = match SignalFd::open() {
-        Ok(signals) => signals,
-        Err(error) => {
-            eprintln!("pinwin: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let lifetime = match Lifetime::new(config_path, config, ipc::REPLY_TIMEOUT) {
-        Ok(lifetime) => lifetime,
-        Err(error) => {
-            eprintln!("pinwin: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let signals =
+        SignalFd::open().map_err(|error| Failure::fatal(DAEMON_FAILURE, error.to_string()))?;
+    let lifetime = Lifetime::new(config_path, config, ipc::REPLY_TIMEOUT)
+        .map_err(|error| Failure::fatal(DAEMON_FAILURE, error.to_string()))?;
     // The tray icon shows only while panels exist (row 11.1, D14), so the
     // daemon enables it before any panel can start.
     let lifetime = Arc::new(lifetime);
     lifetime.enable_tray();
-    // The socket file is removed by the socket's drop when the loop returns
-    // (spec "Daemon socket").
-    match Daemon::new(socket, lifetime).run(Some(&signals)) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("pinwin: the daemon ended: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    Ok((Daemon::new(socket, lifetime), signals))
 }
 
 /// Send one client subcommand to the daemon and print its answer (spec
