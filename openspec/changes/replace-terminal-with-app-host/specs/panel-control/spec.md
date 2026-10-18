@@ -81,9 +81,12 @@ variables unchanged. The process ID of the command is the process ID of `pinwin 
 ### Requirement: Run starts the daemon
 When no daemon answers for the display, `pinwin run` SHALL start one in the background,
 detached from the caller's terminal and session, and SHALL wait a bounded time for it to
-answer. If the daemon does not answer in that time, `pinwin run` SHALL print a message and
-exit 1 without running the command. Two `pinwin run` calls at the same time SHALL result in
-one daemon.
+report that it is ready. The started daemon SHALL report ready once it accepts requests, or
+report its error message when it cannot start. When the daemon reports an error or ends
+before it is ready, `pinwin run` SHALL print the daemon's message and exit 1 at once,
+without running the command. When the daemon reports nothing in the bounded time,
+`pinwin run` SHALL print a message and exit 1 without running the command. Two
+`pinwin run` calls at the same time SHALL result in one daemon.
 
 #### Scenario: First run
 - **WHEN** no daemon runs and the user runs `pinwin run --name notes -- myeditor`
@@ -94,6 +97,11 @@ one daemon.
 - **WHEN** no daemon runs and two `pinwin run` calls with different names start at the same
   time
 - **THEN** one daemon runs and it owns both panels
+
+#### Scenario: Daemon cannot start
+- **WHEN** no daemon runs, the config file is invalid, and the user runs `pinwin run -- myeditor`
+- **THEN** `pinwin run` prints the config file's error with its file and line, exits 1
+  without waiting for the bounded time, and does not run `myeditor`
 
 ### Requirement: Run options
 `pinwin run` SHALL accept `--name <name>`, `--edge <left|right|top|bottom>`,

@@ -257,6 +257,12 @@ below). Its code does not enter pinwin; only the findings do.
     gave no-window and removed; no pinwin process was left. The warning line was not seen
     because an auto-started daemon discards its error output; the exact message is covered by
     a test.
+- [ ] 7.5 Report the daemon's readiness over one inherited pipe (D12, spec "Run starts the
+  daemon"): `pinwin run` reads `R` or the daemon's error message from a close-on-exec pipe and
+  fails at once on a start error, instead of polling `connect()` and reading a temp log.
+  Verify: unit tests of the readiness read (ready, message, silent, early EOF) and the fd
+  adoption; integration test that an invalid config makes `pinwin run` exit 1 with the file
+  and line well under the bound, and that a valid config and two concurrent runs still work.
 
 ## 8. Show, hide, focus and keyboard modes
 
