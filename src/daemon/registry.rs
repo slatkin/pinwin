@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::locked;
-use super::panel::{CommandError, PanelHandle, PanelReply, PanelRequest, PendingCall};
+use super::panel::{CommandError, PanelHandle, PanelReply, PendingCall};
 use crate::ipc::{ErrorKind, ErrorReply, PanelEntry, Reply, Request};
 use crate::name::PanelName;
 
@@ -119,51 +119,32 @@ impl Registry {
     #[must_use]
     pub fn route(&self, request: &Request, wait: Duration) -> Option<Reply> {
         Some(match request {
-            Request::Status { panel } => self.status(panel.as_ref(), wait),
+            Request::Status { panel } => self.status(panel.as_ref(), request, wait),
             Request::Create { .. } | Request::Subscribe | Request::Quit | Request::Reload => {
                 return None;
             }
-            Request::Toggle { panel } => self.command(panel, PanelRequest::Toggle, wait),
-            Request::Show { panel } => self.command(panel, PanelRequest::Show, wait),
-            Request::Hide { panel } => self.command(panel, PanelRequest::Hide, wait),
-            Request::Focus { panel } => self.command(panel, PanelRequest::Focus, wait),
-            Request::SetEdge { panel, edge } => {
-                self.command(panel, PanelRequest::SetEdge(*edge), wait)
-            }
-            Request::SetSize { panel, size, ms } => self.command(
-                panel,
-                PanelRequest::SetSize {
-                    size: *size,
-                    ms: *ms,
-                },
-                wait,
-            ),
-            Request::Resize { panel, by, ms } => {
-                self.command(panel, PanelRequest::Resize { by: *by, ms: *ms }, wait)
-            }
-            Request::SetOutput { panel, output } => {
-                self.command(panel, PanelRequest::SetOutput(output.clone()), wait)
-            }
-            Request::SetLayer { panel, layer } => {
-                self.command(panel, PanelRequest::SetLayer(*layer), wait)
-            }
-            Request::SetReserve { panel, reserve } => {
-                self.command(panel, PanelRequest::SetReserve(*reserve), wait)
-            }
-            Request::SetKeyboard { panel, keyboard } => {
-                self.command(panel, PanelRequest::SetKeyboard(*keyboard), wait)
-            }
+            Request::Toggle { panel }
+            | Request::Show { panel }
+            | Request::Hide { panel }
+            | Request::Focus { panel }
+            | Request::SetEdge { panel, .. }
+            | Request::SetSize { panel, .. }
+            | Request::Resize { panel, .. }
+            | Request::SetOutput { panel, .. }
+            | Request::SetLayer { panel, .. }
+            | Request::SetReserve { panel, .. }
+            | Request::SetKeyboard { panel, .. } => self.command(panel, request, wait),
         })
     }
 
     /// Ask one panel to carry a command out and return its answer as the
     /// reply the client gets (spec "Panel commands", "Status").
-    fn command(&self, name: &PanelName, command: PanelRequest, wait: Duration) -> Reply {
+    fn command(&self, name: &PanelName, request: &Request, wait: Duration) -> Reply {
         let handle = match self.handle(name) {
             Ok(handle) => handle,
             Err(reply) => return reply,
         };
-        match handle.call(command, wait) {
+        match handle.call(request, wait) {
             Ok(PanelReply::Done) => Reply::ok(),
             Ok(PanelReply::Refused(error)) => Reply::Error(error),
             // A panel that answers a change with its status is out of step
@@ -178,7 +159,7 @@ impl Registry {
 
     /// The status reply of every panel, in start order, or of `panel` alone
     /// (spec "Status of all panels", "Status of one panel").
-    fn status(&self, panel: Option<&PanelName>, wait: Duration) -> Reply {
+    fn status(&self, panel: Option<&PanelName>, request: &Request, wait: Duration) -> Reply {
         let panels = match self.panels(panel) {
             Ok(panels) => panels,
             Err(reply) => return reply,
@@ -187,7 +168,7 @@ impl Registry {
         // panel's and not the sum.
         let pending: Vec<_> = panels
             .iter()
-            .map(|(_, handle)| handle.send(PanelRequest::Status, wait))
+            .map(|(_, handle)| handle.send(request, wait))
             .collect();
         let mut entries = Vec::with_capacity(panels.len());
         for ((name, handle), pending) in panels.iter().zip(pending) {

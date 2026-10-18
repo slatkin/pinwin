@@ -43,9 +43,9 @@ use super::routing::Routing;
 use crate::cli::Amount;
 use crate::config::PanelSettings;
 use crate::daemon::events::Bus;
-use crate::daemon::panel::{PanelReply, PanelRequest};
+use crate::daemon::panel::PanelReply;
 use crate::geometry::{Geometry, HeldGap, OutputSize, Size};
-use crate::ipc::{ErrorKind, ErrorReply};
+use crate::ipc::{ErrorKind, ErrorReply, Request};
 use crate::name::PanelName;
 
 /// What a validated change does to the panel (row 6.6). Built only by
@@ -85,7 +85,7 @@ struct Plan {
 /// without effect.
 pub(super) fn answer(
     routing: &Rc<Routing>,
-    request: &PanelRequest,
+    request: &Request,
     panel: &PanelName,
     bus: &Bus,
 ) -> Option<PanelReply> {
@@ -109,33 +109,33 @@ pub(super) fn answer(
 /// applying it").
 fn plan_change(
     current: &PanelSettings,
-    request: &PanelRequest,
+    request: &Request,
     output: OutputSize,
 ) -> Result<Option<Plan>, ErrorReply> {
     let next = match request {
-        PanelRequest::SetEdge(edge) => PanelSettings {
+        Request::SetEdge { edge, .. } => PanelSettings {
             edge: *edge,
             ..current.clone()
         },
-        PanelRequest::SetSize { size, .. } => PanelSettings {
+        Request::SetSize { size, .. } => PanelSettings {
             size: *size,
             ..current.clone()
         },
-        PanelRequest::Resize { by, .. } => PanelSettings {
+        Request::Resize { by, .. } => PanelSettings {
             size: resize_size(current, *by, output).ok_or_else(resize_refused)?,
             ..current.clone()
         },
-        PanelRequest::SetReserve(reserve) => PanelSettings {
+        Request::SetReserve { reserve, .. } => PanelSettings {
             reserve: *reserve,
             ..current.clone()
         },
-        PanelRequest::SetLayer(layer) => PanelSettings {
+        Request::SetLayer { layer, .. } => PanelSettings {
             layer: *layer,
             ..current.clone()
         },
         _ => return Ok(None),
     };
-    let redock = matches!(request, PanelRequest::SetLayer(_));
+    let redock = matches!(request, Request::SetLayer { .. });
     let geometry = geometry_of(&next, output);
     geometry
         .validate(output)
@@ -168,9 +168,9 @@ fn plan_change(
 /// The duration a layout command animates over (D8): `set-size` and `resize`
 /// use their `ms` or the panel's `tween_ms`, clamped; every other command
 /// returns `None`.
-fn request_duration(request: &PanelRequest, panel_ms: u32) -> Option<u32> {
+fn request_duration(request: &Request, panel_ms: u32) -> Option<u32> {
     let ms = match request {
-        PanelRequest::SetSize { ms, .. } | PanelRequest::Resize { ms, .. } => *ms,
+        Request::SetSize { ms, .. } | Request::Resize { ms, .. } => *ms,
         _ => return None,
     };
     Some(super::tween::duration_ms(ms, panel_ms))

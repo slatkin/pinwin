@@ -57,7 +57,8 @@ use super::ring;
 use super::routing::Routing;
 use super::syncobj::Points;
 use crate::daemon::events::{Bus, Event};
-use crate::daemon::panel::{PanelReply, PanelRequest};
+use crate::daemon::panel::PanelReply;
+use crate::ipc::Request;
 use crate::name::PanelName;
 
 /// The state the panel's hidden flag and the buffers it hides (D6): kept in
@@ -521,14 +522,14 @@ impl fmt::Debug for BufferRelease {
 /// coordinator. `None` for every other request, which the caller answers.
 pub(super) fn answer(
     routing: &Rc<Routing>,
-    request: &PanelRequest,
+    request: &Request,
     panel: &PanelName,
     bus: &Bus,
 ) -> Option<PanelReply> {
     match request {
-        PanelRequest::Toggle => Some(toggle(routing, panel, bus)),
-        PanelRequest::Show => Some(show(routing, panel, bus)),
-        PanelRequest::Hide => Some(hide(routing, panel, bus)),
+        Request::Toggle { .. } => Some(toggle(routing, panel, bus)),
+        Request::Show { .. } => Some(show(routing, panel, bus)),
+        Request::Hide { .. } => Some(hide(routing, panel, bus)),
         _ => None,
     }
 }

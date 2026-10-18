@@ -44,7 +44,8 @@ use super::mapping::keyboard_of;
 use super::routing::Routing;
 use crate::config::{Keyboard, PanelSettings};
 use crate::daemon::events::Bus;
-use crate::daemon::panel::{PanelReply, PanelRequest};
+use crate::daemon::panel::PanelReply;
+use crate::ipc::Request;
 use crate::name::PanelName;
 
 /// The interactivity a layer surface is created with (row 8.3): while a
@@ -84,13 +85,13 @@ pub(super) const fn takes_keyboard_when_mapped(keyboard: Keyboard) -> bool {
 /// `None` for every other request, which the caller answers.
 pub(super) fn answer(
     routing: &Rc<Routing>,
-    request: &PanelRequest,
+    request: &Request,
     panel: &PanelName,
     bus: &Bus,
 ) -> Option<PanelReply> {
     match request {
-        PanelRequest::SetKeyboard(keyboard) => Some(set(routing, *keyboard)),
-        PanelRequest::Focus => Some(focus(routing, panel, bus)),
+        Request::SetKeyboard { keyboard, .. } => Some(set(routing, *keyboard)),
+        Request::Focus { .. } => Some(focus(routing, panel, bus)),
         _ => None,
     }
 }
@@ -143,7 +144,8 @@ mod tests {
     use super::{deferred_until_map, dock_interactivity, takes_keyboard_when_mapped};
     use crate::config::{Keyboard, PanelSettings};
     use crate::daemon::events::{Bus, Event};
-    use crate::daemon::panel::{PanelReply, PanelRequest};
+    use crate::daemon::panel::PanelReply;
+    use crate::ipc::Request;
     use crate::name::PanelName;
     use crate::proxy::routing::Routing;
 
@@ -219,7 +221,10 @@ mod tests {
         assert_eq!(
             super::answer(
                 &routing,
-                &PanelRequest::SetKeyboard(Keyboard::Exclusive),
+                &Request::SetKeyboard {
+                    panel: panel.clone(),
+                    keyboard: Keyboard::Exclusive,
+                },
                 &panel,
                 &bus
             ),
@@ -238,7 +243,10 @@ mod tests {
         let panel = notes();
         let _ = super::answer(
             &routing,
-            &PanelRequest::SetKeyboard(Keyboard::None),
+            &Request::SetKeyboard {
+                panel: panel.clone(),
+                keyboard: Keyboard::None,
+            },
             &panel,
             &bus,
         );
@@ -258,7 +266,14 @@ mod tests {
         let panel = notes();
         routing.hidden.set_hidden(true);
         assert_eq!(
-            super::answer(&routing, &PanelRequest::Focus, &panel, &bus),
+            super::answer(
+                &routing,
+                &Request::Focus {
+                    panel: panel.clone()
+                },
+                &panel,
+                &bus
+            ),
             Some(PanelReply::Done)
         );
         assert!(!routing.hidden.is_hidden());
@@ -280,7 +295,14 @@ mod tests {
         let routing = Routing::new(PanelSettings::built_in());
         let panel = notes();
         assert_eq!(
-            super::answer(&routing, &PanelRequest::Focus, &panel, &bus),
+            super::answer(
+                &routing,
+                &Request::Focus {
+                    panel: panel.clone()
+                },
+                &panel,
+                &bus
+            ),
             Some(PanelReply::Done)
         );
         assert!(!routing.hidden.is_hidden());

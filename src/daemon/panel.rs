@@ -4,7 +4,7 @@
 //!
 //! A panel thread owns its state, its Wayland connection and its app's
 //! connections (D1), so the daemon cannot call into it: it sends a
-//! [`PanelRequest`] through [`PanelHandle::call`], writes the [`EventFd`] the
+//! [`Request`] through [`PanelHandle::call`], writes the [`EventFd`] the
 //! panel polls, and waits at most the caller's timeout for the
 //! [`PanelReply`]. A panel that does not answer in time makes the request
 //! fail with error kind `internal` (spec "The daemon survives bad input"),
@@ -21,42 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::locked;
-use crate::cli::Amount;
-use crate::config::{Keyboard, Layer};
-use crate::geometry::{Edge, ReserveMode, Size};
-use crate::ipc::{ErrorReply, PanelStatus};
-
-/// What the daemon asks a panel to do (spec "Panel commands", "Status"): one
-/// variant for each request that names a panel, without the name — the
-/// registry already chose the panel.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PanelRequest {
-    /// Show or hide the panel.
-    Toggle,
-    /// Show the panel.
-    Show,
-    /// Hide the panel.
-    Hide,
-    /// Show the panel and give it the keyboard.
-    Focus,
-    /// Dock the panel at `edge`.
-    SetEdge(Edge),
-    /// Set the panel's size, over `ms` milliseconds or its `tween_ms`.
-    SetSize { size: Size, ms: Option<u32> },
-    /// Change the panel's size by `by`, over `ms` milliseconds or its
-    /// `tween_ms`.
-    Resize { by: Amount, ms: Option<u32> },
-    /// Open the panel on another output.
-    SetOutput(String),
-    /// Draw the panel in another layer.
-    SetLayer(Layer),
-    /// Push or cover the strip the panel occupies.
-    SetReserve(ReserveMode),
-    /// Set the panel's keyboard interactivity.
-    SetKeyboard(Keyboard),
-    /// Report the panel's settings and view state.
-    Status,
-}
+use crate::ipc::{ErrorReply, PanelStatus, Request};
 
 /// What a panel answers (spec "The daemon survives bad input"): the command
 /// was carried out, it was refused with the kind the client gets, or it is
@@ -68,7 +33,7 @@ pub enum PanelReply {
     /// The panel refused the command, for example a layout the output cannot
     /// hold (`invalid_layout`).
     Refused(ErrorReply),
-    /// The panel's settings and view state, for a [`PanelRequest::Status`].
+    /// The panel's settings and view state, for a [`Request::Status`].
     Status(PanelStatus),
 }
 
@@ -77,14 +42,14 @@ pub enum PanelReply {
 /// sent them (D12).
 #[derive(Debug)]
 pub struct Command {
-    request: PanelRequest,
+    request: Request,
     reply: SyncSender<PanelReply>,
 }
 
 impl Command {
     /// What the panel has to do.
     #[must_use]
-    pub const fn request(&self) -> &PanelRequest {
+    pub const fn request(&self) -> &Request {
         &self.request
     }
 
@@ -244,16 +209,19 @@ impl PanelHandle {
     /// answer. The command goes on the channel first and the wake after it,
     /// so a panel that polls the eventfd always finds the command in the
     /// channel.
-    pub fn call(&self, request: PanelRequest, wait: Duration) -> Result<PanelReply, CommandError> {
+    pub fn call(&self, request: &Request, wait: Duration) -> Result<PanelReply, CommandError> {
         self.send(request, wait)?.finish()
     }
 
     /// Queue `request` and wake the panel without waiting for the answer, so
     /// a caller can ask several panels at once and collect the answers with
     /// [`PendingCall::finish`]. `wait` runs from this call.
-    pub fn send(&self, request: PanelRequest, wait: Duration) -> Result<PendingCall, CommandError> {
+    pub fn send(&self, request: &Request, wait: Duration) -> Result<PendingCall, CommandError> {
         let (reply, answer) = mpsc::sync_channel(1);
-        let queued = locked(&self.commands).send(Command { request, reply });
+        let queued = locked(&self.commands).send(Command {
+            request: request.clone(),
+            reply,
+        });
         if queued.is_err() {
             return Err(CommandError::Ended);
         }

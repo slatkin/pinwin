@@ -22,7 +22,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use crate::cli::{ClientCommand, Command};
+use crate::cli::Command;
 use crate::config::Config;
 use crate::daemon::DaemonSocket;
 use crate::daemon::SocketError;
@@ -71,7 +71,7 @@ fn dispatch() -> ExitCode {
     match cli::parse_args(&args) {
         Ok(Command::Run(run)) => run_app(&run),
         Ok(Command::Daemon) => daemon(),
-        Ok(Command::Client(command)) => client(command),
+        Ok(Command::Client(request)) => client(&request),
         Err(error) => {
             eprintln!("{error}");
             eprintln!("{USAGE}");
@@ -223,14 +223,14 @@ fn daemon() -> ExitCode {
 
 /// Send one client subcommand to the daemon and print its answer (spec
 /// "Command-line client", "Command-line exit codes").
-fn client(command: ClientCommand) -> ExitCode {
-    if matches!(command, ClientCommand::Subscribe) {
+fn client(request: &Request) -> ExitCode {
+    if matches!(request, Request::Subscribe) {
         return finish(subscribe());
     }
     // `pinwin status` prints the reply's JSON; the other successes print
     // nothing (spec "Command-line exit codes").
-    let status = matches!(command, ClientCommand::Status { .. });
-    finish(send(&Request::from(command), status))
+    let status = matches!(request, Request::Status { .. });
+    finish(send(request, status))
 }
 
 /// The exit code of a command's result: a failure prints `pinwin: ` and its

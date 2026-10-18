@@ -5,9 +5,9 @@ use super::{Plan, Routing, app_size, needs_new_app_size, plan_change, resize_siz
 use crate::cli::Amount;
 use crate::config::{Layer, PanelSettings};
 use crate::daemon::events::{Bus, Event};
-use crate::daemon::panel::{PanelReply, PanelRequest};
+use crate::daemon::panel::PanelReply;
 use crate::geometry::{Edge, Gutters, OutputSize, ReserveMode, Size};
-use crate::ipc::ErrorKind;
+use crate::ipc::{ErrorKind, Request};
 use crate::name::PanelName;
 
 /// An output of `width` by `height` logical pixels.
@@ -31,6 +31,11 @@ fn percent(value: u32) -> Size {
     Size::percent(value).expect("a percent from 1 to 100")
 }
 
+/// The panel name the layout requests carry; the plan ignores it.
+fn notes() -> PanelName {
+    PanelName::parse("notes").expect("a panel name")
+}
+
 /// A growing and a shrinking amount of `size`.
 fn grow(size: Size) -> Amount {
     Amount::grow(size)
@@ -41,14 +46,14 @@ fn shrink(size: Size) -> Amount {
 }
 
 /// The plan of one request, unwrapped.
-fn planned(current: &PanelSettings, request: &PanelRequest, output: OutputSize) -> Plan {
+fn planned(current: &PanelSettings, request: &Request, output: OutputSize) -> Plan {
     plan_change(current, request, output)
         .expect("the change fits the output")
         .expect("the request is a layout command")
 }
 
 /// The kind of a refused request.
-fn refused(current: &PanelSettings, request: &PanelRequest, output: OutputSize) -> ErrorKind {
+fn refused(current: &PanelSettings, request: &Request, output: OutputSize) -> ErrorKind {
     plan_change(current, request, output)
         .expect_err("the change is refused")
         .kind()
@@ -61,7 +66,10 @@ fn a_pure_edge_move_sends_no_new_size() {
     let current = settings();
     let plan = planned(
         &current,
-        &PanelRequest::SetEdge(Edge::Right),
+        &Request::SetEdge {
+            panel: notes(),
+            edge: Edge::Right,
+        },
         output(1920, 1080),
     );
     assert_eq!(plan.settings.edge(), Edge::Right);
@@ -78,7 +86,10 @@ fn an_edge_move_across_the_axes_sends_one_new_size() {
     let current = settings();
     let plan = planned(
         &current,
-        &PanelRequest::SetEdge(Edge::Top),
+        &Request::SetEdge {
+            panel: notes(),
+            edge: Edge::Top,
+        },
         output(1920, 1080),
     );
     assert_eq!(plan.settings.edge(), Edge::Top);
@@ -93,7 +104,8 @@ fn a_size_change_with_a_duration_animates_from_the_current_width() {
     let current = settings();
     let plan = planned(
         &current,
-        &PanelRequest::SetSize {
+        &Request::SetSize {
+            panel: notes(),
             size: pixels(800),
             ms: Some(200),
         },
@@ -111,7 +123,8 @@ fn a_resize_with_a_duration_animates() {
     let current = settings();
     let plan = planned(
         &current,
-        &PanelRequest::Resize {
+        &Request::Resize {
+            panel: notes(),
             by: grow(pixels(120)),
             ms: Some(150),
         },
@@ -130,7 +143,8 @@ fn a_zero_duration_snaps_and_interrupts() {
     let current = settings();
     let plan = planned(
         &current,
-        &PanelRequest::SetSize {
+        &Request::SetSize {
+            panel: notes(),
             size: pixels(800),
             ms: Some(0),
         },
@@ -149,7 +163,8 @@ fn an_absent_ms_uses_the_panel_tween_ms() {
     assert_eq!(current.tween_ms(), 200, "the built-in duration");
     let plan = planned(
         &current,
-        &PanelRequest::SetSize {
+        &Request::SetSize {
+            panel: notes(),
             size: pixels(800),
             ms: None,
         },
@@ -166,7 +181,8 @@ fn a_long_duration_is_clamped() {
     let current = settings();
     let plan = planned(
         &current,
-        &PanelRequest::SetSize {
+        &Request::SetSize {
+            panel: notes(),
             size: pixels(800),
             ms: Some(60_000),
         },
@@ -182,7 +198,8 @@ fn a_size_change_sends_one_new_size() {
     let current = settings();
     let plan = planned(
         &current,
-        &PanelRequest::SetSize {
+        &Request::SetSize {
+            panel: notes(),
             size: pixels(800),
             ms: None,
         },
@@ -200,7 +217,8 @@ fn a_size_that_resolves_the_same_sends_no_new_size() {
     let current = settings();
     let plan = planned(
         &current,
-        &PanelRequest::SetSize {
+        &Request::SetSize {
+            panel: notes(),
             size: pixels(480),
             ms: None,
         },
@@ -217,7 +235,10 @@ fn a_reserve_change_sends_no_new_size() {
     let current = settings();
     let plan = planned(
         &current,
-        &PanelRequest::SetReserve(ReserveMode::Cover),
+        &Request::SetReserve {
+            panel: notes(),
+            reserve: ReserveMode::Cover,
+        },
         output(1920, 1080),
     );
     assert_eq!(plan.size, None);
@@ -232,7 +253,10 @@ fn a_layer_change_re_docks_the_window() {
     let current = settings();
     let plan = planned(
         &current,
-        &PanelRequest::SetLayer(Layer::Bottom),
+        &Request::SetLayer {
+            panel: notes(),
+            layer: Layer::Bottom,
+        },
         output(1920, 1080),
     );
     assert!(plan.redock);
@@ -314,7 +338,8 @@ fn a_resize_outside_the_size_grammar_is_refused() {
     assert_eq!(
         refused(
             &current,
-            &PanelRequest::Resize {
+            &Request::Resize {
+                panel: notes(),
                 by: shrink(pixels(480)),
                 ms: None,
             },
@@ -329,7 +354,8 @@ fn a_resize_outside_the_size_grammar_is_refused() {
 #[test]
 fn a_size_too_large_for_the_output_is_refused() {
     let current = settings();
-    let request = PanelRequest::SetSize {
+    let request = Request::SetSize {
+        panel: notes(),
         size: pixels(1000),
         ms: None,
     };
@@ -351,7 +377,8 @@ fn gutters_that_leave_no_visible_length_are_refused() {
         gutters: Gutters::new(0, 0, 600, 600),
         ..settings()
     };
-    let request = PanelRequest::SetSize {
+    let request = Request::SetSize {
+        panel: notes(),
         size: pixels(640),
         ms: None,
     };
@@ -370,7 +397,8 @@ fn a_negative_reservation_is_refused() {
         gutters: Gutters::new(-2000, 0, 0, 0),
         ..settings()
     };
-    let request = PanelRequest::SetSize {
+    let request = Request::SetSize {
+        panel: notes(),
         size: pixels(640),
         ms: None,
     };
@@ -387,8 +415,16 @@ fn a_successful_apply_publishes_the_geometry_change() {
     let bus = Bus::new();
     let events = bus.subscribe();
     let routing = Routing::new(settings());
-    let panel = PanelName::parse("notes").expect("a panel name");
-    let reply = super::answer(&routing, &PanelRequest::SetEdge(Edge::Right), &panel, &bus);
+    let panel = notes();
+    let reply = super::answer(
+        &routing,
+        &Request::SetEdge {
+            panel: notes(),
+            edge: Edge::Right,
+        },
+        &panel,
+        &bus,
+    );
     assert_eq!(reply, Some(PanelReply::Done));
     assert_eq!(
         events.next(Duration::from_millis(100)),
@@ -403,10 +439,11 @@ fn a_refused_apply_publishes_no_geometry_change() {
     let bus = Bus::new();
     let events = bus.subscribe();
     let routing = Routing::new(settings());
-    let panel = PanelName::parse("notes").expect("a panel name");
+    let panel = notes();
     let reply = super::answer(
         &routing,
-        &PanelRequest::SetSize {
+        &Request::SetSize {
+            panel: notes(),
             size: pixels(10_000),
             ms: None,
         },

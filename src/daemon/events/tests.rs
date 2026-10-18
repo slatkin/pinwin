@@ -18,8 +18,8 @@ use super::{Bus, Event};
 use crate::config::Config;
 use crate::daemon::connection;
 use crate::daemon::lifetime::Lifetime;
-use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply, PanelRequest};
-use crate::ipc::{LineReader, MAX_LINE, read_line, write_line};
+use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply};
+use crate::ipc::{LineReader, MAX_LINE, Request, read_line, write_line};
 use crate::name::PanelName;
 
 /// How long a test connection waits for one step. A test that has to time
@@ -37,7 +37,7 @@ fn notes() -> PanelName {
 /// A stand-in for a panel thread: it takes each command, clears the eventfd
 /// that delivered it and answers what the test says (D12).
 fn panel_thread(
-    answer: impl Fn(&PanelRequest) -> PanelReply + Send + 'static,
+    answer: impl Fn(&Request) -> PanelReply + Send + 'static,
 ) -> (PanelName, PanelHandle, JoinHandle<()>) {
     let (commands, incoming) = mpsc::channel::<Command>();
     let wake = Arc::new(EventFd::new().expect("an eventfd"));
@@ -164,8 +164,8 @@ fn a_subscriber_receives_toggle_events() {
     let publisher = {
         let bus = bus.clone();
         let toggles = Arc::clone(&toggles);
-        move |request: &PanelRequest| {
-            if matches!(request, PanelRequest::Toggle) {
+        move |request: &Request| {
+            if matches!(request, Request::Toggle { .. }) {
                 let event = if toggles.fetch_add(1, Ordering::Relaxed) == 0 {
                     Event::Hidden { panel: notes() }
                 } else {

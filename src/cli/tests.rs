@@ -15,7 +15,7 @@ fn usage(raw: &[&str]) -> UsageError {
     parse(raw).expect_err("the command line is not usable")
 }
 
-fn client(raw: &[&str]) -> ClientCommand {
+fn client(raw: &[&str]) -> Request {
     match parse(raw).expect("a valid client command") {
         Command::Client(command) => command,
         other => panic!("expected a client command: {other:?}"),
@@ -205,31 +205,39 @@ fn the_name_errors_carry_the_option_context() {
 fn the_client_subcommands_parse_their_values() {
     assert_eq!(
         client(&["toggle", "notes"]),
-        ClientCommand::Toggle(name("notes"))
+        Request::Toggle {
+            panel: name("notes")
+        }
     );
     assert_eq!(
         client(&["show", "notes"]),
-        ClientCommand::Show(name("notes"))
+        Request::Show {
+            panel: name("notes")
+        }
     );
     assert_eq!(
         client(&["hide", "notes"]),
-        ClientCommand::Hide(name("notes"))
+        Request::Hide {
+            panel: name("notes")
+        }
     );
     assert_eq!(
         client(&["focus", "notes"]),
-        ClientCommand::Focus(name("notes"))
+        Request::Focus {
+            panel: name("notes")
+        }
     );
 
     assert_eq!(
         client(&["set-edge", "notes", "right"]),
-        ClientCommand::SetEdge {
+        Request::SetEdge {
             panel: name("notes"),
             edge: Edge::Right,
         }
     );
     assert_eq!(
         client(&["set-size", "notes", "640px"]),
-        ClientCommand::SetSize {
+        Request::SetSize {
             panel: name("notes"),
             size: px(640),
             ms: None,
@@ -237,68 +245,67 @@ fn the_client_subcommands_parse_their_values() {
     );
     assert_eq!(
         client(&["set-size", "notes", "30%", "--ms", "0"]),
-        ClientCommand::SetSize {
+        Request::SetSize {
             panel: name("notes"),
             size: size("30%"),
             ms: Some(0),
         }
     );
 
-    let ClientCommand::Resize { panel, amount, ms } =
-        client(&["resize", "notes", "-40px", "--ms", "150"])
+    let Request::Resize { panel, by, ms } = client(&["resize", "notes", "-40px", "--ms", "150"])
     else {
         panic!("expected resize");
     };
     assert_eq!(panel, name("notes"));
-    assert_eq!(amount.size(), px(40));
-    assert!(amount.shrinks());
+    assert_eq!(by.size(), px(40));
+    assert!(by.shrinks());
     assert_eq!(ms, Some(150));
 
-    let ClientCommand::Resize { amount, .. } = client(&["resize", "notes", "+10%"]) else {
+    let Request::Resize { by, .. } = client(&["resize", "notes", "+10%"]) else {
         panic!("expected resize");
     };
-    assert_eq!(amount.size(), size("10%"));
-    assert!(!amount.shrinks());
+    assert_eq!(by.size(), size("10%"));
+    assert!(!by.shrinks());
 
     assert_eq!(
         client(&["set-output", "notes", "DP-1"]),
-        ClientCommand::SetOutput {
+        Request::SetOutput {
             panel: name("notes"),
             output: "DP-1".to_owned(),
         }
     );
     assert_eq!(
         client(&["set-layer", "notes", "bottom"]),
-        ClientCommand::SetLayer {
+        Request::SetLayer {
             panel: name("notes"),
             layer: Layer::Bottom,
         }
     );
     assert_eq!(
         client(&["set-reserve", "notes", "cover"]),
-        ClientCommand::SetReserve {
+        Request::SetReserve {
             panel: name("notes"),
             reserve: ReserveMode::Cover,
         }
     );
     assert_eq!(
         client(&["set-keyboard", "notes", "exclusive"]),
-        ClientCommand::SetKeyboard {
+        Request::SetKeyboard {
             panel: name("notes"),
             keyboard: Keyboard::Exclusive,
         }
     );
 
-    assert_eq!(client(&["status"]), ClientCommand::Status { panel: None });
+    assert_eq!(client(&["status"]), Request::Status { panel: None });
     assert_eq!(
         client(&["status", "notes"]),
-        ClientCommand::Status {
+        Request::Status {
             panel: Some(name("notes")),
         }
     );
-    assert_eq!(client(&["subscribe"]), ClientCommand::Subscribe);
-    assert_eq!(client(&["quit"]), ClientCommand::Quit);
-    assert_eq!(client(&["reload"]), ClientCommand::Reload);
+    assert_eq!(client(&["subscribe"]), Request::Subscribe);
+    assert_eq!(client(&["quit"]), Request::Quit);
+    assert_eq!(client(&["reload"]), Request::Reload);
 }
 
 /// A missing, extra or unreadable client argument is a usage error that

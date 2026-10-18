@@ -451,10 +451,9 @@ fn every_client_subcommand_has_one_request_variant() {
     ];
     for (&subcommand, sample) in super::REQUEST_COMMANDS.iter().zip(samples) {
         let args: Vec<OsString> = sample.iter().map(OsString::from).collect();
-        let Command::Client(command) = cli::parse_args(&args).expect("a client command") else {
+        let Command::Client(request) = cli::parse_args(&args).expect("a client command") else {
             panic!("{subcommand} is not a client subcommand");
         };
-        let request = Request::from(command);
         let line = request.to_line();
         let value: serde_json::Value = serde_json::from_str(&line).expect("a request is JSON");
         assert_eq!(

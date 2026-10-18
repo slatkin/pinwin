@@ -13,7 +13,8 @@ use wl_proxy::state::State;
 use super::{Attach, Hidden};
 use crate::config::PanelSettings;
 use crate::daemon::events::{Bus, Event};
-use crate::daemon::panel::{PanelReply, PanelRequest};
+use crate::daemon::panel::PanelReply;
+use crate::ipc::Request;
 use crate::name::PanelName;
 use crate::proxy::routing::Routing;
 
@@ -55,7 +56,14 @@ fn a_toggle_hides_then_shows_with_one_event_each() {
     let routing = routing();
     let panel = notes();
     assert_eq!(
-        super::answer(&routing, &PanelRequest::Toggle, &panel, &bus),
+        super::answer(
+            &routing,
+            &Request::Toggle {
+                panel: panel.clone()
+            },
+            &panel,
+            &bus
+        ),
         Some(PanelReply::Done)
     );
     assert!(routing.hidden.is_hidden());
@@ -66,7 +74,14 @@ fn a_toggle_hides_then_shows_with_one_event_each() {
         })
     );
     assert_eq!(
-        super::answer(&routing, &PanelRequest::Toggle, &panel, &bus),
+        super::answer(
+            &routing,
+            &Request::Toggle {
+                panel: panel.clone()
+            },
+            &panel,
+            &bus
+        ),
         Some(PanelReply::Done)
     );
     assert!(!routing.hidden.is_hidden());
@@ -91,7 +106,14 @@ fn showing_a_shown_panel_and_hiding_a_hidden_one_are_no_ops() {
     let routing = routing();
     let panel = notes();
     assert_eq!(
-        super::answer(&routing, &PanelRequest::Show, &panel, &bus),
+        super::answer(
+            &routing,
+            &Request::Show {
+                panel: panel.clone()
+            },
+            &panel,
+            &bus
+        ),
         Some(PanelReply::Done)
     );
     assert_eq!(
@@ -99,7 +121,14 @@ fn showing_a_shown_panel_and_hiding_a_hidden_one_are_no_ops() {
         Err(std::sync::mpsc::RecvTimeoutError::Timeout)
     );
     assert_eq!(
-        super::answer(&routing, &PanelRequest::Hide, &panel, &bus),
+        super::answer(
+            &routing,
+            &Request::Hide {
+                panel: panel.clone()
+            },
+            &panel,
+            &bus
+        ),
         Some(PanelReply::Done)
     );
     assert_eq!(
@@ -109,7 +138,14 @@ fn showing_a_shown_panel_and_hiding_a_hidden_one_are_no_ops() {
         })
     );
     assert_eq!(
-        super::answer(&routing, &PanelRequest::Hide, &panel, &bus),
+        super::answer(
+            &routing,
+            &Request::Hide {
+                panel: panel.clone()
+            },
+            &panel,
+            &bus
+        ),
         Some(PanelReply::Done)
     );
     assert_eq!(

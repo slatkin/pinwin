@@ -5,7 +5,7 @@
 //! The parser is pure and display-free (`port-to-rust` D10): it turns the
 //! arguments into a [`Command`], which carries the resolved panel name, the
 //! [`PanelOptions`] overrides of the config file and the command to run, or
-//! one [`ClientCommand`]. It opens no socket and starts nothing; rows 5.x
+//! one [`Request`]. It opens no socket and starts nothing; rows 5.x
 //! and 6.x own the daemon, the IPC and the panel. Every setting value is
 //! parsed with the same `FromStr` grammar as the config file, so the option
 //! and the file cannot drift apart.
@@ -20,6 +20,7 @@ use std::str::FromStr;
 
 use crate::config::{FocusRing, InvalidValue, Keyboard, Layer, PanelOptions, parse_digits};
 use crate::geometry::{Edge, ReserveMode, Size};
+use crate::ipc::Request;
 use crate::name::PanelName;
 
 /// Every subcommand the parser accepts, in README order (spec
@@ -59,7 +60,7 @@ pub enum Command {
     /// Wayland display").
     Daemon,
     /// Send one request to the daemon (spec "Command-line client").
-    Client(ClientCommand),
+    Client(Request),
 }
 
 /// A `pinwin run` invocation: the resolved panel name, the setting
@@ -92,51 +93,6 @@ impl Run {
     pub fn command(&self) -> &[OsString] {
         &self.command
     }
-}
-
-/// The one request a client subcommand sends (spec "Command-line client").
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ClientCommand {
-    Toggle(PanelName),
-    Show(PanelName),
-    Hide(PanelName),
-    Focus(PanelName),
-    SetEdge {
-        panel: PanelName,
-        edge: Edge,
-    },
-    SetSize {
-        panel: PanelName,
-        size: Size,
-        ms: Option<u32>,
-    },
-    Resize {
-        panel: PanelName,
-        amount: Amount,
-        ms: Option<u32>,
-    },
-    SetOutput {
-        panel: PanelName,
-        output: String,
-    },
-    SetLayer {
-        panel: PanelName,
-        layer: Layer,
-    },
-    SetReserve {
-        panel: PanelName,
-        reserve: ReserveMode,
-    },
-    SetKeyboard {
-        panel: PanelName,
-        keyboard: Keyboard,
-    },
-    Status {
-        panel: Option<PanelName>,
-    },
-    Subscribe,
-    Quit,
-    Reload,
 }
 
 /// A relative size change for `pinwin resize`: the magnitude uses the size
@@ -378,12 +334,12 @@ fn parse_client(subcommand: &str, args: &[OsString]) -> Result<Command, UsageErr
 
 /// The command one client subcommand asks for; each helper owns its own
 /// arguments and its own usage message.
-fn client_command(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+fn client_command(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
     match subcommand {
-        "toggle" => panel_command(ClientCommand::Toggle, subcommand, args),
-        "show" => panel_command(ClientCommand::Show, subcommand, args),
-        "hide" => panel_command(ClientCommand::Hide, subcommand, args),
-        "focus" => panel_command(ClientCommand::Focus, subcommand, args),
+        "toggle" => panel_command(|panel| Request::Toggle { panel }, subcommand, args),
+        "show" => panel_command(|panel| Request::Show { panel }, subcommand, args),
+        "hide" => panel_command(|panel| Request::Hide { panel }, subcommand, args),
+        "focus" => panel_command(|panel| Request::Focus { panel }, subcommand, args),
         "set-edge" => set_edge(subcommand, args),
         "set-size" => set_size(subcommand, args),
         "resize" => resize(subcommand, args),
@@ -392,45 +348,45 @@ fn client_command(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, 
         "set-reserve" => set_reserve(subcommand, args),
         "set-keyboard" => set_keyboard(subcommand, args),
         "status" => status_command(subcommand, args),
-        "subscribe" => no_arg_command(ClientCommand::Subscribe, subcommand, args),
-        "quit" => no_arg_command(ClientCommand::Quit, subcommand, args),
-        "reload" => no_arg_command(ClientCommand::Reload, subcommand, args),
+        "subscribe" => no_arg_command(Request::Subscribe, subcommand, args),
+        "quit" => no_arg_command(Request::Quit, subcommand, args),
+        "reload" => no_arg_command(Request::Reload, subcommand, args),
         other => Err(unknown_command(other)),
     }
 }
 
 /// A client command that names one panel and nothing else.
 fn panel_command(
-    build: fn(PanelName) -> ClientCommand,
+    build: fn(PanelName) -> Request,
     subcommand: &str,
     args: &[OsString],
-) -> Result<ClientCommand, UsageError> {
+) -> Result<Request, UsageError> {
     Ok(build(one_panel(subcommand, args)?))
 }
 
 /// A client command that takes no arguments.
 fn no_arg_command(
-    command: ClientCommand,
+    command: Request,
     subcommand: &str,
     args: &[OsString],
-) -> Result<ClientCommand, UsageError> {
+) -> Result<Request, UsageError> {
     no_args(subcommand, args)?;
     Ok(command)
 }
 
 /// `set-edge <name> <edge>`.
-fn set_edge(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+fn set_edge(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
     let (panel, raw) = panel_and_value(subcommand, args, "an edge")?;
-    Ok(ClientCommand::SetEdge {
+    Ok(Request::SetEdge {
         panel,
         edge: setting(subcommand, raw)?,
     })
 }
 
 /// `set-size <name> <size> [--ms N]`.
-fn set_size(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+fn set_size(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
     let (panel, raw, ms) = panel_value_ms(subcommand, args, "a size")?;
-    Ok(ClientCommand::SetSize {
+    Ok(Request::SetSize {
         panel,
         size: setting(subcommand, &raw)?,
         ms,
@@ -438,53 +394,53 @@ fn set_size(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageE
 }
 
 /// `resize <name> <amount> [--ms N]`.
-fn resize(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+fn resize(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
     let (panel, raw, ms) = panel_value_ms(subcommand, args, "an amount")?;
-    Ok(ClientCommand::Resize {
+    Ok(Request::Resize {
         panel,
-        amount: setting(subcommand, &raw)?,
+        by: setting(subcommand, &raw)?,
         ms,
     })
 }
 
 /// `set-output <name> <output>`.
-fn set_output(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+fn set_output(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
     let (panel, raw) = panel_and_value(subcommand, args, "an output name")?;
-    Ok(ClientCommand::SetOutput {
+    Ok(Request::SetOutput {
         panel,
         output: text(subcommand, raw)?.to_owned(),
     })
 }
 
 /// `set-layer <name> <layer>`.
-fn set_layer(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+fn set_layer(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
     let (panel, raw) = panel_and_value(subcommand, args, "a layer")?;
-    Ok(ClientCommand::SetLayer {
+    Ok(Request::SetLayer {
         panel,
         layer: setting(subcommand, raw)?,
     })
 }
 
 /// `set-reserve <name> <reserve>`.
-fn set_reserve(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+fn set_reserve(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
     let (panel, raw) = panel_and_value(subcommand, args, "a reserve mode")?;
-    Ok(ClientCommand::SetReserve {
+    Ok(Request::SetReserve {
         panel,
         reserve: setting(subcommand, raw)?,
     })
 }
 
 /// `set-keyboard <name> <keyboard>`.
-fn set_keyboard(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+fn set_keyboard(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
     let (panel, raw) = panel_and_value(subcommand, args, "a keyboard mode")?;
-    Ok(ClientCommand::SetKeyboard {
+    Ok(Request::SetKeyboard {
         panel,
         keyboard: setting(subcommand, raw)?,
     })
 }
 
 /// `status [<name>]` (spec "Status").
-fn status_command(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, UsageError> {
+fn status_command(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
     let panel = match args {
         [] => None,
         [raw] => Some(panel(subcommand, raw)?),
@@ -492,7 +448,7 @@ fn status_command(subcommand: &str, args: &[OsString]) -> Result<ClientCommand, 
             return Err(UsageError::new("status: expected at most one panel name"));
         }
     };
-    Ok(ClientCommand::Status { panel })
+    Ok(Request::Status { panel })
 }
 
 /// The message of a subcommand the parser does not know.

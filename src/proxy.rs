@@ -69,9 +69,9 @@ use wl_proxy::state::{Destructor, State, StateError, StateHandler};
 use crate::config::PanelSettings;
 use crate::daemon::events::Bus;
 use crate::daemon::lifetime::Lifetime;
-use crate::daemon::panel::{AppId, Command, EventFd, PanelHandle, PanelReply, PanelRequest};
+use crate::daemon::panel::{AppId, Command, EventFd, PanelHandle, PanelReply};
 use crate::guard::{Poisoned, guard};
-use crate::ipc::{ErrorReply, PanelStatus};
+use crate::ipc::{ErrorReply, PanelStatus, Request};
 use crate::name::PanelName;
 use lifetime::{PidFd, ends, exited_without_window, pidfd_watch};
 use registry::ClientDisplay;
@@ -575,11 +575,11 @@ impl Panel {
     /// `toggle`, `show` and `hide` are row 8.2's state changes (D6), and
     /// `set-keyboard` and `focus` are row 8.3's keyboard modes; every other
     /// command succeeds without effect until its row gives it one.
-    fn answer(&self, request: &PanelRequest) -> PanelReply {
+    fn answer(&self, request: &Request) -> PanelReply {
         match request {
-            PanelRequest::Status => PanelReply::Status(self.status()),
-            PanelRequest::SetOutput(name) => {
-                match dock::answer_set_output(&self.routing, name, &self.name, &self.bus) {
+            Request::Status { .. } => PanelReply::Status(self.status()),
+            Request::SetOutput { output, .. } => {
+                match dock::answer_set_output(&self.routing, output, &self.name, &self.bus) {
                     Ok(()) => PanelReply::Done,
                     Err(error) => PanelReply::Refused(error),
                 }

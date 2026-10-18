@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{Config, Keyboard, Layer, PanelOptions, PanelSettings};
 use crate::daemon;
-use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply, PanelRequest};
+use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply};
 use crate::daemon::registry::Registry;
 use crate::daemon::{PathError, SocketError, socket_path};
 use crate::geometry::{Edge, ReserveMode, Size};
@@ -231,7 +231,7 @@ fn defaults_status() -> PanelStatus {
 fn panel_thread(
     name: &str,
     pid: u32,
-    answer: impl Fn(&PanelRequest) -> PanelReply + Send + 'static,
+    answer: impl Fn(&Request) -> PanelReply + Send + 'static,
 ) -> (PanelName, PanelHandle, JoinHandle<()>) {
     let (commands, incoming) = mpsc::channel::<Command>();
     let wake = Arc::new(EventFd::new().expect("an eventfd"));
@@ -255,7 +255,7 @@ fn answering_panel(
     status: PanelStatus,
 ) -> (PanelName, PanelHandle, JoinHandle<()>) {
     panel_thread(name, pid, move |request| match request {
-        PanelRequest::Status => PanelReply::Status(status.clone()),
+        Request::Status { .. } => PanelReply::Status(status.clone()),
         _ => PanelReply::Done,
     })
 }
