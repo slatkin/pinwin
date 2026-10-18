@@ -20,11 +20,9 @@ fn the_program_and_its_arguments_are_handed_over_unchanged() {
         OsString::from("~/notes.txt"),
         raw.clone(),
     ];
-    let built = Exec::new(&command, "wayland-1")
-        .expect("a command")
-        .into_command();
-    assert_eq!(built.get_program(), OsStr::new("/usr/bin/myeditor"));
-    let args: Vec<&OsStr> = built.get_args().collect();
+    let exec = Exec::new(&command, "wayland-1").expect("a command");
+    assert_eq!(exec.command.get_program(), OsStr::new("/usr/bin/myeditor"));
+    let args: Vec<&OsStr> = exec.command.get_args().collect();
     assert_eq!(args, [OsStr::new("~/notes.txt"), raw.as_os_str()]);
 }
 
@@ -34,12 +32,10 @@ fn the_program_and_its_arguments_are_handed_over_unchanged() {
 #[test]
 fn the_panel_display_is_set_and_the_working_folder_is_kept() {
     let command = [OsString::from("myeditor")];
-    let built = Exec::new(&command, "wayland-1")
-        .expect("a command")
-        .into_command();
+    let exec = Exec::new(&command, "wayland-1").expect("a command");
     // `None` means the command inherits the caller's working folder.
-    assert_eq!(built.get_current_dir(), None);
-    let envs: Vec<(&OsStr, Option<&OsStr>)> = built.get_envs().collect();
+    assert_eq!(exec.command.get_current_dir(), None);
+    let envs: Vec<(&OsStr, Option<&OsStr>)> = exec.command.get_envs().collect();
     assert_eq!(
         envs,
         [(OsStr::new("WAYLAND_DISPLAY"), Some(OsStr::new("wayland-1")))]

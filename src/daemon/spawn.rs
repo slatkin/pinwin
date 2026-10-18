@@ -113,7 +113,7 @@ pub fn start_and_wait(path: &Path) -> Result<(), StartError> {
     // this wait is short. Reaping it here is what keeps no zombie under the
     // app this process becomes; the daemon itself is init's child now (D12).
     child.wait().map_err(StartError::Spawn)?;
-    if wait_until_answering(path, START_TIMEOUT) {
+    if wait_until(|| UnixStream::connect(path).is_ok(), START_TIMEOUT) {
         // Dropping the log removes it; the detached daemon keeps writing into
         // the unlinked file, which nobody reads.
         Ok(())
@@ -199,14 +199,9 @@ fn detach(command: &mut Command) {
     }
 }
 
-/// Wait until a connect to `path` succeeds, bounded by `timeout`.
-fn wait_until_answering(path: &Path, timeout: Duration) -> bool {
-    wait_until(|| UnixStream::connect(path).is_ok(), timeout, POLL_INTERVAL)
-}
-
 /// Poll `probe` until it answers or `timeout` passes, sleeping at most
-/// `interval` between two probes and never past the deadline.
-fn wait_until(mut probe: impl FnMut() -> bool, timeout: Duration, interval: Duration) -> bool {
+/// [`POLL_INTERVAL`] between two probes and never past the deadline.
+fn wait_until(mut probe: impl FnMut() -> bool, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
         if probe() {
@@ -216,16 +211,16 @@ fn wait_until(mut probe: impl FnMut() -> bool, timeout: Duration, interval: Dura
         if now >= deadline {
             return false;
         }
-        thread::sleep(interval.min(deadline.saturating_duration_since(now)));
+        thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(now)));
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{POLL_INTERVAL, StartError, StartupOutput, wait_until, wait_until_answering};
+    use super::{StartError, StartupOutput, wait_until};
     use std::fs;
     use std::io::Write as _;
-    use std::os::unix::net::UnixListener;
+    use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
@@ -248,7 +243,10 @@ mod tests {
         let path = socket_path("answering");
         let listener = UnixListener::bind(&path).expect("bind the test socket");
         let started = Instant::now();
-        assert!(wait_until_answering(&path, Duration::from_secs(1)));
+        assert!(wait_until(
+            || UnixStream::connect(&path).is_ok(),
+            Duration::from_secs(1)
+        ));
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "the first probe answers"
@@ -264,7 +262,7 @@ mod tests {
         let path = socket_path("missing");
         let timeout = Duration::from_millis(30);
         let started = Instant::now();
-        assert!(!wait_until_answering(&path, timeout));
+        assert!(!wait_until(|| UnixStream::connect(&path).is_ok(), timeout));
         assert!(
             started.elapsed() >= timeout,
             "the wait uses its whole bound"
@@ -311,7 +309,6 @@ mod tests {
                 probes >= 3
             },
             Duration::from_secs(1),
-            POLL_INTERVAL,
         );
         assert!(answered);
         assert_eq!(probes, 3, "no probe runs after the answer");

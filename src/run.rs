@@ -28,14 +28,12 @@ pub fn app_name(program: &OsStr) -> String {
         .into_owned()
 }
 
-/// The process `pinwin run` becomes (spec "Run an app in a panel"): the app's
-/// program, its arguments and the environment it inherits, with
-/// `WAYLAND_DISPLAY` set to the panel's display.
+/// The process `pinwin run` becomes (spec "Run an app in a panel"): the
+/// command that hands the app its program, its arguments and the environment
+/// it inherits, with `WAYLAND_DISPLAY` set to the panel's display.
 #[derive(Debug)]
 pub struct Exec {
-    program: OsString,
-    args: Vec<OsString>,
-    display: String,
+    command: Command,
 }
 
 impl Exec {
@@ -46,11 +44,13 @@ impl Exec {
         let (program, args) = command
             .split_first()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no command to run"))?;
-        Ok(Self {
-            program: program.clone(),
-            args: args.to_vec(),
-            display: display.into(),
-        })
+        let mut built = Command::new(program);
+        built.args(args);
+        // `Command` inherits the working folder and the environment, so only
+        // the panel's display is set here: every other variable stays the
+        // caller's (spec "Run an app in a panel").
+        built.env("WAYLAND_DISPLAY", display.into());
+        Ok(Self { command: built })
     }
 
     /// Replace this process with the app (D2): `exec` keeps the process ID
@@ -58,22 +58,9 @@ impl Exec {
     /// app inherits the caller's working folder, environment, terminal and
     /// file descriptors. The returned error means `exec` failed, so the
     /// caller still runs and reports it (spec "Command not found").
-    pub fn exec(self) -> io::Error {
+    pub fn exec(mut self) -> io::Error {
         use std::os::unix::process::CommandExt as _;
-        self.into_command().exec()
-    }
-
-    /// The command the app runs as: its program, its arguments and its
-    /// environment. A test checks the hand-over through this, so no test
-    /// replaces the test process.
-    fn into_command(self) -> Command {
-        let mut command = Command::new(&self.program);
-        command.args(&self.args);
-        // `Command` inherits the working folder and the environment, so only
-        // the panel's display is set here: every other variable stays the
-        // caller's (spec "Run an app in a panel").
-        command.env("WAYLAND_DISPLAY", &self.display);
-        command
+        self.command.exec()
     }
 }
 

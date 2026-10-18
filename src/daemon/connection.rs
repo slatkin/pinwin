@@ -22,11 +22,11 @@ use std::sync::Arc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
-use super::create;
 use super::events::Bus;
 use super::lifetime::Lifetime;
 use crate::guard::{Poisoned, guard};
 use crate::ipc::{self, ErrorKind, MAX_LINE, Reply, Request};
+use crate::proxy::{self, StartError};
 
 /// Serve one accepted connection: one request line and its reply, or the
 /// event stream of a `subscribe` request until the client closes.
@@ -93,7 +93,20 @@ fn carry_out(
             app,
             options,
         } => {
-            let reply = create::panel(lifetime, panel, app, &options, pid);
+            // The options are merged with the config file's tables; a name
+            // another panel uses is refused and that panel stays (spec
+            // "Duplicate name"). A panel whose thread or socket cannot start
+            // is error kind `internal`, so the client reports it as the
+            // daemon's failure rather than its own.
+            let settings = lifetime.panel_settings(&panel, &options);
+            let reply = match proxy::spawn(panel, settings, app, pid, lifetime) {
+                Ok(started) => Reply::created(started.display().to_owned()),
+                Err(StartError::Refused(error)) => Reply::Error(error),
+                Err(StartError::Io(error)) => Reply::error(
+                    ErrorKind::Internal,
+                    format!("the panel did not start: {error}"),
+                ),
+            };
             answer(stream, &reply, timeout)
         }
         Request::Subscribe => subscribe(stream, lifetime.bus(), timeout),

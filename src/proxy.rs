@@ -249,7 +249,7 @@ pub fn spawn(
     let changed_lifetime = Arc::downgrade(lifetime);
     app_id.on_change(move || {
         if let Some(lifetime) = changed_lifetime.upgrade() {
-            lifetime.app_id_changed();
+            lifetime.update_tray();
         }
     });
     let (ready, waited) = mpsc::sync_channel(1);

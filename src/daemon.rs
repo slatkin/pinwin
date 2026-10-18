@@ -23,8 +23,8 @@
 //! panel that does not answer never stops another or the daemon (spec "The
 //! daemon survives bad input"). [`events`] is the bus that carries a panel's
 //! events to its subscribers, [`connection`] serves one IPC connection,
-//! including the `subscribe` stream, [`create`] starts the panel a
-//! `pinwin run` asks for (spec "Run an app in a panel", D2), and
+//! including the `subscribe` stream and the `create` request that starts the
+//! panel a `pinwin run` asks for (spec "Run an app in a panel", D2), and
 //! [`lifetime`] holds the accept loop, the shutdown trigger, `quit`,
 //! `reload` and the SIGINT and SIGTERM handling (spec "Daemon lifetime
 //! preference", "Quit", "Reload").
@@ -40,7 +40,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 pub mod connection;
-pub mod create;
 pub mod events;
 pub mod lifetime;
 pub mod panel;

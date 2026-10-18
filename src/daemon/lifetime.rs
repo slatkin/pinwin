@@ -154,7 +154,7 @@ impl Lifetime {
     /// preference", "Quit").
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
-        self.shutdown.is_triggered()
+        self.shutdown.triggered.load(Ordering::SeqCst)
     }
 
     /// Register a new panel under `name` (spec "Panel names", "Duplicate
@@ -209,16 +209,11 @@ impl Lifetime {
         true
     }
 
-    /// A panel's app reported its `app_id` (row 11.1, D14): the tray icon
-    /// names the oldest panel's app, so ask the running tray to re-read it.
-    pub fn app_id_changed(&self) {
-        self.update_tray();
-    }
-
     /// Ask the running tray to re-read its item, without holding the tray
-    /// lock across the tray thread's work (D14). A tray that is off, gone or
-    /// unavailable has no icon to update.
-    fn update_tray(&self) {
+    /// lock across the tray thread's work (D14). A panel's app reports its
+    /// `app_id` (row 11.1) so the icon names the oldest panel's app. A tray
+    /// that is off, gone or unavailable has no icon to update.
+    pub fn update_tray(&self) {
         let handle = {
             let tray = locked(&self.tray);
             match &*tray {
@@ -401,21 +396,6 @@ impl Shutdown {
             eprintln!("pinwin: the daemon could not be woken: {error}");
         }
     }
-
-    /// Whether the trigger was set.
-    fn is_triggered(&self) -> bool {
-        self.triggered.load(Ordering::SeqCst)
-    }
-
-    /// Read the wake eventfd, so the accept loop's next `poll` waits again.
-    fn drain(&self) -> io::Result<u64> {
-        self.wake.drain()
-    }
-
-    /// The descriptor the accept loop polls.
-    fn wake_fd(&self) -> RawFd {
-        self.wake.as_raw_fd()
-    }
 }
 
 /// The signalfd the daemon reads SIGINT and SIGTERM from (D12). [`open`]
@@ -558,7 +538,7 @@ impl Daemon {
     pub fn run(self, signals: Option<&SignalFd>) -> io::Result<()> {
         let listener = self.socket.listener();
         listener.set_nonblocking(true)?;
-        let wake_fd = self.lifetime.shutdown.wake_fd();
+        let wake_fd = self.lifetime.shutdown.wake.as_raw_fd();
         let signal_fd = signals.map_or(-1, AsRawFd::as_raw_fd);
         loop {
             if self.lifetime.is_shutdown() {
@@ -600,7 +580,7 @@ impl Daemon {
                 self.on_signals(signals)?;
             }
             if watched[1].revents != 0 {
-                let _ = self.lifetime.shutdown.drain();
+                let _ = self.lifetime.shutdown.wake.drain();
             }
             if watched[0].revents & libc::POLLIN != 0 {
                 self.accept()?;
