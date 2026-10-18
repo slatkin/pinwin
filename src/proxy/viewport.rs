@@ -556,6 +556,7 @@ impl WpViewportHandler for ClientWpViewport {
             .iter()
             .all(|value| value.to_wire() == UNSET_FIXED);
         state.set_source(surface_id, (!unset).then_some([x, y, width, height]));
+        super::commit::mark_app_viewport_dirty(&routing, surface_id);
         match state.kept(surface_id) {
             Some(Kept::Adopted) => recompose(&routing),
             Some(Kept::Mirrored) => {
@@ -574,6 +575,7 @@ impl WpViewportHandler for ClientWpViewport {
         let state = globals.viewport();
         let unset = width == -1 && height == -1;
         state.set_destination(surface_id, (!unset).then_some((width, height)));
+        super::commit::mark_app_viewport_dirty(&routing, surface_id);
         match state.kept(surface_id) {
             Some(Kept::Adopted) => recompose(&routing),
             Some(Kept::Mirrored) => {

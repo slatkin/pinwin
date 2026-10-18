@@ -4,9 +4,15 @@
 //! commit.
 //!
 //! The app's surface counts as dirty from any request on it after the app's
-//! last commit. The spike's approximation is the four requests that change
-//! double-buffered surface state — `attach`, `damage`, `damage_buffer` and
-//! `set_buffer_scale` — which [`PanelSurfaceCommits`] records. While the
+//! last commit (D7). [`PanelSurfaceCommits`] records every `wl_surface`
+//! request — the double-buffered state of `attach`, `set_buffer_scale`,
+//! `set_buffer_transform`, `set_opaque_region` and `set_input_region`, the
+//! pending damage of `damage` and `damage_buffer`, the commit-paired `frame`
+//! and `offset`, and the app's own `wp_viewport` source and destination on
+//! the panel surface. A request that is not double-buffered still counts:
+//! the app is mid-update, and the proxy waits for its commit instead of
+//! splitting that update over two frames. `destroy` is the one exception,
+//! because a destroyed surface never commits. While the
 //! surface is dirty, a proxy change (the tween's frame step, the focus
 //! ring's position, hide and show, a keyboard mode change) waits in a FIFO
 //! queue, and
@@ -32,8 +38,11 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::rc::{Rc, Weak};
 
+use wl_proxy::object::ObjectUtils;
 use wl_proxy::protocols::wayland::wl_buffer::WlBuffer;
-use wl_proxy::protocols::wayland::wl_output::WlOutput;
+use wl_proxy::protocols::wayland::wl_callback::WlCallback;
+use wl_proxy::protocols::wayland::wl_output::{WlOutput, WlOutputTransform};
+use wl_proxy::protocols::wayland::wl_region::WlRegion;
 use wl_proxy::protocols::wayland::wl_surface::{WlSurface, WlSurfaceHandler};
 
 use super::hide::{Attach, BufferRelease};
@@ -74,8 +83,8 @@ impl CommitCoordinator {
         self.dirty.get()
     }
 
-    /// Marks the app's surface dirty (D7): a request that changes
-    /// double-buffered state arrived after the app's last commit.
+    /// Marks the app's surface dirty (D7): an app request arrived after its
+    /// last commit.
     pub fn mark_dirty(&self) {
         self.dirty.set(true);
     }
@@ -192,6 +201,13 @@ impl PanelSurfaceCommits {
         );
     }
 
+    /// Marks the panel surface dirty for an app request on another object
+    /// that changes its double-buffered state (D7): the app's `wp_viewport`
+    /// source and destination belong to the surface it was created for.
+    pub(super) fn mark_dirty(&self) {
+        self.coordinator.mark_dirty();
+    }
+
     /// Places `change` on the panel surface (D7): the `commit` is the proxy's
     /// own, sent only when the surface is clean.
     pub fn request(&self, change: Change) {
@@ -206,6 +222,21 @@ impl PanelSurfaceCommits {
     /// does.
     fn surface(&self) -> Option<Rc<WlSurface>> {
         self.surface.upgrade()
+    }
+}
+
+/// Marks the panel surface dirty for an app request on another object that
+/// changes its double-buffered state (D7): the app's `wp_viewport` source and
+/// destination belong to the surface it was created for.
+pub(super) fn mark_app_viewport_dirty(routing: &Routing, surface_id: u64) {
+    if !routing.is_panel_surface(surface_id) {
+        return;
+    }
+    let Some((surface, _, _)) = routing.panel_window() else {
+        return;
+    };
+    if let Ok(commits) = surface.try_get_handler_ref::<PanelSurfaceCommits>() {
+        commits.mark_dirty();
     }
 }
 
@@ -255,6 +286,41 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
         self.coordinator.mark_dirty();
         if let Some(surface) = self.surface() {
             ForwardToServer.handle_damage(&surface, x, y, width, height);
+        }
+    }
+
+    fn handle_frame(&mut self, _slf: &Rc<WlSurface>, callback: &Rc<WlCallback>) {
+        self.coordinator.mark_dirty();
+        if let Some(surface) = self.surface() {
+            ForwardToServer.handle_frame(&surface, callback);
+        }
+    }
+
+    fn handle_set_opaque_region(&mut self, _slf: &Rc<WlSurface>, region: Option<&Rc<WlRegion>>) {
+        self.coordinator.mark_dirty();
+        if let Some(surface) = self.surface() {
+            ForwardToServer.handle_set_opaque_region(&surface, region);
+        }
+    }
+
+    fn handle_set_input_region(&mut self, _slf: &Rc<WlSurface>, region: Option<&Rc<WlRegion>>) {
+        self.coordinator.mark_dirty();
+        if let Some(surface) = self.surface() {
+            ForwardToServer.handle_set_input_region(&surface, region);
+        }
+    }
+
+    fn handle_set_buffer_transform(&mut self, _slf: &Rc<WlSurface>, transform: WlOutputTransform) {
+        self.coordinator.mark_dirty();
+        if let Some(surface) = self.surface() {
+            ForwardToServer.handle_set_buffer_transform(&surface, transform);
+        }
+    }
+
+    fn handle_offset(&mut self, _slf: &Rc<WlSurface>, x: i32, y: i32) {
+        self.coordinator.mark_dirty();
+        if let Some(surface) = self.surface() {
+            ForwardToServer.handle_offset(&surface, x, y);
         }
     }
 
@@ -343,15 +409,25 @@ mod tests {
     use std::rc::Rc;
 
     use wl_proxy::baseline::Baseline;
+    use wl_proxy::fixed::Fixed;
     use wl_proxy::object::{ObjectCoreApi, ObjectUtils};
+    use wl_proxy::protocols::viewporter::wp_viewport::{WpViewport, WpViewportHandler};
+    use wl_proxy::protocols::viewporter::wp_viewporter::{WpViewporter, WpViewporterHandler};
     use wl_proxy::protocols::wayland::wl_buffer::{WlBuffer, WlBufferHandler};
+    use wl_proxy::protocols::wayland::wl_callback::WlCallback;
+    use wl_proxy::protocols::wayland::wl_output::WlOutputTransform;
+    use wl_proxy::protocols::wayland::wl_region::WlRegion;
     use wl_proxy::protocols::wayland::wl_surface::{WlSurface, WlSurfaceHandler};
+    use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
+    use wl_proxy::protocols::xdg_shell::xdg_surface::XdgSurface;
+    use wl_proxy::protocols::xdg_shell::xdg_toplevel::XdgToplevel;
     use wl_proxy::state::State;
 
     use super::{Change, CommitCoordinator, PanelSurfaceCommits};
     use crate::config::PanelSettings;
     use crate::proxy::hide::BufferRelease;
     use crate::proxy::routing::Routing;
+    use crate::proxy::viewport::{ClientWpViewport, ClientWpViewporter};
 
     /// The `wl_surface` version a test mints its object with.
     const SURFACE_VERSION: u32 = 6;
@@ -446,32 +522,123 @@ mod tests {
         assert_eq!(*log.borrow(), ["after", "commit"]);
     }
 
-    /// Each of the four requests that change double-buffered state leaves the
-    /// surface dirty (D7, spike 1.3).
+    /// Every request the app sends on the panel surface leaves it dirty until
+    /// the app's commit (D7): the double-buffered state, the pending damage,
+    /// the commit-paired frame and offset, and the region and transform
+    /// setters.
     #[test]
-    fn each_pending_state_request_marks_the_surface_dirty() {
-        type Request = fn(&mut PanelSurfaceCommits, &Rc<WlSurface>);
-        let requests: [(&str, Request); 4] = [
-            ("attach", |handler, surface| {
+    fn every_app_request_marks_the_surface_dirty() {
+        type Request = fn(&mut PanelSurfaceCommits, &Rc<State>, &Rc<WlSurface>);
+        let requests: [(&str, Request); 9] = [
+            ("attach", |handler, _state, surface| {
                 handler.handle_attach(surface, None, 0, 0);
             }),
-            ("damage", |handler, surface| {
+            ("damage", |handler, _state, surface| {
                 handler.handle_damage(surface, 0, 0, 1, 1);
             }),
-            ("damage_buffer", |handler, surface| {
+            ("frame", |handler, state, surface| {
+                let callback = state.create_object::<WlCallback>(1);
+                handler.handle_frame(surface, &callback);
+            }),
+            ("set_opaque_region", |handler, state, surface| {
+                let region = state.create_object::<WlRegion>(1);
+                handler.handle_set_opaque_region(surface, Some(&region));
+            }),
+            ("set_input_region", |handler, _state, surface| {
+                handler.handle_set_input_region(surface, None);
+            }),
+            ("set_buffer_transform", |handler, _state, surface| {
+                handler.handle_set_buffer_transform(surface, WlOutputTransform(0));
+            }),
+            ("set_buffer_scale", |handler, _state, surface| {
+                handler.handle_set_buffer_scale(surface, 1);
+            }),
+            ("damage_buffer", |handler, _state, surface| {
                 handler.handle_damage_buffer(surface, 0, 0, 1, 1);
             }),
-            ("set_buffer_scale", |handler, surface| {
-                handler.handle_set_buffer_scale(surface, 1);
+            ("offset", |handler, _state, surface| {
+                handler.handle_offset(surface, 0, 0);
             }),
         ];
         for (name, request) in requests {
-            let (_state, surface, mut handler) = commits();
+            let (state, surface, mut handler) = commits();
             assert!(!handler.coordinator.is_dirty(), "a fresh surface is clean");
-            request(&mut handler, &surface);
+            request(&mut handler, &state, &surface);
             assert!(
                 handler.coordinator.is_dirty(),
                 "wl_surface.{name} leaves pending state"
+            );
+        }
+    }
+
+    /// The app's commit is the only thing that clears the surface's dirty flag
+    /// (D7): every other request keeps the proxy waiting for it.
+    #[test]
+    fn the_app_commit_clears_the_surface_dirty_flag() {
+        let (_state, surface, mut handler) = commits();
+        handler.handle_set_input_region(&surface, None);
+        assert!(
+            handler.coordinator.is_dirty(),
+            "the request leaves it dirty"
+        );
+        handler.handle_commit(&surface);
+        assert!(
+            !handler.coordinator.is_dirty(),
+            "the app's commit leaves it clean"
+        );
+    }
+
+    /// The app's own `wp_viewport` source and destination on the panel surface
+    /// are double-buffered surface state (D7): either leaves it dirty until the
+    /// app commits, so a proxy commit cannot drag the values out early.
+    #[test]
+    fn an_app_viewport_request_on_the_panel_marks_the_surface_dirty() {
+        type Request = fn(&mut ClientWpViewport, &Rc<WpViewport>);
+        let requests: [(&str, Request); 2] = [
+            ("set_source", |handler, viewport| {
+                handler.handle_set_source(
+                    viewport,
+                    Fixed::from_f64_lossy(0.0),
+                    Fixed::from_f64_lossy(0.0),
+                    Fixed::from_f64_lossy(10.0),
+                    Fixed::from_f64_lossy(10.0),
+                );
+            }),
+            ("set_destination", |handler, viewport| {
+                handler.handle_set_destination(viewport, 10, 10);
+            }),
+        ];
+        for (name, request) in requests {
+            let (state, surface, handler) = commits();
+            let routing = Rc::clone(&handler.routing);
+            let xdg_surface = state.create_object::<XdgSurface>(1);
+            let toplevel = state.create_object::<XdgToplevel>(1);
+            let layer_surface = state.create_object::<ZwlrLayerSurfaceV1>(4);
+            routing.set_panel_window(&surface, &xdg_surface, &toplevel, &layer_surface);
+            // The viewport path reaches the coordinator through the surface's
+            // installed handler, as the routing installs it (D7).
+            surface.set_handler(handler);
+
+            let viewporter = state.create_object::<WpViewporter>(1);
+            let viewport = state.create_object::<WpViewport>(1);
+            let mut app_viewporter = ClientWpViewporter::new(&viewporter, &routing);
+            WpViewporterHandler::handle_get_viewport(
+                &mut app_viewporter,
+                &viewporter,
+                &viewport,
+                &surface,
+            );
+            let commits = surface
+                .try_get_handler_ref::<PanelSurfaceCommits>()
+                .expect("the surface carries the commit handler");
+            assert!(!commits.coordinator.is_dirty(), "a fresh surface is clean");
+            let mut app_viewport = viewport
+                .try_get_handler_mut::<ClientWpViewport>()
+                .expect("the app viewport carries its local handler");
+            request(&mut app_viewport, &viewport);
+            assert!(
+                commits.coordinator.is_dirty(),
+                "wp_viewport.{name} leaves pending state"
             );
         }
     }
