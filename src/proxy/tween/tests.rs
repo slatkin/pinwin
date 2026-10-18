@@ -655,17 +655,8 @@ fn a_retarget_continues_from_the_current_length() {
     // wide buffer serves the new target, so no new configure is needed
     // until the last frame (spec "Retarget").
     assert!(!waits_for_app(Edge::Left, surface, 500));
-    let mut retarget = Tween::start(
-        push(Edge::Left, 500),
-        Continuation {
-            from: shrink.visible(),
-            surface,
-            resting_gap: shrink.current_gap(),
-            reserve: ReserveMode::Push,
-        },
-        200,
-    )
-    .expect("a retarget");
+    let mut retarget = Tween::start(push(Edge::Left, 500), shrink.retarget_continuation(), 200)
+        .expect("a retarget");
     let first = frame(retarget.step(0));
     assert_eq!(first.visible, 425, "no jump on the retarget");
     let last = frame(retarget.step(200_000));

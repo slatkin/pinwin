@@ -508,20 +508,24 @@ impl Tween {
 
     /// The length the panel shows now (D8): what a retarget continues from
     /// (spec "Retarget").
-    #[cfg(test)]
     pub(super) const fn visible(self) -> u32 {
         self.visible
     }
 
-    /// The state the change started from (D8, D5): a retarget takes all of it
-    /// from the running tween.
-    pub(super) const fn continuation(self) -> Continuation {
-        self.continuation
+    /// The state a retarget continues from (D8, D5): the length the panel
+    /// shows now and the gap it holds now, on the surface it crops, with the
+    /// reserve mode the change started from. A running strip tween therefore
+    /// hands the retarget the strip it applied, not the one it started from.
+    pub(super) fn retarget_continuation(self) -> Continuation {
+        Continuation {
+            from: self.visible(),
+            resting_gap: self.current_gap(),
+            ..self.continuation
+        }
     }
 
     /// The gap the panel holds now (D8): what a retarget to a covering target
     /// keeps still.
-    #[cfg(test)]
     pub(super) fn current_gap(self) -> HeldGap {
         self.continuation
             .resting_gap
