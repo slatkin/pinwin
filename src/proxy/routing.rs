@@ -163,16 +163,18 @@ impl Routing {
     pub(super) fn new(settings: PanelSettings) -> Rc<Self> {
         let output = settings.output().map(str::to_owned);
         let hidden = settings.hidden();
+        let globals = Rc::new(Globals::new());
+        let buffers = globals.viewport().buffers();
         Rc::new_cyclic(|self_ref| Self {
             self_weak: Weak::clone(self_ref),
             settings: RefCell::new(settings),
-            hidden: super::hide::Hidden::new(hidden),
+            hidden: super::hide::Hidden::new(hidden, buffers),
             output: RefCell::new(output),
             slot: Cell::new(Slot::new()),
             slot_owner: RefCell::new(None),
             layer_shell: RefCell::new(None),
             decoration_manager: RefCell::new(None),
-            globals: Rc::new(Globals::new()),
+            globals,
             panel_surface_id: Cell::new(None),
             panel_surface: RefCell::new(None),
             panel_xdg_surface: RefCell::new(None),

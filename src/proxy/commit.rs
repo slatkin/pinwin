@@ -366,15 +366,10 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
         };
         self.coordinator.on_app_commit(|| {
             let plan = self.routing.hidden.commit_plan();
-            // D8: the crop is clamped to the buffer the compositor holds
-            // after this commit, whose size the proxy knows from the request
-            // that created it. While hidden that is the buffer show attaches,
-            // not the app's attach, which never reaches the compositor (D6).
-            self.routing
-                .globals()
-                .viewport()
-                .buffers()
-                .set_panel_buffer(self.routing.hidden.compositor_buffer());
+            // D6, D8: `commit_plan` advances the buffer ownership model, so
+            // the crop below is clamped to the buffer the compositor holds
+            // after this commit — the kept buffer while hidden, whose size
+            // the proxy knows from the request that created it.
             if let Some(points) = plan.points {
                 self.routing.hidden.emit_points(&points);
             }
@@ -413,7 +408,7 @@ mod tests {
 
     use wl_proxy::baseline::Baseline;
     use wl_proxy::fixed::Fixed;
-    use wl_proxy::object::{ObjectCoreApi, ObjectUtils};
+    use wl_proxy::object::ObjectUtils;
     use wl_proxy::protocols::viewporter::wp_viewport::{WpViewport, WpViewportHandler};
     use wl_proxy::protocols::viewporter::wp_viewporter::{WpViewporter, WpViewporterHandler};
     use wl_proxy::protocols::wayland::wl_buffer::{WlBuffer, WlBufferHandler};
@@ -706,9 +701,9 @@ mod tests {
         let globals = handler.routing.globals();
         let buffers = globals.viewport().buffers();
         buffers.record(&buffer, 640, 480);
-        buffers.set_panel_buffer(Some(buffer.unique_id()));
 
         handler.handle_attach(&surface, Some(&buffer), 0, 0);
+        handler.handle_commit(&surface);
         assert_eq!(buffers.panel_size(), Some((640, 480)));
 
         let mut release = buffer

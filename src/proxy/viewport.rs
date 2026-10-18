@@ -234,7 +234,7 @@ pub(super) struct ViewportState {
     preferred: RefCell<HashMap<u64, u32>>,
     window: Cell<Option<[i32; 4]>>,
     written: Cell<Option<(u64, StaticCrop)>>,
-    buffers: PanelBuffers,
+    buffers: Rc<PanelBuffers>,
 }
 
 impl ViewportState {
@@ -245,13 +245,14 @@ impl ViewportState {
             preferred: RefCell::new(HashMap::new()),
             window: Cell::new(None),
             written: Cell::new(None),
-            buffers: PanelBuffers::new(),
+            buffers: Rc::new(PanelBuffers::new()),
         }
     }
 
-    /// The buffer sizes the crop is clamped to (D8).
-    pub(super) fn buffers(&self) -> &PanelBuffers {
-        &self.buffers
+    /// The panel surface's buffer sizes and ownership (D6, D8); the hide and
+    /// show state shares this instance.
+    pub(super) fn buffers(&self) -> Rc<PanelBuffers> {
+        Rc::clone(&self.buffers)
     }
 
     /// Records the window geometry the app reported on the panel surface

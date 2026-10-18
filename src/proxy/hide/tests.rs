@@ -16,6 +16,7 @@ use crate::daemon::events::{Bus, Event};
 use crate::daemon::panel::PanelReply;
 use crate::ipc::Request;
 use crate::name::PanelName;
+use crate::proxy::buffers::{PanelBuffers, Release};
 use crate::proxy::routing::Routing;
 
 /// A display-free state: the test mints proxy objects without a
@@ -40,6 +41,16 @@ fn timeline(state: &Rc<State>) -> Rc<WpLinuxDrmSyncobjTimelineV1> {
 /// The panel's routing with the built-in settings.
 fn routing() -> Rc<Routing> {
     Routing::new(PanelSettings::built_in())
+}
+
+/// A display-free buffer-ownership model for the panel surface.
+fn buffers() -> Rc<PanelBuffers> {
+    Rc::new(PanelBuffers::new())
+}
+
+/// The hidden state of a panel that starts hidden or shown.
+fn hidden(shown: bool) -> Hidden {
+    Hidden::new(shown, buffers())
 }
 
 /// A panel name the events name.
@@ -162,7 +173,7 @@ fn showing_a_shown_panel_and_hiding_a_hidden_one_are_no_ops() {
 #[test]
 fn a_visible_buffer_becomes_the_one_show_attaches() {
     let state = state();
-    let hidden = Hidden::new(false);
+    let hidden = hidden(false);
     let first = buffer(&state);
     assert_eq!(hidden.on_app_attach(Some(&first)), Attach::Forward);
     let plan = hidden.commit_plan();
@@ -179,7 +190,7 @@ fn a_visible_buffer_becomes_the_one_show_attaches() {
 #[test]
 fn a_hidden_panel_keeps_the_first_buffer_and_releases_the_next() {
     let state = state();
-    let hidden = Hidden::new(true);
+    let hidden = hidden(true);
     let first = buffer(&state);
     assert_eq!(hidden.on_app_attach(Some(&first)), Attach::Hold);
     let plan = hidden.commit_plan();
@@ -201,7 +212,7 @@ fn a_hidden_panel_keeps_the_first_buffer_and_releases_the_next() {
 #[test]
 fn a_hidden_reattach_of_the_kept_buffer_is_held() {
     let state = state();
-    let hidden = Hidden::new(true);
+    let hidden = hidden(true);
     let first = buffer(&state);
     assert_eq!(hidden.on_app_attach(Some(&first)), Attach::Hold);
     let _ = hidden.commit_plan();
@@ -210,18 +221,32 @@ fn a_hidden_reattach_of_the_kept_buffer_is_held() {
     assert!(plan.release.is_empty());
 }
 
-/// The app gets exactly one release per proxy-made attach, and the next
-/// release goes through again (D6 amendment 3).
+/// A proxy-made attach of a buffer the app already owns is a borrow: the
+/// compositor's release for it is swallowed, and only a later app attach
+/// makes the next release the app's (D6 amendment 3).
 #[test]
-fn a_proxy_attach_owns_one_swallowed_release() {
+fn a_proxy_attach_of_an_app_held_buffer_swallows_its_release() {
     let state = state();
-    let hidden = Hidden::new(false);
+    let hidden = hidden(false);
     let buffer = buffer(&state);
     hidden.on_proxy_attach(&buffer);
-    assert!(hidden.swallow_release(buffer.unique_id()));
-    assert!(
-        !hidden.swallow_release(buffer.unique_id()),
-        "the second release belongs to the app"
+    assert_eq!(
+        hidden.on_release(buffer.unique_id()),
+        Release::Swallow,
+        "the app already owns the buffer"
+    );
+    assert_eq!(
+        hidden.on_release(buffer.unique_id()),
+        Release::Swallow,
+        "no app attach is outstanding"
+    );
+
+    assert_eq!(hidden.on_app_attach(Some(&buffer)), Attach::Forward);
+    let _ = hidden.commit_plan();
+    assert_eq!(
+        hidden.on_release(buffer.unique_id()),
+        Release::Forward,
+        "the app's own attach owns the release"
     );
 }
 
@@ -231,7 +256,7 @@ fn a_proxy_attach_owns_one_swallowed_release() {
 #[test]
 fn held_points_wait_for_a_buffer_carrying_commit() {
     let state = state();
-    let hidden = Hidden::new(true);
+    let hidden = hidden(true);
     let timeline = timeline(&state);
     hidden.remember_acquire(&timeline, 0, 1);
     hidden.remember_release(&timeline, 0, 2);
@@ -257,7 +282,7 @@ fn held_points_wait_for_a_buffer_carrying_commit() {
 #[test]
 fn a_kept_buffer_of_a_panel_that_started_hidden_keeps_its_release() {
     let state = state();
-    let hidden = Hidden::new(true);
+    let hidden = hidden(true);
     let kept = buffer(&state);
     assert_eq!(hidden.on_app_attach(Some(&kept)), Attach::Hold);
     let plan = hidden.commit_plan();
@@ -268,8 +293,9 @@ fn a_kept_buffer_of_a_panel_that_started_hidden_keeps_its_release() {
 
     hidden.set_hidden(false);
     hidden.on_proxy_attach(&kept);
-    assert!(
-        !hidden.swallow_release(kept.unique_id()),
+    assert_eq!(
+        hidden.on_release(kept.unique_id()),
+        Release::Forward,
         "the held buffer's release reaches the app"
     );
 }
@@ -280,7 +306,7 @@ fn a_kept_buffer_of_a_panel_that_started_hidden_keeps_its_release() {
 #[test]
 fn a_replaced_kept_buffer_is_released_once() {
     let state = state();
-    let hidden = Hidden::new(true);
+    let hidden = hidden(true);
     let kept = buffer(&state);
     assert_eq!(hidden.on_app_attach(Some(&kept)), Attach::Hold);
     let _ = hidden.commit_plan();
@@ -302,11 +328,12 @@ fn a_replaced_kept_buffer_is_released_once() {
 }
 
 /// A buffer whose app-side release already went out still has its
-/// proxy-made attach's release swallowed, once (D6 amendment 3).
+/// proxy-made attach's release swallowed (D6 amendment 3): the app owns the
+/// buffer again, so no release is owed to it.
 #[test]
 fn a_released_buffer_that_the_proxy_attaches_is_still_swallowed() {
     let state = state();
-    let hidden = Hidden::new(true);
+    let hidden = hidden(true);
     let kept = buffer(&state);
     assert_eq!(hidden.on_app_attach(Some(&kept)), Attach::Hold);
     let _ = hidden.commit_plan();
@@ -318,13 +345,15 @@ fn a_released_buffer_that_the_proxy_attaches_is_still_swallowed() {
 
     hidden.set_hidden(false);
     hidden.on_proxy_attach(&dropped);
-    assert!(
-        hidden.swallow_release(dropped.unique_id()),
+    assert_eq!(
+        hidden.on_release(dropped.unique_id()),
+        Release::Swallow,
         "the app already had the release for its dropped attach"
     );
-    assert!(
-        !hidden.swallow_release(dropped.unique_id()),
-        "its second release belongs to the app"
+    assert_eq!(
+        hidden.on_release(dropped.unique_id()),
+        Release::Swallow,
+        "no app attach is outstanding"
     );
 }
 
@@ -334,7 +363,7 @@ fn a_released_buffer_that_the_proxy_attaches_is_still_swallowed() {
 #[test]
 fn a_show_before_the_commit_emits_no_points_for_a_dropped_attach() {
     let state = state();
-    let hidden = Hidden::new(true);
+    let hidden = hidden(true);
     let kept = buffer(&state);
     assert_eq!(hidden.on_app_attach(Some(&kept)), Attach::Hold);
     let _ = hidden.commit_plan();
@@ -364,19 +393,20 @@ fn a_show_before_the_commit_emits_no_points_for_a_dropped_attach() {
 #[test]
 fn a_hidden_commit_names_the_kept_buffer_as_the_compositors_own() {
     let state = state();
-    let hidden = Hidden::new(true);
-    assert_eq!(hidden.compositor_buffer(), None, "nothing is kept yet");
+    let buffers = buffers();
+    let hidden = Hidden::new(true, Rc::clone(&buffers));
+    assert_eq!(buffers.kept_id(), None, "nothing is kept yet");
 
     let first = buffer(&state);
     assert_eq!(hidden.on_app_attach(Some(&first)), Attach::Hold);
     let _ = hidden.commit_plan();
-    assert_eq!(hidden.compositor_buffer(), Some(first.unique_id()));
+    assert_eq!(buffers.kept_id(), Some(first.unique_id()));
 
     let dropped = buffer(&state);
     assert_eq!(hidden.on_app_attach(Some(&dropped)), Attach::Drop);
     let _ = hidden.commit_plan();
     assert_eq!(
-        hidden.compositor_buffer(),
+        buffers.kept_id(),
         Some(first.unique_id()),
         "a dropped hidden attach never reaches the compositor"
     );
@@ -386,7 +416,7 @@ fn a_hidden_commit_names_the_kept_buffer_as_the_compositors_own() {
     assert_eq!(hidden.on_app_attach(Some(&forwarded)), Attach::Forward);
     let _ = hidden.commit_plan();
     assert_eq!(
-        hidden.compositor_buffer(),
+        buffers.kept_id(),
         Some(forwarded.unique_id()),
         "a shown commit forwards the buffer it attached"
     );
@@ -398,7 +428,7 @@ fn a_hidden_commit_names_the_kept_buffer_as_the_compositors_own() {
 #[test]
 fn a_show_before_the_commit_keeps_a_held_attachs_points() {
     let state = state();
-    let hidden = Hidden::new(true);
+    let hidden = hidden(true);
     let kept = buffer(&state);
     assert_eq!(hidden.on_app_attach(Some(&kept)), Attach::Hold);
     let timeline = timeline(&state);
@@ -412,4 +442,71 @@ fn a_show_before_the_commit_keeps_a_held_attachs_points() {
     let (buffer, points) = hidden.show_buffer().expect("the held buffer is kept");
     assert_eq!(buffer.unique_id(), kept.unique_id());
     assert!(!points.is_empty(), "the held points stay with the buffer");
+}
+
+/// The app destroying the buffer the proxy keeps for show leaves nothing to
+/// attach (D6): show must not send a destroyed buffer.
+#[test]
+fn a_destroyed_kept_buffer_is_not_attached_again() {
+    let state = state();
+    let buffers = buffers();
+    let hidden = Hidden::new(true, Rc::clone(&buffers));
+    let kept = buffer(&state);
+    buffers.record(&kept, 640, 480);
+    assert_eq!(hidden.on_app_attach(Some(&kept)), Attach::Hold);
+    let _ = hidden.commit_plan();
+    assert!(hidden.show_buffer().is_some());
+
+    hidden.forget(kept.unique_id());
+
+    assert!(
+        hidden.show_buffer().is_none(),
+        "a destroyed buffer is not attached"
+    );
+    assert_eq!(
+        buffers.kept_id(),
+        None,
+        "a destroyed buffer is no crop bound"
+    );
+}
+
+/// A dropped hidden attach whose buffer the app destroys before the commit
+/// owes no release (D6): there is no buffer left to release.
+#[test]
+fn a_destroyed_dropped_buffer_owes_no_release() {
+    let state = state();
+    let hidden = hidden(true);
+    let kept = buffer(&state);
+    assert_eq!(hidden.on_app_attach(Some(&kept)), Attach::Hold);
+    let _ = hidden.commit_plan();
+    let dropped = buffer(&state);
+    assert_eq!(hidden.on_app_attach(Some(&dropped)), Attach::Drop);
+
+    hidden.forget(dropped.unique_id());
+
+    assert!(
+        hidden.commit_plan().release.is_empty(),
+        "a destroyed buffer gets no release"
+    );
+}
+
+/// A buffer the app destroys after attaching it but before the commit is not
+/// kept for show (D6): the pending attach leaves with it.
+#[test]
+fn a_destroyed_pending_attach_is_not_kept_for_show() {
+    let state = state();
+    let buffers = buffers();
+    let hidden = Hidden::new(true, Rc::clone(&buffers));
+    let buffer = buffer(&state);
+    assert_eq!(hidden.on_app_attach(Some(&buffer)), Attach::Hold);
+
+    hidden.forget(buffer.unique_id());
+
+    let plan = hidden.commit_plan();
+    assert!(plan.points.is_none(), "the commit carries no buffer");
+    assert!(
+        buffers.kept_id().is_none(),
+        "a destroyed pending attach is not kept"
+    );
+    assert!(hidden.show_buffer().is_none());
 }

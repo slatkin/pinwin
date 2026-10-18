@@ -1,5 +1,6 @@
-//! The panel surface's buffer sizes (replace-terminal-with-app-host row
-//! 10.1, D8): the bounds the viewport crop is clamped to.
+//! The panel surface's buffers (replace-terminal-with-app-host rows 8.2 and
+//! 10.1, D6, D8): the bounds the viewport crop is clamped to, and the one
+//! ownership model hide, show and the crop share.
 //!
 //! A `wp_viewport` source rectangle past the buffer it crops is the fatal
 //! `out_of_buffer` error, so the proxy has to know how large the buffer it
@@ -17,6 +18,23 @@
 //! buffer and scale are recorded by the commit coordinator
 //! ([`super::commit`]), which sees the app's `attach` and
 //! `set_buffer_scale`.
+//!
+//! [`PanelBuffers`] is also the one place that knows who owns a buffer the
+//! panel surface attached (D6):
+//!
+//! - the app, when no attach is outstanding (a compositor release for a
+//!   proxy-made attach is then swallowed);
+//! - the proxy, while it holds the app's attach for the next show (D6
+//!   amendment 2);
+//! - the compositor, while it holds the app's attach (its release goes to
+//!   the app).
+//!
+//! Hide, show and the tween crop read and advance that model instead of
+//! keeping release-history flags of their own. The proxy's own attach on a
+//! buffer the app owns is a borrow: the model stays with the app, and the
+//! compositor's release for the borrow is swallowed. A buffer the app
+//! destroys leaves the model and the crop bound here, so a show never
+//! attaches a destroyed buffer.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -81,22 +99,54 @@ pub(super) fn argb_buffer(
     Ok(buffer)
 }
 
-/// The buffer sizes one panel knows (D8): every buffer the app created
-/// through `wl_shm` or `zwp_linux_dmabuf_v1`, the buffer the panel surface
-/// attached last, and that surface's buffer scale.
+/// Who owns a buffer's outstanding app attach (D6, D8): the one place that
+/// decides whether a compositor release belongs to the app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Owner {
+    /// The app holds the buffer: no attach is outstanding, so a compositor
+    /// release for a proxy-made attach is swallowed.
+    App,
+    /// The proxy holds the app's attach for the next show (D6 amendment 2):
+    /// handing it to the compositor gives its one release to the app.
+    Proxy,
+    /// The compositor holds the app's attach: its release goes to the app.
+    Compositor,
+}
+
+/// What the panel surface does with a compositor release (D6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Release {
+    /// The release belongs to an app attach: forward it.
+    Forward,
+    /// The release belongs to a proxy-made attach of an app-held buffer:
+    /// swallow it.
+    Swallow,
+}
+
+/// The buffers one panel knows (D6, D8): the sizes the crop is clamped to,
+/// the panel surface's buffer scale, and the owner of every buffer the panel
+/// surface attached.
 pub(super) struct PanelBuffers {
     sizes: RefCell<HashMap<u64, (u32, u32)>>,
-    panel_buffer: Cell<Option<u64>>,
     panel_scale: Cell<u32>,
+    /// The buffer the next show attaches and the crop is bounded by: the
+    /// last attach the proxy forwarded, or the first one it held while
+    /// hidden. The proxy holds this buffer for show, so its handle lives
+    /// here and leaves with the app's `wl_buffer.destroy`.
+    kept: RefCell<Option<(u64, Rc<WlBuffer>)>>,
+    /// The owner of each buffer's outstanding app attach (D6). A buffer with
+    /// no entry is [`Owner::App`].
+    owners: RefCell<HashMap<u64, Owner>>,
 }
 
 impl PanelBuffers {
-    /// No buffer seen yet, and the default scale of one.
+    /// No buffer seen yet, no attach owned, and the default scale of one.
     pub(super) fn new() -> Self {
         Self {
             sizes: RefCell::new(HashMap::new()),
-            panel_buffer: Cell::new(None),
             panel_scale: Cell::new(1),
+            kept: RefCell::new(None),
+            owners: RefCell::new(HashMap::new()),
         }
     }
 
@@ -115,18 +165,96 @@ impl PanelBuffers {
             .insert(buffer.unique_id(), (width, height));
     }
 
-    /// Forgets a buffer the app destroyed, so a long-lived app's buffer churn
-    /// does not grow the map. A buffer the panel surface attached calls this
-    /// through the release handler too: that attach replaces the tracked
-    /// handler (D6 amendment 3), and its entry must still leave (D8).
+    /// Forgets a buffer the app destroyed (D6, D8): its size, its owner and
+    /// the proxy's handle on it leave, so a show never attaches a destroyed
+    /// buffer and the crop never bounds itself by one. A buffer the panel
+    /// surface attached calls this through the release handler too: that
+    /// attach replaces the tracked handler (D6 amendment 3).
     pub(super) fn forget(&self, buffer: u64) {
         self.sizes.borrow_mut().remove(&buffer);
+        self.owners.borrow_mut().remove(&buffer);
+        let mut kept = self.kept.borrow_mut();
+        if kept.as_ref().is_some_and(|(id, _)| *id == buffer) {
+            kept.take();
+        }
     }
 
-    /// Records the buffer the panel surface attached (D8), or none when the
-    /// app detached.
-    pub(super) fn set_panel_buffer(&self, buffer: Option<u64>) {
-        self.panel_buffer.set(buffer);
+    /// The app's attach reached the compositor (D6): the buffer is
+    /// compositor-held, it becomes the buffer the next show attaches, and a
+    /// buffer the proxy still held for show gives its owed release back.
+    pub(super) fn app_attach_forwarded(&self, buffer: &Rc<WlBuffer>) -> Option<Rc<WlBuffer>> {
+        let id = buffer.unique_id();
+        let previous = self.kept.borrow_mut().replace((id, Rc::clone(buffer)));
+        let release = previous
+            .and_then(|(kept, buffer)| (self.owner(kept) == Owner::Proxy).then_some(buffer));
+        self.owners.borrow_mut().insert(id, Owner::Compositor);
+        release
+    }
+
+    /// The proxy holds the app's attach for the next show (D6 amendment 2):
+    /// the caller keeps only the first attach it meets while hidden, so the
+    /// buffer becomes the kept one and the app waits for its release.
+    pub(super) fn keep_held(&self, buffer: &Rc<WlBuffer>) {
+        let id = buffer.unique_id();
+        self.kept.borrow_mut().replace((id, Rc::clone(buffer)));
+        self.owners.borrow_mut().insert(id, Owner::Proxy);
+    }
+
+    /// The proxy attaches the kept buffer for show (D6 amendment 2): a held
+    /// app attach moves to the compositor, which then owes the app its
+    /// release; a buffer the app already owns stays a borrow.
+    pub(super) fn proxy_attach(&self, buffer: &Rc<WlBuffer>) {
+        let id = buffer.unique_id();
+        let mut owners = self.owners.borrow_mut();
+        if owners.get(&id) == Some(&Owner::Proxy) {
+            owners.insert(id, Owner::Compositor);
+        }
+    }
+
+    /// A compositor release (D6): forward the one an app attach owns, and
+    /// swallow the one a proxy-made attach of an app-held buffer owns. The
+    /// buffer returns to the app in both cases.
+    pub(super) fn compositor_release(&self, buffer: u64) -> Release {
+        let mut owners = self.owners.borrow_mut();
+        match owners.get(&buffer).copied() {
+            Some(Owner::Proxy | Owner::Compositor) => {
+                owners.remove(&buffer);
+                Release::Forward
+            }
+            None | Some(Owner::App) => Release::Swallow,
+        }
+    }
+
+    /// The buffer the next show attaches, with its id (D6).
+    pub(super) fn kept(&self) -> Option<(u64, Rc<WlBuffer>)> {
+        self.kept
+            .borrow()
+            .as_ref()
+            .map(|(id, buffer)| (*id, Rc::clone(buffer)))
+    }
+
+    /// The id of the buffer the next show attaches (D6): the one the
+    /// compositor holds or receives next, and therefore the crop's bound
+    /// (D8).
+    pub(super) fn kept_id(&self) -> Option<u64> {
+        self.kept.borrow().as_ref().map(|(id, _)| *id)
+    }
+
+    /// Forgets every owner and the kept buffer for a new panel window (D6).
+    /// The sizes stay: they belong to the app's buffers.
+    pub(super) fn reset_ownership(&self) {
+        self.kept.borrow_mut().take();
+        self.owners.borrow_mut().clear();
+    }
+
+    /// The owner of a buffer's outstanding app attach (D6); [`Owner::App`]
+    /// when no attach is outstanding.
+    fn owner(&self, buffer: u64) -> Owner {
+        self.owners
+            .borrow()
+            .get(&buffer)
+            .copied()
+            .unwrap_or(Owner::App)
     }
 
     /// Records the panel surface's `wl_surface.set_buffer_scale` (D8): the
@@ -136,11 +264,11 @@ impl PanelBuffers {
             .set(u32::try_from(scale).unwrap_or(1).max(1));
     }
 
-    /// The pixel size of the buffer the panel surface attached last (D8):
-    /// `None` while the app attached none, or when the proxy did not see it
-    /// created.
+    /// The pixel size of the buffer the compositor holds or receives next
+    /// (D8): `None` while the proxy keeps none, or when it did not see the
+    /// buffer created.
     pub(super) fn panel_size(&self) -> Option<(u32, u32)> {
-        let buffer = self.panel_buffer.get()?;
+        let buffer = self.kept_id()?;
         self.sizes.borrow().get(&buffer).copied()
     }
 
@@ -358,14 +486,14 @@ impl WlBufferHandler for ForwardBuffer {}
 
 #[cfg(test)]
 mod tests {
-    use super::PanelBuffers;
+    use super::{Owner, PanelBuffers, Release};
     use wl_proxy::baseline::Baseline;
     use wl_proxy::object::ObjectCoreApi;
     use wl_proxy::protocols::wayland::wl_buffer::WlBuffer;
     use wl_proxy::state::State;
 
     /// Two buffers recorded, looked up and forgotten (D8): the crop reads the
-    /// attached buffer's size and a destroyed buffer's entry leaves.
+    /// kept buffer's size and a destroyed buffer's entry leaves.
     #[test]
     fn a_buffer_size_is_known_until_the_buffer_is_destroyed() {
         let state = object_state();
@@ -375,12 +503,108 @@ mod tests {
         buffers.record(&first, 640, 480);
         buffers.record(&second, 0, 480);
         buffers.record(&second, 640, 0);
-        buffers.set_panel_buffer(Some(first.unique_id()));
+        buffers.keep_held(&first);
 
         assert_eq!(buffers.panel_size(), Some((640, 480)));
 
         buffers.forget(first.unique_id());
         assert_eq!(buffers.panel_size(), None, "a destroyed buffer is gone");
+        assert_eq!(buffers.kept_id(), None, "and it is no longer kept");
+    }
+
+    /// An app attach the proxy forwards belongs to the compositor (D6): its
+    /// release is the app's and the buffer returns to the app.
+    #[test]
+    fn a_forwarded_attach_belongs_to_the_compositor_until_it_is_released() {
+        let state = object_state();
+        let buffer = test_buffer(&state);
+        let buffers = PanelBuffers::new();
+
+        assert!(
+            buffers.app_attach_forwarded(&buffer).is_none(),
+            "there is no held attach to release"
+        );
+        assert_eq!(buffers.owner(buffer.unique_id()), Owner::Compositor);
+        assert_eq!(
+            buffers.compositor_release(buffer.unique_id()),
+            Release::Forward,
+            "the compositor's release is the app's"
+        );
+        assert_eq!(buffers.owner(buffer.unique_id()), Owner::App);
+        assert_eq!(
+            buffers.compositor_release(buffer.unique_id()),
+            Release::Swallow,
+            "a release with no app attach is swallowed"
+        );
+    }
+
+    /// An attach the proxy holds while hidden belongs to the proxy (D6): show
+    /// hands it to the compositor, whose release then goes to the app.
+    #[test]
+    fn a_held_attach_belongs_to_the_proxy_until_show_hands_it_over() {
+        let state = object_state();
+        let buffer = test_buffer(&state);
+        let buffers = PanelBuffers::new();
+        buffers.keep_held(&buffer);
+
+        assert_eq!(buffers.owner(buffer.unique_id()), Owner::Proxy);
+        assert_eq!(
+            buffers.compositor_release(buffer.unique_id()),
+            Release::Forward,
+            "the held attach was never released to the app"
+        );
+
+        let next = test_buffer(&state);
+        buffers.keep_held(&next);
+        buffers.proxy_attach(&next);
+        assert_eq!(buffers.owner(next.unique_id()), Owner::Compositor);
+        assert_eq!(
+            buffers.compositor_release(next.unique_id()),
+            Release::Forward,
+            "the show's attach owes the app its release"
+        );
+    }
+
+    /// A proxy attach of a buffer the app already owns is a borrow (D6): the
+    /// model stays app-held and the compositor's release is swallowed.
+    #[test]
+    fn a_proxy_attach_of_a_free_buffer_stays_app_held() {
+        let state = object_state();
+        let buffer = test_buffer(&state);
+        let buffers = PanelBuffers::new();
+        buffers.proxy_attach(&buffer);
+
+        assert_eq!(buffers.owner(buffer.unique_id()), Owner::App);
+        assert_eq!(
+            buffers.compositor_release(buffer.unique_id()),
+            Release::Swallow,
+            "no app attach owns this release"
+        );
+    }
+
+    /// A forwarded attach replaces the buffer the proxy kept (D6): a held
+    /// attach whose show no longer uses it gives its release back to the app,
+    /// and the new buffer becomes the crop's bound (D8).
+    #[test]
+    fn a_forwarded_attach_releases_the_held_buffer_it_replaces() {
+        let state = object_state();
+        let kept = test_buffer(&state);
+        let next = test_buffer(&state);
+        let buffers = PanelBuffers::new();
+        buffers.record(&kept, 640, 480);
+        buffers.record(&next, 800, 600);
+        buffers.keep_held(&kept);
+        assert_eq!(buffers.panel_size(), Some((640, 480)));
+
+        let released = buffers
+            .app_attach_forwarded(&next)
+            .expect("the held attach owes a release");
+        assert_eq!(released.unique_id(), kept.unique_id());
+        assert_eq!(
+            buffers.panel_size(),
+            Some((800, 600)),
+            "the crop follows the forwarded buffer"
+        );
     }
 
     /// A detached surface has no buffer size, and its scale is at least one
