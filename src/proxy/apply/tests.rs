@@ -86,7 +86,7 @@ fn a_pure_edge_move_sends_no_new_size() {
     assert_eq!(plan.settings.edge(), Edge::Right);
     assert_eq!(plan.size, None, "the same size across the other side");
     assert!(plan.layout_changed, "the anchors and margins move");
-    assert!(!plan.redock, "the window keeps its layer surface");
+    assert!(!plan.layer_changed, "the window keeps its layer surface");
 }
 
 /// An edge move to a perpendicular edge changes the app's size, because
@@ -256,11 +256,11 @@ fn a_reserve_change_sends_no_new_size() {
     assert!(plan.layout_changed, "the strip the reserve holds moves");
 }
 
-/// A layer change re-docks the window, because a live layer surface
-/// carries its layer from its creation (D11): no size of its own, the
-/// re-dock sends the geometry.
+/// A layer change moves the live layer surface in place (D11, spec
+/// "Change the layer"): the window keeps its layer surface, so the plan
+/// carries no re-dock and no new size, and the geometry does not change.
 #[test]
-fn a_layer_change_re_docks_the_window() {
+fn a_layer_change_keeps_the_window_and_its_surface() {
     let current = settings();
     let plan = planned(
         &current,
@@ -270,8 +270,10 @@ fn a_layer_change_re_docks_the_window() {
         },
         output(1920, 1080),
     );
-    assert!(plan.redock);
-    assert_eq!(plan.size, None, "the re-dock sends the size itself");
+    assert!(plan.layer_changed);
+    assert_eq!(plan.settings.layer(), Layer::Bottom);
+    assert_eq!(plan.size, None, "a layer change moves no geometry");
+    assert!(!plan.layout_changed, "only the layer changes");
 }
 
 /// A percent amount moves a percent size in percent (spec "Size

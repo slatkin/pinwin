@@ -136,6 +136,15 @@ impl Reserve {
         self.send_gap_state(size, anchor, zone);
     }
 
+    /// Changes the layer of the strip so it stays beside the panel (D9,
+    /// D11): a `set-layer` moves the panel in place, and the layer is
+    /// double-buffered, so the reserve commits its own surface — it is
+    /// proxy-owned and shares no commit with the app.
+    pub(super) fn set_layer(&self, layer: ZwlrLayerShellV1Layer) {
+        self.layer_surface.send_set_layer(layer);
+        self.surface.send_commit();
+    }
+
     /// Releases the strip while the panel is hidden (D6, spec "Hide releases
     /// the reservation"): the zone moves to zero and the held gap stays in
     /// the routing for the next show. The strip's size and anchors do not

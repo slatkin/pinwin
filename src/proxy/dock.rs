@@ -4,7 +4,9 @@
 //! change requires.
 //!
 //! The layer surface is created with no output unless the panel's settings
-//! name one, so the compositor chooses (D11). A `set-output` checks the
+//! name one, so the compositor chooses (D11). A `set-layer` changes the
+//! layer of the live surface in place (spec "Change the layer"): the window
+//! keeps its layer surface, so it stays configured and mapped. A `set-output` checks the
 //! name against the outputs the proxy tracks — a name no tracked output
 //! carries is refused with error kind `invalid_value` and the panel does
 //! not move (spec "Unknown output") — then destroys the current layer
@@ -201,6 +203,42 @@ pub(super) fn dock_panel_window(
     );
 }
 
+/// Changes the layer of the panel window's live layer surface (D11, spec
+/// "Change the layer"): `zwlr_layer_surface_v1.set_layer` is double-buffered
+/// with the surface, so the panel commits the surface through the commit
+/// coordinator (D7) and the window keeps its layer surface — nothing is
+/// destroyed, so the panel stays configured and mapped. The strip follows
+/// the panel into the same layer and commits its own surface, because the
+/// reserve is proxy-owned. A compositor whose layer-shell bind predates
+/// `set_layer` has no in-place change, so the window re-docks there.
+/// Does nothing when the panel holds no window.
+pub(super) fn set_layer(routing: &Rc<Routing>, layer: ZwlrLayerShellV1Layer) {
+    let Some(layer_surface) = routing.panel_layer_surface() else {
+        return;
+    };
+    if !supports_set_layer(layer_surface.version()) {
+        redock(routing, routing.pinned_output().map(|(_, global)| global));
+        return;
+    }
+    let Some((surface, _, _)) = routing.panel_window() else {
+        return;
+    };
+    let Ok(commits) = surface.try_get_handler_ref::<PanelSurfaceCommits>() else {
+        return;
+    };
+    commits.request(Box::new(move || layer_surface.send_set_layer(layer)));
+    if let Some(reserve) = routing.reserve() {
+        reserve.set_layer(layer);
+    }
+}
+
+/// Whether the compositor's layer-shell bind supports changing a live layer
+/// surface's layer (spec "Change the layer"): `set_layer` arrived in
+/// version 2, so an older bind re-docks the window instead.
+fn supports_set_layer(version: u32) -> bool {
+    version >= ZwlrLayerSurfaceV1::MSG__SET_LAYER__SINCE
+}
+
 /// Re-docks the panel window on the output named by `output_global` (D11):
 /// destroys the layer surface and the reserve it had and creates both again
 /// with the same settings, so the app keeps its window and gets the new
@@ -255,9 +293,39 @@ pub(super) fn redock(routing: &Rc<Routing>, output_global: Option<u32>) {
         output_global,
         defer_keyboard,
     );
+    // The fresh layer surface gets its initial configure only from a
+    // bufferless commit of the panel surface (D7, D11): the app is often
+    // already at the same size and commits nothing, and wlroots ends the
+    // connection over a buffer committed before the first configure.
+    open_new_surface(routing, &window.surface);
     // The strip follows the panel (D9, D11): re-created with the gap it
     // already holds, on the same output.
     recreate_reserve(routing, output_global);
+}
+
+/// Opens a fresh layer surface on the panel window (D7, D11): the protocol
+/// wants its first commit without a buffer, so the commit detaches the app's
+/// buffer and the proxy re-attaches the buffer it keeps once the app acks the
+/// new surface's configure (`hide::on_ack`). The commit goes through
+/// the commit coordinator, so it never lands on the app's pending state; an
+/// app attach the detach replaces is released back to the app (D6).
+fn open_new_surface(routing: &Rc<Routing>, surface: &Rc<WlSurface>) {
+    let Ok(commits) = surface.try_get_handler_ref::<PanelSurfaceCommits>() else {
+        surface.send_attach(None, 0, 0);
+        surface.send_commit();
+        return;
+    };
+    // A hidden panel is already unmapped and its show re-attaches the kept
+    // buffer itself, so only a shown panel waits for the ack here.
+    if !routing.hidden.is_hidden() {
+        routing.hidden.mark_awaiting_map();
+    }
+    let routing = Rc::clone(routing);
+    let surface = Rc::clone(surface);
+    commits.request(Box::new(move || {
+        routing.hidden.release_pending_attach();
+        surface.send_attach(None, 0, 0);
+    }));
 }
 
 /// Creates the reserve surface with the panel window (D9): it carries the
@@ -536,7 +604,7 @@ fn toplevel_states(toplevel: &XdgToplevel) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SetOutputDecision, set_output_decision};
+    use super::{SetOutputDecision, set_output_decision, supports_set_layer};
 
     fn tracked() -> Vec<(u32, Option<String>)> {
         vec![
@@ -560,6 +628,16 @@ mod tests {
             set_output_decision("DP-1", &tracked),
             SetOutputDecision::Pin(10)
         );
+    }
+
+    /// A layer change is in place only where the compositor's layer-shell
+    /// bind knows `set_layer` (spec "Change the layer"): version 1 re-docks
+    /// the window on a new layer surface, version 2 and later keep it.
+    #[test]
+    fn a_layer_change_is_in_place_from_version_two() {
+        assert!(!supports_set_layer(1), "version 1 has no set_layer");
+        assert!(supports_set_layer(2), "set_layer arrived in version 2");
+        assert!(supports_set_layer(5), "the bind clamps at version 5");
     }
 
     /// A name no tracked output carries is refused and the panel does not

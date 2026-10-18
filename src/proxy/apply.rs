@@ -20,11 +20,11 @@
 //! - the app gets a new window size only when the panel's width or length
 //!   changes ([`needs_new_app_size`]): a pure edge move with the same size
 //!   sends no new size, and a size change sends exactly one;
-//! - the layer of a live layer surface is fixed at its creation, so
-//!   `set-layer` re-docks the window on a new layer surface ([`dock::redock`],
-//!   D11) instead of re-sending state on the old one — the same re-dock a
-//!   `set-output` and a `closed` surface use, so the app still keeps its
-//!   window.
+//! - `set-layer` changes the layer of the live layer surface in place
+//!   ([`dock::set_layer`], D11), so the window keeps its layer surface and
+//!   stays configured and mapped (spec "Change the layer"); a
+//!   `set-output` and a `closed` surface still re-dock, because the output
+//!   of a live layer surface is fixed at its creation.
 //!
 //! Gutters have no command of their own (the design keeps them to the options
 //! and the config file), so they reach the apply path only inside the
@@ -38,7 +38,7 @@
 use std::rc::Rc;
 
 use super::dock;
-use super::mapping::anchor_of;
+use super::mapping::{anchor_of, layer_of};
 use super::routing::Routing;
 use crate::cli::Amount;
 use crate::config::PanelSettings;
@@ -65,8 +65,9 @@ struct Plan {
     /// Whether the geometry changes at all: a change that resolves to the
     /// geometry the panel already runs at re-sends nothing.
     layout_changed: bool,
-    /// Whether the change needs a new layer surface (see the module comment).
-    redock: bool,
+    /// Whether the change moves the panel to another layer, which the live
+    /// layer surface takes in place (see the module comment).
+    layer_changed: bool,
     /// The panel's length across the edge before the change, which an
     /// animated change starts from (D8).
     from_across: u32,
@@ -160,14 +161,14 @@ fn plan_change(
         },
         _ => return Ok(None),
     };
-    let redock = matches!(request, Request::SetLayer { .. });
+    let layer_changed = matches!(request, Request::SetLayer { .. });
     let geometry = geometry_of(&next, output);
     geometry
         .validate(output)
         .map_err(|error| ErrorReply::new(ErrorKind::InvalidLayout, error.to_string()))?;
     let current_geometry = geometry_of(current, output);
-    // A re-dock sends the whole geometry, so it carries no size of its own.
-    let needs_size = !redock && needs_new_app_size(current_geometry, geometry, output);
+    // A layer change moves no geometry, so it carries no size of its own.
+    let needs_size = !layer_changed && needs_new_app_size(current_geometry, geometry, output);
     // D8: only a width change with a duration animates; an edge or gutter
     // change snaps. The request's `ms` or the panel's `tween_ms` is clamped to
     // the tween's ceiling (spec "Duration clamp"), and a zero duration snaps
@@ -183,7 +184,7 @@ fn plan_change(
         settings: next,
         geometry,
         size: needs_size.then(|| geometry.size()),
-        redock,
+        layer_changed,
         from_across: current_geometry.across(),
         animate,
         snaps,
@@ -286,14 +287,15 @@ fn needs_new_app_size(current: Geometry, next: Geometry, output: OutputSize) -> 
 
 /// Applies a validated plan to the live panel (row 6.6): the settings are
 /// stored first, so a status reply already reports them, and then the
-/// compositor hears what changed. A `set-layer` re-docks the window; every
-/// other change re-sends state on the layer surface the window docks with.
+/// compositor hears what changed. A `set-layer` changes the layer of the
+/// live layer surface in place; every other change re-sends state on the
+/// layer surface the window docks with.
 fn apply_plan(routing: &Rc<Routing>, plan: Plan, panel: &PanelName, bus: &Bus) {
     routing.set_settings(plan.settings);
-    if plan.redock {
-        // D11: the panel stays where it is pinned, in the layer it now asks
-        // for; the re-dock sends the whole geometry and re-creates the strip.
-        dock::redock(routing, routing.pinned_output().map(|(_, global)| global));
+    if plan.layer_changed {
+        // D11: the window keeps its layer surface and stays mapped; the
+        // strip follows it into the same layer (spec "Change the layer").
+        dock::set_layer(routing, layer_of(routing.settings().layer()));
         bus.publish_geometry_changed(panel);
         return;
     }
