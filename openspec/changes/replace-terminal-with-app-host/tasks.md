@@ -344,6 +344,22 @@ below). Its code does not enter pinwin; only the findings do.
     "i had to reboot." The cause is not found. The last commands before the report were
     `set-layer top top`, `set-layer top overlay` and the animation commands on the left panel.
     The cause was not found.
+  - REPRODUCED 2026-10-18 (PR #39 branch, umbriel 0.1.0, two outputs: `DP-1` AOC 3440x1440
+    primary at scale 1.1, `DP-2` Dell secondary). Trigger: `set-layer <top-panel> top` alone,
+    with two pushing panels on the primary.
+    Repro: `pinwin run --name top --edge top --output DP-1 -- galculator` and
+    `pinwin run --name left --edge left --output DP-1 -- paw`, then `pinwin set-layer top top`.
+    The primary monitor flickers badly within seconds; the flickering content is the tiled
+    (non-overlay) windows, while the overlay `pinwin` surface and the noctalia bar (`top`
+    layer, DP-1 and DP-2) stay stable. `pinwin quit` stops it at once. While it flickers,
+    `umbriel layers` reports the moved panel's surfaces in the `top` layer unmapped
+    (`top pinwin DP-1 no`, `top pinwin-reserve DP-1 no`) and the untouched overlay panel
+    mapped. Turning an output off makes the other flicker. What did not flicker: two panels
+    alone, and two panels plus the left panel's `set-size`/`resize` animations and
+    `set-edge left right` / `set-edge left left`. `set-layer top overlay` was not tested
+    separately (the flicker was already present after `set-layer top top`).
+    Suspect: the `top` layer already holds the noctalia bar, so a second exclusive zone at the
+    same edge (the reserve strip) may drive the compositor's layout. Not yet confirmed.
 
 ## Workflow follow-up
 
