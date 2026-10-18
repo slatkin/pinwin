@@ -255,11 +255,13 @@ and several modules wait for the rows that wire them in (D15).
   before any panel exists. `src/main.rs` calls it in the daemon start path,
   before the socket bind.
 - `src/proxy/tween.rs` — the animated width transition (row 10.1, D8): the
-  pure grow/shrink state machine (`Phase`, `Step`, `Frame`) that holds a grow
-  at its current width until the app commits a buffer whose reported size
-  reaches the target (bounded at 500 ms, then a snap), crops a shrink's wide
-  buffer down each frame, and yields each frame's visible length, layer size,
-  margins, held-gap zone and viewport fraction. It also owns the
+  pure grow/shrink state machine (`Phase`, `Step`, `Frame`) that crops a
+  shrink's wide buffer down each frame and yields each frame's visible
+  length, layer size, margins, held-gap zone and viewport fraction, plus
+  the `GrowHandshake` that owns a grow's wait as a first-class result: it
+  sends one configure and settles `Answered` when the app commits a buffer
+  whose reported size reaches the target, or `Unanswered` at 500 ms, which
+  snaps the panel to the target. It also owns the
   one-size-per-tween rule: the proxy acks the compositor's intermediate
   configures itself, the app gets one minted configure, and its ack of that
   minted serial is swallowed. Row 10.2 adds the duration rule (the request's
@@ -268,7 +270,8 @@ and several modules wait for the rows that wire them in (D15).
   starts with the change. Display-free, so its tests run without a
   compositor (`src/proxy/tween/tests.rs`).
 - `src/proxy/tween/drive.rs` — the tween's driver (row 10.1, D8): the
-  per-panel tween slot, the frame clock the panel loop waits on, the grow's
+  per-panel tween slot that holds the pending grow handshake or the running
+  tween, the frame clock the panel loop waits on, the grow's
   configure to the target with a minted serial, and the per-frame apply of
   the layer size, margins, reserve zone and viewport through the commit
   coordinator (D7). Row 10.2 adds retargeting, the duration clamp,
