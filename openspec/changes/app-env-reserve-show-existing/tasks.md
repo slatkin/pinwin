@@ -54,7 +54,7 @@ wrong.
 
 ## 3. Show an existing panel
 
-- [ ] 3.1 Add `--show-existing` to `pinwin run` and `show_existing` to the `create` request,
+- [x] 3.1 Add `--show-existing` to `pinwin run` and `show_existing` to the `create` request,
   the `existing` reply, and the create-or-show order of D6 in `src/daemon/connection.rs`;
   `run_app` exits 0 on `existing` without exec. Document the flag in the README section on
   `pinwin run`, and update the `src/main.rs`, `src/ipc.rs` and `src/daemon/connection.rs`
