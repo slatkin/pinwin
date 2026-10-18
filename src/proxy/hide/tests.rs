@@ -327,6 +327,31 @@ fn a_replaced_kept_buffer_is_released_once() {
     );
 }
 
+/// A panel window the app destroys while its attach is compositor-held
+/// (D6): the compositor still owes the app that release, so the reset keeps
+/// the owner and the next release reaches the app once.
+#[test]
+fn a_compositor_held_attach_keeps_its_release_across_a_window_destroy() {
+    let state = state();
+    let hidden = hidden(false);
+    let buffer = buffer(&state);
+    assert_eq!(hidden.on_app_attach(Some(&buffer)), Attach::Forward);
+    let _ = hidden.commit_plan();
+
+    hidden.reset();
+
+    assert_eq!(
+        hidden.on_release(buffer.unique_id()),
+        Release::Forward,
+        "the compositor's release is still the app's"
+    );
+    assert_eq!(
+        hidden.on_release(buffer.unique_id()),
+        Release::Swallow,
+        "the owed release goes out once"
+    );
+}
+
 /// A buffer whose app-side release already went out still has its
 /// proxy-made attach's release swallowed (D6 amendment 3): the app owns the
 /// buffer again, so no release is owed to it.

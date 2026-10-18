@@ -240,11 +240,16 @@ impl PanelBuffers {
         self.kept.borrow().as_ref().map(|(id, _)| *id)
     }
 
-    /// Forgets every owner and the kept buffer for a new panel window (D6).
-    /// The sizes stay: they belong to the app's buffers.
+    /// Forgets the kept buffer and the attach the proxy held for a new panel
+    /// window (D6). A compositor-held attach keeps its entry: the compositor
+    /// still owes the app that release even though the surface it came from
+    /// is gone, so a later release forwards it once. The sizes stay: they
+    /// belong to the app's buffers.
     pub(super) fn reset_ownership(&self) {
         self.kept.borrow_mut().take();
-        self.owners.borrow_mut().clear();
+        self.owners
+            .borrow_mut()
+            .retain(|_, owner| *owner == Owner::Compositor);
     }
 
     /// The owner of a buffer's outstanding app attach (D6); [`Owner::App`]
