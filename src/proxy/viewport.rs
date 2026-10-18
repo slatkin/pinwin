@@ -603,7 +603,11 @@ impl WpViewportHandler for ClientWpViewport {
             }
             Kept::Adopted => {
                 // The panel surface's mapping is the proxy's own again: the
-                // composition drops the app's values (D8).
+                // composition drops the app's values (D8). Destroying the
+                // viewport removes the surface's crop state on its next
+                // commit, so the recompose below is pending state the proxy
+                // must not flush with a commit of its own (D7).
+                super::commit::mark_app_viewport_dirty(&routing, surface_id);
                 routing.set_panel_has_app_viewport(false);
                 recompose(&routing);
                 viewport.delete_id();

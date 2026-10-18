@@ -3,16 +3,17 @@
 //! needs is either injected on a clean surface or queued for the app's next
 //! commit.
 //!
-//! The app's surface counts as dirty from any request on it after the app's
-//! last commit (D7). [`PanelSurfaceCommits`] records every `wl_surface`
-//! request — the double-buffered state of `attach`, `set_buffer_scale`,
-//! `set_buffer_transform`, `set_opaque_region` and `set_input_region`, the
-//! pending damage of `damage` and `damage_buffer`, the commit-paired `frame`
-//! and `offset`, and the app's own `wp_viewport` source and destination on
-//! the panel surface. A request that is not double-buffered still counts:
-//! the app is mid-update, and the proxy waits for its commit instead of
-//! splitting that update over two frames. `destroy` is the one exception,
-//! because a destroyed surface never commits. While the
+//! The app's surface counts as dirty from any request on it that sets pending
+//! state after the app's last commit (D7). [`PanelSurfaceCommits`] records
+//! those requests — the double-buffered state of `attach`, `set_buffer_scale`,
+//! `set_buffer_transform`, `set_opaque_region`, `set_input_region` and
+//! `offset`, the pending damage of `damage` and `damage_buffer`, and the
+//! app's own `wp_viewport` source and destination on the panel surface.
+//! `frame` is the one request that does not count: it carries no surface
+//! state and the compositor fires its callback on repaint, so an idle pacer
+//! that re-requests the callback without committing would hold the queue
+//! forever. `destroy` needs no mark either, because a destroyed surface never
+//! commits. While the
 //! surface is dirty, a proxy change (the tween's frame step, the focus
 //! ring's position, hide and show, a keyboard mode change) waits in a FIFO
 //! queue, and
@@ -290,7 +291,9 @@ impl WlSurfaceHandler for PanelSurfaceCommits {
     }
 
     fn handle_frame(&mut self, _slf: &Rc<WlSurface>, callback: &Rc<WlCallback>) {
-        self.coordinator.mark_dirty();
+        // D7: a frame callback carries no surface state and the compositor
+        // fires it on repaint even when the app never commits, so it must not
+        // leave the surface dirty.
         if let Some(surface) = self.surface() {
             ForwardToServer.handle_frame(&surface, callback);
         }
@@ -522,23 +525,19 @@ mod tests {
         assert_eq!(*log.borrow(), ["after", "commit"]);
     }
 
-    /// Every request the app sends on the panel surface leaves it dirty until
-    /// the app's commit (D7): the double-buffered state, the pending damage,
-    /// the commit-paired frame and offset, and the region and transform
+    /// Every request the app sends on the panel surface that sets pending
+    /// state leaves it dirty until the app's commit (D7): the double-buffered
+    /// state, the pending damage, the offset, and the region and transform
     /// setters.
     #[test]
     fn every_app_request_marks_the_surface_dirty() {
         type Request = fn(&mut PanelSurfaceCommits, &Rc<State>, &Rc<WlSurface>);
-        let requests: [(&str, Request); 9] = [
+        let requests: [(&str, Request); 8] = [
             ("attach", |handler, _state, surface| {
                 handler.handle_attach(surface, None, 0, 0);
             }),
             ("damage", |handler, _state, surface| {
                 handler.handle_damage(surface, 0, 0, 1, 1);
-            }),
-            ("frame", |handler, state, surface| {
-                let callback = state.create_object::<WlCallback>(1);
-                handler.handle_frame(surface, &callback);
             }),
             ("set_opaque_region", |handler, state, surface| {
                 let region = state.create_object::<WlRegion>(1);
@@ -569,6 +568,21 @@ mod tests {
                 "wl_surface.{name} leaves pending state"
             );
         }
+    }
+
+    /// `wl_surface.frame` sets no surface state, so it must not leave the
+    /// surface dirty (D7): the compositor fires the callback on repaint even
+    /// when the app never commits, and an app stopped after a frame request
+    /// would otherwise hold every queued proxy change forever.
+    #[test]
+    fn an_app_frame_request_leaves_the_surface_clean() {
+        let (state, surface, mut handler) = commits();
+        let callback = state.create_object::<WlCallback>(1);
+        handler.handle_frame(&surface, &callback);
+        assert!(
+            !handler.coordinator.is_dirty(),
+            "wl_surface.frame sets no pending state"
+        );
     }
 
     /// The app's commit is the only thing that clears the surface's dirty flag
@@ -641,6 +655,44 @@ mod tests {
                 "wp_viewport.{name} leaves pending state"
             );
         }
+    }
+
+    /// Destroying the app's viewport on the panel surface changes the
+    /// surface's pending state too: the protocol removes the surface's crop
+    /// and scale on its next commit, and the recompose after the destroy
+    /// writes the proxy's own crop (D7, D8). A proxy commit sent before that
+    /// would draw the whole buffer for a frame.
+    #[test]
+    fn an_app_viewport_destroy_on_the_panel_marks_the_surface_dirty() {
+        let (state, surface, handler) = commits();
+        let routing = Rc::clone(&handler.routing);
+        let xdg_surface = state.create_object::<XdgSurface>(1);
+        let toplevel = state.create_object::<XdgToplevel>(1);
+        let layer_surface = state.create_object::<ZwlrLayerSurfaceV1>(4);
+        routing.set_panel_window(&surface, &xdg_surface, &toplevel, &layer_surface);
+        surface.set_handler(handler);
+
+        let viewporter = state.create_object::<WpViewporter>(1);
+        let viewport = state.create_object::<WpViewport>(1);
+        let mut app_viewporter = ClientWpViewporter::new(&viewporter, &routing);
+        WpViewporterHandler::handle_get_viewport(
+            &mut app_viewporter,
+            &viewporter,
+            &viewport,
+            &surface,
+        );
+        let commits = surface
+            .try_get_handler_ref::<PanelSurfaceCommits>()
+            .expect("the surface carries the commit handler");
+        assert!(!commits.coordinator.is_dirty(), "a fresh surface is clean");
+        let mut app_viewport = viewport
+            .try_get_handler_mut::<ClientWpViewport>()
+            .expect("the app viewport carries its local handler");
+        app_viewport.handle_destroy(&viewport);
+        assert!(
+            commits.coordinator.is_dirty(),
+            "wp_viewport.destroy leaves pending state"
+        );
     }
 
     /// A buffer the panel surface attached still frees its size entry when
