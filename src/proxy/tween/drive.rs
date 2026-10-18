@@ -31,19 +31,19 @@ use super::super::dock;
 use super::super::routing::Routing;
 use super::super::viewport;
 use super::{
-    Fraction, Frame, GROW_TIMEOUT_US, PROXY_SERIAL_BASE, Step, Tween, animates, waits_for_app,
+    Fraction, Frame, GROW_TIMEOUT_US, MintedSerials, Step, Tween, animates, waits_for_app,
 };
 use crate::geometry::{Geometry, HeldGap};
 
 /// How long the panel loop sleeps between two tween frames.
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
-/// One panel's tween state (D8): the tween the driver runs, if any, the next
-/// serial the proxy mints for a configure it sends the app itself, and the
-/// generation a queued frame is told apart by.
+/// One panel's tween state (D8): the tween the driver runs, if any, the
+/// serials the proxy minted for its own configures, and the generation a
+/// queued frame is told apart by.
 pub(in crate::proxy) struct Slot {
     driver: RefCell<Option<Driver>>,
-    next_serial: Cell<u32>,
+    serials: MintedSerials,
     /// The tween that owns the frames (D8). A frame waits in the commit
     /// coordinator while the app's surface is dirty, and the state it carries
     /// is stale once a newer owner has sent layer state: a hide or the panel
@@ -62,7 +62,7 @@ impl Slot {
     pub(in crate::proxy) fn new() -> Self {
         Self {
             driver: RefCell::new(None),
-            next_serial: Cell::new(PROXY_SERIAL_BASE),
+            serials: MintedSerials::new(),
             generation: Cell::new(0),
         }
     }
@@ -72,16 +72,26 @@ impl Slot {
     /// queued in the commit coordinator must not re-send the layer state it
     /// captured over the state the abandoning event sent. A retarget replaces
     /// the driver instead ([`Slot::set_driver`]), which bumps the generation
-    /// the same way.
+    /// the same way. The minted serials stay: the app may still ack the
+    /// configure the abandoned tween sent, even after a hide or a re-dock.
     pub(in crate::proxy) fn clear(&self) {
         self.bump();
         self.driver.borrow_mut().take();
     }
 
+    /// Forgets a panel window that ended (D8): the tween goes and so do the
+    /// minted serials, because the app's `xdg_surface` is gone and no ack can
+    /// still name one.
+    pub(in crate::proxy) fn reset(&self) {
+        self.clear();
+        self.serials.reset();
+    }
+
     /// Forgets a tween that reached its target (D8): the state it ended on is
     /// the steady state, so its last frame — which may still wait in the
     /// commit coordinator — stays valid and must still be applied. A frame of
-    /// a later owner is told apart by that owner's own bump.
+    /// a later owner is told apart by that owner's own bump. The final
+    /// configure's serial stays live: the app acks it after the tween ends.
     fn finish(&self) {
         self.driver.borrow_mut().take();
     }
@@ -102,13 +112,17 @@ impl Slot {
         self.generation.set(self.generation.get().wrapping_add(1));
     }
 
-    /// The next serial of the proxy's own configures (D8), always at or above
-    /// the proxy's base so the app's ack is recognised and swallowed.
-    fn mint(&self) -> u32 {
-        let serial = self.next_serial.get();
-        self.next_serial
-            .set(serial.wrapping_add(1).max(PROXY_SERIAL_BASE));
-        serial
+    /// The next serial of the proxy's own configures (D8), remembered so the
+    /// app's ack is recognised by its membership and swallowed.
+    pub(super) fn mint(&self) -> u32 {
+        self.serials.mint()
+    }
+
+    /// Whether an app ack answers a configure the proxy minted itself (D8):
+    /// the layer surface never saw that serial, so the ack must not be
+    /// forwarded. A serial the proxy did not mint passes through.
+    pub(in crate::proxy) fn swallow_ack(&self, serial: u32) -> bool {
+        self.serials.swallow(serial)
     }
 
     /// Whether a tween runs (D8).
@@ -492,6 +506,29 @@ mod tests {
             slot.is_current(queued),
             "the final frame of a finished tween still applies"
         );
+    }
+
+    /// A tween that ends naturally keeps its final minted serial: the app
+    /// acks the configure it sent after the tween drops (D8).
+    #[test]
+    fn a_natural_finish_keeps_its_minted_serial() {
+        let slot = Slot::new();
+        let minted = slot.mint();
+        slot.finish();
+        assert!(
+            slot.swallow_ack(minted),
+            "the app acks the final configure after the tween ends"
+        );
+    }
+
+    /// A panel window that ends forgets its minted serials: the app's
+    /// `xdg_surface` is gone, so no ack can still name one (D8).
+    #[test]
+    fn a_reset_forgets_the_minted_serials() {
+        let slot = Slot::new();
+        let minted = slot.mint();
+        slot.reset();
+        assert!(!slot.swallow_ack(minted), "the old xdg_surface is gone");
     }
 
     /// A frame queued by a tween is stale once a new tween takes the slot or a

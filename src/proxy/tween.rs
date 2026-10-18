@@ -25,8 +25,8 @@
 //! intermediate layer-surface configures are acked by the proxy itself and
 //! never forwarded ([`route_configure`]), so the app gets exactly one new
 //! window size for the whole tween. That configure carries a serial the proxy
-//! minted from its own range ([`PROXY_SERIAL_BASE`]), and the app's ack of it
-//! is swallowed ([`swallow_ack`]) because the layer surface never saw it.
+//! minted itself ([`MintedSerials`]), and the app's ack of it is swallowed
+//! ([`Slot::swallow_ack`]) because the layer surface never saw it.
 //!
 //! The machine does not read a clock: [`Tween::step`] takes the microseconds
 //! since the tween began, so a test drives it without a display
@@ -37,6 +37,9 @@
 //! starts with the change, so a stalled frame clock still lands on the exact
 //! target.
 
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
+
 use super::anim::{Advance, Tween as Anim};
 use crate::geometry::{Edge, Geometry, HeldGap, Margins};
 
@@ -46,10 +49,17 @@ mod drive;
 
 pub(super) use drive::{Slot, advance, is_running, on_app_commit, start, stop};
 
-/// The first serial of the configures the proxy mints itself (D8). A
-/// compositor's layer-surface configure serials are small, so an ack at or
-/// above this base answers the proxy, not the compositor.
-pub(super) const PROXY_SERIAL_BASE: u32 = 1 << 31;
+/// The first serial the proxy mints for a configure it sends the app itself
+/// (D8). Serial values are opaque, so this starting point only makes a
+/// collision with a compositor's serial unlikely; the ack route reads
+/// [`MintedSerials`] membership, never the value.
+const FIRST_MINTED_SERIAL: u32 = 1 << 31;
+
+/// How many minted serials the proxy remembers at once (D8). The app may ack
+/// a configure long after the tween that sent it ended, so an unacked serial
+/// cannot be forgotten at the tween's end; the bound keeps a client that
+/// never acks from growing the set without limit.
+const MINTED_LIMIT: usize = 64;
 
 /// How long a grow waits for the app's wide buffer before it snaps (D8): the
 /// spec's "Grow waits for the app" bound.
@@ -91,10 +101,65 @@ pub(super) fn waits_for_app(edge: Edge, surface: (u32, u32), target: u32) -> boo
     across(edge, surface) < target
 }
 
-/// Whether an app ack answers a configure the proxy minted itself (D8): the
-/// layer surface never saw that serial, so the ack must not be forwarded.
-pub(super) fn swallow_ack(serial: u32) -> bool {
-    serial >= PROXY_SERIAL_BASE
+/// The serials the proxy minted for its own configures and the app has not
+/// acked (D8). The layer surface never saw these, so an ack that names one is
+/// swallowed. Membership, not a value range, decides the route: a
+/// compositor's serials are opaque and may be larger than any minted one.
+#[derive(Debug)]
+pub(super) struct MintedSerials {
+    next: Cell<u32>,
+    live: RefCell<VecDeque<u32>>,
+}
+
+impl MintedSerials {
+    /// No serial minted yet.
+    pub(super) fn new() -> Self {
+        Self {
+            next: Cell::new(FIRST_MINTED_SERIAL),
+            live: RefCell::new(VecDeque::new()),
+        }
+    }
+
+    /// The next serial for a configure the proxy sends the app itself. The
+    /// value is never reused while it is still live, so a wrapped counter
+    /// cannot mint a serial twice.
+    pub(super) fn mint(&self) -> u32 {
+        let mut live = self.live.borrow_mut();
+        loop {
+            let serial = self.next.get();
+            self.next.set(if serial == u32::MAX {
+                FIRST_MINTED_SERIAL
+            } else {
+                serial + 1
+            });
+            if live.contains(&serial) {
+                continue;
+            }
+            live.push_back(serial);
+            while live.len() > MINTED_LIMIT {
+                live.pop_front();
+            }
+            return serial;
+        }
+    }
+
+    /// Whether `serial` names a configure the proxy minted (D8): true when it
+    /// does, and the serial is forgotten with every earlier minted serial,
+    /// because an ack consumes them all.
+    pub(super) fn swallow(&self, serial: u32) -> bool {
+        let mut live = self.live.borrow_mut();
+        let Some(index) = live.iter().position(|minted| *minted == serial) else {
+            return false;
+        };
+        live.drain(..=index);
+        true
+    }
+
+    /// Forgets every minted serial (D8): the app's `xdg_surface` is gone, so
+    /// no ack can still name one.
+    pub(super) fn reset(&self) {
+        self.live.borrow_mut().clear();
+    }
 }
 
 /// What the proxy does with one compositor layer-surface configure (D8).

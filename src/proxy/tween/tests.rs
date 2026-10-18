@@ -319,13 +319,69 @@ fn a_cleared_tween_drops_the_frames_it_queued() {
 }
 
 /// A serial the proxy minted is swallowed, and a compositor's is not
-/// (D8 finding 3).
+/// (D8 finding 3): membership, not a value range, decides the route.
 #[test]
 fn the_app_ack_of_a_minted_configure_is_not_forwarded() {
-    assert!(swallow_ack(PROXY_SERIAL_BASE));
-    assert!(swallow_ack(PROXY_SERIAL_BASE + 7));
-    assert!(!swallow_ack(0));
-    assert!(!swallow_ack(1024));
+    let slot = Slot::new();
+    let minted = slot.mint();
+    assert!(
+        !slot.swallow_ack(minted.wrapping_add(1)),
+        "a serial the proxy did not mint passes through"
+    );
+    assert!(slot.swallow_ack(minted), "the minted serial is swallowed");
+    assert!(
+        !slot.swallow_ack(minted),
+        "an ack consumes the serial it names"
+    );
+}
+
+/// An ack consumes the serials of every earlier minted configure too
+/// (D8): the later ack supersedes them, so the set can forget them.
+#[test]
+fn an_ack_consumes_the_earlier_minted_serials() {
+    let slot = Slot::new();
+    let first = slot.mint();
+    let second = slot.mint();
+    assert!(slot.swallow_ack(second));
+    assert!(
+        !slot.swallow_ack(first),
+        "the earlier minted serial is already consumed"
+    );
+}
+
+/// A client that never acks cannot grow the minted set without limit
+/// (D8): the oldest serials are forgotten first, and the newest still
+/// route to the proxy.
+#[test]
+fn minted_serials_are_bounded() {
+    let slot = Slot::new();
+    let oldest = slot.mint();
+    for _ in 1..MINTED_LIMIT {
+        let _ = slot.mint();
+    }
+    let newest = slot.mint();
+    assert!(
+        !slot.swallow_ack(oldest),
+        "the oldest minted serial is forgotten once the bound is passed"
+    );
+    assert!(
+        slot.swallow_ack(newest),
+        "the newest minted serial still reaches the proxy"
+    );
+}
+
+/// Abandoning a tween keeps its minted serials: the app may ack the
+/// configure after a hide, a snap or a re-dock (D8), and that ack must
+/// still be swallowed rather than forwarded to the layer surface.
+#[test]
+fn a_cancelled_tween_still_swallows_its_minted_serial() {
+    let slot = Slot::new();
+    let minted = slot.mint();
+    slot.clear();
+    assert!(
+        slot.swallow_ack(minted),
+        "the app may ack a configure its tween abandoned"
+    );
 }
 
 /// The tween's held gap at the end is the state a plain apply would

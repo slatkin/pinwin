@@ -551,7 +551,7 @@ impl Routing {
         self.panel_surface_id.set(None);
         self.has_proxy_viewport.set(false);
         self.panel_has_app_viewport.set(false);
-        self.globals.tween().clear();
+        self.globals.tween().reset();
         self.proxy_viewport.borrow_mut().take();
         *self.held_gap.borrow_mut() = None;
         self.last_resolved_across.set(None);
@@ -799,8 +799,8 @@ impl XdgSurfaceHandler for ClientXdgSurface {
     }
 
     fn handle_ack_configure(&mut self, _slf: &Rc<XdgSurface>, serial: u32) {
-        // D8: the layer surface never saw a tween's minted serial.
-        if super::tween::swallow_ack(serial) {
+        // D8: a minted configure's ack is swallowed; any other ack is forwarded.
+        if self.routing.globals().tween().swallow_ack(serial) {
             return;
         }
         if let Some(layer) = self.panel_layer_surface() {
