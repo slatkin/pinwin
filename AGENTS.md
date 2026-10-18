@@ -14,9 +14,10 @@ authorize changes here.
 ## Project Structure & Module Organization
 
 pinwin is one Rust crate that builds the `pinwin` binary; the build is
-Cargo only. `openspec/changes/replace-terminal-with-app-host/` removes the
-terminal, the renderer and the library API, so the crate is binary-only now
-and several modules wait for the rows that wire them in (D15).
+Cargo only. The `replace-terminal-with-app-host` change, archived under
+`openspec/changes/archive/2026-10-18-replace-terminal-with-app-host/`,
+removed the terminal, the renderer and the library API, so the crate is
+binary-only now and every row of its tasks is landed.
 
 - `src/main.rs` — the `pinwin` binary (row 5.6, D2, D12, D15): the
   subcommand dispatch. `pinwin daemon` binds the display's socket, reads the
@@ -393,13 +394,18 @@ and several modules wait for the rows that wire them in (D15).
 - `src/guard.rs` — the shared panic guard. `src/main.rs` compiles it now
   that the panel thread guards its loop under it.
 
-`openspec/specs/pinwin-panel/spec.md` is the behaviour spec.
+`openspec/specs/pinwin-panel/spec.md`, `openspec/specs/panel-control/spec.md`
+and `openspec/specs/panel-tray/spec.md` are the behaviour specs.
 `openspec/changes/archive/` holds the archived design decisions code comments
 reference as D-numbers; the port's own decisions are
-`openspec/changes/port-to-rust/design.md` (D1–D11) and new code cites them as
-`port-to-rust D<n>`. The Wayland rewrite's decisions are in
-`openspec/changes/replace-gtk-with-wayland/design.md` (D1–D11), cited as
-`replace-gtk-with-wayland D<n>`. `pinwin.sh` is the legacy pre-library bash
+`openspec/changes/archive/2026-10-04-port-to-rust/design.md` (D1–D11) and
+code cites them as `port-to-rust D<n>`. The Wayland rewrite's decisions are
+in `openspec/changes/archive/2026-10-07-replace-gtk-with-wayland/design.md`
+(D1–D11), cited as `replace-gtk-with-wayland D<n>`, and the app host's are
+in
+`openspec/changes/archive/2026-10-18-replace-terminal-with-app-host/design.md`
+(D1–D15), cited as `replace-terminal-with-app-host D<n>`.
+`pinwin.sh` is the legacy pre-library bash
 script, kept for reference only. `README.md` documents installation, use,
 behaviour, architecture and known caveats.
 
@@ -426,7 +432,8 @@ with `bash -n pinwin.sh`.
 
 Rust only, `rustfmt` clean. Keep modules small and split them by
 responsibility: the port maps one Rust module to one design area
-(`openspec/changes/port-to-rust/design.md` D3), and a file should stay at or
+(`openspec/changes/archive/2026-10-04-port-to-rust/design.md` D3), and a
+file should stay at or
 under 800 lines. Public
 types keep their fields private and expose constructors and accessors, so the
 invariant lives in the field type rather than a runtime check (`port-to-rust`
@@ -438,8 +445,8 @@ and `extern "C"` callbacks — through the shared
 path and command arguments where expansion should remain one argument. Keep
 comments focused on niri, Wayland or timing behaviour that is not obvious
 from the code, and keep D-number references pointing at the design they came
-from (an archived change, or the design of the change that added the code:
-`port-to-rust` or `replace-gtk-with-wayland`).
+from (an archived change: `port-to-rust`, `replace-gtk-with-wayland` or
+`replace-terminal-with-app-host`).
 
 ## Testing Guidelines
 

@@ -274,21 +274,28 @@ client subcommands, and runs the daemon in the foreground. `src/cli.rs` is the
 hand-written command-line parser; `src/name.rs` holds the panel name rules;
 `src/config.rs` reads the config file. `src/ipc.rs`, with `src/ipc/options.rs`
 and `src/ipc/client.rs`, is the wire format, the run options and the client.
-`src/daemon.rs` owns the daemon socket, and `src/daemon/` holds the registry,
-the panel handles, the event bus, the connections, the `create` request, the
-lifetime and the daemon spawn. `src/proxy.rs` is the panel thread and
-`src/proxy/` holds the window routing, the dock, the reserve surface, popups,
-decorations, keyboard, the focus ring and the width tween. `src/tray.rs` is
-the tray icon, and `src/run.rs` is the exec that becomes the app.
+`src/fd.rs` is the raw descriptor helpers the daemon, the proxy and the client
+share. `src/daemon.rs` owns the daemon socket, and `src/daemon/` holds the
+registry, the panel handles, the event bus, the connections, the `create`
+request, the lifetime, the daemon spawn and the readiness pipe. `src/proxy.rs`
+is the panel thread and `src/proxy/` holds the window routing, the dock, the
+reserve surface, popups, decorations, the keyboard modes, hide and show, the
+focus ring, the width tween, the viewport and buffer composition, the commit
+coordinator, the output tracking and the panel lifetime. `src/tray.rs` is the
+tray icon, and `src/run.rs` is the exec that becomes the app.
 `src/geometry.rs` is the display-free geometry core, `src/anim.rs` eases the
 width and `src/guard.rs` is the panic guard.
 
-The behaviour spec lives in `openspec/specs/pinwin-panel/spec.md`; the
+The behaviour specs live in `openspec/specs/pinwin-panel/spec.md`,
+`openspec/specs/panel-control/spec.md` and
+`openspec/specs/panel-tray/spec.md`; the
 archived design decisions code comments cite as D-numbers are under
 `openspec/changes/archive/`, the port's own are in
-`openspec/changes/port-to-rust/design.md`, the Wayland rewrite's are in
-`openspec/changes/replace-gtk-with-wayland/design.md`, and this app host's
-are in `openspec/changes/replace-terminal-with-app-host/design.md`.
+`openspec/changes/archive/2026-10-04-port-to-rust/design.md`, the Wayland
+rewrite's are in
+`openspec/changes/archive/2026-10-07-replace-gtk-with-wayland/design.md`, and
+this app host's are in
+`openspec/changes/archive/2026-10-18-replace-terminal-with-app-host/design.md`.
 
 ## Known limits
 
