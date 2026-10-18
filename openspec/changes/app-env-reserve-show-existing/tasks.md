@@ -80,7 +80,7 @@ wrong.
 
 ## 5. Gutters
 
-- [ ] 5.1 Add `--gutter-top N`, `--gutter-bottom N`, `--gutter-left N` and
+- [x] 5.1 Add `--gutter-top N`, `--gutter-bottom N`, `--gutter-left N` and
   `--gutter-right N` to `pinwin run` (design D7): parse each as an `i32` in `src/cli.rs`,
   add the four fields to `WireOptions` in `src/ipc/options.rs` and copy them in
   `wire_options` and `parse`, so the `create` request carries them and the existing
@@ -92,7 +92,7 @@ wrong.
   gutter fields and with none (absent, as 0.4.0), and refuses a fractional gutter with
   `invalid_value`; `src/config/tests.rs` checks that the option wins over the config file
   for a gutter (spec "Run options", "Panel settings and precedence", "Option wins").
-- [ ] 5.2 Add the `set-gutters` command (design D7): `Request::SetGutters` and
+- [x] 5.2 Add the `set-gutters` command (design D7): `Request::SetGutters` and
   `RawRequest::SetGutters` in `src/ipc.rs`, the `set-gutters` subcommand in `src/cli.rs`,
   and the `plan_change` arm with its `is_layout_request` entry in `src/proxy/apply.rs`; add
   the `Gutters` accessors in `src/geometry.rs` and replace the apply module comment that says
