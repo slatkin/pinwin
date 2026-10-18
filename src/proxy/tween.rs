@@ -1,7 +1,7 @@
 //! The animated width transition's state machine (replace-terminal-with-app-host
-//! row 10.1, D8): the grow that waits for the app's wide buffer, the shrink
-//! that crops the buffer the app already has, and the per-frame values the
-//! proxy commits.
+//! row 10.1, D8): the grow's configure handshake and the animation it starts,
+//! the shrink that crops the buffer the app already has, and the per-frame
+//! values the proxy commits.
 //!
 //! D8 keeps the method the terminal panel used and the step of
 //! [`anim`](super::anim):
@@ -10,8 +10,11 @@
 //!   holds the current visible width until the app commits a buffer whose
 //!   reported size reaches the target — checked at the commit, because a
 //!   toolkit reports its new window geometry after its attach (D8 finding 4).
-//!   The wait is bounded at 500 ms, after which the panel snaps. Every frame
-//!   then crops the docked-edge part of the wide buffer.
+//!   That wait is the configure handshake ([`GrowHandshake`]) and its answer
+//!   is a result of its own: an answered handshake starts the animation from
+//!   the commit, and one the app never answers settles on no wide buffer
+//!   after [`GROW_HANDSHAKE_US`], which snaps the change. Every frame then
+//!   crops the docked-edge part of the wide buffer.
 //! - **Shrink**: the app keeps the wide buffer it has and the proxy crops it
 //!   down each frame; at the end the proxy configures the app to the target
 //!   width.
@@ -61,9 +64,10 @@ const FIRST_MINTED_SERIAL: u32 = 1 << 31;
 /// never acks from growing the set without limit.
 const MINTED_LIMIT: usize = 64;
 
-/// How long a grow waits for the app's wide buffer before it snaps (D8): the
-/// spec's "Grow waits for the app" bound.
-pub(super) const GROW_TIMEOUT_US: i64 = 500_000;
+/// How long a grow's configure handshake waits for the app's wide buffer
+/// before it settles on no wide buffer (D8): the spec's "Grow waits for the
+/// app" bound.
+pub(super) const GROW_HANDSHAKE_US: i64 = 500_000;
 
 /// The longest duration a change animates over (D8, spec "Duration clamp"):
 /// a longer request is clamped to it.
@@ -99,6 +103,145 @@ const fn across(edge: Edge, surface: (u32, u32)) -> u32 {
 /// inside the buffer the app already has, crop that buffer instead.
 pub(super) fn waits_for_app(edge: Edge, surface: (u32, u32), target: u32) -> bool {
     across(edge, surface) < target
+}
+
+/// What a grow's configure handshake settled on (D8): the app answered with
+/// a buffer for the configure, or it never answered within
+/// [`GROW_HANDSHAKE_US`]. The result is first-class, so [`Tween`] is only the
+/// animation an answer starts and owns no wait or timeout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GrowResult {
+    /// The app committed a buffer that reports the target: the grow animates
+    /// from that surface.
+    Answered { surface: (u32, u32) },
+    /// The app never answered within the bound: the change snaps.
+    Unanswered,
+}
+
+/// The configure handshake of a grow (D8): the proxy configured the app once
+/// to the target and holds the panel's current length until the app commits
+/// a buffer that reports that size. The handshake owns the bound; the tween
+/// it starts only runs the eased animation.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct GrowHandshake {
+    /// The target geometry the frames resolve against.
+    geometry: Geometry,
+    /// The length the panel shows while the handshake waits.
+    from: u32,
+    /// The app surface's extent the crop reads while the handshake waits.
+    surface: (u32, u32),
+    /// The gap the panel held before the change.
+    resting_gap: HeldGap,
+    /// The duration the answered grow animates over.
+    duration_ms: u32,
+}
+
+impl GrowHandshake {
+    /// The handshake of a grow from `from` to `geometry.across()` (D8), with
+    /// the app surface the crop reads until the answer arrives.
+    pub(super) fn new(
+        geometry: Geometry,
+        from: u32,
+        surface: (u32, u32),
+        resting_gap: HeldGap,
+        duration_ms: u32,
+    ) -> Self {
+        Self {
+            geometry,
+            from,
+            surface: (surface.0.max(1), surface.1.max(1)),
+            resting_gap,
+            duration_ms,
+        }
+    }
+
+    /// The target geometry the answered grow resolves its frames against.
+    pub(super) const fn geometry(self) -> Geometry {
+        self.geometry
+    }
+
+    /// The length the panel shows while the handshake waits (D8).
+    pub(super) const fn visible(self) -> u32 {
+        self.from
+    }
+
+    /// The app surface's extent the crop reads while the handshake waits
+    /// (D8).
+    pub(super) const fn surface(self) -> (u32, u32) {
+        self.surface
+    }
+
+    /// The gap the panel holds while the handshake waits (D8).
+    pub(super) const fn current_gap(self) -> HeldGap {
+        self.resting_gap
+    }
+
+    /// The visible fraction of the app surface the crop shows while the
+    /// handshake waits (D8): the panel's current length over the surface's
+    /// length across the edge.
+    pub(super) fn fraction(self) -> Fraction {
+        Fraction::of(self.from, across(self.geometry.edge(), self.surface))
+            .unwrap_or_else(Fraction::whole)
+    }
+
+    /// The gap the reserve holds once the grow ends (D8): a pushing target's
+    /// own strip at the target length, a covering target's resting gap.
+    pub(super) fn final_gap(self) -> HeldGap {
+        let to = self.geometry.across();
+        let tweens = HeldGap::tweens_with_panel(self.resting_gap.zone(), true, self.geometry, to);
+        self.resting_gap.reserve(tweens, self.geometry, to)
+    }
+
+    /// The handshake's answer to the app's commit (D8 finding 4): `Answered`
+    /// once the length the app reports across the tween axis reaches the
+    /// target, `None` while it does not.
+    pub(super) fn on_commit(self, reported: Option<u32>) -> Option<GrowResult> {
+        let reported = reported?;
+        if reported < self.geometry.across() {
+            return None;
+        }
+        let reported = reported.max(1);
+        let mut surface = self.surface;
+        if self.geometry.edge().across_is_width() {
+            surface.0 = reported;
+        } else {
+            surface.1 = reported;
+        }
+        Some(GrowResult::Answered { surface })
+    }
+
+    /// The handshake's result at `elapsed_us` microseconds after the change
+    /// (D8): `Unanswered` once the bound is spent, `None` before it. The
+    /// bound belongs to the handshake, not to the tween it starts.
+    pub(super) fn on_deadline(elapsed_us: i64) -> Option<GrowResult> {
+        (elapsed_us >= GROW_HANDSHAKE_US).then_some(GrowResult::Unanswered)
+    }
+
+    /// The animation an answered handshake starts from the surface it
+    /// reports (D8). The caller starts its clock at the commit.
+    pub(super) fn start(self, surface: (u32, u32)) -> Option<Tween> {
+        Tween::start(
+            self.geometry,
+            self.from,
+            surface,
+            self.resting_gap,
+            self.duration_ms,
+        )
+    }
+
+    /// The frame an unanswered handshake snaps to (D8): the target layer
+    /// state with no wide buffer to crop, so the whole old surface shows.
+    pub(super) fn snap(self) -> Frame {
+        let visible = self.geometry.across();
+        Frame {
+            visible,
+            layer: self.geometry.size_at(visible),
+            margins: self.geometry.margins(),
+            gap: self.final_gap(),
+            fraction: Fraction::of(visible, across(self.geometry.edge(), self.surface))
+                .unwrap_or_else(Fraction::whole),
+        }
+    }
 }
 
 /// The serials the proxy minted for its own configures (D8). The layer
@@ -205,9 +348,6 @@ pub(super) fn route_configure(tweening: bool) -> ConfigureRoute {
 /// transitions between these phases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Phase {
-    /// A grow: the app was configured to the target and the panel holds its
-    /// current width until the app commits a wide buffer.
-    Waiting,
     /// The eased width moves from the start length to the target.
     Running,
     /// The eased width reached the target; the driver applies this frame and
@@ -218,8 +358,6 @@ pub(super) enum Phase {
 /// What one [`Tween::step`] does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Step {
-    /// The grow still waits for the app's wide buffer: nothing changes.
-    Held,
     /// A frame to apply at the eased width.
     Frame(Frame),
     /// The last frame: the eased width reached the target exactly.
@@ -288,20 +426,16 @@ impl Tween {
     /// The tween of a change from `from` to `geometry.across()` over
     /// `duration_ms`. `surface` is the app's current extent in surface-local
     /// pixels, width first, the source of the visible fraction's denominator.
-    /// `grow` starts in the wait for the app's wide buffer; a shrink starts
-    /// moving at once.
     /// `None` for a change with no distance, no duration or a size the
     /// easing's integer step cannot carry.
     ///
-    /// `wait` starts the tween in the wait for the app's wide buffer, so the
-    /// caller has configured the app to the target; a change inside the
-    /// buffer the app already has starts moving at once.
+    /// A grow starts here only after its configure handshake answered
+    /// ([`GrowHandshake::start`]); a shrink starts moving at once.
     pub(super) fn start(
         geometry: Geometry,
         from: u32,
         surface: (u32, u32),
         resting_gap: HeldGap,
-        wait: bool,
         duration_ms: u32,
     ) -> Option<Self> {
         let to = geometry.across();
@@ -315,17 +449,14 @@ impl Tween {
         );
         // D8: the eased clock starts with the change, not with its first
         // frame, so a frame clock that stalls for the duration still lands on
-        // the target (spec "Stalled frame clock"). A waiting grow starts its
-        // clock when the app's buffer arrives.
-        if !wait {
-            anim.advance(0);
-        }
+        // the target (spec "Stalled frame clock").
+        anim.advance(0);
         Some(Self {
             geometry,
             from,
             to,
             surface: (surface.0.max(1), surface.1.max(1)),
-            phase: if wait { Phase::Waiting } else { Phase::Running },
+            phase: Phase::Running,
             anim,
             resting_gap,
             gap_tweening: HeldGap::tweens_with_panel(resting_gap.zone(), true, geometry, to),
@@ -351,8 +482,8 @@ impl Tween {
         self.phase
     }
 
-    /// Whether the tween still owns the frames: it runs while it waits for
-    /// the app's wide buffer, moves and has not yet applied its last frame.
+    /// Whether the tween still owns the frames: it moves and has not yet
+    /// applied its last frame.
     pub(super) const fn is_tweening(self) -> bool {
         !matches!(self.phase, Phase::Finished)
     }
@@ -404,20 +535,11 @@ impl Tween {
 
     /// One step at `elapsed_us` microseconds after the tween began (D8).
     ///
-    /// A waiting grow holds for at most [`GROW_TIMEOUT_US`] and then snaps to
-    /// the target. A running tween eases with [`crate::anim`] and finishes
-    /// exactly on the target, so the last frame's length is the target and
-    /// nothing re-rounds it.
+    /// The tween eases with [`crate::anim`] and finishes exactly on the
+    /// target, so the last frame's length is the target and nothing re-rounds
+    /// it.
     pub(super) fn step(&mut self, elapsed_us: i64) -> Step {
         match self.phase {
-            Phase::Waiting => {
-                if elapsed_us >= GROW_TIMEOUT_US {
-                    self.visible = self.to;
-                    self.phase = Phase::Finished;
-                    return Step::Finished(self.frame());
-                }
-                Step::Held
-            }
             Phase::Running => match self.anim.advance(elapsed_us) {
                 Advance::Frame(px) => {
                     self.visible = px
@@ -434,33 +556,6 @@ impl Tween {
             },
             Phase::Finished => Step::Finished(self.frame()),
         }
-    }
-
-    /// The app committed a surface: a waiting grow starts moving once the
-    /// length the app reports across the tween axis reaches the target (D8
-    /// finding 4). The eased clock starts at `elapsed_us` microseconds after
-    /// the change, so a stalled frame clock still spends the duration from
-    /// the commit. `false` for a shrink or a grow that already waits no
-    /// more.
-    pub(super) fn app_commit(&mut self, reported: Option<u32>, elapsed_us: i64) -> bool {
-        if self.phase != Phase::Waiting {
-            return false;
-        }
-        let Some(reported) = reported else {
-            return false;
-        };
-        if reported < self.to {
-            return false;
-        }
-        let reported = reported.max(1);
-        if self.geometry.edge().across_is_width() {
-            self.surface.0 = reported;
-        } else {
-            self.surface.1 = reported;
-        }
-        self.phase = Phase::Running;
-        self.anim.advance(elapsed_us);
-        true
     }
 
     /// This frame's values (D8).

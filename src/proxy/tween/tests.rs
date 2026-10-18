@@ -27,18 +27,22 @@ fn surface(edge: Edge, across: u32) -> (u32, u32) {
     }
 }
 
-/// A 200 ms grow from `from` to `to` on `edge`, with the app surface at
-/// its old length.
-fn growing(edge: Edge, from: u32, to: u32) -> Tween {
-    Tween::start(
+/// The configure handshake of a 200 ms grow from `from` to `to` on `edge`,
+/// with the app surface at its old length.
+fn growing(edge: Edge, from: u32, to: u32) -> GrowHandshake {
+    GrowHandshake::new(
         push(edge, to),
         from,
         surface(edge, from),
         HeldGap::start(push(edge, from)),
-        true,
         200,
     )
-    .expect("a 200 ms grow")
+}
+
+/// The tween an answered handshake starts, from the surface the app
+/// reported.
+fn answered(handshake: GrowHandshake, surface: (u32, u32)) -> Tween {
+    handshake.start(surface).expect("an answered grow")
 }
 
 /// A 200 ms shrink from `from` to `to` on `edge`, with the app surface
@@ -49,17 +53,15 @@ fn shrinking(edge: Edge, from: u32, to: u32) -> Tween {
         from,
         surface(edge, from),
         HeldGap::start(push(edge, from)),
-        false,
         200,
     )
     .expect("a 200 ms shrink")
 }
 
-/// The frame of a step, panicking when the step held.
+/// The frame of a step.
 fn frame(step: Step) -> Frame {
     match step {
         Step::Frame(frame) | Step::Finished(frame) => frame,
-        Step::Held => panic!("the step holds no frame"),
     }
 }
 
@@ -69,9 +71,16 @@ fn frame(step: Step) -> Frame {
 #[test]
 fn grow_and_shrink_end_on_the_target_on_both_axes() {
     for edge in [Edge::Left, Edge::Top] {
-        let mut grow = growing(edge, 300, 450);
-        assert_eq!(grow.step(0), Step::Held, "the grow holds first");
-        assert!(grow.app_commit(Some(450), 0));
+        let handshake = growing(edge, 300, 450);
+        assert_eq!(
+            GrowHandshake::on_deadline(0),
+            None,
+            "the handshake waits first"
+        );
+        let Some(GrowResult::Answered { surface }) = handshake.on_commit(Some(450)) else {
+            panic!("the target answers the handshake");
+        };
+        let mut grow = answered(handshake, surface);
         let first = frame(grow.step(0));
         assert_eq!(first.visible, 300, "the first frame is the start");
         let last = frame(grow.step(200_000));
@@ -121,9 +130,11 @@ fn a_top_panel_reads_the_across_length_from_the_height() {
             "the mid shrink frame crops the height on {edge:?}"
         );
 
-        let mut grow = growing(edge, 300, 450);
-        assert_eq!(grow.step(0), Step::Held);
-        assert!(grow.app_commit(Some(450), 0));
+        let handshake = growing(edge, 300, 450);
+        let Some(GrowResult::Answered { surface: wide }) = handshake.on_commit(Some(450)) else {
+            panic!("the target answers the handshake");
+        };
+        let mut grow = answered(handshake, wide);
         assert_eq!(
             grow.surface,
             surface(edge, 450),
@@ -149,21 +160,29 @@ fn a_top_panel_reads_the_across_length_from_the_height() {
     }
 }
 
-/// A grow holds the panel's current length until the app commits a
-/// buffer whose reported length reaches the target (D8 finding 4), and
-/// then eases from that length.
+/// A grow holds the panel's current length until the configure handshake
+/// answers with a buffer whose reported length reaches the target (D8
+/// finding 4), and then eases from that length. The handshake owns the
+/// wait; the tween it starts owns none.
 #[test]
 fn a_grow_starts_only_at_a_commit_that_reports_the_target() {
-    let mut tween = growing(Edge::Left, 400, 600);
-    assert_eq!(tween.phase(), Phase::Waiting);
-    assert!(
-        !tween.app_commit(Some(575), 0),
+    let handshake = growing(Edge::Left, 400, 600);
+    assert_eq!(
+        handshake.on_commit(Some(575)),
+        None,
         "an intermediate size waits"
     );
-    assert!(!tween.app_commit(None, 0), "no report waits");
-    assert_eq!(tween.step(0), Step::Held);
-    assert_eq!(tween.step(499_999), Step::Held, "still inside the bound");
-    assert!(tween.app_commit(Some(600), 0), "the target starts the grow");
+    assert_eq!(handshake.on_commit(None), None, "no report waits");
+    assert_eq!(
+        GrowHandshake::on_deadline(499_999),
+        None,
+        "still inside the bound"
+    );
+    let Some(GrowResult::Answered { surface }) = handshake.on_commit(Some(600)) else {
+        panic!("the target starts the grow");
+    };
+    assert_eq!(surface, (600, 1080), "the wide surface is the crop");
+    let mut tween = answered(handshake, surface);
     assert_eq!(tween.phase(), Phase::Running);
     assert_eq!(tween.surface, (600, 1080), "the wide surface is the crop");
     let first = frame(tween.step(0));
@@ -180,25 +199,31 @@ fn a_grow_starts_only_at_a_commit_that_reports_the_target() {
     );
 }
 
-/// A grow that does not see the wide buffer within 500 ms snaps to the
-/// target (D8, spec "Grow waits for the app").
+/// A configure handshake the app never answers settles on no wide buffer at
+/// the bound (D8, spec "Grow waits for the app"), and its snap frame is the
+/// target's layer state while the old surface still draws.
 #[test]
-fn a_grow_snaps_after_the_500_ms_bound() {
-    let mut tween = growing(Edge::Left, 400, 600);
-    assert_eq!(tween.step(0), Step::Held);
-    assert_eq!(tween.step(GROW_TIMEOUT_US - 1), Step::Held);
-    let last = frame(tween.step(GROW_TIMEOUT_US));
-    assert_eq!(last.visible, 600, "the snap lands on the target");
-    assert_eq!(last.layer, (600, 0), "the snapped layer is the target");
+fn a_handshake_without_a_wide_buffer_snaps_at_the_bound() {
+    let handshake = growing(Edge::Left, 400, 600);
+    assert_eq!(GrowHandshake::on_deadline(0), None);
+    assert_eq!(GrowHandshake::on_deadline(GROW_HANDSHAKE_US - 1), None);
     assert_eq!(
-        tween.final_gap(),
+        GrowHandshake::on_deadline(GROW_HANDSHAKE_US),
+        Some(GrowResult::Unanswered),
+        "the bound settles on no wide buffer"
+    );
+    let snap = handshake.snap();
+    assert_eq!(snap.visible, 600, "the snap lands on the target");
+    assert_eq!(snap.layer, (600, 0), "the snapped layer is the target");
+    assert_eq!(
+        snap.gap,
         HeldGap::start(push(Edge::Left, 400)).after_publish(push(Edge::Left, 600)),
         "the snapped strip is the target's, not an intermediate one"
     );
-    assert_eq!(tween.phase(), Phase::Finished);
-    assert!(
-        !tween.app_commit(Some(600), 0),
-        "a snapped grow takes no commit"
+    assert_eq!(
+        snap.fraction,
+        Fraction::of(600, 400).expect("the whole old surface"),
+        "the snap shows the whole old surface it still has"
     );
 }
 
@@ -239,9 +264,11 @@ fn a_shrink_crops_the_wide_buffer_from_the_docked_edge() {
 /// request"): every frame's gap is the strip at that frame's length.
 #[test]
 fn a_pushing_gap_moves_with_the_panel() {
-    let mut tween = growing(Edge::Left, 400, 600);
-    let _ = tween.step(0);
-    assert!(tween.app_commit(Some(600), 0));
+    let handshake = growing(Edge::Left, 400, 600);
+    let Some(GrowResult::Answered { surface }) = handshake.on_commit(Some(600)) else {
+        panic!("the target answers the handshake");
+    };
+    let mut tween = answered(handshake, surface);
     let _ = tween.step(0);
     let mid = frame(tween.step(100_000));
     assert_eq!(mid.visible, 575);
@@ -256,10 +283,11 @@ fn a_pushing_gap_moves_with_the_panel() {
 #[test]
 fn a_covering_gap_holds_still() {
     let resting = HeldGap::start(push(Edge::Left, 400));
-    let mut tween = Tween::start(cover(Edge::Left, 600), 400, (400, 1080), resting, true, 200)
-        .expect("a covering grow");
-    let _ = tween.step(0);
-    assert!(tween.app_commit(Some(600), 0));
+    let handshake = GrowHandshake::new(cover(Edge::Left, 600), 400, (400, 1080), resting, 200);
+    let Some(GrowResult::Answered { surface }) = handshake.on_commit(Some(600)) else {
+        panic!("the target answers the handshake");
+    };
+    let mut tween = answered(handshake, surface);
     let _ = tween.step(0);
     let mid = frame(tween.step(100_000));
     assert_eq!(mid.visible, 575, "the panel still grows");
@@ -275,15 +303,18 @@ fn a_covering_gap_holds_still() {
 /// tween (D8 finding 3, spec "One new size for the app").
 #[test]
 fn a_tween_forwards_one_app_size() {
-    let mut tween = growing(Edge::Left, 400, 600);
+    let handshake = growing(Edge::Left, 400, 600);
     // The one configure the proxy sends when the grow starts.
-    let mut app_sizes = vec![tween.target()];
+    let mut app_sizes = vec![handshake.geometry().across()];
+    let Some(GrowResult::Answered { surface }) = handshake.on_commit(Some(600)) else {
+        panic!("the target answers the handshake");
+    };
+    let mut tween = answered(handshake, surface);
     assert_eq!(
         route_configure(tween.is_tweening()),
         ConfigureRoute::AckOnly,
-        "the waiting grow swallows the compositor's configures"
+        "the grow swallows the compositor's configures"
     );
-    assert!(tween.app_commit(Some(600), 0));
     for elapsed in [0, 50_000, 100_000, 150_000] {
         let _ = tween.step(elapsed);
         if route_configure(tween.is_tweening()) == ConfigureRoute::Forward {
@@ -391,22 +422,13 @@ fn a_cancelled_tween_still_swallows_its_minted_serial() {
 /// (spec "Exact final width").
 #[test]
 fn the_final_gap_matches_a_plain_apply() {
-    let pushing = Tween::start(
-        push(Edge::Left, 600),
-        400,
-        (400, 1080),
-        HeldGap::start(push(Edge::Left, 400)),
-        true,
-        200,
-    )
-    .expect("a pushing grow");
+    let pushing = growing(Edge::Left, 400, 600);
     assert_eq!(
         pushing.final_gap(),
         HeldGap::start(push(Edge::Left, 400)).after_publish(push(Edge::Left, 600))
     );
     let resting = HeldGap::start(push(Edge::Left, 400));
-    let covering = Tween::start(cover(Edge::Left, 600), 400, (400, 1080), resting, true, 200)
-        .expect("a covering grow");
+    let covering = GrowHandshake::new(cover(Edge::Left, 600), 400, (400, 1080), resting, 200);
     assert_eq!(covering.final_gap(), resting);
 }
 
@@ -420,7 +442,6 @@ fn a_change_that_cannot_animate_starts_no_tween() {
             400,
             (400, 1080),
             HeldGap::start(push(Edge::Left, 400)),
-            true,
             0
         )
         .is_none()
@@ -431,7 +452,6 @@ fn a_change_that_cannot_animate_starts_no_tween() {
             400,
             (400, 1080),
             HeldGap::start(push(Edge::Left, 400)),
-            true,
             200
         )
         .is_none()
@@ -441,7 +461,6 @@ fn a_change_that_cannot_animate_starts_no_tween() {
         400,
         (0, 0),
         HeldGap::start(push(Edge::Left, 400)),
-        false,
         200,
     )
     .expect("a shrink");
@@ -477,17 +496,17 @@ fn a_duration_is_resolved_and_clamped() {
 /// finished exactly on it.
 #[test]
 fn a_clamped_tween_ends_after_one_second() {
-    let mut tween = Tween::start(
+    let handshake = GrowHandshake::new(
         push(Edge::Left, 600),
         400,
         surface(Edge::Left, 400),
         HeldGap::start(push(Edge::Left, 400)),
-        true,
         60_000,
-    )
-    .expect("a clamped grow");
-    assert_eq!(tween.step(0), Step::Held);
-    assert!(tween.app_commit(Some(600), 0));
+    );
+    let Some(GrowResult::Answered { surface }) = handshake.on_commit(Some(600)) else {
+        panic!("the target answers the handshake");
+    };
+    let mut tween = answered(handshake, surface);
     let _ = tween.step(0);
     assert!(
         matches!(tween.step(999_999), Step::Frame(_)),
@@ -528,7 +547,6 @@ fn a_retarget_continues_from_the_current_length() {
         shrink.visible(),
         surface,
         shrink.current_gap(),
-        false,
         200,
     )
     .expect("a retarget");
@@ -553,7 +571,6 @@ fn a_snap_starts_no_frames() {
             425,
             surface(Edge::Left, 600),
             HeldGap::start(push(Edge::Left, 425)),
-            false,
             0
         )
         .is_none(),
@@ -573,9 +590,11 @@ fn a_stalled_clock_snaps_to_the_exact_target() {
     assert_eq!(shrink.phase(), Phase::Finished);
     // A grow starts its clock when the app's buffer arrives, and a stall
     // after that still ends exactly.
-    let mut grow = growing(Edge::Left, 400, 600);
-    assert_eq!(grow.step(0), Step::Held);
-    assert!(grow.app_commit(Some(600), 0));
+    let handshake = growing(Edge::Left, 400, 600);
+    let Some(GrowResult::Answered { surface }) = handshake.on_commit(Some(600)) else {
+        panic!("the target answers the handshake");
+    };
+    let mut grow = answered(handshake, surface);
     let _ = grow.step(0);
     let last = frame(grow.step(300_000));
     assert_eq!(last.visible, 600, "the stalled grow lands exactly");
