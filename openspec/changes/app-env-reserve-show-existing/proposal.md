@@ -30,7 +30,15 @@ for 0.4.1.
   `show` does), the other run options do not change it, and `pinwin run` exits 0 and runs
   nothing. The check is done in the daemon, so two launches at the same time give one panel.
   Without the flag, a duplicate name exits 2 as in 0.4.0.
-- The README names `PINWIN_SOCKET` and `PINWIN_PANEL`, `--reserve` and `--show-existing`.
+- `pinwin run` accepts `--gutter-top N`, `--gutter-bottom N`, `--gutter-left N` and
+  `--gutter-right N` in logical pixels, which may be negative. Each wins over the config
+  file, as the other run options do.
+- A new `set-gutters` panel command changes one or more gutters. The daemon validates the
+  result as for `set-size`, applies it in one step with no animation, and keeps the app's
+  window size unless the panel's length changes. A refusal changes nothing, and a change
+  while hidden is validated and stored.
+- The README names `PINWIN_SOCKET` and `PINWIN_PANEL`, `--reserve`, `--show-existing` and
+  the gutter options and command.
 
 ## Capabilities
 
@@ -41,19 +49,20 @@ None.
 ### Modified Capabilities
 
 - `panel-control`: the run environment, the client socket lookup, the run start of the
-  daemon, `--show-existing`, the `reserve` field of `set-size` and `resize`, and the CLI
-  grammar.
+  daemon, `--show-existing`, the `reserve` field of `set-size` and `resize`, the gutter run
+  options and the `set-gutters` command, and the CLI grammar.
 - `pinwin-panel`: new scenarios for an animated change of width and reserve mode back to a
-  pushing state (the strip that equals the held strip, and a new strip). The rule does not
-  change.
+  pushing state (the strip that equals the held strip, and a new strip), and for a live
+  gutter change. The rules do not change.
 
 ## Impact
 
 - Code: `src/daemon.rs` (socket lookup), `src/main.rs` (`run_app`, `create_panel`,
-  clients), `src/run.rs` (environment), `src/cli.rs` (`--reserve`, `--show-existing`),
-  `src/ipc.rs` and `src/ipc/reply.rs` (request fields, reply of an existing panel),
-  `src/daemon/connection.rs` (create or show), `src/proxy/apply.rs` (one plan for size
-  plus reserve).
+  clients), `src/run.rs` (environment), `src/cli.rs` (`--reserve`, `--show-existing`,
+  gutter options, `set-gutters`), `src/ipc.rs` and `src/ipc/reply.rs` (request fields,
+  reply of an existing panel, `set-gutters`), `src/ipc/options.rs` (gutter run options on
+  the wire), `src/daemon/connection.rs` (create or show), `src/proxy/apply.rs` (one plan
+  for size plus reserve, the `set-gutters` plan), `src/geometry.rs` (gutter accessors).
 - Tests: `src/cli/tests.rs`, `src/ipc/tests.rs`, `src/proxy/apply/tests.rs`,
   `src/daemon/tests.rs`, `tests/command_line_ipc.rs`.
 - Docs: `README.md`, the module entries in `AGENTS.md`.

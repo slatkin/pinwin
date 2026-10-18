@@ -78,6 +78,48 @@ wrong.
   at the end); from a terminal panel, `pinwin status` and `pinwin run --name <name>
   --show-existing -- <app>` after a hide. Record the user's answer here.
 
+## 5. Gutters
+
+- [ ] 5.1 Add `--gutter-top N`, `--gutter-bottom N`, `--gutter-left N` and
+  `--gutter-right N` to `pinwin run` (design D7): parse each as an `i32` in `src/cli.rs`,
+  add the four fields to `WireOptions` in `src/ipc/options.rs` and copy them in
+  `wire_options` and `parse`, so the `create` request carries them and the existing
+  `config::resolve` precedence makes an option win over `[panel.<name>]` and
+  `[panel.defaults]`. Update the README run-options table and the `src/cli.rs`,
+  `src/ipc/options.rs` and `src/config.rs` entries in `AGENTS.md`. Verify: `src/cli/tests.rs`
+  parses `--gutter-left -12 --gutter-top 8` into `PanelOptions` and refuses
+  `--gutter-left 1.5` with exit 2; `src/ipc/tests.rs` round-trips a `create` with all four
+  gutter fields and with none (absent, as 0.4.0), and refuses a fractional gutter with
+  `invalid_value`; `src/config/tests.rs` checks that the option wins over the config file
+  for a gutter (spec "Run options", "Panel settings and precedence", "Option wins").
+- [ ] 5.2 Add the `set-gutters` command (design D7): `Request::SetGutters` and
+  `RawRequest::SetGutters` in `src/ipc.rs`, the `set-gutters` subcommand in `src/cli.rs`,
+  and the `plan_change` arm with its `is_layout_request` entry in `src/proxy/apply.rs`; add
+  the `Gutters` accessors in `src/geometry.rs` and replace the apply module comment that says
+  gutters have no command. A request with no gutter field, or a non-integer one, is
+  `invalid_value`; the plan validates through the existing `set-size` path, applies with no
+  animation, and a hidden panel stores the settings. Update the README command table and the
+  `src/ipc.rs`, `src/cli.rs`, `src/geometry.rs` and `src/proxy/apply.rs` entries in
+  `AGENTS.md`. Verify: `src/ipc/tests.rs` parses a line with one, several and no gutter
+  fields (the last `invalid_value`) and refuses `"top":1.5` with `invalid_value`;
+  `src/cli/tests.rs` builds `set-gutters notes --top 8 --bottom 8` and refuses no option or
+  `--top 1.5` with exit 2; `src/proxy/apply/tests.rs` cases: a left panel with Top 0 gets Top
+  8 and Bottom 8 as one plan with the new margins and no animation; a pushing left panel
+  whose `right` leaves no output width is refused with `invalid_layout` and the settings and
+  gap stay; a hidden panel stores the new gutters and its next show uses them; a near-gutter
+  change sends no new app size while a side-gutter change sends exactly one (spec "Set
+  gutters", "Panel commands", "Change while hidden", "Other fields snap", "Validate a
+  change before applying it").
+- [ ] 5.3 Run the gates: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D
+  warnings`, `cargo audit`, `cargo nextest run` and `make check-code-file-lines`. Verify:
+  all pass.
+- [ ] 5.4 Live check, run by the user: a running panel with Top 0; then
+  `pinwin set-gutters <name> --top 8 --bottom 8` (the panel's edges move in one step and the
+  app keeps its window); a pushing panel and `pinwin set-gutters <name> --right <large>`
+  (the reply is `invalid_layout` and nothing moves); `pinwin run --name <name>
+  --gutter-left 12 -- <app>` while `[panel.<name>]` sets `gutter_left = 4` (the panel starts
+  12 pixels from the left edge). Record the user's answer here.
+
 ## Workflow follow-up
 
 - Archive the change after the review.

@@ -96,6 +96,61 @@ before.
 - **WHEN** a client sends a `set-size` with `"reserve":"middle"`
 - **THEN** the reply has error kind `invalid_value` and the panel does not change
 
+### Requirement: Set gutters
+The `set-gutters` command SHALL change one or more of the panel's four gutters and SHALL
+validate the result with requirement "Validate a change before applying it". It SHALL apply
+the change in one step, with no animation, keeping the app's window size unless the panel's
+length changes. A refusal SHALL change neither the gutters nor the reservation. A change
+while the panel is hidden SHALL be validated and stored for the next show.
+
+#### Scenario: Set the side gutters
+- **WHEN** a left panel with Top 0 gets
+  `pinwin set-gutters notes --top 8 --bottom 8`
+- **THEN** the panel's top edge is 8 pixels below the output's top edge, its bottom edge 8
+  pixels above the output's bottom edge, and the reply is a success
+
+#### Scenario: Refused gutter change
+- **WHEN** a pushing left panel gets `set-gutters` with a `right` value that leaves no output
+  width for other windows
+- **THEN** the reply has error kind `invalid_layout`, and the gutters and the reservation do
+  not change
+
+#### Scenario: No gutter option
+- **WHEN** the user runs `pinwin set-gutters notes`
+- **THEN** pinwin prints a message, exits 2 and sends nothing
+
+#### Scenario: Hidden panel stores the gutters
+- **WHEN** the panel is hidden and a client sends `set-gutters` with a new gutter
+- **THEN** the reply is a success, nothing shows, and the next show uses the new gutter
+
+#### Scenario: Gutter change snaps
+- **WHEN** a shown panel with `tween_ms` 200 gets `set-gutters` with a new gutter
+- **THEN** the panel moves to the new gutter in one step with no animation
+
+#### Scenario: App size follows the length
+- **WHEN** a left panel gets `set-gutters` with a new `top` and `bottom`, and then with a new
+  `left`
+- **THEN** the first change sends the app one new window size and the second sends none
+
+### Requirement: Gutter request fields
+A `set-gutters` request SHALL carry `top`, `bottom`, `left` and `right` as optional whole
+numbers of logical pixels; a negative value is valid. At least one field SHALL be present,
+and a missing field SHALL keep the panel's current gutter. A request with no gutter field,
+or a field that is not a whole number, SHALL get error kind `invalid_value`.
+
+#### Scenario: One gutter
+- **WHEN** a client sends `{"cmd":"set-gutters","panel":"notes","left":-12}`
+- **THEN** the panel's left gutter becomes -12 pixels, its other gutters stay, and the reply
+  is a success
+
+#### Scenario: No gutter field
+- **WHEN** a client sends `{"cmd":"set-gutters","panel":"notes"}`
+- **THEN** the reply has error kind `invalid_value` and the panel does not change
+
+#### Scenario: Non-integer gutter
+- **WHEN** a client sends `{"cmd":"set-gutters","panel":"notes","top":1.5}`
+- **THEN** the reply has error kind `invalid_value` and the panel does not change
+
 ### Requirement: One decision for a duplicate launch
 The daemon SHALL decide between a new panel and the existing one for
 `pinwin run --show-existing`. Two such calls with the same name at the same time SHALL give
@@ -117,6 +172,39 @@ without the new reserve mode.
 - **THEN** the subscriber receives one `geometry-changed` event for the panel
 
 ## MODIFIED Requirements
+
+### Requirement: Panel commands
+The daemon SHALL accept these panel commands: `toggle`, `show`, `hide`, `focus`, `set-edge`,
+`set-size`, `resize`, `set-gutters`, `set-output`, `set-layer`, `set-reserve` and
+`set-keyboard`. A command with an invalid value SHALL get error kind `invalid_value`. A
+geometry the output cannot hold SHALL get error kind `invalid_layout`. Neither error SHALL
+change the panel.
+
+#### Scenario: Set the size
+- **WHEN** a client sends `{"cmd":"set-size","panel":"notes","size":"640px"}`
+- **THEN** the panel's width becomes 640 pixels and the reply is a success
+
+#### Scenario: Relative resize
+- **WHEN** the `notes` panel is 640 pixels wide and a client sends
+  `{"cmd":"resize","panel":"notes","by":"-40px"}`
+- **THEN** the panel's width becomes 600 pixels
+
+#### Scenario: Invalid value
+- **WHEN** a client sends `{"cmd":"set-edge","panel":"notes","edge":"middle"}`
+- **THEN** the reply has error kind `invalid_value` and the panel does not change
+
+#### Scenario: Too large for the output
+- **WHEN** a client sends a `set-size` for a pushing panel that would leave no output space
+  for other windows
+- **THEN** the reply has error kind `invalid_layout` and the panel does not change
+
+#### Scenario: Focus
+- **WHEN** the `notes` panel is hidden and a client sends `{"cmd":"focus","panel":"notes"}`
+- **THEN** the panel shows and gets the keyboard
+
+#### Scenario: Focus on a shown panel
+- **WHEN** the `notes` panel is shown and a client sends `{"cmd":"focus","panel":"notes"}`
+- **THEN** the reply is a success and the panel and the keyboard focus do not change
 
 ### Requirement: Run an app in a panel
 `pinwin run [options] -- <command> [args...]` SHALL ask the daemon for a new panel, then
@@ -182,7 +270,9 @@ no daemon and run nothing.
 `pinwin run` SHALL accept `--name <name>`, `--edge <left|right|top|bottom>`,
 `--size <size>`, `--reserve <push|cover>`, `--layer <background|bottom|top|overlay>`,
 `--keyboard <none|on-demand|exclusive>`, `--output <output name>`, `--hidden`,
-`--focus-ring <off|#RRGGBB[:width]>` and `--show-existing`. `--` SHALL end the options. A
+`--focus-ring <off|#RRGGBB[:width]>`, `--gutter-top <pixels>`, `--gutter-bottom <pixels>`,
+`--gutter-left <pixels>`, `--gutter-right <pixels>` and `--show-existing`. A gutter value
+SHALL be a whole number of logical pixels and MAY be negative. `--` SHALL end the options. A
 missing command, an unknown option or an invalid value SHALL make pinwin print a message and
 exit 2.
 
@@ -201,6 +291,11 @@ exit 2.
 #### Scenario: Start hidden
 - **WHEN** the user runs `pinwin run --name notes --hidden -- myeditor`
 - **THEN** the app runs, the panel does not show, and a later `pinwin show notes` shows it
+
+#### Scenario: Gutter option wins over the file
+- **WHEN** the user runs `pinwin run --name notes --gutter-left 12 -- myeditor` and
+  `[panel.notes]` sets `gutter_left = 4`
+- **THEN** the panel starts 12 pixels from the left output edge
 
 ### Requirement: Panel names
 Each panel SHALL have a name of 1..=64 characters from `[A-Za-z0-9_-]`. Without `--name`, the
@@ -230,6 +325,7 @@ The `pinwin` command SHALL offer one subcommand for each request: `toggle <name>
 `show <name>`, `hide <name>`, `focus <name>`, `set-edge <name> <edge>`,
 `set-size <name> <size> [--reserve push|cover] [--ms N]`,
 `resize <name> <amount> [--reserve push|cover] [--ms N]`,
+`set-gutters <name> [--top N] [--bottom N] [--left N] [--right N]`,
 `set-output <name> <output>`, `set-layer <name> <layer>`, `set-reserve <name> <mode>`,
 `set-keyboard <name> <mode>`, `status [name]`, `subscribe`, `quit` and `reload`.
 
@@ -249,3 +345,8 @@ The `pinwin` command SHALL offer one subcommand for each request: `toggle <name>
 #### Scenario: Invalid reserve option
 - **WHEN** the user runs `pinwin set-size notes 1100px --reserve middle`
 - **THEN** pinwin prints a message, exits 2 and sends nothing
+
+#### Scenario: Gutter command
+- **WHEN** the user runs `pinwin set-gutters notes --top 8 --bottom 8`
+- **THEN** pinwin sends one `set-gutters` request with both gutters and exits 0 on its
+  success reply

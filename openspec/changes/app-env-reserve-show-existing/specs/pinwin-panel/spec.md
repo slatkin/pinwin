@@ -72,3 +72,22 @@ NOT read any desktop animation setting.
 - **THEN** the panel shrinks to 500 pixels over about 200 ms while the strip holds still at
   400 pixels, and when the animation ends the strip becomes 500 pixels and tiled windows move
   once
+
+### Requirement: Apply layout without restarting the app
+A successful change of size, edge, gutters, reserve mode, layer, output or keyboard mode SHALL
+keep the same app process and the same window. The app SHALL get a new window size only when
+the panel's width or length changes.
+
+#### Scenario: Change the edge
+- **WHEN** a left panel moves to the right edge with the same size
+- **THEN** the same window shows at the right edge, and the app gets no new size
+
+#### Scenario: Change the size
+- **WHEN** a panel's size changes from 640 to 800 pixels
+- **THEN** the app gets one new window size of 800 pixels wide and keeps running
+
+#### Scenario: Change the gutters
+- **WHEN** a left panel with Top 0 gets `set-gutters` with Top 8 and Bottom 8
+- **THEN** the same window shows with its top edge 8 pixels below the output's top edge and
+  its bottom edge 8 pixels above the output's bottom edge, and the app gets one new window
+  height

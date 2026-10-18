@@ -31,8 +31,8 @@ Current code that this design changes:
 
 **Goals:**
 
-- No new IPC command. The new fields are optional, so a 0.4.0 request line still parses and
-  does the same.
+- A 0.4.0 request line still parses and does the same: the new fields are optional, and
+  `set-gutters` is an added command (D7).
 - The client takes `PINWIN_SOCKET` from its own environment; the daemon's socket path does
   not change.
 
@@ -132,6 +132,73 @@ not applied to an existing panel, because step 1 sends only `show`. `--hidden` t
 Alternative: the client sends `status` and then `show` or `create`. Rejected: two launches
 can race.
 
+### D7. Gutters as run options and one live command
+
+`PanelOptions` already has `gutter_left`, `gutter_right`, `gutter_top` and
+`gutter_bottom` (`Option<i32>`), and `config::resolve` already merges them, so the file and
+the built-in defaults need no change. Two gaps keep them out of `pinwin run` and the IPC:
+`src/cli.rs` has no `--gutter-*` arms, and `src/ipc/options.rs` `WireOptions` has no gutter
+fields, so a `create` request drops them.
+
+Run options:
+
+- Add `--gutter-top N`, `--gutter-bottom N`, `--gutter-left N` and `--gutter-right N` to
+  `run_option` in `src/cli.rs`. Each value parses as an `i32`; a negative value is valid and
+  a non-integer is a usage error (exit 2).
+- Add the four fields to `WireOptions` with `skip_serializing_if` for an absent field, and
+  copy them in `wire_options` and `parse`. The existing `config::resolve` precedence then
+  makes a run option win over `[panel.<name>]`, which wins over `[panel.defaults]` and the
+  built-in `0`.
+
+Wire command:
+
+- `Request::SetGutters { panel, top, bottom, left, right }`, with each gutter an
+  `Option<i32>` and `skip_serializing_if` for an absent field. The JSON names are `top`,
+  `bottom`, `left` and `right`: `{"cmd":"set-gutters","panel":"notes","top":8,
+  "bottom":8}`.
+- `RawRequest::SetGutters` keeps each present field as `Option<Number>`, so a fractional or
+  over-`i32` value is `invalid_value` of the known command, not a serde failure of the whole
+  line; `whole` plus `i32::try_from` parses it. A line with no gutter field is
+  `invalid_value` (the command is known, but its value is incomplete), with a message that
+  names `top`, `bottom`, `left` and `right`.
+- Add `set-gutters` to `cli::SUBCOMMANDS`, which a test checks against the request `cmd`
+  names.
+
+CLI:
+
+- `pinwin set-gutters <name> [--top N] [--bottom N] [--left N] [--right N]`. The options
+  may come in any order after the name; a repeated option takes its last value, as
+  `--reserve` and `--ms` do. At least one option is required: without one the command is a
+  usage error (exit 2) and sends nothing. A non-integer value is also exit 2.
+
+Apply:
+
+- Add `Request::SetGutters` to `is_layout_request` and a `plan_change` arm that builds
+  `PanelSettings { gutters: Gutters::new(left, right, top, bottom), ..current.clone() }`,
+  taking each absent field from `current.gutters()`. Add `Gutters::left()`, `right()`,
+  `top()` and `bottom()` accessors to `src/geometry.rs` for that merge; they change no
+  behaviour.
+- `request_duration` returns `None` for `SetGutters`, so the plan never animates, even when
+  the panel has a `tween_ms`. There is no `ms` field on the command.
+- The plan goes through the same `geometry.validate(output)` as `set-size`; a refusal
+  returns before `apply_plan`, so the settings, window and reservation stay unchanged. A
+  successful apply stores the settings and publishes one `geometry-changed`; a request that
+  names the current gutters is a no-change and publishes none, as the other layout
+  commands.
+- `needs_new_app_size` already gives the item's app-size rule: a near or far gutter change
+  leaves the length alone and sends no new app size, while a side-gutter change (Top or
+  Bottom on a side panel, Left or Right on a top or bottom panel) changes the length and
+  sends exactly one new size.
+- A hidden panel needs no special case: `apply::answer` validates against the known output
+  and stores the settings, `publish_gap` uses `apply_gap_hidden`, and the next show re-sends
+  the layer state, as for a hidden `set-size` (spec "Change while hidden"). A panel whose
+  output size is not known yet is refused with `invalid_layout`, as every layout command.
+- Replace the `src/proxy/apply.rs` module comment that says gutters have no command of their
+  own; the module now applies `set-gutters` with the other layout commands.
+
+No new IPC command is needed for the run options: they ride the existing `create` request.
+A 0.4.1 daemon accepts the new fields, and a 0.4.0 request line without them still parses.
+
 ## Risks / Trade-offs
 
 - [A script runs with a stale `PINWIN_SOCKET` from a panel that ended with its daemon] → the
@@ -142,6 +209,9 @@ can race.
 - [D5 changes the end gap code for every tween] → the unit tests of `tween.rs` and
   `geometry.rs` keep the push-to-push and covering cases, and new cases cover cover-to-push
   with an equal and a different strip.
+- [A `set-gutters` field is absent on the wire] → an absent field keeps the panel's current
+  gutter, and only a request with all four absent is refused, so a client can change one
+  gutter without sending the other three.
 
 ## Migration Plan
 
