@@ -12,6 +12,9 @@ panel and the client subcommands control the daemon.
 
 ## Install
 
+Arch Linux: install the [`pinwin` package](https://aur.archlinux.org/packages/pinwin)
+from the AUR (`paru -S pinwin`).
+
 Building needs the Rust toolchain pinned in `rust-toolchain.toml`. Running
 needs a Wayland compositor with wlr-layer-shell.
 

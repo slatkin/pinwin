@@ -1,0 +1,120 @@
+name: Publish AUR
+
+# Publishes the AUR package for an already-published GitHub release, so it can
+# be triggered (and retried) any number of times without rebuilding anything.
+# The workflow regenerates PKGBUILD/.SRCINFO from the release tarball and
+# pushes it to aur.archlinux.org. Failures here are isolated from the
+# build/release workflow.
+#
+# The first push creates the AUR package; it needs the account's SSH key in
+# the AUR_SSH_KEY secret and the key registered on aur.archlinux.org.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Release version to publish to AUR, e.g. "0.4.1" or "v0.4.1".
+          Must match an existing GitHub release tag "v<version>".
+        required: true
+        type: string
+
+concurrency:
+  group: aur-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Same pinned base-devel snapshot as the build workflow, so this job has
+    # a reproducible pacman/makepkg/git toolchain.
+    container: archlinux/archlinux:base-devel-20260818.0.575430
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Update system and install tooling
+        run: |
+          pacman_retry() {
+            for attempt in 1 2 3; do
+              "$@" && return 0
+              pacman -Syy --noconfirm
+              sleep $((attempt * 10))
+            done
+            "$@"
+          }
+          pacman_retry pacman -Syu --noconfirm
+          pacman_retry pacman -S --noconfirm --needed github-cli openssh git
+
+      - name: Normalize version input
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${VERSION_INPUT#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version '${VERSION_INPUT}';" \
+              "expected e.g. 0.4.1 or v0.4.1" >&2
+            exit 1
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "TAG=v${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Download release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/release
+          # Fetch through the API asset route, not the /releases/download/
+          # redirect. Both serve the current object, but the redirect path is
+          # a cacheable public URL whose bytes are ambiguous while a same-name
+          # --clobber replace is in flight; the API route names the asset by
+          # id and signs a fresh object URL per request, so what it returns
+          # is always the asset the release records right now.
+          ASSET="pinwin-${VERSION}-linux-x86_64.tar.gz"
+          ASSET_URL=$(gh api "repos/${GH_REPO}/releases/tags/${TAG}" \
+            --jq ".assets[] | select(.name == \"${ASSET}\") | .url")
+          test -n "${ASSET_URL}"
+          gh api --header "Accept: application/octet-stream" "${ASSET_URL}" \
+            > "/tmp/release/${ASSET}"
+          test -s "/tmp/release/${ASSET}"
+          echo "Downloaded release asset for ${TAG}"
+
+      - name: Publish to AUR
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${AUR_SSH_KEY}" ]]; then
+            echo "AUR_SSH_KEY secret is not set; cannot publish to AUR." >&2
+            exit 1
+          fi
+          TARBALL="/tmp/release/pinwin-${VERSION}-linux-x86_64.tar.gz"
+          SHA256=$(sha256sum "${TARBALL}" | cut -d' ' -f1)
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${SHA256}')/" PKGBUILD
+          # Install the AUR SSH key with restrictive permissions. The secret is
+          # auto-masked in logs, so never echo it back.
+          mkdir -p /root/.ssh
+          umask 077
+          printf '%s\n' "${AUR_SSH_KEY}" | tr -d '\r' > /root/.ssh/aur
+          chmod 600 /root/.ssh/aur
+          ssh_opts="-o StrictHostKeyChecking=accept-new"
+          export GIT_SSH_COMMAND="ssh -i /root/.ssh/aur ${ssh_opts}"
+          git config --global --add safe.directory '*'
+          git clone ssh://aur@aur.archlinux.org/pinwin.git /tmp/aur-pinwin
+          cp PKGBUILD /tmp/aur-pinwin/PKGBUILD
+          useradd -m aurbuild
+          chown -R aurbuild /tmp/aur-pinwin
+          su -c 'cd /tmp/aur-pinwin && makepkg --printsrcinfo' aurbuild \
+            > /tmp/aur-pinwin/.SRCINFO
+          cd /tmp/aur-pinwin
+          git config user.name "pinwin release"
+          git config user.email "github@poo.town"
+          git add PKGBUILD .SRCINFO
+          git diff --staged --quiet || git commit -m "Release v${VERSION}"
+          git push
