@@ -42,6 +42,7 @@ use crate::name::PanelName;
 mod client;
 mod options;
 mod reply;
+mod requests;
 
 pub use client::{Answer, CallError, Subscription, call};
 pub use reply::{ErrorKind, ErrorReply, PanelEntry, PanelStatus, Reply};
@@ -251,104 +252,77 @@ impl Request {
 
     /// Turn the checked-shape line into the typed request: the panel name
     /// and every setting value are parsed with the config file's grammar.
+    ///
+    /// Each family of commands builds its request in its own helper, so the
+    /// dispatcher only decides which family a line belongs to.
     fn from_raw(raw: RawRequest) -> Result<Self, RequestError> {
-        Ok(match raw {
-            RawRequest::Toggle { panel } => Self::Toggle {
-                panel: panel_name(&panel)?,
-            },
-            RawRequest::Show { panel } => Self::Show {
-                panel: panel_name(&panel)?,
-            },
-            RawRequest::Hide { panel } => Self::Hide {
-                panel: panel_name(&panel)?,
-            },
-            RawRequest::Focus { panel } => Self::Focus {
-                panel: panel_name(&panel)?,
-            },
-            RawRequest::SetEdge { panel, edge } => Self::SetEdge {
-                panel: panel_name(&panel)?,
-                edge: setting("edge", &edge)?,
-            },
+        match raw {
+            RawRequest::Toggle { panel } => {
+                requests::panel_only(&panel, requests::PanelCommand::Toggle)
+            }
+            RawRequest::Show { panel } => {
+                requests::panel_only(&panel, requests::PanelCommand::Show)
+            }
+            RawRequest::Hide { panel } => {
+                requests::panel_only(&panel, requests::PanelCommand::Hide)
+            }
+            RawRequest::Focus { panel } => {
+                requests::panel_only(&panel, requests::PanelCommand::Focus)
+            }
+            RawRequest::SetEdge { panel, edge } => {
+                requests::setting_value(&panel, &edge, "edge", |panel, edge| Self::SetEdge {
+                    panel,
+                    edge,
+                })
+            }
             RawRequest::SetSize {
                 panel,
                 size,
                 reserve,
                 ms,
-            } => Self::SetSize {
-                panel: panel_name(&panel)?,
-                size: wire_size(size)?,
-                reserve: optional_setting("reserve", reserve.as_deref())?,
-                ms: millis(ms)?,
-            },
+            } => requests::set_size(&panel, size, reserve.as_deref(), ms),
             RawRequest::Resize {
                 panel,
                 by,
                 reserve,
                 ms,
-            } => Self::Resize {
-                panel: panel_name(&panel)?,
-                by: amount(by)?,
-                reserve: optional_setting("reserve", reserve.as_deref())?,
-                ms: millis(ms)?,
-            },
+            } => requests::resize(&panel, by, reserve.as_deref(), ms),
             RawRequest::SetGutters {
                 panel,
                 top,
                 bottom,
                 left,
                 right,
-            } => {
-                let top = gutter("top", top)?;
-                let bottom = gutter("bottom", bottom)?;
-                let left = gutter("left", left)?;
-                let right = gutter("right", right)?;
-                if [top, bottom, left, right].iter().all(Option::is_none) {
-                    return Err(no_gutter_field());
-                }
-                Self::SetGutters {
-                    panel: panel_name(&panel)?,
-                    top,
-                    bottom,
-                    left,
-                    right,
-                }
+            } => requests::gutters(&panel, top, bottom, left, right),
+            RawRequest::SetOutput { panel, output } => requests::output(&panel, output),
+            RawRequest::SetLayer { panel, layer } => {
+                requests::setting_value(&panel, &layer, "layer", |panel, layer| Self::SetLayer {
+                    panel,
+                    layer,
+                })
             }
-            RawRequest::SetOutput { panel, output } => Self::SetOutput {
-                panel: panel_name(&panel)?,
-                output,
-            },
-            RawRequest::SetLayer { panel, layer } => Self::SetLayer {
-                panel: panel_name(&panel)?,
-                layer: setting("layer", &layer)?,
-            },
-            RawRequest::SetReserve { panel, reserve } => Self::SetReserve {
-                panel: panel_name(&panel)?,
-                reserve: setting("reserve", &reserve)?,
-            },
-            RawRequest::SetKeyboard { panel, keyboard } => Self::SetKeyboard {
-                panel: panel_name(&panel)?,
-                keyboard: setting("keyboard", &keyboard)?,
-            },
-            RawRequest::Status { panel } => Self::Status {
-                panel: panel.map(|name| panel_name(&name)).transpose()?,
-            },
+            RawRequest::SetReserve { panel, reserve } => {
+                requests::setting_value(&panel, &reserve, "reserve", |panel, reserve| {
+                    Self::SetReserve { panel, reserve }
+                })
+            }
+            RawRequest::SetKeyboard { panel, keyboard } => {
+                requests::setting_value(&panel, &keyboard, "keyboard", |panel, keyboard| {
+                    Self::SetKeyboard { panel, keyboard }
+                })
+            }
+            RawRequest::Status { panel } => requests::status(panel.as_deref()),
             RawRequest::Create {
                 panel,
                 pid,
                 app,
                 options,
                 show_existing,
-            } => Self::Create {
-                panel: panel_name(&panel)?,
-                pid,
-                app,
-                options: options::parse(*options)?,
-                show_existing,
-            },
-            RawRequest::Subscribe => Self::Subscribe,
-            RawRequest::Quit => Self::Quit,
-            RawRequest::Reload => Self::Reload,
-        })
+            } => requests::create(&panel, pid, app, *options, show_existing),
+            RawRequest::Subscribe => Ok(Self::Subscribe),
+            RawRequest::Quit => Ok(Self::Quit),
+            RawRequest::Reload => Ok(Self::Reload),
+        }
     }
 }
 

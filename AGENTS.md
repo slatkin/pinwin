@@ -61,6 +61,10 @@ binary-only now and every row of its tasks is landed.
   panel"), the 64 KiB request line with a bounded reader that keeps the
   lines behind the one it returns, and the wire types. `src/main.rs`
   compiles it; its unit tests are `src/ipc/tests.rs`.
+- `src/ipc/requests.rs` — the typed builders of a checked-shape request line
+  (D13): one function for each family of request variants, each parsing its
+  own fields with the config file's grammar, so `Request::parse`'s
+  dispatcher stays small and a bad value still names its field.
 - `src/ipc/options.rs` — the wire text of a setting value (row 7.1, D13,
   spec "Run options"): the `create` request's run options in the config
   file's grammar, the four gutters among them, and the one `Serialize`

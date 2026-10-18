@@ -299,19 +299,33 @@ fn run_option(
         }
         "--hidden" => options.hidden = Some(true),
         "--show-existing" => *show_existing = true,
-        "--edge" => setting_option(args, index, option, &mut options.edge)?,
-        "--size" => setting_option(args, index, option, &mut options.size)?,
-        "--reserve" => setting_option(args, index, option, &mut options.reserve)?,
-        "--layer" => setting_option(args, index, option, &mut options.layer)?,
-        "--keyboard" => setting_option(args, index, option, &mut options.keyboard)?,
-        "--focus-ring" => setting_option(args, index, option, &mut options.focus_ring)?,
-        "--gutter-top" => gutter_option(args, index, option, &mut options.gutter_top)?,
-        "--gutter-bottom" => gutter_option(args, index, option, &mut options.gutter_bottom)?,
-        "--gutter-left" => gutter_option(args, index, option, &mut options.gutter_left)?,
-        "--gutter-right" => gutter_option(args, index, option, &mut options.gutter_right)?,
-        other => return Err(UsageError::new(format!("unknown option '{other}'"))),
+        setting => return setting_run_option(args, index, setting, options),
     }
     Ok(())
+}
+
+/// A `run` option that sets one setting of the new panel (spec "Run
+/// options"): a value that parses with the config file's grammar, or one of
+/// the four gutters as a whole number of pixels (D7).
+fn setting_run_option(
+    args: &[OsString],
+    index: &mut usize,
+    option: &str,
+    options: &mut PanelOptions,
+) -> Result<(), UsageError> {
+    match option {
+        "--edge" => setting_option(args, index, option, &mut options.edge),
+        "--size" => setting_option(args, index, option, &mut options.size),
+        "--reserve" => setting_option(args, index, option, &mut options.reserve),
+        "--layer" => setting_option(args, index, option, &mut options.layer),
+        "--keyboard" => setting_option(args, index, option, &mut options.keyboard),
+        "--focus-ring" => setting_option(args, index, option, &mut options.focus_ring),
+        "--gutter-top" => gutter_option(args, index, option, &mut options.gutter_top),
+        "--gutter-bottom" => gutter_option(args, index, option, &mut options.gutter_bottom),
+        "--gutter-left" => gutter_option(args, index, option, &mut options.gutter_left),
+        "--gutter-right" => gutter_option(args, index, option, &mut options.gutter_right),
+        other => Err(UsageError::new(format!("unknown option '{other}'"))),
+    }
 }
 
 /// A `run` option whose value parses with the config file's grammar.
@@ -363,6 +377,19 @@ fn client_command(subcommand: &str, args: &[OsString]) -> Result<Request, UsageE
         "show" => panel_command(|panel| Request::Show { panel }, subcommand, args),
         "hide" => panel_command(|panel| Request::Hide { panel }, subcommand, args),
         "focus" => panel_command(|panel| Request::Focus { panel }, subcommand, args),
+        "status" => status_command(subcommand, args),
+        "subscribe" => no_arg_command(Request::Subscribe, subcommand, args),
+        "quit" => no_arg_command(Request::Quit, subcommand, args),
+        "reload" => no_arg_command(Request::Reload, subcommand, args),
+        value => value_command(value, args),
+    }
+}
+
+/// A client command that reads a value from its arguments (`set-edge`,
+/// `set-size`, `resize`, `set-gutters`, `set-output`, `set-layer`,
+/// `set-reserve` and `set-keyboard`).
+fn value_command(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
+    match subcommand {
         "set-edge" => setting_command(subcommand, args, "an edge", |panel, edge| {
             Request::SetEdge { panel, edge }
         }),
@@ -381,10 +408,6 @@ fn client_command(subcommand: &str, args: &[OsString]) -> Result<Request, UsageE
                 Request::SetKeyboard { panel, keyboard }
             })
         }
-        "status" => status_command(subcommand, args),
-        "subscribe" => no_arg_command(Request::Subscribe, subcommand, args),
-        "quit" => no_arg_command(Request::Quit, subcommand, args),
-        "reload" => no_arg_command(Request::Reload, subcommand, args),
         other => Err(unknown_command(other)),
     }
 }
