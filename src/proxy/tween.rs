@@ -51,8 +51,8 @@ pub(super) use drive::{Slot, advance, is_running, on_app_commit, start, stop};
 
 /// The first serial the proxy mints for a configure it sends the app itself
 /// (D8). Serial values are opaque, so this starting point only makes a
-/// collision with a compositor's serial unlikely; the ack route reads
-/// [`MintedSerials`] membership, never the value.
+/// collision with a compositor's serial unlikely; the ack route reads the
+/// proxy's own minted values, never a range of someone else's.
 const FIRST_MINTED_SERIAL: u32 = 1 << 31;
 
 /// How many minted serials the proxy remembers at once (D8). The app may ack
@@ -101,14 +101,20 @@ pub(super) fn waits_for_app(edge: Edge, surface: (u32, u32), target: u32) -> boo
     across(edge, surface) < target
 }
 
-/// The serials the proxy minted for its own configures and the app has not
-/// acked (D8). The layer surface never saw these, so an ack that names one is
-/// swallowed. Membership, not a value range, decides the route: a
-/// compositor's serials are opaque and may be larger than any minted one.
+/// The serials the proxy minted for its own configures (D8). The layer
+/// surface never saw these, so an ack that names one is swallowed. Every
+/// value from [`FIRST_MINTED_SERIAL`] up to the counter was minted, so a
+/// serial the bound forgot, or one a second ack names again, keeps the
+/// proxy's route instead of reaching the layer surface. A compositor's
+/// opaque serial is swallowed only where it collides with a minted value,
+/// which the high starting point makes unlikely.
 #[derive(Debug)]
 pub(super) struct MintedSerials {
     next: Cell<u32>,
     live: RefCell<VecDeque<u32>>,
+    /// Whether the counter wrapped, so the whole range from
+    /// [`FIRST_MINTED_SERIAL`] up has been minted at least once.
+    wrapped: Cell<bool>,
 }
 
 impl MintedSerials {
@@ -117,6 +123,7 @@ impl MintedSerials {
         Self {
             next: Cell::new(FIRST_MINTED_SERIAL),
             live: RefCell::new(VecDeque::new()),
+            wrapped: Cell::new(false),
         }
     }
 
@@ -128,6 +135,7 @@ impl MintedSerials {
         loop {
             let serial = self.next.get();
             self.next.set(if serial == u32::MAX {
+                self.wrapped.set(true);
                 FIRST_MINTED_SERIAL
             } else {
                 serial + 1
@@ -144,21 +152,33 @@ impl MintedSerials {
     }
 
     /// Whether `serial` names a configure the proxy minted (D8): true when it
-    /// does, and the serial is forgotten with every earlier minted serial,
-    /// because an ack consumes them all.
+    /// does. A live serial is forgotten with every earlier minted serial,
+    /// because an ack consumes them all. A serial the bound already forgot,
+    /// or one that a repeated ack names, is still swallowed: forwarding it
+    /// would ack a serial the layer surface never configured.
     pub(super) fn swallow(&self, serial: u32) -> bool {
         let mut live = self.live.borrow_mut();
         let Some(index) = live.iter().position(|minted| *minted == serial) else {
-            return false;
+            return self.was_minted(serial);
         };
         live.drain(..=index);
         true
     }
 
+    /// Whether the proxy minted `serial` since the last [`Self::reset`] (D8):
+    /// `next` names the first value not yet minted, and a counter that
+    /// wrapped has minted the whole range.
+    fn was_minted(&self, serial: u32) -> bool {
+        serial >= FIRST_MINTED_SERIAL && (self.wrapped.get() || serial < self.next.get())
+    }
+
     /// Forgets every minted serial (D8): the app's `xdg_surface` is gone, so
-    /// no ack can still name one.
+    /// no ack can still name one, and the next window's configures start a
+    /// fresh range.
     pub(super) fn reset(&self) {
         self.live.borrow_mut().clear();
+        self.next.set(FIRST_MINTED_SERIAL);
+        self.wrapped.set(false);
     }
 }
 
