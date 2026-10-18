@@ -498,14 +498,7 @@ impl fmt::Display for LineError {
     }
 }
 
-impl std::error::Error for LineError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            Self::TooLong | Self::Timeout => None,
-        }
-    }
-}
+impl std::error::Error for LineError {}
 
 /// Read one line from `stream`, bounded in size and time: the read stops
 /// with [`LineError::TooLong`] as soon as the line passes `limit` bytes

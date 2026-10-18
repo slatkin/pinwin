@@ -204,14 +204,7 @@ impl fmt::Display for StartError {
     }
 }
 
-impl std::error::Error for StartError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Refused(_) => None,
-            Self::Io(error) => Some(error),
-        }
-    }
-}
+impl std::error::Error for StartError {}
 
 /// One panel's socket (D2).
 #[derive(Debug)]

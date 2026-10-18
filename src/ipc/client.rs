@@ -52,15 +52,7 @@ impl fmt::Display for CallError {
     }
 }
 
-impl std::error::Error for CallError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Connect { source, .. } => Some(source),
-            Self::Send(error) | Self::Receive(error) => Some(error),
-            Self::InvalidReply(_) => None,
-        }
-    }
-}
+impl std::error::Error for CallError {}
 
 /// Connect to the daemon socket at `path`, send `request` as one line and
 /// read one reply line, every wait bounded by [`REPLY_TIMEOUT`] (spec

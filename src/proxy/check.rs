@@ -69,14 +69,7 @@ impl fmt::Display for CheckError {
     }
 }
 
-impl std::error::Error for CheckError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Connect(error) | Self::Dispatch(error) => Some(error),
-            Self::NoAnswer(_) | Self::NoLayerShell => None,
-        }
-    }
-}
+impl std::error::Error for CheckError {}
 
 /// Check the compositor before the daemon takes the display's socket (D12):
 /// the daemon prints the message and exits 1 when this fails, so no daemon

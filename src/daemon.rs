@@ -123,15 +123,7 @@ impl fmt::Display for SocketError {
     }
 }
 
-impl std::error::Error for SocketError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Live => None,
-            Self::Path(error) => Some(error),
-            Self::Io(error) => Some(error),
-        }
-    }
-}
+impl std::error::Error for SocketError {}
 
 /// The daemon socket path for a display (spec "Daemon socket"):
 /// `$XDG_RUNTIME_DIR/pinwin/<display>.sock`. The runtime directory is used as

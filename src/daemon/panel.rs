@@ -87,14 +87,7 @@ impl fmt::Display for CommandError {
     }
 }
 
-impl std::error::Error for CommandError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Wake(error) => Some(error),
-            Self::Ended | Self::Timeout(_) => None,
-        }
-    }
-}
+impl std::error::Error for CommandError {}
 
 /// The hosted app's `app_id` (row 11.1, D14), shared by the panel thread that
 /// reads it from the panel window's `xdg_toplevel.set_app_id` and the daemon's

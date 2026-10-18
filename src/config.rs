@@ -352,14 +352,7 @@ impl fmt::Display for ConfigError {
     }
 }
 
-impl std::error::Error for ConfigError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Read { source, .. } => Some(source),
-            Self::Invalid { .. } => None,
-        }
-    }
-}
+impl std::error::Error for ConfigError {}
 
 /// The daemon preferences (spec "Daemon lifetime preference").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

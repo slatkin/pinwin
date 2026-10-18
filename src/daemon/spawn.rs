@@ -83,14 +83,7 @@ impl fmt::Display for StartError {
     }
 }
 
-impl std::error::Error for StartError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Spawn(error) => Some(error),
-            Self::Failed(_) | Self::NoAnswer { .. } => None,
-        }
-    }
-}
+impl std::error::Error for StartError {}
 
 /// Start `pinwin daemon` in the background and wait up to [`START_TIMEOUT`]
 /// for it to report readiness (spec "Run starts the daemon"). The caller
