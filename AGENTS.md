@@ -295,15 +295,19 @@ and several modules wait for the rows that wire them in (D15).
   is known, and the fractional-scale watch a surface's one
   `wp_fractional_scale_v1` needs. It sends no commit of its own: the values
   ride the commit coordinator (D7).
-- `src/proxy/buffers.rs` — the panel surface's buffer sizes (row 10.1, D8):
-  the `wl_shm` pool and `zwp_linux_dmabuf_v1` params handlers that record
-  each buffer's pixel size when it is created and forget it when the app
-  destroys it, and the panel surface's attached buffer and buffer scale the
-  composition is clamped to. A buffer the proxy did not see created has no
-  size, so the whole buffer draws.
+- `src/proxy/buffers.rs` — the panel surface's buffer sizes and ownership
+  (row 10.1, D8): the `wl_shm` pool and `zwp_linux_dmabuf_v1` params handlers
+  that record each buffer's pixel size when it is created and forget it when
+  the app destroys it, the panel surface's attached buffer and buffer scale
+  the composition is clamped to, and the `PanelBuffers` ownership model
+  (`App`, `Proxy`, `Compositor`) with its kept buffer handle that bounds the
+  tween crop. A buffer the proxy did not see created has no size, so the
+  whole buffer draws. A compositor release is forwarded only when it belongs
+  to an app attach; a proxy-made attach of an app-held buffer is a borrow
+  whose release is swallowed.
 - `src/proxy/commit.rs` — the commit coordinator (row 8.1, D7): the dirty
-  flag the app's four pending-state requests set — `attach`, `damage`,
-  `damage_buffer` and `set_buffer_scale` — and the FIFO queue of proxy
+  flag every app request that sets pending surface state sets (`frame` and
+  `destroy` excluded), and the FIFO queue of proxy
   changes, so a change on a clean surface is applied at once with the
   proxy's own commit (inject) and one on a dirty surface waits for the
   app's next commit (piggyback), which applies the queue in order just
@@ -318,9 +322,8 @@ and several modules wait for the rows that wire them in (D15).
   "Change while hidden"): the shown/hidden state the routing keeps across a
   re-take and every re-dock, the null-buffer commit and released reserve
   zone a hide applies, the layer-surface state re-send and kept-buffer
-  attach a show applies once the app acks its configure, the buffer release
-  a hidden panel owes its app, the release bookkeeping of a proxy-made
-  attach, and the `shown` and `hidden` events published once per real
+  attach a show applies once the app acks its configure, and the `shown`
+  and `hidden` events published once per real
   change. `src/proxy.rs` dispatches `toggle`, `show` and `hide` to it,
   `src/proxy/commit.rs` reads the state on every app attach and commit, and
   `src/proxy/reserve.rs` carries the released zone a hide applies. Its state
