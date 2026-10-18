@@ -1,7 +1,8 @@
 //! The live apply of a layout change (replace-terminal-with-app-host row 6.6,
 //! spec "Apply layout without restarting the app", "Validate a change before
-//! applying it"): `set-edge`, `set-size`, `resize`, `set-reserve` and
-//! `set-layer` change a running panel's settings and re-send to the
+//! applying it"): `set-edge`, `set-size`, `resize`, `set-gutters`,
+//! `set-reserve` and `set-layer` change a running panel's settings and
+//! re-send to the
 //! compositor what changed, on the layer surface the panel window already
 //! docks with. The app keeps its process and its window.
 //!
@@ -26,10 +27,13 @@
 //!   `set-output` and a `closed` surface still re-dock, because the output
 //!   of a live layer surface is fixed at its creation.
 //!
-//! Gutters have no command of their own (the design keeps them to the options
-//! and the config file), so they reach the apply path only inside the
-//! settings a change carries: an edge move re-reads them into the margins of
-//! the new edge, and every plan validates the geometry they take part in.
+//! `set-gutters` changes one or more of the four gutters (D7): an absent
+//! field keeps the panel's current gutter, so a client can move one gutter
+//! without naming the other three. The change has no duration of its own, so
+//! it always snaps, even when the panel has a `tween_ms`. Gutters also reach
+//! the apply path inside the settings an edge move carries, which re-reads
+//! them into the margins of the new edge, and every plan validates the
+//! geometry they take part in.
 //!
 //! The commit that applies the re-sent state is the app's own (D7): the proxy
 //! sends no separate commit on the app's surface, exactly as the crop's
@@ -44,7 +48,7 @@ use crate::cli::Amount;
 use crate::config::PanelSettings;
 use crate::daemon::events::Bus;
 use crate::daemon::panel::PanelReply;
-use crate::geometry::{Geometry, HeldGap, OutputSize, ReserveMode, Size};
+use crate::geometry::{Geometry, Gutters, HeldGap, OutputSize, ReserveMode, Size};
 use crate::ipc::{ErrorKind, ErrorReply, Request};
 use crate::name::PanelName;
 
@@ -122,6 +126,7 @@ fn is_layout_request(request: &Request) -> bool {
         Request::SetEdge { .. }
             | Request::SetSize { .. }
             | Request::Resize { .. }
+            | Request::SetGutters { .. }
             | Request::SetReserve { .. }
             | Request::SetLayer { .. }
     )
@@ -156,6 +161,24 @@ fn plan_change(
             reserve: reserve.unwrap_or(current.reserve()),
             ..current.clone()
         },
+        Request::SetGutters {
+            top,
+            bottom,
+            left,
+            right,
+            ..
+        } => {
+            let gutters = current.gutters();
+            PanelSettings {
+                gutters: Gutters::new(
+                    left.unwrap_or(gutters.left()),
+                    right.unwrap_or(gutters.right()),
+                    top.unwrap_or(gutters.top()),
+                    bottom.unwrap_or(gutters.bottom()),
+                ),
+                ..current.clone()
+            }
+        }
         Request::SetReserve { reserve, .. } => PanelSettings {
             reserve: *reserve,
             ..current.clone()
@@ -199,7 +222,8 @@ fn plan_change(
 
 /// The duration a layout command animates over (D8): `set-size` and `resize`
 /// use their `ms` or the panel's `tween_ms`, clamped; every other command
-/// returns `None`.
+/// returns `None`, so `set-gutters` and an edge change always snap even when
+/// the panel has a `tween_ms` (D7, spec "Other fields snap").
 fn request_duration(request: &Request, panel_ms: u32) -> Option<u32> {
     let ms = match request {
         Request::SetSize { ms, .. } | Request::Resize { ms, .. } => *ms,

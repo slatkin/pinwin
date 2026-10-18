@@ -748,3 +748,7 @@ fn a_fallback_dock_keeps_the_layout_commands_applicable() {
         "the docked panel is configurable again"
     );
 }
+
+// The gutter tests are a child module so this file stays under the
+// 800-line limit.
+mod gutters;

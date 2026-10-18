@@ -487,7 +487,7 @@ fn the_client_gives_up_when_no_reply_comes() {
 fn every_client_subcommand_has_one_request_variant() {
     assert_eq!(cli::SUBCOMMANDS[2..], super::REQUEST_COMMANDS[..]);
 
-    let samples: [&[&str]; 15] = [
+    let samples: [&[&str]; 16] = [
         &["toggle", "notes"],
         &["show", "notes"],
         &["hide", "notes"],
@@ -495,6 +495,7 @@ fn every_client_subcommand_has_one_request_variant() {
         &["set-edge", "notes", "right"],
         &["set-size", "notes", "640px"],
         &["resize", "notes", "-40px"],
+        &["set-gutters", "notes", "--top", "8"],
         &["set-output", "notes", "eDP-1"],
         &["set-layer", "notes", "overlay"],
         &["set-reserve", "notes", "push"],
@@ -683,4 +684,54 @@ fn a_create_request_carries_the_gutters() {
         error.message().starts_with("gutter_left:"),
         "the message names the field: {error}"
     );
+}
+
+/// `set-gutters` carries the gutters it names and leaves the rest absent, so
+/// a client changes one gutter without sending the others (spec "Gutter
+/// request fields", D7).
+#[test]
+fn the_set_gutters_request_round_trips_its_fields() {
+    let one =
+        Request::parse(br#"{"cmd":"set-gutters","panel":"notes","left":-12}"#).expect("one gutter");
+    assert_eq!(
+        one,
+        Request::SetGutters {
+            panel: notes(),
+            top: None,
+            bottom: None,
+            left: Some(-12),
+            right: None,
+        }
+    );
+    assert_eq!(
+        one.to_line(),
+        "{\"cmd\":\"set-gutters\",\"panel\":\"notes\",\"left\":-12}\n",
+        "a negative gutter is valid"
+    );
+
+    let several = Request::parse(br#"{"cmd":"set-gutters","panel":"notes","top":8,"bottom":8}"#)
+        .expect("two gutters");
+    assert_eq!(
+        several.to_line(),
+        "{\"cmd\":\"set-gutters\",\"panel\":\"notes\",\"top\":8,\"bottom\":8}\n"
+    );
+    assert_eq!(
+        Request::parse(several.to_line().as_bytes()).expect("the request round-trips"),
+        several
+    );
+
+    // A single gutter keeps the other three as absent fields.
+    let one = Request::parse(br#"{"cmd":"set-gutters","panel":"notes","right":4}"#)
+        .expect("one far gutter");
+    let Request::SetGutters {
+        top,
+        bottom,
+        left,
+        right,
+        ..
+    } = one
+    else {
+        panic!("expected set-gutters");
+    };
+    assert_eq!((top, bottom, left, right), (None, None, None, Some(4)));
 }

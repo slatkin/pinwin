@@ -78,6 +78,7 @@ foreground. The other subcommands send one request to the daemon and exit:
 | `set-edge` | Move a panel to another edge. |
 | `set-size` | Set a panel's size, optionally with `--reserve push\|cover` and `--ms <N>`. |
 | `resize` | Change a panel's size by a signed amount, optionally with `--reserve push\|cover` and `--ms <N>`. |
+| `set-gutters` | Change one or more of a panel's gutters with `--top`, `--bottom`, `--left` and `--right`, each a whole number of pixels. |
 | `set-output` | Move a panel to another output. |
 | `set-layer` | Change the layer-shell layer of a panel. |
 | `set-reserve` | Change whether a panel pushes or covers tiled windows. |

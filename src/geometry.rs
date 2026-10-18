@@ -123,6 +123,30 @@ impl Gutters {
         }
     }
 
+    /// The gutter at the output's left edge.
+    #[must_use]
+    pub const fn left(self) -> i32 {
+        self.left
+    }
+
+    /// The gutter at the output's right edge.
+    #[must_use]
+    pub const fn right(self) -> i32 {
+        self.right
+    }
+
+    /// The gutter at the output's top edge.
+    #[must_use]
+    pub const fn top(self) -> i32 {
+        self.top
+    }
+
+    /// The gutter at the output's bottom edge.
+    #[must_use]
+    pub const fn bottom(self) -> i32 {
+        self.bottom
+    }
+
     /// The near gutter: the one on the panel's edge.
     #[must_use]
     pub const fn near(self, edge: Edge) -> i32 {

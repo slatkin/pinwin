@@ -39,9 +39,11 @@ binary-only now and every row of its tasks is landed.
 - `src/cli.rs` — the hand-written command line (row 4.3): `run` with the
   options of spec "Run options", the four `--gutter-*` values among them as
   whole numbers of pixels, `daemon`, and one client subcommand for each
-  daemon request. It produces the command value and the `PanelOptions` of the
-  config file and opens no socket. `src/main.rs` compiles it and dispatches
-  its commands; its unit tests are `src/cli/tests.rs`.
+  daemon request, the `set-gutters` command with its `--top`, `--bottom`,
+  `--left` and `--right` among them. It produces the command value and the
+  `PanelOptions` of the config file and opens no socket. `src/main.rs`
+  compiles it and dispatches its commands; its unit tests are
+  `src/cli/tests.rs`.
 - `src/fd.rs` — the raw descriptors the daemon, the proxy and the client
   share (D12): the one `poll` wait, which takes `None` for an endless wait,
   retries `EINTR` with the time left against its deadline and returns a real
@@ -52,6 +54,7 @@ binary-only now and every row of its tasks is landed.
 - `src/ipc.rs` — the daemon's wire format (D13): the request enum with one
   variant for each client subcommand and the `create` request `pinwin run`
   sends (D2), with its `show_existing` flag absent when false (D6), the
+  `set-gutters` request with its optional whole-number gutters (D7), the
   reply with its error kinds, its display for a new panel, its `existing`
   marker for a panel that was already there and its status reply's panel
   fields (spec "Status", "Run an app in a panel", "Show an existing
@@ -168,10 +171,11 @@ binary-only now and every row of its tasks is landed.
   the same grammar and `src/main.rs` reads the file; its unit tests are
   `src/config/tests.rs`.
 - `src/geometry.rs` — the display-free geometry core: `Edge`, `Size` (pixels
-  or percent), `Gutters`, `ReserveMode`, the layer-surface anchors, margins
-  and size, the reserved strip and the held gap (D9), whose strip follows an
-  animation only when the panel pushed before the change. `src/main.rs`
-  compiles it; the option parser and the reserve surface are its first users.
+  or percent), `Gutters` with its four per-edge accessors, `ReserveMode`, the
+  layer-surface anchors, margins and size, the reserved strip and the held
+  gap (D9), whose strip follows an animation only when the panel pushed
+  before the change. `src/main.rs` compiles it; the option parser, the apply
+  path and the reserve surface are its users.
 - `src/proxy.rs` — the panel thread (D1, D2, D3, D5, D12): one wl-proxy
   `State` with its acceptor, the loop that polls the state's `poll_fd`, the
   command eventfd and the app's pidfd, the pass-through dispatch under the
@@ -208,7 +212,8 @@ binary-only now and every row of its tasks is landed.
   "Apply layout without restarting the app", "Validate a change before
   applying it"): the plan that resolves a change's settings against the
   panel's output and validates them, the size and the optional reserve mode
-  as one plan, the app-size rule (a pure edge move
+  as one plan, `set-gutters` merging each given gutter into the settings and
+  always snapping (D7), the app-size rule (a pure edge move
   sends no new size, a size change exactly one), the re-send of the layer
   surface's size, anchors and margins on the surface the window already
   docks with, the in-place `set-layer` layer change, the resize arithmetic,

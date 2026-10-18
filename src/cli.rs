@@ -27,7 +27,7 @@ use crate::name::PanelName;
 /// "Command-line client"). The README's command table is checked against
 /// this list in both directions, as the configuration keys are.
 #[cfg(test)]
-pub const SUBCOMMANDS: [&str; 17] = [
+pub const SUBCOMMANDS: [&str; 18] = [
     "run",
     "daemon",
     "toggle",
@@ -37,6 +37,7 @@ pub const SUBCOMMANDS: [&str; 17] = [
     "set-edge",
     "set-size",
     "resize",
+    "set-gutters",
     "set-output",
     "set-layer",
     "set-reserve",
@@ -367,6 +368,7 @@ fn client_command(subcommand: &str, args: &[OsString]) -> Result<Request, UsageE
         }),
         "set-size" => set_size(subcommand, args),
         "resize" => resize(subcommand, args),
+        "set-gutters" => set_gutters(subcommand, args),
         "set-output" => set_output(subcommand, args),
         "set-layer" => setting_command(subcommand, args, "a layer", |panel, layer| {
             Request::SetLayer { panel, layer }
@@ -441,6 +443,47 @@ fn resize(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
         by: setting(subcommand, &raw)?,
         reserve,
         ms,
+    })
+}
+
+/// `set-gutters <name> [--top N] [--bottom N] [--left N] [--right N]`
+/// (spec "Gutter command", D7): at least one gutter, each a whole number of
+/// pixels, the options in any order after the name, and a repeated option
+/// keeps its last value.
+fn set_gutters(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
+    let expected = || {
+        UsageError::new(format!(
+            "{subcommand}: expected <name> [--top N] [--bottom N] [--left N] [--right N]"
+        ))
+    };
+    let (raw_panel, mut rest) = args.split_first().ok_or_else(expected)?;
+    let panel = panel(subcommand, raw_panel)?;
+    let mut top = None;
+    let mut bottom = None;
+    let mut left = None;
+    let mut right = None;
+    while let Some((option, tail)) = rest.split_first() {
+        let (raw, next) = tail.split_first().ok_or_else(expected)?;
+        match text("option", option)? {
+            "--top" => top = Some(gutter("--top", raw)?),
+            "--bottom" => bottom = Some(gutter("--bottom", raw)?),
+            "--left" => left = Some(gutter("--left", raw)?),
+            "--right" => right = Some(gutter("--right", raw)?),
+            _ => return Err(expected()),
+        }
+        rest = next;
+    }
+    if [top, bottom, left, right].iter().all(Option::is_none) {
+        return Err(UsageError::new(format!(
+            "{subcommand}: expected at least one of --top, --bottom, --left or --right"
+        )));
+    }
+    Ok(Request::SetGutters {
+        panel,
+        top,
+        bottom,
+        left,
+        right,
     })
 }
 

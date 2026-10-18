@@ -107,6 +107,7 @@ impl Registry {
             | Request::SetEdge { panel, .. }
             | Request::SetSize { panel, .. }
             | Request::Resize { panel, .. }
+            | Request::SetGutters { panel, .. }
             | Request::SetOutput { panel, .. }
             | Request::SetLayer { panel, .. }
             | Request::SetReserve { panel, .. }

@@ -337,6 +337,16 @@ fn the_client_subcommands_parse_their_values() {
         }
     );
     assert_eq!(
+        client(&["set-gutters", "notes", "--top", "8", "--bottom", "8"]),
+        Request::SetGutters {
+            panel: name("notes"),
+            top: Some(8),
+            bottom: Some(8),
+            left: None,
+            right: None,
+        }
+    );
+    assert_eq!(
         client(&["set-output", "notes", "DP-1"]),
         Request::SetOutput {
             panel: name("notes"),
@@ -437,6 +447,63 @@ fn the_size_commands_take_a_reserve_mode() {
     };
     assert_eq!(by.size(), size("10%"));
     assert!(!by.shrinks());
+}
+
+/// `set-gutters` sends the gutters it names, each a whole number of pixels
+/// (spec "Gutter command", "No gutter option", D7).
+#[test]
+fn the_gutter_command_takes_whole_pixels() {
+    assert_eq!(
+        client(&[
+            "set-gutters",
+            "notes",
+            "--right",
+            "-4",
+            "--left",
+            "12",
+            "--right",
+            "6",
+        ]),
+        Request::SetGutters {
+            panel: name("notes"),
+            top: None,
+            bottom: None,
+            left: Some(12),
+            right: Some(6),
+        },
+        "the options come in any order and a repeated one keeps its last value"
+    );
+
+    let error = usage(&["set-gutters", "notes"]);
+    assert_eq!(
+        error.to_string(),
+        "pinwin: set-gutters: expected at least one of --top, --bottom, --left or --right"
+    );
+    assert_eq!(UsageError::EXIT_CODE, 2);
+
+    let error = usage(&["set-gutters", "notes", "--top", "1.5"]);
+    assert_eq!(
+        error.to_string(),
+        "pinwin: --top: expected a whole number of pixels, got '1.5'"
+    );
+    assert_eq!(UsageError::EXIT_CODE, 2);
+
+    // A gutter option without its value, or one that is not an option, is a
+    // usage error too.
+    for raw in [
+        &["set-gutters", "notes", "--top"][..],
+        &["set-gutters", "notes", "--frobnicate", "8"][..],
+        &["set-gutters"][..],
+    ] {
+        let error = usage(raw);
+        assert!(
+            error
+                .to_string()
+                .starts_with("pinwin: set-gutters: expected <name> [--top N]"),
+            "raw = {raw:?}, error = {error}"
+        );
+        assert_eq!(UsageError::EXIT_CODE, 2, "raw = {raw:?}");
+    }
 }
 
 /// A missing, extra or unreadable client argument is a usage error that

@@ -62,7 +62,7 @@ pub const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 /// "Command-line client"). The drift test checks the two lists against each
 /// other in both directions.
 #[cfg(test)]
-pub const REQUEST_COMMANDS: [&str; 15] = [
+pub const REQUEST_COMMANDS: [&str; 16] = [
     "toggle",
     "show",
     "hide",
@@ -70,6 +70,7 @@ pub const REQUEST_COMMANDS: [&str; 15] = [
     "set-edge",
     "set-size",
     "resize",
+    "set-gutters",
     "set-output",
     "set-layer",
     "set-reserve",
@@ -161,6 +162,20 @@ pub enum Request {
         reserve: Option<ReserveMode>,
         #[serde(skip_serializing_if = "Option::is_none")]
         ms: Option<u32>,
+    },
+    /// Change one or more of the panel's four gutters; an absent field keeps
+    /// the panel's current gutter (spec "Set gutters", "Gutter request
+    /// fields", D7).
+    SetGutters {
+        panel: PanelName,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        top: Option<i32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bottom: Option<i32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        left: Option<i32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        right: Option<i32>,
     },
     /// Open the panel on another output.
     SetOutput { panel: PanelName, output: String },
@@ -276,6 +291,28 @@ impl Request {
                 reserve: optional_setting("reserve", reserve.as_deref())?,
                 ms: millis(ms)?,
             },
+            RawRequest::SetGutters {
+                panel,
+                top,
+                bottom,
+                left,
+                right,
+            } => {
+                let top = gutter("top", top)?;
+                let bottom = gutter("bottom", bottom)?;
+                let left = gutter("left", left)?;
+                let right = gutter("right", right)?;
+                if [top, bottom, left, right].iter().all(Option::is_none) {
+                    return Err(no_gutter_field());
+                }
+                Self::SetGutters {
+                    panel: panel_name(&panel)?,
+                    top,
+                    bottom,
+                    left,
+                    right,
+                }
+            }
             RawRequest::SetOutput { panel, output } => Self::SetOutput {
                 panel: panel_name(&panel)?,
                 output,
@@ -352,6 +389,17 @@ enum RawRequest {
         reserve: Option<String>,
         #[serde(default)]
         ms: Option<Number>,
+    },
+    SetGutters {
+        panel: String,
+        #[serde(default)]
+        top: Option<Number>,
+        #[serde(default)]
+        bottom: Option<Number>,
+        #[serde(default)]
+        left: Option<Number>,
+        #[serde(default)]
+        right: Option<Number>,
     },
     SetOutput {
         panel: String,
@@ -452,6 +500,33 @@ where
 /// over-`i64` value is none, so the field turns it into `invalid_value`.
 fn whole(number: &Number) -> Option<i64> {
     number.to_string().parse().ok()
+}
+
+/// One wire gutter: an absent field keeps the panel's current gutter, and a
+/// fractional or an over-`i32` value is the known command's `invalid_value`,
+/// not a request line the parser cannot read (spec "Gutter request fields",
+/// D7).
+fn gutter(field: &str, raw: Option<Number>) -> Result<Option<i32>, RequestError> {
+    let Some(number) = raw else {
+        return Ok(None);
+    };
+    whole(&number)
+        .and_then(|value| i32::try_from(value).ok())
+        .map(Some)
+        .ok_or_else(|| {
+            RequestError::InvalidValue(format!(
+                "{field}: expected a whole number of pixels, got {number}"
+            ))
+        })
+}
+
+/// The `set-gutters` request that names no gutter: the command is known but
+/// incomplete, so it is `invalid_value` with the fields it expects (spec
+/// "Gutter request fields", D7).
+fn no_gutter_field() -> RequestError {
+    RequestError::InvalidValue(
+        "set-gutters: expected at least one of top, bottom, left or right".to_owned(),
+    )
 }
 
 /// The value error of a `by` number the grammar cannot hold.
