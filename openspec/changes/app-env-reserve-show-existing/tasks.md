@@ -8,7 +8,7 @@ wrong.
 
 ## 1. Run environment and client socket lookup
 
-- [ ] 1.1 Add `daemon::client_socket_path()` with its pure form and source tag, and
+- [x] 1.1 Add `daemon::client_socket_path()` with its pure form and source tag, and
   `PathError::RelativeSocket` (design D1). Use it in `run_app`, `send` and `subscribe`;
   `bind_from_env` keeps `socket_path_from_env`. Update the README sentence about the
   variables pinwin reads, and the `src/daemon.rs` entry in `AGENTS.md`. Verify: unit tests in
@@ -17,12 +17,12 @@ wrong.
   test where `PINWIN_SOCKET` names the running daemon and `WAYLAND_DISPLAY` names another
   display, and `pinwin status` exits 0 (spec "Variable wins over the display",
   "Relative path", "Daemon ignores the variable").
-- [ ] 1.2 Set `PINWIN_PANEL` and `PINWIN_SOCKET` in `Exec::new` together with
+- [x] 1.2 Set `PINWIN_PANEL` and `PINWIN_SOCKET` in `Exec::new` together with
   `WAYLAND_DISPLAY`, with an absolute socket path (D2). Document both variables in the README
   section on `pinwin run`. Verify: a `tests/command_line_ipc.rs` test runs
   `pinwin run --name notes -- env` against the test daemon, reads its output, and checks `PINWIN_PANEL=notes` and a `PINWIN_SOCKET` equal to the daemon's socket path, with
   inherited values of both variables replaced (spec "Run an app", "Run from inside a panel").
-- [ ] 1.3 Do not start a daemon when the path comes from `PINWIN_SOCKET` (D3). Verify: a
+- [x] 1.3 Do not start a daemon when the path comes from `PINWIN_SOCKET` (D3). Verify: a
   `tests/command_line_ipc.rs` test with `PINWIN_SOCKET` set to a path where nothing listens:
   `pinwin run` exits 1, prints a message, runs nothing, and no daemon socket appears in the
   test's runtime directory (spec "No daemon at the set socket").
