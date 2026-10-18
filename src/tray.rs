@@ -62,12 +62,13 @@ pub fn icon_for(panels: &[Option<String>]) -> String {
 /// The theme icon name `app_id` may be used as, or `None` when it is not valid
 /// (row 11.1, D14, spec "One tray icon while panels exist"): 1 to 128
 /// characters from letters, digits, `.`, `_` and `-`, not starting with `.`.
-/// A host may take a theme name that looks like a path as a file, so a
-/// separator fails the character rule too.
+/// Letters and digits are the Unicode ones the spec names, so a non-ASCII
+/// letter is valid. A host may take a theme name that looks like a path as a
+/// file, so a separator fails the character rule too.
 fn theme_name(app_id: &str) -> Option<&str> {
     let allowed = app_id
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+        .chars()
+        .all(|character| character.is_alphanumeric() || matches!(character, '.' | '_' | '-'));
     let valid = (1..=128).contains(&app_id.chars().count()) && !app_id.starts_with('.') && allowed;
     valid.then_some(app_id)
 }

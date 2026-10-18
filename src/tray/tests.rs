@@ -195,7 +195,7 @@ fn an_unusable_app_id_gives_the_fallback_icon() {
         "a/b".to_owned(),
         "/absolute".to_owned(),
         "with space".to_owned(),
-        "ümlaut".to_owned(),
+        "notes😀".to_owned(),
         "x".repeat(129),
     ] {
         assert_eq!(
@@ -224,9 +224,9 @@ fn the_theme_name_accepts_only_a_plain_icon_name() {
     assert_eq!(theme_name("a/b"), None, "a separator looks like a path");
     assert_eq!(theme_name("a b"), None, "a space is not in the grammar");
     assert_eq!(
-        theme_name("\u{fc}mlaut"),
-        None,
-        "only ASCII letters are allowed"
+        theme_name("org.пример.Notes"),
+        Some("org.пример.Notes"),
+        "a non-ASCII letter is a letter"
     );
     let longest = "x".repeat(128);
     assert_eq!(theme_name(&longest), Some(longest.as_str()));
