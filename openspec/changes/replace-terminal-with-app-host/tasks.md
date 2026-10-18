@@ -360,6 +360,36 @@ below). Its code does not enter pinwin; only the findings do.
     separately (the flicker was already present after `set-layer top top`).
     Suspect: the `top` layer already holds the noctalia bar, so a second exclusive zone at the
     same edge (the reserve strip) may drive the compositor's layout. Not yet confirmed.
+  - MECHANISM (captured 2026-10-18 with `umbriel subscribe layers,outputs` during the flicker):
+    the moved panel's **reserve** surface alternates mapped (w=2346, h=327) and unmapped (w=0,
+    h=0) about 490 times a second (2457 `layers` events in ~5 s), while the moved panel's
+    **window** surface stays unmapped the whole time (`anchor:[]`, w=0, h=0, exclusive_zone=0).
+    Each reserve map/unmap changes the output's usable area (height 947 mapped vs 1274
+    unmapped), which marks the layout dirty and re-tiles the tiled windows — that is the
+    flicker. The moved window surface is never initialized because the re-dock creates a new
+    layer surface for the app's `wl_surface` but sends no commit, and the app (already showing
+    the same size) does not commit one either, so `zwlr_layer_surface_v1` never gets its
+    initial commit. The reserve alternates because each `recreate_reserve` makes a fresh
+    surface whose first-configure map cannot be re-run after an unmap.
+  - ROOT CAUSE, flicker (fixed 2026-10-18): `Globals::global_of_output`
+    (`src/proxy/output.rs`) searched only the proxy's own tracked `wl_output` binds, but the
+    reserve surface's `enter` names the `wl_output` the proxy forwarded for the app's bind — a
+    different object on the proxy's connection. Instrumented capture:
+    `global_of_output id=31 tracked=[(13, 52), (15, 53)] client=[(31, 52), (34, 53)]`; the
+    entered object is global 52 in the app-bind table, yet the lookup returned `None`, so
+    `on_reserve_entered` set `reserve_output = None` and `follow_reserve` recreated the reserve
+    ~370 times a second. Fix: `global_of_output` consults `client_output_names` first, then the
+    proxy's own binds. Verified: the reserve stays mapped, no oscillation, `cargo nextest run
+    -p pinwin` 306/306.
+  - DEFECT, second bug in the same `redock` (open 2026-10-18): with the flicker gone, the
+    moved panel's window stays unmapped and the compositor ends its connection:
+    `zwlr_layer_surface_v1#60 code 2: layer_surface has never been configured`; the panel ends.
+    The re-dock creates a new `zwlr_layer_surface_v1` for the app's `wl_surface` but sends no
+    commit, and the app (already showing the same size) sends none either, so the new surface
+    is never configured and the app's next buffer commit is a protocol error. `redock` also
+    serves `set-output` and the `closed` re-dock (monitor unplug), so the fix belongs there:
+    change the layer in place with `zwlr_layer_surface_v1.set_layer` plus a commit through the
+    commit coordinator, and keep the destroy/recreate re-dock only for a real output change.
 
 ## Workflow follow-up
 

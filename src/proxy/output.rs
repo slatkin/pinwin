@@ -365,9 +365,15 @@ impl Globals {
 
     /// The global name of a proxy-bound `wl_output` object (D11): the join
     /// that turns the reserve surface's `enter` into the output the strip
-    /// sits on.
+    /// sits on. The `enter` names one of the proxy's own `wl_output`
+    /// objects, and a `wl_output` the proxy forwarded for an app bind is
+    /// one of them (both live on the proxy's connection), so the app-bind
+    /// table answers first and the proxy's own binds answer second.
     pub(super) fn global_of_output(&self, output: &Rc<WlOutput>) -> Option<u32> {
         let id = output.unique_id();
+        if let Some(global) = self.client_output_names.borrow().get(&id).copied() {
+            return Some(global);
+        }
         self.outputs
             .borrow()
             .values()
