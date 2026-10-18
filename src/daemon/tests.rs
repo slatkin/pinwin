@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{Config, Keyboard, Layer, PanelOptions, PanelSettings};
 use crate::daemon;
-use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply};
+use crate::daemon::panel::{AppId, Command, EventFd, PanelHandle, PanelReply};
 use crate::daemon::registry::Registry;
 use crate::daemon::{PathError, SocketError, socket_path};
 use crate::geometry::{Edge, ReserveMode, Size};
@@ -244,7 +244,11 @@ fn panel_thread(
         }
     });
     let name = PanelName::parse(name).expect("a panel name");
-    (name, PanelHandle::new(pid, commands, wake), thread)
+    (
+        name,
+        PanelHandle::new(pid, commands, wake, AppId::default()),
+        thread,
+    )
 }
 
 /// A panel that reports `status` when the daemon asks for it and carries
@@ -277,7 +281,11 @@ fn silent_panel(name: &str) -> (PanelName, PanelHandle, JoinHandle<()>) {
         }
     });
     let name = PanelName::parse(name).expect("a panel name");
-    (name, PanelHandle::new(0, commands, wake), thread)
+    (
+        name,
+        PanelHandle::new(0, commands, wake, AppId::default()),
+        thread,
+    )
 }
 
 /// The wake is an eventfd: every command adds one to its count and the

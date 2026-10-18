@@ -283,7 +283,7 @@ pub fn spawn(
     // refused name ends the thread without its end report: that report
     // removes the registry entry of the name, which belongs to the panel
     // that keeps running (spec "Duplicate name").
-    let handle = PanelHandle::with_app_id(pid, commands, wake, app_id);
+    let handle = PanelHandle::new(pid, commands, wake, app_id);
     match lifetime.add_panel(name, handle) {
         Ok(()) => {
             let _ = registered.send(true);

@@ -601,7 +601,7 @@ mod tests {
 
     use super::{Lifetime, TrayState, locked};
     use crate::config::Config;
-    use crate::daemon::panel::{EventFd, PanelHandle};
+    use crate::daemon::panel::{AppId, EventFd, PanelHandle};
     use crate::name::PanelName;
 
     /// A panel name the test registers.
@@ -632,6 +632,7 @@ mod tests {
             0,
             commands,
             Arc::new(EventFd::new().expect("a wake eventfd")),
+            AppId::default(),
         );
         lifetime.add_panel(notes(), handle).expect("notes is free");
 

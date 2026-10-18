@@ -161,32 +161,20 @@ impl AppId {
 #[derive(Debug)]
 pub struct PanelHandle {
     pid: u32,
-    commands: Mutex<Sender<Command>>,
+    commands: Sender<Command>,
     wake: Arc<EventFd>,
     app_id: AppId,
 }
 
 impl PanelHandle {
     /// The handle of the panel whose app has process ID `pid`, with the
-    /// channel the panel thread reads and the eventfd it polls.
-    #[cfg(test)]
+    /// channel the panel thread reads, the eventfd it polls and the app id the
+    /// panel thread records, so the registry and the tray read the same value.
     #[must_use]
-    pub fn new(pid: u32, commands: Sender<Command>, wake: Arc<EventFd>) -> Self {
-        Self::with_app_id(pid, commands, wake, AppId::default())
-    }
-
-    /// [`PanelHandle::new`] for a panel thread that also records its app's id
-    /// in `app_id`, so the registry and the tray read the same value.
-    #[must_use]
-    pub fn with_app_id(
-        pid: u32,
-        commands: Sender<Command>,
-        wake: Arc<EventFd>,
-        app_id: AppId,
-    ) -> Self {
+    pub fn new(pid: u32, commands: Sender<Command>, wake: Arc<EventFd>, app_id: AppId) -> Self {
         Self {
             pid,
-            commands: Mutex::new(commands),
+            commands,
             wake,
             app_id,
         }
@@ -218,7 +206,7 @@ impl PanelHandle {
     /// [`PendingCall::finish`]. `wait` runs from this call.
     pub fn send(&self, request: &Request, wait: Duration) -> Result<PendingCall, CommandError> {
         let (reply, answer) = mpsc::sync_channel(1);
-        let queued = locked(&self.commands).send(Command {
+        let queued = self.commands.send(Command {
             request: request.clone(),
             reply,
         });

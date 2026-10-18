@@ -13,7 +13,7 @@ use std::time::Duration;
 use super::guarded;
 use crate::config::Config;
 use crate::daemon::lifetime::Lifetime;
-use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply};
+use crate::daemon::panel::{AppId, Command, EventFd, PanelHandle, PanelReply};
 use crate::ipc::{ErrorKind, Request};
 use crate::name::PanelName;
 
@@ -41,7 +41,11 @@ fn stand_in(name: &str, pid: u32) -> (PanelName, PanelHandle, thread::JoinHandle
         }
     });
     let name = PanelName::parse(name).expect("a panel name");
-    (name, PanelHandle::new(pid, commands, wake), thread)
+    (
+        name,
+        PanelHandle::new(pid, commands, wake, AppId::default()),
+        thread,
+    )
 }
 
 /// A panic in one panel's loop ends only that panel's handle: its name leaves

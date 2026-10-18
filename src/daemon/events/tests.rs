@@ -18,7 +18,7 @@ use super::{Bus, Event};
 use crate::config::Config;
 use crate::daemon::connection;
 use crate::daemon::lifetime::Lifetime;
-use crate::daemon::panel::{Command, EventFd, PanelHandle, PanelReply};
+use crate::daemon::panel::{AppId, Command, EventFd, PanelHandle, PanelReply};
 use crate::ipc::{LineReader, MAX_LINE, Request, read_line, write_line};
 use crate::name::PanelName;
 
@@ -49,7 +49,11 @@ fn panel_thread(
             command.answer(reply);
         }
     });
-    (notes(), PanelHandle::new(7, commands, wake), thread)
+    (
+        notes(),
+        PanelHandle::new(7, commands, wake, AppId::default()),
+        thread,
+    )
 }
 
 /// A daemon lifetime with `bus` and a short wait, standing in for the daemon

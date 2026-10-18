@@ -17,7 +17,6 @@
 //! answer fails its request with error kind `internal` (spec "The daemon
 //! survives bad input").
 
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,27 +25,14 @@ use super::panel::{CommandError, PanelHandle, PanelReply, PendingCall};
 use crate::ipc::{ErrorKind, ErrorReply, PanelEntry, Reply, Request};
 use crate::name::PanelName;
 
-/// The daemon's panels, keyed by name (D12). Every thread that serves a
-/// client connection shares it, so one registry lives in the daemon and each
-/// request is routed under its lock only long enough to find the handle.
+/// The daemon's panels in the order they started (D12). Every thread that
+/// serves a client connection shares it, so one registry lives in the daemon
+/// and each request is routed under its lock only long enough to find the
+/// handle. A panel's push order is its start order, so removal keeps the
+/// order of the remaining panels without a counter or a sort.
 #[derive(Debug, Default)]
 pub struct Registry {
-    inner: Mutex<Panels>,
-}
-
-/// The registry's contents under one lock: the panels and the next start
-/// order to hand out, so the start order survives a panel's removal.
-#[derive(Debug, Default)]
-struct Panels {
-    panels: BTreeMap<PanelName, Panel>,
-    next_start: u64,
-}
-
-/// One registered panel: its handle and the order it started in.
-#[derive(Debug)]
-struct Panel {
-    handle: Arc<PanelHandle>,
-    start: u64,
+    panels: Mutex<Vec<(PanelName, Arc<PanelHandle>)>>,
 }
 
 impl Registry {
@@ -60,42 +46,37 @@ impl Registry {
     /// panel already uses is refused with `duplicate_name`, and that panel
     /// and its name stay unchanged (spec "Duplicate name").
     pub fn add(&self, name: PanelName, handle: PanelHandle) -> Result<(), ErrorReply> {
-        let mut panels = locked(&self.inner);
-        if panels.panels.contains_key(&name) {
+        let mut panels = locked(&self.panels);
+        if panels.iter().any(|(existing, _)| existing == &name) {
             return Err(ErrorReply::new(
                 ErrorKind::DuplicateName,
                 format!("a panel named '{name}' already exists"),
             ));
         }
-        let start = panels.next_start;
-        panels.next_start += 1;
-        panels.panels.insert(
-            name,
-            Panel {
-                handle: Arc::new(handle),
-                start,
-            },
-        );
+        panels.push((name, Arc::new(handle)));
         Ok(())
     }
 
     /// Drop the panel named `name` when it ends, so its name is free for the
     /// next panel (spec "Name is free again"); false when no panel had it.
     pub fn remove(&self, name: &PanelName) -> bool {
-        locked(&self.inner).panels.remove(name).is_some()
+        let mut panels = locked(&self.panels);
+        let before = panels.len();
+        panels.retain(|(existing, _)| existing != name);
+        panels.len() != before
     }
 
     /// Remove every panel, so a `quit` ends each panel thread by closing its
     /// command channel (spec "Quit").
     pub fn clear(&self) {
-        locked(&self.inner).panels.clear();
+        locked(&self.panels).clear();
     }
 
     /// Whether no panel is registered, so the daemon's lifetime can tell
     /// when the last panel ended (spec "Daemon lifetime preference").
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        locked(&self.inner).panels.is_empty()
+        locked(&self.panels).is_empty()
     }
 
     /// The hosted app's `app_id` for every panel, in start order (row 11.1,
@@ -103,14 +84,10 @@ impl Registry {
     /// app has not named itself yet contributes `None`.
     #[must_use]
     pub fn app_ids(&self) -> Vec<Option<String>> {
-        let panels = locked(&self.inner);
-        let mut started: Vec<(u64, Option<String>)> = panels
-            .panels
-            .values()
-            .map(|panel| (panel.start, panel.handle.app_id()))
-            .collect();
-        started.sort_by_key(|(start, _)| *start);
-        started.into_iter().map(|(_, app_id)| app_id).collect()
+        locked(&self.panels)
+            .iter()
+            .map(|(_, handle)| handle.app_id())
+            .collect()
     }
 
     /// Route one decoded request (D12). `None` means the daemon answers it
@@ -186,21 +163,15 @@ impl Registry {
         &self,
         panel: Option<&PanelName>,
     ) -> Result<Vec<(PanelName, Arc<PanelHandle>)>, Reply> {
-        let panels = locked(&self.inner);
+        let panels = locked(&self.panels);
         let Some(panel) = panel else {
-            let mut started: Vec<(u64, &PanelName, &Panel)> = panels
-                .panels
+            return Ok(panels
                 .iter()
-                .map(|(name, panel)| (panel.start, name, panel))
-                .collect();
-            started.sort_by_key(|(start, ..)| *start);
-            return Ok(started
-                .into_iter()
-                .map(|(_, name, panel)| (name.clone(), Arc::clone(&panel.handle)))
+                .map(|(name, handle)| (name.clone(), Arc::clone(handle)))
                 .collect());
         };
-        match panels.panels.get(panel) {
-            Some(found) => Ok(vec![(panel.clone(), Arc::clone(&found.handle))]),
+        match panels.iter().find(|(name, _)| name == panel) {
+            Some((name, handle)) => Ok(vec![(name.clone(), Arc::clone(handle))]),
             None => Err(no_panel(panel)),
         }
     }
@@ -208,10 +179,10 @@ impl Registry {
     /// The handle of the panel named `name`, or the reply that says no panel
     /// has that name (spec "Unknown panel").
     fn handle(&self, name: &PanelName) -> Result<Arc<PanelHandle>, Reply> {
-        locked(&self.inner)
-            .panels
-            .get(name)
-            .map(|panel| Arc::clone(&panel.handle))
+        locked(&self.panels)
+            .iter()
+            .find(|(existing, _)| existing == name)
+            .map(|(_, handle)| Arc::clone(handle))
             .ok_or_else(|| no_panel(name))
     }
 }
