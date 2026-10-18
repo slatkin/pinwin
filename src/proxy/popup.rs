@@ -24,7 +24,7 @@
 
 use std::rc::{Rc, Weak};
 
-use wl_proxy::object::ObjectUtils;
+use wl_proxy::object::{Object, ObjectUtils};
 use wl_proxy::protocols::xdg_shell::xdg_popup::{XdgPopup, XdgPopupHandler};
 use wl_proxy::protocols::xdg_shell::xdg_positioner::{XdgPositioner, XdgPositionerHandler};
 
@@ -65,12 +65,19 @@ pub(super) fn reposition_offset(
 
 /// The app's `xdg_positioner` (D5): it records the anchor rectangle the app
 /// set, which the popup creation offsets by the parent's window geometry.
-/// Copied from wl-paper's `paper.rs` `ClientXdgPositioner` (GPL-3.0).
+/// Copied from wl-paper's `paper.rs` `ClientXdgPositioner` (GPL-3.0); the
+/// held-back `destroy` is pinwin's (D9).
 pub(super) struct ClientXdgPositioner {
     /// The positioner this handler answers, kept weak so the handler does not
     /// keep its own object alive.
     positioner: Weak<XdgPositioner>,
     anchor_rect: Option<[i32; 4]>,
+    /// Whether a popup that waits for the panel's first dock still needs this
+    /// positioner (D9): the app's `destroy` waits for that popup.
+    held: bool,
+    /// Whether the app destroyed this positioner while the popup that names
+    /// it waited (D9): the upstream object stays until the popup is created.
+    destroyed: bool,
 }
 
 impl ClientXdgPositioner {
@@ -80,6 +87,8 @@ impl ClientXdgPositioner {
         Self {
             positioner: Rc::downgrade(positioner),
             anchor_rect: None,
+            held: false,
+            destroyed: false,
         }
     }
 
@@ -88,9 +97,59 @@ impl ClientXdgPositioner {
     pub(super) fn anchor_rect(&self) -> Option<[i32; 4]> {
         self.anchor_rect
     }
+
+    /// Holds the app's `destroy` until the popup that names this positioner
+    /// exists (D9): a popup cannot be created from a positioner whose
+    /// upstream object is gone.
+    pub(super) fn hold_destroy(&mut self) {
+        self.held = true;
+    }
+
+    /// Takes whether the app's `destroy` was held back (D9), so the caller
+    /// finishes it once the popup exists.
+    fn take_destroyed(&mut self) -> bool {
+        std::mem::take(&mut self.destroyed)
+    }
+}
+
+/// Holds a `destroy` the app may still send for `positioner` until the popup
+/// it names exists (D9).
+pub(super) fn hold_destroy(positioner: &Rc<XdgPositioner>) {
+    if let Ok(mut handler) = positioner.try_get_handler_mut::<ClientXdgPositioner>() {
+        handler.hold_destroy();
+    }
+}
+
+/// Forwards a `destroy` the app asked for while the popup that names the
+/// positioner waited for the panel's first dock (D9): the upstream object
+/// outlived the request, so the popup could still be created from it, and it
+/// goes now.
+pub(super) fn finish_deferred_destroy(positioner: &Rc<XdgPositioner>) {
+    let Ok(mut handler) = positioner.try_get_handler_mut::<ClientXdgPositioner>() else {
+        return;
+    };
+    if !handler.take_destroyed() {
+        return;
+    }
+    positioner.send_destroy();
+    positioner.unset_handler();
 }
 
 impl XdgPositionerHandler for ClientXdgPositioner {
+    /// A `destroy` of a positioner a waiting popup still needs goes out after
+    /// the popup is created: a popup cannot be created from a positioner
+    /// whose upstream object is gone (D9).
+    fn handle_destroy(&mut self, _slf: &Rc<XdgPositioner>) {
+        let Some(positioner) = self.positioner.upgrade() else {
+            return;
+        };
+        if self.held {
+            self.destroyed = true;
+            return;
+        }
+        positioner.send_destroy();
+    }
+
     fn handle_set_anchor_rect(
         &mut self,
         _slf: &Rc<XdgPositioner>,

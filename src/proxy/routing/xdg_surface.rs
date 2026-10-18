@@ -11,12 +11,14 @@
 //! one ([`super::super::dock::size`], D9): the toplevel stays local and the
 //! panel loop, an output event, an `enter` or the wait's deadline resumes it,
 //! so the panel never maps at an invented size and never waits indefinitely.
+//! A popup the app creates against the waiting window is held with it
+//! ([`PendingPopup`]) and routed once the dock decided.
 //!
 //! `_slf` names the handler parameters the proxy's own object would carry; a
 //! handler that needs its own object keeps it in a `Weak` field, so the
 //! xdg-surface handler closes no reference cycle.
 
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use wl_proxy::object::{Object, ObjectCoreApi, ObjectUtils};
 use wl_proxy::protocols::wayland::wl_surface::WlSurface;
@@ -37,7 +39,23 @@ use super::super::viewport::{apply_steady_crop, settle_forwarded};
 use super::super::window::ClientXdgToplevel;
 use super::{Route, Routing};
 use crate::daemon::panel::AppId;
-use crate::geometry::Geometry;
+use crate::geometry::{Geometry, OutputSize};
+
+/// A popup of the panel window that waits for its first dock (D9): the
+/// popup's own surface, its role object and the positioner it was created
+/// with, held until the dock decides which branch the popup takes — a popup
+/// of the panel's layer surface when the panel docks, a normal popup when the
+/// window passes through.
+struct PendingPopup {
+    /// The popup's `xdg_surface`, already upstream so the app's commit
+    /// follows it, with no role yet.
+    owner: Weak<XdgSurface>,
+    popup: Rc<XdgPopup>,
+    positioner: Rc<XdgPositioner>,
+    /// The panel window's geometry, whose origin the anchor rectangle moves
+    /// by (D5).
+    parent_geometry: Option<[i32; 4]>,
+}
 
 /// One app `xdg_surface` (D4): held back until its toplevel role appears,
 /// then either the panel's layer surface or a forwarded normal window.
@@ -62,6 +80,9 @@ pub(in crate::proxy) struct ClientXdgSurface {
     /// The panel toplevel whose first dock waits for an output size (D9),
     /// kept local until [`ClientXdgSurface::resume`] docks or forwards it.
     pending_dock: Option<Rc<XdgToplevel>>,
+    /// The popups the app created against that window while the dock waited
+    /// (D9): the resume routes them once its branch is known.
+    pending_popups: Vec<PendingPopup>,
 }
 
 impl ClientXdgSurface {
@@ -83,6 +104,7 @@ impl ClientXdgSurface {
             geometry: None,
             app_id,
             pending_dock: None,
+            pending_popups: Vec::new(),
         }
     }
 
@@ -140,6 +162,32 @@ impl ClientXdgSurface {
         self.routing.release(id.unique_id());
     }
 
+    /// Holds a popup of this window until its first dock decides where the
+    /// window goes (D9): nothing can be created upstream yet, because the
+    /// popup has neither a layer surface to attach to nor an upstream parent.
+    fn defer_popup(
+        &mut self,
+        owner: &Rc<XdgSurface>,
+        popup: &Rc<XdgPopup>,
+        positioner: &Rc<XdgPositioner>,
+        parent_geometry: Option<[i32; 4]>,
+    ) {
+        self.pending_popups.push(PendingPopup {
+            owner: Rc::downgrade(owner),
+            popup: Rc::clone(popup),
+            positioner: Rc::clone(positioner),
+            parent_geometry,
+        });
+    }
+
+    /// Drops the popups a waiting first dock held back (D9): a `destroy` the
+    /// app asked for meanwhile goes out now.
+    fn clear_pending_popups(&mut self) {
+        for pending in self.pending_popups.drain(..) {
+            super::super::popup::finish_deferred_destroy(&pending.positioner);
+        }
+    }
+
     /// Resumes a waiting first dock (D9): a known output size docks the
     /// window, an invalid geometry forwards it as a normal window, and a wait
     /// that reached its deadline takes any known output size or forwards the
@@ -152,6 +200,7 @@ impl ClientXdgSurface {
         let Some(layer_shell) = routing.layer_shell() else {
             self.abandon_pending(&id);
             self.forward_pending(&id);
+            self.route_pending_popups();
             return;
         };
         let decision = match routing.dock_decision() {
@@ -160,6 +209,7 @@ impl ClientXdgSurface {
                 let Some(decision) = routing.fallback_dock_decision() else {
                     self.abandon_pending(&id);
                     self.forward_pending(&id);
+                    self.route_pending_popups();
                     return;
                 };
                 decision
@@ -177,11 +227,15 @@ impl ClientXdgSurface {
             );
             self.abandon_pending(&id);
             self.forward_pending(&id);
+            self.route_pending_popups();
             return;
         }
         self.pending_dock = None;
         routing.clear_pending_dock(id.unique_id());
-        self.take_slot(&layer_shell, &id, geometry);
+        self.take_slot(&layer_shell, &id, geometry, output);
+        // D9: the popups the app created while the dock waited follow the
+        // window it just docked.
+        self.route_pending_popups();
         // The app's initial commit may have gone upstream while the window
         // waited, so the layer surface's state needs one commit of its own to
         // reach the compositor. The coordinator injects it on the clean
@@ -202,6 +256,7 @@ impl ClientXdgSurface {
         layer_shell: &Rc<ZwlrLayerShellV1>,
         id: &Rc<XdgToplevel>,
         geometry: Geometry,
+        output: Option<OutputSize>,
     ) {
         let window = dock::PanelWindow {
             surface: Rc::clone(&self.wl_surface),
@@ -230,8 +285,95 @@ impl ClientXdgSurface {
         // own output's size arrives.
         self.routing
             .set_last_resolved_across(Some(geometry.across()));
+        // D9: the size the dock resolved against stays the panel's fallback
+        // for a layout change, for a panel whose output never reports one.
+        self.routing.set_docked_output(output);
         // A window geometry the app set before its toplevel crops from here.
         apply_steady_crop(&self.routing, self.geometry);
+    }
+
+    /// Creates the popup of this surface upstream (D5): with `layer_surface`
+    /// it becomes a popup of the panel's layer surface with the anchor
+    /// rectangle moved by `parent_geometry`, and otherwise it is created with
+    /// `proxy_parent` as its parent. Copied from wl-paper's `paper.rs`
+    /// `ClientXdgSurface::handle_get_popup` (GPL-3.0).
+    fn create_popup(
+        &mut self,
+        id: &Rc<XdgPopup>,
+        layer_surface: Option<&Rc<ZwlrLayerSurfaceV1>>,
+        proxy_parent: Option<&Rc<XdgSurface>>,
+        parent_geometry: Option<[i32; 4]>,
+        positioner: &Rc<XdgPositioner>,
+    ) {
+        if !self.has_server {
+            self.xdg_wm_base
+                .send_get_xdg_surface(&self.xdg_surface, &self.wl_surface);
+            self.has_server = true;
+        }
+        if let Some([x, y, width, height]) = self.geometry {
+            self.xdg_surface
+                .send_set_window_geometry(x, y, width, height);
+        }
+        let anchor = positioner
+            .try_get_handler_ref::<ClientXdgPositioner>()
+            .ok()
+            .and_then(|handler| handler.anchor_rect());
+        if let Some(geometry) = parent_geometry
+            && let Some([ax, ay, aw, ah]) = anchor
+        {
+            let [x, y, width, height] = offset_anchor_rect([ax, ay, aw, ah], Some(geometry));
+            positioner.send_set_anchor_rect(x, y, width, height);
+        }
+        self.xdg_surface
+            .send_get_popup(id, proxy_parent, positioner);
+        if parent_geometry.is_some()
+            && let Some([ax, ay, aw, ah]) = anchor
+        {
+            // The upstream positioner keeps the app's rectangle: the offset
+            // was only for this popup's creation (wl-paper).
+            positioner.send_set_anchor_rect(ax, ay, aw, ah);
+        }
+        if let Some(layer_surface) = layer_surface {
+            layer_surface.send_get_popup(id);
+        }
+        if let Some(geometry) = parent_geometry {
+            id.set_handler(ClientXdgPopup::new(id, geometry));
+        }
+    }
+
+    /// Routes the popups the app created against the panel window while its
+    /// first dock waited (D9): the dock's outcome decides whether each one
+    /// becomes a popup of the panel's layer surface or a normal popup of the
+    /// window that passed through. A `destroy` the app asked for meanwhile
+    /// goes out after the popup that needed the positioner.
+    fn route_pending_popups(&mut self) {
+        for pending in std::mem::take(&mut self.pending_popups) {
+            let Some(owner) = pending.owner.upgrade() else {
+                super::super::popup::finish_deferred_destroy(&pending.positioner);
+                continue;
+            };
+            let Ok(mut handler) = owner.try_get_handler_mut::<ClientXdgSurface>() else {
+                super::super::popup::finish_deferred_destroy(&pending.positioner);
+                continue;
+            };
+            match self.routing.panel_layer_surface() {
+                Some(layer_surface) => handler.create_popup(
+                    &pending.popup,
+                    Some(&layer_surface),
+                    None,
+                    pending.parent_geometry,
+                    &pending.positioner,
+                ),
+                None => handler.create_popup(
+                    &pending.popup,
+                    None,
+                    Some(&self.xdg_surface),
+                    None,
+                    &pending.positioner,
+                ),
+            }
+            super::super::popup::finish_deferred_destroy(&pending.positioner);
+        }
     }
 }
 
@@ -239,6 +381,8 @@ impl XdgSurfaceHandler for ClientXdgSurface {
     fn handle_destroy(&mut self, _slf: &Rc<XdgSurface>) {
         if let Some(id) = self.pending_dock.take() {
             self.abandon_pending(&id);
+            // D9: the popups the waiting dock held back lose their parent.
+            self.clear_pending_popups();
         }
         self.xdg_surface.unset_handler();
         if self.has_server {
@@ -277,7 +421,7 @@ impl XdgSurfaceHandler for ClientXdgSurface {
                     return;
                 }
                 self.prepare_panel(id);
-                self.take_slot(&layer_shell, id, geometry);
+                self.take_slot(&layer_shell, id, geometry, output);
             }
             DockDecision::Wait => {
                 // D9: a percent size waits for its output instead of docking
@@ -333,7 +477,10 @@ impl XdgSurfaceHandler for ClientXdgSurface {
         // keeps.
         if !self.has_server {
             // The upstream popup is created from this surface's upstream
-            // `xdg_surface`, so the held-back surface goes first.
+            // `xdg_surface`, so the held-back surface goes first. A popup of
+            // a waiting panel window stands its surface up now too: the
+            // app's commit follows this request, and the role arrives with
+            // the dock's resume (D9).
             self.xdg_wm_base
                 .send_get_xdg_surface(&self.xdg_surface, &self.wl_surface);
             self.has_server = true;
@@ -342,41 +489,43 @@ impl XdgSurfaceHandler for ClientXdgSurface {
             self.xdg_surface
                 .send_set_window_geometry(x, y, width, height);
         }
-        let mut layer_surface = None;
-        let mut proxy_parent = parent;
-        let mut parent_geometry = None;
-        if let Some(parent) = parent
-            && let Ok(parent_handler) = parent.try_get_handler_ref::<ClientXdgSurface>()
-            && let Some(parent_layer) = parent_handler.panel_layer_surface()
-        {
-            layer_surface = Some(parent_layer);
-            proxy_parent = None;
-            parent_geometry = parent_handler.geometry;
+        let Some(parent) = parent else {
+            self.create_popup(id, None, None, None, positioner);
+            return;
+        };
+        let Ok(parent_handler) = parent.try_get_handler_ref::<ClientXdgSurface>() else {
+            self.create_popup(id, None, Some(parent), None, positioner);
+            return;
+        };
+        let waiting = parent_handler.pending_dock.is_some();
+        let layer_surface = parent_handler.panel_layer_surface();
+        let parent_geometry = parent_handler.geometry;
+        drop(parent_handler);
+        if waiting {
+            // D9: the panel window's first dock still waits for its output
+            // size, so the popup has neither a layer surface to attach to nor
+            // an upstream parent. The resume routes it once it decided
+            // ([`Self::route_pending_popups`]); creating it now would be
+            // dropped as a parent without an upstream object. The positioner
+            // stays upstream until then, so its `destroy` waits too.
+            let Ok(mut panel) = parent.try_get_handler_mut::<ClientXdgSurface>() else {
+                self.create_popup(id, None, Some(parent), None, positioner);
+                return;
+            };
+            panel.defer_popup(&self.xdg_surface, id, positioner, parent_geometry);
+            super::super::popup::hold_destroy(positioner);
+            return;
         }
-        let anchor = positioner
-            .try_get_handler_ref::<ClientXdgPositioner>()
-            .ok()
-            .and_then(|handler| handler.anchor_rect());
-        if let Some(geometry) = parent_geometry
-            && let Some([ax, ay, aw, ah]) = anchor
-        {
-            let [x, y, width, height] = offset_anchor_rect([ax, ay, aw, ah], Some(geometry));
-            positioner.send_set_anchor_rect(x, y, width, height);
-        }
-        self.xdg_surface
-            .send_get_popup(id, proxy_parent, positioner);
-        if parent_geometry.is_some()
-            && let Some([ax, ay, aw, ah]) = anchor
-        {
-            // The upstream positioner keeps the app's rectangle: the offset
-            // was only for this popup's creation (wl-paper).
-            positioner.send_set_anchor_rect(ax, ay, aw, ah);
-        }
-        if let Some(layer_surface) = layer_surface {
-            layer_surface.send_get_popup(id);
-        }
-        if let Some(geometry) = parent_geometry {
-            id.set_handler(ClientXdgPopup::new(id, geometry));
+        if layer_surface.is_some() {
+            self.create_popup(
+                id,
+                layer_surface.as_ref(),
+                None,
+                parent_geometry,
+                positioner,
+            );
+        } else {
+            self.create_popup(id, None, Some(parent), None, positioner);
         }
     }
 
@@ -397,3 +546,6 @@ impl XdgSurfaceHandler for ClientXdgSurface {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

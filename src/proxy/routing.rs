@@ -152,6 +152,10 @@ pub(super) struct Routing {
     last_resolved_across: Cell<Option<u32>>,
     /// The panel window whose first dock waits for an output size (D9).
     pending_dock: RefCell<Option<PendingDock>>,
+    /// The output size the first dock resolved against (D9): the last resort
+    /// a layout change validates against while the panel's own output has not
+    /// reported one.
+    docked_output: Cell<Option<OutputSize>>,
 }
 
 impl Routing {
@@ -182,6 +186,7 @@ impl Routing {
             held_gap: RefCell::new(None),
             last_resolved_across: Cell::new(None),
             pending_dock: RefCell::new(None),
+            docked_output: Cell::new(None),
         })
     }
 
@@ -361,13 +366,22 @@ impl Routing {
 
     /// The output size the first dock resolves a percent size against, when
     /// it is known (D9): the pinned output's, the output the panel entered,
-    /// or a sole tracked output's. `None` leaves the compositor's choice
-    /// open, so a percent panel waits for it.
+    /// or a sole tracked output's. A docked panel keeps the size its dock
+    /// resolved against when none of those names one — an app that binds no
+    /// `wl_output` never enters an output, and its layout commands still have
+    /// to validate against the size the panel runs at. `None` leaves the
+    /// compositor's choice open, so a percent panel waits for it.
     pub(super) fn dock_output(&self) -> Option<OutputSize> {
         self.pinned_output()
             .and_then(|(_, global)| self.globals.output_size(global))
             .or_else(|| self.globals.panel_output_size())
             .or_else(|| self.globals.sole_output_size())
+            .or_else(|| self.docked_output.get())
+    }
+
+    /// Records the output size the panel window's dock resolved against (D9).
+    pub(super) fn set_docked_output(&self, output: Option<OutputSize>) {
+        self.docked_output.set(output);
     }
 
     /// What the panel's first dock does about its size (D4, D9): an
@@ -614,6 +628,7 @@ impl Routing {
     pub(super) fn on_panel_window_destroyed(&self, window: u64) {
         self.release(window);
         self.clear_pending_dock(window);
+        self.docked_output.set(None);
         self.slot_owner.borrow_mut().take();
         self.hidden.reset();
         if let Some(reserve) = self.reserve.borrow_mut().take() {

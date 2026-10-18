@@ -10,6 +10,7 @@ use crate::daemon::panel::PanelReply;
 use crate::geometry::{Edge, Gutters, OutputSize, ReserveMode, Size};
 use crate::ipc::{ErrorKind, Request};
 use crate::name::PanelName;
+use crate::proxy::dock::size::DockDecision;
 use crate::proxy::routing::Routing;
 
 /// An output of `width` by `height` logical pixels.
@@ -508,5 +509,71 @@ fn the_size_decision_compares_the_configured_size() {
     assert!(
         needs_new_app_size(current, inset, output),
         "the side gutters shorten the panel's length"
+    );
+}
+
+/// A panel that docked at the wait's fallback size stays configurable (D9):
+/// the dock keeps the output size it resolved against, so a layout command is
+/// not refused when no output `enter` ever names the panel's output.
+#[test]
+fn a_fallback_dock_keeps_the_layout_commands_applicable() {
+    let routing = Routing::new(settings());
+    // Two outputs leave the compositor's choice open, so the first dock waits
+    // for the panel's own output (D9).
+    routing
+        .globals()
+        .install_test_output(10, output(2560, 1440));
+    routing
+        .globals()
+        .install_test_output(11, output(1920, 1080));
+    let bus = Bus::new();
+    let panel = notes();
+    assert!(
+        routing.dock_output().is_none(),
+        "no output is the panel's yet"
+    );
+    assert!(
+        matches!(
+            super::answer(
+                &routing,
+                &Request::SetEdge {
+                    panel: notes(),
+                    edge: Edge::Right,
+                },
+                &panel,
+                &bus
+            ),
+            Some(PanelReply::Refused(_))
+        ),
+        "the panel cannot validate a change before a dock resolved a size"
+    );
+
+    let DockDecision::Ready {
+        output: resolved, ..
+    } = routing
+        .fallback_dock_decision()
+        .expect("a tracked output reported its size")
+    else {
+        panic!("the fallback resolves the percent size");
+    };
+    routing.set_docked_output(resolved);
+
+    assert_eq!(
+        routing.dock_output(),
+        Some(output(2560, 1440)),
+        "the dock keeps the first known output size"
+    );
+    assert_eq!(
+        super::answer(
+            &routing,
+            &Request::SetEdge {
+                panel: notes(),
+                edge: Edge::Right,
+            },
+            &panel,
+            &bus
+        ),
+        Some(PanelReply::Done),
+        "the docked panel is configurable again"
     );
 }
