@@ -722,4 +722,23 @@ fn the_set_gutters_request_round_trips_its_fields() {
         Request::parse(several.to_line().as_bytes()).expect("the request round-trips"),
         several
     );
+
+    // A line with no gutter field is the known command's `invalid_value`: the
+    // command is known, but its value is incomplete (spec "No gutter field").
+    let error = Request::parse(br#"{"cmd":"set-gutters","panel":"notes"}"#).expect_err("no gutter");
+    assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    assert!(
+        error.message().starts_with("set-gutters:"),
+        "the message names the fields it expects: {error}"
+    );
+
+    // A fractional gutter is a bad value of the known command, so the daemon
+    // can name the field it refused (spec "Non-integer gutter").
+    let error = Request::parse(br#"{"cmd":"set-gutters","panel":"notes","top":1.5}"#)
+        .expect_err("a fractional gutter");
+    assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    assert!(
+        error.message().starts_with("top:"),
+        "the message names the field: {error}"
+    );
 }
