@@ -29,14 +29,14 @@ wrong.
 
 ## 2. Size and reserve in one request
 
-- [ ] 2.1 Add the optional `reserve` field to `set-size` and `resize` in `src/ipc.rs`, and
+- [x] 2.1 Add the optional `reserve` field to `set-size` and `resize` in `src/ipc.rs`, and
   `--reserve push|cover` to both subcommands in `src/cli.rs` (D4). Update the README command
   table rows for `set-size` and `resize`. Verify: `src/ipc/tests.rs` parses lines with and
   without `reserve` and refuses `"reserve":"middle"` with `invalid_value`; a 0.4.0 line
   without the field round-trips unchanged; `src/cli/tests.rs` builds the request from
   `set-size notes 1100px --reserve cover --ms 200` and refuses `--reserve middle` with exit 2
   (spec "Size with a reserve mode", "Invalid reserve option", "Invalid mode").
-- [ ] 2.2 Apply the size and the reserve mode as one plan in `plan_change` (D4). Verify:
+- [x] 2.2 Apply the size and the reserve mode as one plan in `plan_change` (D4). Verify:
   `src/proxy/apply/tests.rs` cases: push 400 to cover 1100 is one plan with both fields; a
   combined change whose pushing strip leaves no output space is refused with
   `invalid_layout` and the settings stay; a `reserve` equal to the current mode gives the
@@ -44,7 +44,7 @@ wrong.
   (spec "Covering expand in one request", "Refused together", "Same reserve mode",
   "Relative resize with a mode"). One `geometry-changed` event per request is checked with
   the bus in the same tests (spec "One event").
-- [ ] 2.3 Hold the strip in a change from covering to pushing, and compute the end gap from
+- [x] 2.3 Hold the strip in a change from covering to pushing, and compute the end gap from
   the target mode (D5). Verify: `src/geometry.rs` and `src/proxy/tween.rs` unit tests: cover
   1100 with held 400 to push 400 keeps the strip at 400 in every frame and at the end; cover
   1100 with held 400 to push 500 keeps 400 in every frame and ends at 500; push 400 to push
