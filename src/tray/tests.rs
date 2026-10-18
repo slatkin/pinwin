@@ -28,9 +28,11 @@ fn panel_name(name: &str) -> PanelName {
 /// One status entry for `name`, shown or hidden, docked at `edge` with
 /// `reserve`.
 fn entry(name: &str, shown: bool, edge: Edge, reserve: ReserveMode) -> PanelEntry {
-    let settings = PanelSettings::built_in()
-        .with_edge(edge)
-        .with_reserve(reserve);
+    let settings = PanelSettings {
+        edge,
+        reserve,
+        ..PanelSettings::built_in()
+    };
     PanelEntry::new(
         panel_name(name),
         11,

@@ -42,7 +42,7 @@ use super::commit::PanelSurfaceCommits;
 use super::hide;
 use super::mapping::keyboard_of;
 use super::routing::Routing;
-use crate::config::Keyboard;
+use crate::config::{Keyboard, PanelSettings};
 use crate::daemon::events::Bus;
 use crate::daemon::panel::{PanelReply, PanelRequest};
 use crate::name::PanelName;
@@ -101,7 +101,10 @@ pub(super) fn answer(
 /// through the commit coordinator (D7). The app keeps its window, its size
 /// and its process.
 fn set(routing: &Rc<Routing>, keyboard: Keyboard) -> PanelReply {
-    routing.set_settings(routing.settings().with_keyboard(keyboard));
+    routing.set_settings(PanelSettings {
+        keyboard,
+        ..routing.settings()
+    });
     if let Some((surface, _, _)) = routing.panel_window()
         && let Ok(commits) = surface.try_get_handler_ref::<PanelSurfaceCommits>()
     {

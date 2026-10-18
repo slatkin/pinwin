@@ -234,7 +234,10 @@ impl Routing {
     /// The settings a status reply reports (spec "Status"): the panel's
     /// settings with the live output a `set-output` may have changed (D11).
     pub(super) fn status_settings(&self) -> PanelSettings {
-        self.settings().with_output(self.output())
+        PanelSettings {
+            output: self.output(),
+            ..self.settings()
+        }
     }
 
     /// The app-side objects of the panel window, when it holds one (D4):

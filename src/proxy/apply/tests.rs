@@ -254,7 +254,10 @@ fn a_percent_resize_keeps_the_percent_form() {
 /// 640 pixels less 40 is 600.
 #[test]
 fn a_pixel_resize_moves_pixels() {
-    let current = settings().with_size(pixels(640));
+    let current = PanelSettings {
+        size: pixels(640),
+        ..settings()
+    };
     assert_eq!(
         resize_size(&current, shrink(pixels(40)), output(1920, 1080)),
         Some(pixels(600))
@@ -276,7 +279,10 @@ fn a_mixed_resize_resolves_against_the_output() {
         Some(pixels(520)),
         "25% of 1920 is 480, plus 40"
     );
-    let sized = settings().with_size(pixels(640));
+    let sized = PanelSettings {
+        size: pixels(640),
+        ..settings()
+    };
     assert_eq!(
         resize_size(&sized, grow(percent(10)), output(1920, 1080)),
         Some(pixels(832)),
@@ -341,7 +347,10 @@ fn a_size_too_large_for_the_output_is_refused() {
 /// first dock and every apply run.
 #[test]
 fn gutters_that_leave_no_visible_length_are_refused() {
-    let current = settings().with_gutters(Gutters::new(0, 0, 600, 600));
+    let current = PanelSettings {
+        gutters: Gutters::new(0, 0, 600, 600),
+        ..settings()
+    };
     let request = PanelRequest::SetSize {
         size: pixels(640),
         ms: None,
@@ -356,9 +365,11 @@ fn gutters_that_leave_no_visible_length_are_refused() {
 /// "Validate a change before applying it"), reached the same way.
 #[test]
 fn a_negative_reservation_is_refused() {
-    let current = settings()
-        .with_size(pixels(640))
-        .with_gutters(Gutters::new(-2000, 0, 0, 0));
+    let current = PanelSettings {
+        size: pixels(640),
+        gutters: Gutters::new(-2000, 0, 0, 0),
+        ..settings()
+    };
     let request = PanelRequest::SetSize {
         size: pixels(640),
         ms: None,
@@ -415,7 +426,13 @@ fn a_refused_apply_publishes_no_geometry_change() {
 fn the_app_size_follows_the_edge() {
     let left = super::geometry_of(&settings(), output(1920, 1080));
     assert_eq!(app_size(left, output(1920, 1080)), (480, 1080));
-    let top = super::geometry_of(&settings().with_edge(Edge::Top), output(1920, 1080));
+    let top = super::geometry_of(
+        &PanelSettings {
+            edge: Edge::Top,
+            ..settings()
+        },
+        output(1920, 1080),
+    );
     assert_eq!(app_size(top, output(1920, 1080)), (1920, 270));
 }
 
@@ -426,9 +443,21 @@ fn the_size_decision_compares_the_configured_size() {
     let output = output(1920, 1080);
     let current = super::geometry_of(&settings(), output);
     assert!(!needs_new_app_size(current, current, output));
-    let wider = super::geometry_of(&settings().with_size(pixels(800)), output);
+    let wider = super::geometry_of(
+        &PanelSettings {
+            size: pixels(800),
+            ..settings()
+        },
+        output,
+    );
     assert!(needs_new_app_size(current, wider, output));
-    let inset = super::geometry_of(&settings().with_gutters(Gutters::new(0, 0, 10, 10)), output);
+    let inset = super::geometry_of(
+        &PanelSettings {
+            gutters: Gutters::new(0, 0, 10, 10),
+            ..settings()
+        },
+        output,
+    );
     assert!(
         needs_new_app_size(current, inset, output),
         "the side gutters shorten the panel's length"

@@ -113,13 +113,26 @@ fn plan_change(
     output: OutputSize,
 ) -> Result<Option<Plan>, ErrorReply> {
     let next = match request {
-        PanelRequest::SetEdge(edge) => current.with_edge(*edge),
-        PanelRequest::SetSize { size, .. } => current.with_size(*size),
-        PanelRequest::Resize { by, .. } => {
-            current.with_size(resize_size(current, *by, output).ok_or_else(resize_refused)?)
-        }
-        PanelRequest::SetReserve(reserve) => current.with_reserve(*reserve),
-        PanelRequest::SetLayer(layer) => current.with_layer(*layer),
+        PanelRequest::SetEdge(edge) => PanelSettings {
+            edge: *edge,
+            ..current.clone()
+        },
+        PanelRequest::SetSize { size, .. } => PanelSettings {
+            size: *size,
+            ..current.clone()
+        },
+        PanelRequest::Resize { by, .. } => PanelSettings {
+            size: resize_size(current, *by, output).ok_or_else(resize_refused)?,
+            ..current.clone()
+        },
+        PanelRequest::SetReserve(reserve) => PanelSettings {
+            reserve: *reserve,
+            ..current.clone()
+        },
+        PanelRequest::SetLayer(layer) => PanelSettings {
+            layer: *layer,
+            ..current.clone()
+        },
         _ => return Ok(None),
     };
     let redock = matches!(request, PanelRequest::SetLayer(_));

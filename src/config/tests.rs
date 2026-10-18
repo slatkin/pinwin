@@ -319,7 +319,7 @@ fn the_readme_documents_every_config_key() {
     );
 }
 
-/// The table fields are the documented keys (row 4.2): a `PanelTable` or
+/// The table fields are the documented keys (row 4.2): a `PanelOptions` or
 /// `DaemonTable` field renamed without updating its key list changes the
 /// field list `deny_unknown_fields` reports, and this test fails.
 #[test]

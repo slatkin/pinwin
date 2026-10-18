@@ -43,7 +43,7 @@ const CONFIG_FILE: &str = "config.toml";
 
 /// The keys a `[panel.defaults]` or `[panel.<name>]` table accepts, in
 /// README order (spec "Panel settings and precedence"). Kept beside
-/// [`PanelTable`], whose serde field names it mirrors: the README test
+/// [`PanelOptions`], whose serde field names it mirrors: the README test
 /// compares the two so a documented key cannot be missing from the file and
 /// a parsed key cannot be undocumented.
 #[cfg(test)]
@@ -301,34 +301,6 @@ struct DaemonTable {
     exit_when_idle: Option<bool>,
 }
 
-/// One `[panel.defaults]` or `[panel.<name>]` table (spec "Panel settings
-/// and precedence"). Every key is optional: an absent key falls through to
-/// the next level of the precedence. The string values are parsed with the
-/// same `FromStr` grammar as the run options.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct PanelTable {
-    #[serde(deserialize_with = "deserialize_option_from_str")]
-    edge: Option<Edge>,
-    #[serde(deserialize_with = "deserialize_option_from_str")]
-    size: Option<Size>,
-    #[serde(deserialize_with = "deserialize_option_from_str")]
-    reserve: Option<ReserveMode>,
-    #[serde(deserialize_with = "deserialize_option_from_str")]
-    layer: Option<Layer>,
-    #[serde(deserialize_with = "deserialize_option_from_str")]
-    keyboard: Option<Keyboard>,
-    output: Option<String>,
-    hidden: Option<bool>,
-    #[serde(deserialize_with = "deserialize_option_from_str")]
-    focus_ring: Option<FocusRing>,
-    tween_ms: Option<u32>,
-    gutter_left: Option<i32>,
-    gutter_right: Option<i32>,
-    gutter_top: Option<i32>,
-    gutter_bottom: Option<i32>,
-}
-
 /// The whole file: the two known tables and the `[panel.*]` map, which keeps
 /// `defaults` until [`Config::parse`] lifts it out. The map keys keep their
 /// byte span, so a key outside the name rules can name its line, which the
@@ -337,7 +309,7 @@ struct PanelTable {
 #[serde(default, deny_unknown_fields)]
 struct ConfigFile {
     daemon: DaemonTable,
-    panel: BTreeMap<Spanned<String>, PanelTable>,
+    panel: BTreeMap<Spanned<String>, PanelOptions>,
 }
 
 /// A string value parsed with the setting grammar, including the line that
@@ -412,20 +384,33 @@ impl Default for DaemonSettings {
     }
 }
 
-/// The `pinwin run` options that override the file, one `Option` for each
-/// setting (spec "Run options"). `src/cli.rs` fills it from the command
-/// line; an absent field leaves the file's value in place. The fields are
-/// public because this is a plain set of overrides: the invariant lives in
-/// each field's type, not in a constructor (`port-to-rust` D6).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// One source of a panel's settings: the `pinwin run` options that override
+/// the file, a `[panel.defaults]` table or a `[panel.<name>]` table (spec
+/// "Run options", "Panel settings and precedence"). Every setting is
+/// optional: an absent field falls through to the next level of the
+/// precedence. `src/cli.rs` fills it from the command line, the config file
+/// deserializes it with the same `FromStr` grammar (D13), and the merge
+/// chains the levels highest first.
+///
+/// The fields are public because this is a plain set of overrides: the
+/// invariant lives in each field's type, not in a constructor (`port-to-rust`
+/// D6).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
 pub struct PanelOptions {
+    #[serde(deserialize_with = "deserialize_option_from_str")]
     pub edge: Option<Edge>,
+    #[serde(deserialize_with = "deserialize_option_from_str")]
     pub size: Option<Size>,
+    #[serde(deserialize_with = "deserialize_option_from_str")]
     pub reserve: Option<ReserveMode>,
+    #[serde(deserialize_with = "deserialize_option_from_str")]
     pub layer: Option<Layer>,
+    #[serde(deserialize_with = "deserialize_option_from_str")]
     pub keyboard: Option<Keyboard>,
     pub output: Option<String>,
     pub hidden: Option<bool>,
+    #[serde(deserialize_with = "deserialize_option_from_str")]
     pub focus_ring: Option<FocusRing>,
     pub tween_ms: Option<u32>,
     pub gutter_left: Option<i32>,
@@ -434,20 +419,45 @@ pub struct PanelOptions {
     pub gutter_bottom: Option<i32>,
 }
 
+impl PanelOptions {
+    /// The merge of two sources: each setting from `self` when it has it,
+    /// else from `other`. The levels of the precedence are chained highest
+    /// first (spec "Panel settings and precedence").
+    #[must_use]
+    fn or(self, other: Self) -> Self {
+        Self {
+            edge: self.edge.or(other.edge),
+            size: self.size.or(other.size),
+            reserve: self.reserve.or(other.reserve),
+            layer: self.layer.or(other.layer),
+            keyboard: self.keyboard.or(other.keyboard),
+            output: self.output.or(other.output),
+            hidden: self.hidden.or(other.hidden),
+            focus_ring: self.focus_ring.or(other.focus_ring),
+            tween_ms: self.tween_ms.or(other.tween_ms),
+            gutter_left: self.gutter_left.or(other.gutter_left),
+            gutter_right: self.gutter_right.or(other.gutter_right),
+            gutter_top: self.gutter_top.or(other.gutter_top),
+            gutter_bottom: self.gutter_bottom.or(other.gutter_bottom),
+        }
+    }
+}
+
 /// A panel's resolved settings: the file and the options merged, every
-/// setting present.
+/// setting present. The fields are crate-visible so a live apply sets one
+/// of them with struct update syntax and leaves the rest alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PanelSettings {
-    edge: Edge,
-    size: Size,
-    reserve: ReserveMode,
-    layer: Layer,
-    keyboard: Keyboard,
-    output: Option<String>,
-    hidden: bool,
-    focus_ring: FocusRing,
-    tween_ms: u32,
-    gutters: Gutters,
+    pub(crate) edge: Edge,
+    pub(crate) size: Size,
+    pub(crate) reserve: ReserveMode,
+    pub(crate) layer: Layer,
+    pub(crate) keyboard: Keyboard,
+    pub(crate) output: Option<String>,
+    pub(crate) hidden: bool,
+    pub(crate) focus_ring: FocusRing,
+    pub(crate) tween_ms: u32,
+    pub(crate) gutters: Gutters,
 }
 
 impl PanelSettings {
@@ -456,7 +466,7 @@ impl PanelSettings {
     #[cfg(test)]
     #[must_use]
     pub fn built_in() -> Self {
-        resolve(&PanelTable::default(), None, &PanelOptions::default())
+        resolve(&PanelOptions::default(), None, &PanelOptions::default())
     }
 
     #[must_use]
@@ -488,77 +498,6 @@ impl PanelSettings {
     #[must_use]
     pub fn output(&self) -> Option<&str> {
         self.output.as_deref()
-    }
-
-    /// The same settings with another output (D11): a successful
-    /// `set-output` changes the live output a panel reports in a status
-    /// reply and docks to, and leaves every other setting alone.
-    #[must_use]
-    pub fn with_output(&self, output: Option<String>) -> Self {
-        let mut settings = self.clone();
-        settings.output = output;
-        settings
-    }
-
-    /// The same settings at another edge (row 6.6): a successful `set-edge`
-    /// changes the live edge a panel docks to and leaves every other setting
-    /// alone.
-    #[must_use]
-    pub fn with_edge(&self, edge: Edge) -> Self {
-        let mut settings = self.clone();
-        settings.edge = edge;
-        settings
-    }
-
-    /// The same settings with another size (row 6.6): a successful
-    /// `set-size` or `resize` changes the live size a panel is laid out with
-    /// and leaves every other setting alone.
-    #[must_use]
-    pub fn with_size(&self, size: Size) -> Self {
-        let mut settings = self.clone();
-        settings.size = size;
-        settings
-    }
-
-    /// The same settings with another reserve mode (row 6.6): a successful
-    /// `set-reserve` changes how the live panel treats the strip it covers
-    /// and leaves every other setting alone.
-    #[must_use]
-    pub fn with_reserve(&self, reserve: ReserveMode) -> Self {
-        let mut settings = self.clone();
-        settings.reserve = reserve;
-        settings
-    }
-
-    /// The same settings in another layer (row 6.6): a successful
-    /// `set-layer` changes the layer the live panel draws in and leaves every
-    /// other setting alone.
-    #[must_use]
-    pub fn with_layer(&self, layer: Layer) -> Self {
-        let mut settings = self.clone();
-        settings.layer = layer;
-        settings
-    }
-
-    /// The same settings with another keyboard mode (row 8.3): a successful
-    /// `set-keyboard` changes the interactivity of the live layer surface and
-    /// leaves every other setting alone.
-    #[must_use]
-    pub fn with_keyboard(&self, keyboard: Keyboard) -> Self {
-        let mut settings = self.clone();
-        settings.keyboard = keyboard;
-        settings
-    }
-
-    /// The same settings with other gutters (row 6.6): the gutters a live
-    /// panel is laid out with, as the apply path re-resolves a geometry from
-    /// a changed settings merge.
-    #[must_use]
-    #[cfg(test)]
-    pub fn with_gutters(&self, gutters: Gutters) -> Self {
-        let mut settings = self.clone();
-        settings.gutters = gutters;
-        settings
     }
 
     #[must_use]
@@ -601,8 +540,8 @@ fn default_focus_ring() -> FocusRing {
 #[derive(Debug, Default)]
 pub struct Config {
     daemon: DaemonSettings,
-    defaults: PanelTable,
-    panels: BTreeMap<String, PanelTable>,
+    defaults: PanelOptions,
+    panels: BTreeMap<String, PanelOptions>,
 }
 
 /// The config file's path (spec "Config file"):
@@ -646,7 +585,7 @@ impl Config {
             line: line_of(&error, text),
             message: error.message().to_owned(),
         })?;
-        let mut defaults = PanelTable::default();
+        let mut defaults = PanelOptions::default();
         let mut panels = BTreeMap::new();
         for (key, table) in file.panel {
             let line = line_at(text, key.span().start);
@@ -703,113 +642,33 @@ fn line_at(text: &str, offset: usize) -> usize {
         .map_or(1, |before| before.split('\n').count())
 }
 
-/// A setting from the highest level that has it: the option, else the
-/// panel's own table, else `[panel.defaults]`, else the built-in value.
-fn pick<T: Copy>(
-    option: Option<T>,
-    named: Option<&PanelTable>,
-    defaults: &PanelTable,
-    field: fn(&PanelTable) -> Option<T>,
-    built_in: T,
-) -> T {
-    option
-        .or_else(|| named.and_then(field))
-        .or(field(defaults))
-        .unwrap_or(built_in)
-}
-
 /// The merge behind [`Config::panel`] and [`PanelSettings::built_in`]
-/// (spec "Panel settings and precedence").
+/// (spec "Panel settings and precedence"): the levels chained highest
+/// first, then the built-in value of each setting.
 fn resolve(
-    defaults: &PanelTable,
-    named: Option<&PanelTable>,
+    defaults: &PanelOptions,
+    named: Option<&PanelOptions>,
     options: &PanelOptions,
 ) -> PanelSettings {
+    let merged = options
+        .clone()
+        .or(named.cloned().unwrap_or_default())
+        .or(defaults.clone());
     PanelSettings {
-        edge: pick(
-            options.edge,
-            named,
-            defaults,
-            |table| table.edge,
-            Edge::Left,
-        ),
-        size: pick(
-            options.size,
-            named,
-            defaults,
-            |table| table.size,
-            default_size(),
-        ),
-        reserve: pick(
-            options.reserve,
-            named,
-            defaults,
-            |table| table.reserve,
-            ReserveMode::Push,
-        ),
-        layer: pick(
-            options.layer,
-            named,
-            defaults,
-            |table| table.layer,
-            Layer::Overlay,
-        ),
-        keyboard: pick(
-            options.keyboard,
-            named,
-            defaults,
-            |table| table.keyboard,
-            Keyboard::OnDemand,
-        ),
-        output: options
-            .output
-            .clone()
-            .or_else(|| named.and_then(|table| table.output.clone()))
-            .or_else(|| defaults.output.clone()),
-        hidden: pick(options.hidden, named, defaults, |table| table.hidden, false),
-        focus_ring: pick(
-            options.focus_ring,
-            named,
-            defaults,
-            |table| table.focus_ring,
-            default_focus_ring(),
-        ),
-        tween_ms: pick(
-            options.tween_ms,
-            named,
-            defaults,
-            |table| table.tween_ms,
-            200,
-        ),
+        edge: merged.edge.unwrap_or(Edge::Left),
+        size: merged.size.unwrap_or_else(default_size),
+        reserve: merged.reserve.unwrap_or(ReserveMode::Push),
+        layer: merged.layer.unwrap_or(Layer::Overlay),
+        keyboard: merged.keyboard.unwrap_or(Keyboard::OnDemand),
+        output: merged.output,
+        hidden: merged.hidden.unwrap_or(false),
+        focus_ring: merged.focus_ring.unwrap_or_else(default_focus_ring),
+        tween_ms: merged.tween_ms.unwrap_or(200),
         gutters: Gutters::new(
-            pick(
-                options.gutter_left,
-                named,
-                defaults,
-                |table| table.gutter_left,
-                0,
-            ),
-            pick(
-                options.gutter_right,
-                named,
-                defaults,
-                |table| table.gutter_right,
-                0,
-            ),
-            pick(
-                options.gutter_top,
-                named,
-                defaults,
-                |table| table.gutter_top,
-                0,
-            ),
-            pick(
-                options.gutter_bottom,
-                named,
-                defaults,
-                |table| table.gutter_bottom,
-                0,
-            ),
+            merged.gutter_left.unwrap_or(0),
+            merged.gutter_right.unwrap_or(0),
+            merged.gutter_top.unwrap_or(0),
+            merged.gutter_bottom.unwrap_or(0),
         ),
     }
 }
