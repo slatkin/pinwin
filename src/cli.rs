@@ -70,6 +70,7 @@ pub enum Command {
 pub struct Run {
     name: PanelName,
     options: PanelOptions,
+    show_existing: bool,
     command: Vec<OsString>,
 }
 
@@ -86,6 +87,14 @@ impl Run {
     #[must_use]
     pub const fn options(&self) -> &PanelOptions {
         &self.options
+    }
+
+    /// Whether `--show-existing` asks the daemon to show a panel with this
+    /// name instead of starting a new one (spec "Show an existing panel",
+    /// D6).
+    #[must_use]
+    pub const fn show_existing(&self) -> bool {
+        self.show_existing
     }
 
     /// The command and its arguments, never empty (spec "No command").
@@ -216,7 +225,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Command, UsageError> {
 /// Parse the `run` options and the command after the first non-option or
 /// `--` (spec "Run options").
 fn parse_run(args: &[OsString]) -> Result<Command, UsageError> {
-    let (name, options, command) = run_arguments(args)?;
+    let (name, options, show_existing, command) = run_arguments(args)?;
     let Some(first) = command.first() else {
         return Err(UsageError::new(
             "run: no command; pass -- <command> [args...]",
@@ -231,6 +240,7 @@ fn parse_run(args: &[OsString]) -> Result<Command, UsageError> {
     Ok(Command::Run(Run {
         name,
         options,
+        show_existing,
         command,
     }))
 }
@@ -240,22 +250,30 @@ fn parse_run(args: &[OsString]) -> Result<Command, UsageError> {
 /// after `--` (spec "Run options").
 fn run_arguments(
     args: &[OsString],
-) -> Result<(Option<PanelName>, PanelOptions, Vec<OsString>), UsageError> {
+) -> Result<(Option<PanelName>, PanelOptions, bool, Vec<OsString>), UsageError> {
     let mut name = None;
     let mut options = PanelOptions::default();
+    let mut show_existing = false;
     let mut index = 0;
     while let Some(argument) = args.get(index) {
         let bytes = argument.as_os_str().as_bytes();
         if bytes == b"--" {
-            return Ok((name, options, args[index + 1..].to_vec()));
+            return Ok((name, options, show_existing, args[index + 1..].to_vec()));
         }
         if !bytes.starts_with(b"--") {
-            return Ok((name, options, args[index..].to_vec()));
+            return Ok((name, options, show_existing, args[index..].to_vec()));
         }
-        run_option(args, &mut index, argument, &mut name, &mut options)?;
+        run_option(
+            args,
+            &mut index,
+            argument,
+            &mut name,
+            &mut options,
+            &mut show_existing,
+        )?;
         index += 1;
     }
-    Ok((name, options, Vec::new()))
+    Ok((name, options, show_existing, Vec::new()))
 }
 
 /// One `--option` of `run`, whose value is the next argument; it changes
@@ -266,6 +284,7 @@ fn run_option(
     argument: &OsStr,
     name: &mut Option<PanelName>,
     options: &mut PanelOptions,
+    show_existing: &mut bool,
 ) -> Result<(), UsageError> {
     let option = text("option", argument)?;
     match option {
@@ -278,6 +297,7 @@ fn run_option(
             options.output = Some(text(option, raw)?.to_owned());
         }
         "--hidden" => options.hidden = Some(true),
+        "--show-existing" => *show_existing = true,
         "--edge" => setting_option(args, index, option, &mut options.edge)?,
         "--size" => setting_option(args, index, option, &mut options.size)?,
         "--reserve" => setting_option(args, index, option, &mut options.reserve)?,

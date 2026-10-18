@@ -42,6 +42,12 @@ error exits 1; a bad command line exits 2. When `PINWIN_SOCKET` names the
 socket and no daemon answers there, `pinwin run` prints a message and exits
 1 without starting a daemon.
 
+With `--show-existing`, a panel that already has the name shows as `pinwin
+show` would show it, the other run options do not change it, and `pinwin run`
+exits 0 without running the command. The daemon decides, so two such launches
+at the same time give one panel. Without the flag, a used name is a usage
+error that exits 2.
+
 `pinwin daemon` binds the display's socket and runs in the foreground until a
 `quit` request, SIGINT or SIGTERM ends it. The daemon reads the config file
 and requires a compositor with wlr-layer-shell before it creates anything.
@@ -127,6 +133,7 @@ panel name is `--name`, else the file name of the command.
 | `--output` | an output name | the compositor chooses | The output the panel opens on. |
 | `--hidden` | none (a flag) | shown | Start hidden. |
 | `--focus-ring` | `off`, `#RRGGBB` or `#RRGGBB:<width>` | `#dabc7f`, 1 pixel | The ring the panel draws while it has the keyboard; `<width>` is in pixels and at least 1. |
+| `--show-existing` | none (a flag) | off | Show a panel that already has the name, without running the command; start a new panel when the name is free. |
 
 The options win over the config file for the values they set: the option wins
 over `[panel.<name>]`, which wins over `[panel.defaults]`, which wins over the

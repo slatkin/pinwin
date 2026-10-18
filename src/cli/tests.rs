@@ -99,6 +99,34 @@ fn run_parses_its_options_and_command() {
     assert_eq!(run.name(), &name("--toggle"));
 }
 
+/// `--show-existing` asks the daemon to show a panel with the name instead
+/// of starting a new one, and it is absent by default (spec "Show an
+/// existing panel", "Run options").
+#[test]
+fn run_parses_show_existing() {
+    let Command::Run(run) = parse(&[
+        "run",
+        "--name",
+        "notes",
+        "--show-existing",
+        "--",
+        "myeditor",
+    ])
+    .expect("a valid run") else {
+        panic!("expected a run command");
+    };
+    assert!(run.show_existing());
+    assert_eq!(run.name(), &name("notes"));
+    assert_eq!(run.command(), os(&["myeditor"]));
+
+    let Command::Run(run) =
+        parse(&["run", "--name", "notes", "--", "myeditor"]).expect("a valid run")
+    else {
+        panic!("expected a run command");
+    };
+    assert!(!run.show_existing(), "the flag is absent by default");
+}
+
 /// An unreadable setting value is a usage error that names the option and
 /// exits 2 (spec "Invalid option value" and "Command-line exit codes").
 #[test]

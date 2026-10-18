@@ -493,7 +493,12 @@ impl FirstRuns {
     /// Start `pinwin run` with `name` and the harmless `sleep` app, so the
     /// panel stays until the test ends it.
     fn start(&mut self, name: &str) {
-        let child = pinwin(&self.dir, &["run", "--name", name, "--", "sleep", "30"])
+        self.start_with(&["run", "--name", name, "--", "sleep", "30"]);
+    }
+
+    /// Start `pinwin run` with the given arguments.
+    fn start_with(&mut self, args: &[&str]) {
+        let child = pinwin(&self.dir, args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -767,3 +772,6 @@ fn an_invalid_config_file_exits_2() {
     );
     fs::remove_dir_all(&dir).expect("cleanup");
 }
+
+#[path = "command_line_ipc/show_existing.rs"]
+mod show_existing;

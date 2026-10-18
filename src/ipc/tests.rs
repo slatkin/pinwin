@@ -548,6 +548,7 @@ fn a_create_request_carries_the_run_options_and_its_reply_names_the_display() {
         pid: 4242,
         app: "myeditor".to_owned(),
         options,
+        show_existing: false,
     };
     let line = request.to_line();
     let value: serde_json::Value = serde_json::from_str(&line).expect("a request is JSON");
@@ -557,6 +558,9 @@ fn a_create_request_carries_the_run_options_and_its_reply_names_the_display() {
     // The app's name is the command's file name, which the daemon's report
     // names (row 7.4, D3).
     assert_eq!(value["app"], serde_json::json!("myeditor"));
+    // `--show-existing` is absent on the wire when it is false, so a 0.4.0
+    // request line keeps its shape (D6).
+    assert_eq!(value["show_existing"], serde_json::Value::Null);
     assert_eq!(value["options"]["edge"], serde_json::json!("right"));
     assert_eq!(value["options"]["size"], serde_json::json!("30%"));
     assert_eq!(value["options"]["reserve"], serde_json::json!("cover"));
@@ -583,4 +587,44 @@ fn a_create_request_carries_the_run_options_and_its_reply_names_the_display() {
     )
     .expect_err("an invalid option value");
     assert_eq!(error.kind(), ErrorKind::InvalidValue);
+}
+
+/// A `create` request with `--show-existing` carries the flag on the wire, a
+/// line without it parses as false, and the reply of an existing panel says
+/// so (spec "Show an existing panel", D6).
+#[test]
+fn a_create_request_round_trips_show_existing_and_reports_an_existing_panel() {
+    let request = Request::Create {
+        panel: notes(),
+        pid: 4242,
+        app: "myeditor".to_owned(),
+        options: crate::config::PanelOptions::default(),
+        show_existing: true,
+    };
+    let line = request.to_line();
+    let value: serde_json::Value = serde_json::from_str(&line).expect("a request is JSON");
+    assert_eq!(value["show_existing"], serde_json::json!(true));
+    assert_eq!(
+        Request::parse(line.as_bytes()).expect("the request round-trips"),
+        request
+    );
+
+    // A 0.4.0 line has no flag, and the missing field means false.
+    let line = br#"{"cmd":"create","panel":"notes","pid":1,"app":"notes"}"#;
+    let parsed = Request::parse(line).expect("an old request line parses");
+    assert!(matches!(
+        parsed,
+        Request::Create {
+            show_existing: false,
+            ..
+        }
+    ));
+
+    let reply = Reply::existing();
+    assert!(reply.is_ok());
+    assert!(reply.is_existing());
+    assert_eq!(reply.display(), None, "an existing panel runs no app");
+    let line = reply.to_line();
+    assert_eq!(line, "{\"ok\":true,\"existing\":true}\n");
+    assert_eq!(Reply::parse(line.as_bytes()), Ok(reply));
 }

@@ -195,6 +195,11 @@ pub enum Request {
         app: String,
         #[serde(serialize_with = "options::serialize")]
         options: PanelOptions,
+        /// Show a panel with this name instead of starting a new one (spec
+        /// "Show an existing panel", D6). Absent on the wire means false,
+        /// so a 0.4.0 request line still parses.
+        #[serde(skip_serializing_if = "Absent::absent")]
+        show_existing: bool,
     },
     /// Receive one line for each event.
     Subscribe,
@@ -295,11 +300,13 @@ impl Request {
                 pid,
                 app,
                 options,
+                show_existing,
             } => Self::Create {
                 panel: panel_name(&panel)?,
                 pid,
                 app,
                 options: options::parse(options)?,
+                show_existing,
             },
             RawRequest::Subscribe => Self::Subscribe,
             RawRequest::Quit => Self::Quit,
@@ -372,6 +379,8 @@ enum RawRequest {
         app: String,
         #[serde(default)]
         options: options::WireOptions,
+        #[serde(default)]
+        show_existing: bool,
     },
     Subscribe,
     Quit,
@@ -413,6 +422,19 @@ where
 {
     raw.parse()
         .map_err(|error| RequestError::InvalidValue(format!("{field}: {error}")))
+}
+
+/// The `create` request's wire rule for a false `show_existing` flag: it is
+/// absent, so a 0.4.0 request line keeps its shape (D6). The predicate takes
+/// `&self` as serde's `skip_serializing_if` requires.
+trait Absent {
+    fn absent(&self) -> bool;
+}
+
+impl Absent for bool {
+    fn absent(&self) -> bool {
+        !*self
+    }
 }
 
 /// An optional setting: an absent field keeps the panel's value, a present

@@ -82,6 +82,9 @@ pub enum Reply {
     /// The command succeeded and reports the new panel's display for the
     /// app to connect with (spec "Run an app in a panel", D2).
     Created { display: String },
+    /// The command succeeded and showed the panel that already had the name,
+    /// so the app does not run (spec "Show an existing panel", D6).
+    Existing,
     /// The command succeeded and reports the daemon's panels (spec
     /// "Status").
     Status(StatusReply),
@@ -113,6 +116,13 @@ impl Reply {
         }
     }
 
+    /// The success reply of a `create` request whose `--show-existing` found
+    /// the panel already running (spec "Show an existing panel", D6).
+    #[must_use]
+    pub const fn existing() -> Self {
+        Self::Existing
+    }
+
     /// A failed reply with `kind` and `message`.
     #[must_use]
     pub fn error(kind: ErrorKind, message: impl Into<String>) -> Self {
@@ -122,7 +132,18 @@ impl Reply {
     /// Whether the command succeeded.
     #[must_use]
     pub const fn is_ok(&self) -> bool {
-        matches!(self, Self::Ok | Self::Created { .. } | Self::Status(_))
+        matches!(
+            self,
+            Self::Ok | Self::Created { .. } | Self::Existing | Self::Status(_)
+        )
+    }
+
+    /// Whether the panel already existed and was shown, so `pinwin run`
+    /// exits 0 without running its command (spec "Show an existing panel",
+    /// D6).
+    #[must_use]
+    pub const fn is_existing(&self) -> bool {
+        matches!(self, Self::Existing)
     }
 
     /// The new panel's display, for a carried-out `create` (D2).
@@ -130,7 +151,7 @@ impl Reply {
     pub fn display(&self) -> Option<&str> {
         match self {
             Self::Created { display } => Some(display),
-            Self::Ok | Self::Status(_) | Self::Error(_) => None,
+            Self::Ok | Self::Existing | Self::Status(_) | Self::Error(_) => None,
         }
     }
 
@@ -139,7 +160,7 @@ impl Reply {
     pub const fn as_status(&self) -> Option<&StatusReply> {
         match self {
             Self::Status(status) => Some(status),
-            Self::Ok | Self::Created { .. } | Self::Error(_) => None,
+            Self::Ok | Self::Created { .. } | Self::Existing | Self::Error(_) => None,
         }
     }
 
@@ -148,7 +169,7 @@ impl Reply {
     pub const fn as_error(&self) -> Option<&ErrorReply> {
         match self {
             Self::Error(error) => Some(error),
-            Self::Ok | Self::Created { .. } | Self::Status(_) => None,
+            Self::Ok | Self::Created { .. } | Self::Existing | Self::Status(_) => None,
         }
     }
 
@@ -169,6 +190,9 @@ impl Reply {
         let reply: ReplyLine =
             serde_json::from_slice(line).map_err(|error| format!("not a reply: {error}"))?;
         if reply.ok {
+            if reply.existing {
+                return Ok(Self::Existing);
+            }
             return Ok(match reply.display {
                 Some(display) => Self::Created { display },
                 None => Self::Ok,
@@ -193,6 +217,8 @@ struct ReplyJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     display: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    existing: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     panels: Option<&'a [PanelEntry]>,
@@ -205,6 +231,7 @@ impl Serialize for Reply {
                 ok: true,
                 error: None,
                 display: None,
+                existing: None,
                 pid: None,
                 panels: None,
             },
@@ -212,6 +239,15 @@ impl Serialize for Reply {
                 ok: true,
                 error: None,
                 display: Some(display),
+                existing: None,
+                pid: None,
+                panels: None,
+            },
+            Self::Existing => ReplyJson {
+                ok: true,
+                error: None,
+                display: None,
+                existing: Some(true),
                 pid: None,
                 panels: None,
             },
@@ -219,6 +255,7 @@ impl Serialize for Reply {
                 ok: true,
                 error: None,
                 display: None,
+                existing: None,
                 pid: Some(status.pid),
                 panels: Some(&status.panels),
             },
@@ -226,6 +263,7 @@ impl Serialize for Reply {
                 ok: false,
                 error: Some(error),
                 display: None,
+                existing: None,
                 pid: None,
                 panels: None,
             },
@@ -399,4 +437,6 @@ struct ReplyLine {
     error: Option<ErrorReply>,
     #[serde(default)]
     display: Option<String>,
+    #[serde(default)]
+    existing: bool,
 }

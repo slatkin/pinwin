@@ -148,6 +148,7 @@ fn run_app(run: &cli::Run) -> ExitCode {
         pid: std::process::id(),
         app: run::app_name(&run.command()[0]),
         options: run.options().clone(),
+        show_existing: run.show_existing(),
     };
     let answer = match create_panel(&path, source, &request) {
         Ok(answer) => answer,
@@ -164,6 +165,11 @@ fn run_app(run: &cli::Run) -> ExitCode {
             ErrorKind::DuplicateName => cli::UsageError::EXIT_CODE,
             _ => 1,
         });
+    }
+    // The daemon showed the panel that already had the name, so this launch
+    // runs nothing and succeeds (spec "Show an existing panel", D6).
+    if answer.reply().is_existing() {
+        return ExitCode::SUCCESS;
     }
     let Some(display) = answer.reply().display() else {
         eprintln!("pinwin: the daemon's reply named no display for the new panel");

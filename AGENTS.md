@@ -31,8 +31,11 @@ binary-only now and every row of its tasks is landed.
   `WAYLAND_DISPLAY`, `PINWIN_PANEL` and the absolute `PINWIN_SOCKET` from the
   reply and replaces itself with the app, and exits 127 when the command
   cannot run (spec "Run an app in a panel", "Command not found"); a path
-  from `PINWIN_SOCKET` that no daemon answers never starts one (D3). Rows 7.2
-  and 7.3 add the daemon spawn and the pidfd lifetime.
+  from `PINWIN_SOCKET` that no daemon answers never starts one (D3). With
+  `--show-existing`, the daemon's `existing` reply means the panel already
+  ran and shows, so `pinwin run` exits 0 without running the command (D6,
+  spec "Show an existing panel"). Rows 7.2 and 7.3 add the daemon spawn and
+  the pidfd lifetime.
 - `src/cli.rs` — the hand-written command line (row 4.3): `run` with the
   options of spec "Run options", `daemon`, and one client subcommand for each
   daemon request. It produces the command value and the `PanelOptions` of the
@@ -47,11 +50,13 @@ binary-only now and every row of its tasks is landed.
   drift apart. `src/main.rs` compiles it; its tests are `src/fd/tests.rs`.
 - `src/ipc.rs` — the daemon's wire format (D13): the request enum with one
   variant for each client subcommand and the `create` request `pinwin run`
-  sends (D2), the reply with its error kinds, its display for a new panel and
-  its status reply's panel fields (spec "Status", "Run an app in a panel"),
-  the 64 KiB request line with a bounded reader that keeps the lines behind
-  the one it returns, and the wire types. `src/main.rs` compiles it; its
-  unit tests are `src/ipc/tests.rs`.
+  sends (D2), with its `show_existing` flag absent when false (D6), the
+  reply with its error kinds, its display for a new panel, its `existing`
+  marker for a panel that was already there and its status reply's panel
+  fields (spec "Status", "Run an app in a panel", "Show an existing
+  panel"), the 64 KiB request line with a bounded reader that keeps the
+  lines behind the one it returns, and the wire types. `src/main.rs`
+  compiles it; its unit tests are `src/ipc/tests.rs`.
 - `src/ipc/options.rs` — the wire text of a setting value (row 7.1, D13,
   spec "Run options"): the `create` request's run options in the config
   file's grammar, and the one `Serialize` place for the types a request
@@ -116,7 +121,12 @@ binary-only now and every row of its tasks is landed.
   caller's process ID and answers with the display the app connects with,
   through `Lifetime::add_panel`, so the registry and the `exit_when_idle`
   rule see the panel. A name another panel uses is refused and the existing
-  panel stays (spec "Duplicate name").
+  panel stays (spec "Duplicate name"). With `show_existing`, the arm first
+  routes `show` through the registry and answers `existing`, so the run
+  options never touch a panel that already has the name; a spawn refused
+  because another launch registered the name first goes back to the show,
+  so two launches give one panel and both exit 0 (D6, spec "Show an existing
+  panel", "One decision for a duplicate launch").
 - `src/daemon/lifetime.rs` — the daemon's lifetime (spec "Daemon lifetime
   preference", "Quit", "Reload", D12): the shared state of the daemon (the
   registry, the event bus, the config it holds and the shutdown trigger),

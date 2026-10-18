@@ -24,8 +24,10 @@ use std::time::Duration;
 
 use super::events::Bus;
 use super::lifetime::Lifetime;
+use crate::config::PanelOptions;
 use crate::guard::{Poisoned, guard};
-use crate::ipc::{self, ErrorKind, MAX_LINE, Reply, Request};
+use crate::ipc::{self, ErrorKind, ErrorReply, MAX_LINE, Reply, Request};
+use crate::name::PanelName;
 use crate::proxy::{self, StartError};
 
 /// Serve one accepted connection: one request line and its reply, or the
@@ -92,21 +94,17 @@ fn carry_out(
             pid,
             app,
             options,
+            show_existing,
         } => {
-            // The options are merged with the config file's tables; a name
-            // another panel uses is refused and that panel stays (spec
-            // "Duplicate name"). A panel whose thread or socket cannot start
-            // is error kind `internal`, so the client reports it as the
-            // daemon's failure rather than its own.
-            let settings = lifetime.panel_settings(&panel, &options);
-            let reply = match proxy::spawn(panel, settings, app, pid, lifetime) {
-                Ok(started) => Reply::created(started.display().to_owned()),
-                Err(StartError::Refused(error)) => Reply::Error(error),
-                Err(StartError::Io(error)) => Reply::error(
-                    ErrorKind::Internal,
-                    format!("the panel did not start: {error}"),
-                ),
-            };
+            let reply = create_or_show(
+                lifetime,
+                &panel,
+                pid,
+                &app,
+                &options,
+                show_existing,
+                timeout,
+            );
             answer(stream, &reply, timeout)
         }
         Request::Subscribe => subscribe(stream, lifetime.bus(), timeout),
@@ -124,6 +122,64 @@ fn carry_out(
             // the daemon, and the arms above answered them.
             None => Ok(()),
         },
+    }
+}
+
+/// Answer a `create` request: show the panel when it exists and the request
+/// allows it, otherwise start it (D6, spec "Show an existing panel", "One
+/// decision for a duplicate launch").
+///
+/// The daemon decides, so two `pinwin run --show-existing` calls cannot both
+/// create a panel: the first registration wins and the other's `show` finds
+/// it. The loop is D6's step 3: a spawn refused because another launch
+/// registered the name first goes back to the show, and a name that is free
+/// again by then starts a panel as without the flag. A refusal other than a
+/// duplicate name, and every IO failure, is the request's error.
+fn create_or_show(
+    lifetime: &Arc<Lifetime>,
+    panel: &PanelName,
+    pid: u32,
+    app: &str,
+    options: &PanelOptions,
+    show_existing: bool,
+    timeout: Duration,
+) -> Reply {
+    loop {
+        if show_existing {
+            let show = Request::Show {
+                panel: panel.clone(),
+            };
+            match lifetime.registry().route(&show, timeout) {
+                Some(reply) if reply.is_ok() => return Reply::existing(),
+                Some(reply)
+                    if reply.as_error().map(ErrorReply::kind) == Some(ErrorKind::NoPanel) => {}
+                Some(reply) => return reply,
+                // The registry answers every panel command, `show` included.
+                None => {
+                    return Reply::error(
+                        ErrorKind::Internal,
+                        format!("{panel}: the daemon could not route the show request"),
+                    );
+                }
+            }
+        }
+        // The options are merged with the config file's tables; a name another
+        // panel uses is refused and that panel stays (spec "Duplicate name").
+        // A panel whose thread or socket cannot start is error kind `internal`,
+        // so the client reports it as the daemon's failure rather than its own.
+        let settings = lifetime.panel_settings(panel, options);
+        match proxy::spawn(panel.clone(), settings, app.to_owned(), pid, lifetime) {
+            Ok(started) => return Reply::created(started.display().to_owned()),
+            Err(StartError::Refused(error))
+                if show_existing && error.kind() == ErrorKind::DuplicateName => {}
+            Err(StartError::Refused(error)) => return Reply::Error(error),
+            Err(StartError::Io(error)) => {
+                return Reply::error(
+                    ErrorKind::Internal,
+                    format!("the panel did not start: {error}"),
+                );
+            }
+        }
     }
 }
 
