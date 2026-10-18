@@ -202,7 +202,11 @@ and several modules wait for the rows that wire them in (D15).
   geometry `set_window_geometry` asked for, the crop of the panel window's
   buffer to that geometry, and the size re-apply when the panel's output
   size arrives. A percent size resolves against the panel's tracked output
-  size, with a 1920x1080 placeholder until the first size is known (D9).
+  size; while the size of a percent panel is unknown its first dock waits
+  (pixels dock at once), with an output-done, surface-enter, output-remove
+  and 500 ms deadline wake, and the deadline falls back to the first known
+  tracked size or forwards the window as a normal window (D9). Panel-parented
+  popups created during the wait are deferred and routed on resume.
 - `src/proxy/dock.rs` — the panel window's dock on one output (D11): the
   layer surface the panel window is served by and the handler that maps its
   configure and ack to the app's toplevel (copied from wl-paper's
