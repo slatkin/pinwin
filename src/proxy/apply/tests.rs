@@ -428,7 +428,7 @@ fn a_successful_apply_publishes_the_geometry_change() {
     assert_eq!(reply, Some(PanelReply::Done));
     assert_eq!(
         events.next(Duration::from_millis(100)),
-        Ok(Event::GeometryChanged { panel })
+        Ok(Event::GeometryChanged { panel }.line())
     );
 }
 

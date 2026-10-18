@@ -132,7 +132,7 @@ fn subscribe(stream: &mut UnixStream, bus: &Bus, timeout: Duration) -> Result<()
     answer(stream, &Reply::ok(), timeout)?;
     loop {
         match subscription.next(timeout) {
-            Ok(event) => ipc::write_line(stream, event.to_line().as_bytes(), timeout)?,
+            Ok(line) => ipc::write_line(stream, line.as_bytes(), timeout)?,
             Err(RecvTimeoutError::Timeout) => {
                 if peer_closed(stream) {
                     return Ok(());

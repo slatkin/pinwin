@@ -2,12 +2,14 @@
 //! stream"): one bounded queue for each subscriber and the events a panel
 //! publishes.
 //!
-//! A subscriber's connection thread takes the events from its queue and
-//! writes each as one JSON line (D13), after the success reply to its
-//! `subscribe` request. [`Bus::publish`] never waits: it offers the event to
-//! every queue with `try_send`, and a queue that is full closes that
-//! subscriber (D12: "each subscriber has a bounded queue, and a full queue
-//! closes that subscriber"). A client that stops reading therefore holds
+//! A subscriber's connection thread takes each event's line from its queue
+//! and writes it out (D13), after the success reply to its `subscribe`
+//! request. [`Bus::publish`] builds that JSON line once and shares it with
+//! every queue, so one event costs one line however many subscribers it
+//! reaches. [`Bus::publish`] never waits: it offers the line to every queue
+//! with `try_send`, and a queue that is full closes that subscriber (D12:
+//! "each subscriber has a bounded queue, and a full queue closes that
+//! subscriber"). A client that stops reading therefore holds
 //! only its own queue and connection thread, never the daemon, a panel or
 //! another client (spec "Slow subscriber", "Clients cannot block the
 //! daemon").
@@ -34,7 +36,7 @@ pub const QUEUE_DEPTH: usize = 64;
 /// removed, shown or hidden, its geometry changed, or it ended with no
 /// connection (row 7.4's `no_window`). Every event names the panel, which is
 /// the object `panel` of its JSON line.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum Event {
     /// A panel was added.
@@ -55,17 +57,18 @@ pub enum Event {
 }
 
 impl Event {
-    /// The line the daemon writes to a subscriber: the JSON object plus its
-    /// newline (D13).
+    /// The one line every subscriber of this event receives: the JSON object
+    /// plus its newline (D13). Built once per publish and shared, so the
+    /// queues hold the same allocation (D12).
     ///
     /// # Panics
     ///
     /// Only if the `Serialize` impl fails, which no wire type here can do.
     #[must_use]
-    pub fn to_line(&self) -> String {
+    pub fn line(&self) -> Arc<str> {
         let mut line = serde_json::to_string(self).expect("an event is serializable");
         line.push('\n');
-        line
+        Arc::from(line)
     }
 }
 
@@ -82,7 +85,7 @@ pub struct Bus {
 #[derive(Debug, Default)]
 struct Subscribers {
     next_id: u64,
-    queues: BTreeMap<u64, SyncSender<Event>>,
+    queues: BTreeMap<u64, SyncSender<Arc<str>>>,
 }
 
 impl Bus {
@@ -118,16 +121,21 @@ impl Bus {
         }
     }
 
-    /// Give `event` to every subscriber whose queue has room. A queue that
-    /// is full closes its subscriber (D12): its sender is dropped, so the
-    /// connection thread finishes the events it has and ends. Publishing
+    /// Give `event`'s line to every subscriber whose queue has room. A queue
+    /// that is full closes its subscriber (D12): its sender is dropped, so
+    /// the connection thread finishes the events it has and ends. Publishing
     /// never waits, so a subscriber that stopped reading cannot hold the
     /// daemon (spec "Slow subscriber").
     pub fn publish(&self, event: &Event) {
         let mut subscribers = locked(&self.inner);
+        // No subscriber owes the event anything, so no line is built for it.
+        if subscribers.queues.is_empty() {
+            return;
+        }
+        let line = event.line();
         let mut closed = Vec::new();
         for (id, queue) in &subscribers.queues {
-            match queue.try_send(event.clone()) {
+            match queue.try_send(Arc::clone(&line)) {
                 Ok(()) => {}
                 Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => closed.push(*id),
             }
@@ -165,14 +173,14 @@ impl Default for Bus {
 #[derive(Debug)]
 pub struct Subscription {
     id: u64,
-    events: Receiver<Event>,
+    events: Receiver<Arc<str>>,
     inner: Arc<Mutex<Subscribers>>,
 }
 
 impl Subscription {
-    /// Wait at most `timeout` for the next event: an event, the timeout, or
-    /// the bus closing this queue because it fell behind.
-    pub fn next(&self, timeout: Duration) -> Result<Event, RecvTimeoutError> {
+    /// Wait at most `timeout` for the next event's line: a line, the
+    /// timeout, or the bus closing this queue because it fell behind.
+    pub fn next(&self, timeout: Duration) -> Result<Arc<str>, RecvTimeoutError> {
         self.events.recv_timeout(timeout)
     }
 }

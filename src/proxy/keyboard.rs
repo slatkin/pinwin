@@ -281,7 +281,8 @@ mod tests {
             events.next(Duration::from_millis(100)),
             Ok(Event::Shown {
                 panel: panel.clone()
-            })
+            }
+            .line())
         );
     }
 

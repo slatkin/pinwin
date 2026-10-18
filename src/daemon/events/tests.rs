@@ -319,12 +319,13 @@ fn a_panel_without_a_window_reports_before_it_is_removed() {
         Event::Added {
             panel: name.clone()
         }
+        .line()
     );
     assert_eq!(
-        Event::NoWindow {
+        &*Event::NoWindow {
             panel: name.clone()
         }
-        .to_line(),
+        .line(),
         "{\"event\":\"no-window\",\"panel\":\"notes\"}\n",
         "the no_window event's JSON line"
     );
@@ -337,12 +338,14 @@ fn a_panel_without_a_window_reports_before_it_is_removed() {
         Event::NoWindow {
             panel: name.clone()
         }
+        .line()
     );
     assert_eq!(
         events.next(WAIT).expect("the removed event arrives"),
         Event::Removed {
             panel: name.clone()
         }
+        .line()
     );
     assert!(
         matches!(
@@ -373,6 +376,7 @@ fn a_panel_announces_its_add_and_end() {
         Event::Added {
             panel: name.clone()
         }
+        .line()
     );
 
     assert!(lifetime.panel_ended(&name, None), "notes ended");
@@ -381,6 +385,7 @@ fn a_panel_announces_its_add_and_end() {
         Event::Removed {
             panel: name.clone()
         }
+        .line()
     );
     // A panel that had a connection gets no report (spec "A panel that had
     // a connection gets no notice"): no event follows `removed`.

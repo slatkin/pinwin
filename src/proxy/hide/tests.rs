@@ -71,7 +71,8 @@ fn a_toggle_hides_then_shows_with_one_event_each() {
         events.next(Duration::from_millis(100)),
         Ok(Event::Hidden {
             panel: panel.clone()
-        })
+        }
+        .line())
     );
     assert_eq!(
         super::answer(
@@ -89,7 +90,8 @@ fn a_toggle_hides_then_shows_with_one_event_each() {
         events.next(Duration::from_millis(100)),
         Ok(Event::Shown {
             panel: panel.clone()
-        })
+        }
+        .line())
     );
     assert_eq!(
         events.next(Duration::from_millis(50)),
@@ -135,7 +137,8 @@ fn showing_a_shown_panel_and_hiding_a_hidden_one_are_no_ops() {
         events.next(Duration::from_millis(100)),
         Ok(Event::Hidden {
             panel: panel.clone()
-        })
+        }
+        .line())
     );
     assert_eq!(
         super::answer(
