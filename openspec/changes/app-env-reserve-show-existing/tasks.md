@@ -71,12 +71,13 @@ wrong.
 - [x] 4.1 Run the gates: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D
   warnings`, `cargo audit`, `cargo nextest run` and `make check-code-file-lines`. Verify:
   all pass.
-- [ ] 4.2 Live check, run by the user: a pushing panel 400 px wide; then
+- [x] 4.2 Live check, run by the user: a pushing panel 400 px wide; then
   `pinwin set-size <name> 1100px --reserve cover --ms 200` (tiles do not move);
   `pinwin set-size <name> 400px --reserve push --ms 200` (tiles do not move);
   expand again, then `pinwin set-size <name> 500px --reserve push --ms 200` (tiles move once,
   at the end); from a terminal panel, `pinwin status` and `pinwin run --name <name>
   --show-existing -- <app>` after a hide. Record the user's answer here.
+  User's answer: "live checks are pass".
 
 ## 5. Gutters
 
@@ -113,12 +114,13 @@ wrong.
 - [x] 5.3 Run the gates: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D
   warnings`, `cargo audit`, `cargo nextest run` and `make check-code-file-lines`. Verify:
   all pass.
-- [ ] 5.4 Live check, run by the user: a running panel with Top 0; then
+- [x] 5.4 Live check, run by the user: a running panel with Top 0; then
   `pinwin set-gutters <name> --top 8 --bottom 8` (the panel's edges move in one step and the
   app keeps its window); a pushing panel and `pinwin set-gutters <name> --right <large>`
   (the reply is `invalid_layout` and nothing moves); `pinwin run --name <name>
   --gutter-left 12 -- <app>` while `[panel.<name>]` sets `gutter_left = 4` (the panel starts
   12 pixels from the left edge). Record the user's answer here.
+  User's answer: "live checks are pass".
 
 ## Workflow follow-up
 
