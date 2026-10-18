@@ -177,8 +177,8 @@ fn run_parses_the_gutter_options() {
             error.to_string(),
             format!("pinwin: {option}: expected a whole number of pixels, got '1.5'")
         );
-        assert_eq!(UsageError::EXIT_CODE, 2, "option = {option:?}");
     }
+    assert_eq!(UsageError::EXIT_CODE, 2, "a bad gutter is a usage error");
 }
 
 /// An unreadable setting value is a usage error that names the option and

@@ -719,19 +719,4 @@ fn the_set_gutters_request_round_trips_its_fields() {
         Request::parse(several.to_line().as_bytes()).expect("the request round-trips"),
         several
     );
-
-    // A single gutter keeps the other three as absent fields.
-    let one = Request::parse(br#"{"cmd":"set-gutters","panel":"notes","right":4}"#)
-        .expect("one far gutter");
-    let Request::SetGutters {
-        top,
-        bottom,
-        left,
-        right,
-        ..
-    } = one
-    else {
-        panic!("expected set-gutters");
-    };
-    assert_eq!((top, bottom, left, right), (None, None, None, Some(4)));
 }

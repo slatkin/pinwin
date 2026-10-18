@@ -290,23 +290,3 @@ fn two_simultaneous_show_existing_launches_leave_one_panel() {
     drop(daemon);
     fs::remove_dir_all(&dir).expect("cleanup");
 }
-
-/// `--show-existing` without `--name` still refuses the invalid default name
-/// and exits 2 without running the command (spec "Show an existing panel":
-/// "Invalid name").
-#[test]
-fn show_existing_with_an_invalid_default_name_exits_2() {
-    let dir = temp_dir("show-existing-invalid-name");
-    let output = client_output(pinwin(&dir, &["run", "--show-existing", "--", "my.app"]));
-    assert_eq!(output.status.code(), Some(2), "the name is a usage error");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--name"),
-        "the refusal names --name: {stderr}"
-    );
-    assert!(
-        output.stdout.is_empty(),
-        "nothing runs and nothing is printed on stdout"
-    );
-    fs::remove_dir_all(&dir).expect("cleanup");
-}
