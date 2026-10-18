@@ -68,7 +68,7 @@ wrong.
 
 ## 4. Gates and live check
 
-- [ ] 4.1 Run the gates: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D
+- [x] 4.1 Run the gates: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D
   warnings`, `cargo audit`, `cargo nextest run` and `make check-code-file-lines`. Verify:
   all pass.
 - [ ] 4.2 Live check, run by the user: a pushing panel 400 px wide; then
