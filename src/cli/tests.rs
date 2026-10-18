@@ -1,6 +1,7 @@
 use super::*;
 
-use crate::config::Rgb;
+use crate::config::{FocusRing, Keyboard, Layer, Rgb};
+use crate::geometry::{Edge, ReserveMode};
 use std::num::NonZeroU32;
 
 fn os(raw: &[&str]) -> Vec<OsString> {
