@@ -10,14 +10,23 @@ on:
       - '**.md'
       - 'docs/**'
       - 'openspec/**'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'openspec/**'
   workflow_dispatch:
 
 # One commit means one build. Keying on the commit SHA makes a tag run
 # supersede the branch run for the same commit instead of building twice.
+# A pull_request run is keyed on its merge commit SHA, so it never shares a
+# group with a main-branch push run; forked PRs only ever get read access.
 #
 # The asymmetry matters: only an incoming *tag* run cancels (it is the last
-# and authoritative ref). An incoming branch run waits its turn, so if the
-# two pushes were ever received out of order the release still runs.
+# and authoritative ref). An incoming branch or PR run waits its turn, so if
+# the two pushes were ever received out of order the release still runs.
 concurrency:
   group: ${{ github.workflow }}-${{ github.sha }}
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/tags/') }}
@@ -62,6 +71,20 @@ jobs:
             git
 
       - uses: actions/checkout@v7
+
+      # A release tag must name the version Cargo.toml builds, so the binary
+      # and checksum published for vX.Y.Z cannot silently describe some other
+      # version. Failed early, before the expensive build steps.
+      - name: Check tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          tag=${GITHUB_REF_NAME#v}
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match" \
+              "Cargo.toml version $version"
+            exit 1
+          fi
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -140,3 +163,74 @@ jobs:
           path: |
             target/debug/pinwin
           if-no-files-found: error
+
+      # Release-only steps: a tag run builds the optimized binary, repeats the
+      # no-toolkit check on it, and stages the named file plus its checksum
+      # for the release job. Non-tag runs stop at the debug artifact above.
+      - name: Build release binary
+        if: startsWith(github.ref, 'refs/tags/')
+        run: cargo build --release
+
+      - name: Check release binary dynamic dependencies
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          forbidden='lib(gtk|gdk|glib|gobject|gio|pango|cairo|pixbuf|harfbuzz)'
+          test -x target/release/pinwin
+          if ldd target/release/pinwin | grep -Eiq "$forbidden"; then
+            echo 'Forbidden toolkit library linked into pinwin:'
+            ldd target/release/pinwin | grep -Ei "$forbidden"
+            exit 1
+          fi
+
+      - name: Stage release files and checksum
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p dist
+          cp target/release/pinwin dist/pinwin-linux-x86_64
+          cd dist
+          sha256sum pinwin-linux-x86_64 > pinwin-linux-x86_64.sha256
+
+      - name: Upload release artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v7
+        with:
+          name: pinwin-release-x86_64
+          path: |
+            dist/pinwin-linux-x86_64
+            dist/pinwin-linux-x86_64.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: pinwin-release-x86_64
+          path: dist
+
+      # Create the release once, then re-runs upload with --clobber so a
+      # failed job can be retried for the same tag. A hyphenated tag is a
+      # prerelease (v0.5.0-rc1); the release action is gh itself, with the
+      # job's GITHUB_TOKEN, so no third-party action sees the token.
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          prerelease=()
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=(--prerelease) ;;
+          esac
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              dist/pinwin-linux-x86_64 dist/pinwin-linux-x86_64.sha256 --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              dist/pinwin-linux-x86_64 dist/pinwin-linux-x86_64.sha256 \
+              --generate-notes --verify-tag "${prerelease[@]}"
+          fi
