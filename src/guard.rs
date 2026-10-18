@@ -2,18 +2,16 @@
 //! boundary that must not unwind, with a shared poisoned latch.
 //!
 //! `Cargo.toml` sets `panic = "unwind"` in every profile, so a panic caught
-//! here unwinds out of the guarded body only; letting one cross a foreign
-//! C frame — libghostty's FFI or a Wayland or calloop callback —
-//! instead is undefined behaviour and aborts. Every
-//! module that registers `extern "C"` trampolines or event-loop callbacks
-//! runs its
-//! bodies through [`guard`] or [`guard_default`] with one shared
-//! [`Poisoned`] flag, so a single panic stops that panel's glue code instead
-//! of killing the host.
+//! here unwinds out of the guarded body only; letting one cross a foreign C
+//! frame — a Wayland or calloop callback — instead is undefined behaviour and
+//! aborts. Every module that registers `extern "C"` trampolines or
+//! event-loop callbacks runs its bodies through [`guard`]
+//! with one shared [`Poisoned`] flag, so a single panic stops that panel's
+//! glue code instead of killing the host.
 //!
-//! The helper is deliberately `PinwinError`-agnostic: the library's
-//! `Panel` maps the `Err` case onto its own `Internal` error (port-to-rust
-//! D5); nothing here needs to know about it.
+//! The helper is deliberately error-type-agnostic: the daemon maps the `Err`
+//! case onto its own internal error (port-to-rust D5); nothing here needs to
+//! know about it.
 
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -34,8 +32,8 @@ impl Poisoned {
         Self(Arc::new(AtomicBool::new(false)))
     }
 
-    /// A flag that is already latched (for tests and callers seeding a
-    /// shutdown).
+    /// A flag that is already latched, for tests.
+    #[cfg(test)]
     #[must_use]
     pub fn latched() -> Self {
         let flag = Self::new();
@@ -59,9 +57,9 @@ impl Poisoned {
 ///
 /// Returns `Err(poisoned)` when the flag was already latched — the body does
 /// not run — or when `body` panicked; the panic payload is described on
-/// stderr before the latch. The `Err` value is the shared flag itself, so the
-/// `Panel` in [`crate::panel`] maps it onto `PinwinError::Internal` at every
-/// public entry point (D5: a panic reports Internal, never `NotRunning`).
+/// stderr before the latch. The `Err` value is the shared flag itself, so
+/// the panel maps it onto its internal error at every public entry point
+/// (D5: a panic reports the internal error, never a liveness error).
 pub fn guard<T>(poisoned: &Poisoned, body: impl FnOnce() -> T) -> Result<T, Poisoned> {
     if poisoned.is_poisoned() {
         return Err(poisoned.clone());
@@ -86,13 +84,6 @@ pub fn guard_always<T>(poisoned: &Poisoned, body: impl FnOnce() -> T) -> Result<
             Err(poisoned.clone())
         }
     }
-}
-
-/// The `extern "C"` trampoline variant of [`guard`] (D5): return `default`
-/// when the flag is already latched or `body` panicked, so a trampoline never
-/// unwinds into C and always hands back a value the caller defined.
-pub fn guard_default<T>(poisoned: &Poisoned, default: T, body: impl FnOnce() -> T) -> T {
-    guard(poisoned, body).unwrap_or(default)
 }
 
 /// Describe a caught panic payload on stderr (D5). The payload is
@@ -159,10 +150,9 @@ mod tests {
         assert!(!fresh.is_poisoned());
     }
 
-    /// Once latched, later guarded calls short-circuit: the body never runs
-    /// and the trampoline variant hands back the caller's default.
+    /// Once latched, later guarded calls short-circuit: the body never runs.
     #[test]
-    fn later_guarded_calls_short_circuit_with_the_default() {
+    fn later_guarded_calls_short_circuit() {
         let poisoned = Poisoned::latched();
         let ran = Cell::new(false);
         let _ = guard(&poisoned, || {
@@ -171,8 +161,6 @@ mod tests {
         })
         .unwrap_err();
         assert!(!ran.get(), "a poisoned guard does not run the body");
-        assert!(!guard_default(&poisoned, false, || true));
-        assert_eq!(guard_default(&poisoned, "fallback", || "real"), "fallback");
     }
 
     /// The caught panic payload is described on stderr (D5). The raw

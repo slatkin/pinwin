@@ -1,18 +1,33 @@
 //! The animated width transition's pure core (port-to-rust D3): the easing
 //! and the per-tick step. Ported from `src/glue_anim.c` (the
 //! add-animated-width design D2, D4-D6 it cites is archived under
-//! `openspec/changes/archive/`). The panel thread's driver — frame
-//! callbacks, a calloop watchdog, the running-tween state and the frame log
-//! — lives in `src/panel/wayland_side/tween.rs`
-//! (`replace-gtk-with-wayland` D7): the library reads no desktop animation
-//! setting — the host's duration is the only control.
+//! `openspec/changes/archive/`). The driver — frame callbacks, the
+//! running-tween state and the frame log — lives in the proxy's tween step
+//! (`src/proxy/tween.rs`, replace-terminal-with-app-host D15;
+//! `replace-gtk-with-wayland` D7): the daemon reads no desktop animation
+//! setting — the requested duration is the only control.
 
-/// Ease-out cubic: close to niri's critically damped window-resize spring
-/// (`glue_anim.c`).
-#[must_use]
-pub fn ease(t: f64) -> f64 {
-    let u = 1.0 - t;
-    1.0 - u * u * u
+/// Ease-out cubic, close to a critically damped spring (`glue_anim.c`), in
+/// millionths: `t` and the result are fractions of one scaled by
+/// `1_000_000`, so the step needs no lossy float-to-int conversion.
+fn ease_millionths(t: i64) -> i64 {
+    const ONE: i64 = 1_000_000;
+    let u = ONE - t;
+    // `u` is at most one million, so `u * u * u` is at most 1e18, which fits
+    // in an i64.
+    ONE - u * u * u / (ONE * ONE)
+}
+
+/// Round a value in millionths to the nearest whole unit, halves away from
+/// zero like `f64::round`.
+fn round_millionths(scaled: i64) -> i64 {
+    const HALF: i64 = 500_000;
+    const ONE: i64 = 1_000_000;
+    if scaled >= 0 {
+        (scaled + HALF) / ONE
+    } else {
+        (scaled - HALF) / ONE
+    }
 }
 
 /// The outcome of one tween tick, in frame-clock microseconds.
@@ -51,41 +66,26 @@ impl Tween {
         }
     }
 
-    /// The tween's current eased width: `from_px` until the first tick, then
-    /// the last eased frame (`a.cur_px`). The wayland driver's retargets
-    /// read it as their `from_px`.
-    #[must_use]
-    pub fn current_px(&self) -> i32 {
-        self.cur_px
-    }
-
-    /// The tween's target width in pixels (`a.to_px`): what the stop paths
-    /// apply when the tween finishes.
-    #[must_use]
-    pub fn target_px(&self) -> i32 {
-        self.to_px
-    }
-
     /// Advance to `now_us`. The first call stamps the tween's start time, so
     /// the first frame is exactly `from_px`.
-    // Approved per-instance (#13): microsecond timestamps are tiny against
-    // f64's 52-bit mantissa; the ratio is clamped to [0, 1] below; the pixel
-    // delta is rounded and screen-bounded, so the float-to-int step cannot
-    // meaningfully truncate.
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        reason = "tween timings are small; pixel delta is rounded and screen-bounded"
-    )]
     pub fn advance(&mut self, now_us: i64) -> Advance {
         let t0 = *self.t0_us.get_or_insert(now_us);
-        let t = (now_us - t0) as f64 / self.dur_us as f64;
-        if t >= 1.0 {
+        let elapsed = now_us.saturating_sub(t0);
+        if elapsed >= self.dur_us {
             return Advance::Finished;
         }
-        let t = t.max(0.0);
-        self.cur_px =
-            self.from_px + (f64::from(self.to_px - self.from_px) * ease(t)).round() as i32;
+        // The caller clamps the duration to 1000 ms, so its microseconds fit
+        // an i32, and the elapsed time is at most that duration.
+        let duration = i32::try_from(self.dur_us).unwrap_or(i32::MAX);
+        let elapsed = i32::try_from(elapsed.max(0)).unwrap_or(duration);
+        // The eased fraction in millionths, then the eased pixel delta. The
+        // delta stays between zero and `to_px - from_px`, so its conversion
+        // back to i32 cannot fail.
+        let t = i64::from(elapsed) * 1_000_000 / i64::from(duration);
+        let delta = i64::from(self.to_px - self.from_px) * ease_millionths(t);
+        let delta = round_millionths(delta);
+        let delta = i32::try_from(delta).unwrap_or(self.to_px - self.from_px);
+        self.cur_px = self.from_px + delta;
         Advance::Frame(self.cur_px)
     }
 }
@@ -96,10 +96,10 @@ mod tests {
 
     #[test]
     fn ease_matches_the_c_ease_out_cubic() {
-        assert_eq!(ease(0.0), 0.0);
-        assert_eq!(ease(1.0), 1.0);
-        assert_eq!(ease(0.5), 0.875);
-        assert!((ease(0.25) - (1.0 - 0.75f64.powi(3))).abs() < 1e-12);
+        assert_eq!(ease_millionths(0), 0);
+        assert_eq!(ease_millionths(1_000_000), 1_000_000);
+        assert_eq!(ease_millionths(500_000), 875_000);
+        assert_eq!(ease_millionths(250_000), 578_125);
     }
 
     #[test]

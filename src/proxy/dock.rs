@@ -1,0 +1,664 @@
+//! The panel window's dock on one output (replace-terminal-with-app-host
+//! D11): the layer surface the panel window is served by, the handler that
+//! maps its events back to the app's toplevel, and the re-docking an output
+//! change requires.
+//!
+//! The layer surface is created with no output unless the panel's settings
+//! name one, so the compositor chooses (D11). A `set-layer` changes the
+//! layer of the live surface in place (spec "Change the layer"): the window
+//! keeps its layer surface, so it stays configured and mapped. A `set-output` checks the
+//! name against the outputs the proxy tracks — a name no tracked output
+//! carries is refused with error kind `invalid_value` and the panel does
+//! not move (spec "Unknown output") — then destroys the current layer
+//! surface and creates a new one on the chosen output; the app keeps its
+//! window and gets the new surface's configure, and a new size only when a
+//! percent size resolves differently on the target output. When the
+//! compositor sends `closed` — for example, the monitor was unplugged — the
+//! proxy creates a new layer surface with no output instead of closing the
+//! app's window (spec "Monitor unplugged"), and the reserve surface follows
+//! ([`super::routing`] `recreate_reserve`).
+//!
+//! The configure/ack mapping and the handler shape are copied from
+//! wl-paper's `apps/wl-paper/src/paper.rs` in
+//! <https://github.com/mahkoh/wl-proxy> (GPL-3.0, the licence of this
+//! crate); the `closed` behaviour and the output pinning are pinwin's.
+//!
+//! The handler parameters the proxy's own object would carry are named
+//! `_slf`, the trait's name with the unused-prefix the codebase's lints
+//! require, and the handler keeps the routing weak: the routing holds the
+//! panel's layer surface strongly, so a strong reference back would close a
+//! reference cycle.
+
+use std::rc::{Rc, Weak};
+
+use wl_proxy::object::{Object, ObjectCoreApi, ObjectUtils};
+use wl_proxy::protocols::wayland::wl_compositor::WlCompositor;
+use wl_proxy::protocols::wayland::wl_output::WlOutput;
+use wl_proxy::protocols::wayland::wl_shm::WlShm;
+use wl_proxy::protocols::wayland::wl_surface::WlSurface;
+use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_shell_v1::{
+    ZwlrLayerShellV1, ZwlrLayerShellV1Layer,
+};
+use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::{
+    ZwlrLayerSurfaceV1, ZwlrLayerSurfaceV1Handler,
+};
+use wl_proxy::protocols::xdg_shell::xdg_surface::XdgSurface;
+use wl_proxy::protocols::xdg_shell::xdg_toplevel::{XdgToplevel, XdgToplevelState};
+
+use super::commit::PanelSurfaceCommits;
+use super::keyboard;
+use super::mapping::{anchor_of, layer_of};
+use super::reserve::Reserve;
+use super::routing::Routing;
+use super::tween::{ConfigureRoute, is_running, route_configure};
+use crate::config::PanelSettings;
+use crate::daemon::events::Bus;
+use crate::geometry::{Geometry, HeldGap};
+use crate::ipc::{ErrorKind, ErrorReply};
+use crate::name::PanelName;
+
+pub(super) mod size;
+
+/// The layer-shell namespace of a panel surface. One namespace keeps every
+/// panel out of the special namespaces compositors reserve for their own
+/// panels.
+const NAMESPACE: &str = "pinwin";
+
+/// What a `set-output` request resolves to (D11, spec "Unknown output").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SetOutputDecision {
+    /// The name matches a tracked output: the panel pins to the global it
+    /// was bound under.
+    Pin(u32),
+    /// No tracked output carries the name: the request is refused and the
+    /// panel does not move.
+    Unknown,
+}
+
+/// The `set-output` decision (D11, spec "Unknown output"): a name one
+/// tracked output carries pins the panel to that output, and every other
+/// name is refused. `tracked` lists each tracked output's global name and
+/// the compositor name it has announced, if any — an output that has not
+/// announced a name yet matches nothing.
+pub(super) fn set_output_decision(
+    requested: &str,
+    tracked: &[(u32, Option<String>)],
+) -> SetOutputDecision {
+    for (global, name) in tracked {
+        if name.as_deref() == Some(requested) {
+            return SetOutputDecision::Pin(*global);
+        }
+    }
+    SetOutputDecision::Unknown
+}
+
+/// The app-side objects of the panel window (D4): the surface the layer
+/// role is put on and the local xdg role objects the layer surface's events
+/// map to.
+pub(super) struct PanelWindow {
+    pub(super) surface: Rc<WlSurface>,
+    pub(super) xdg_surface: Rc<XdgSurface>,
+    pub(super) toplevel: Rc<XdgToplevel>,
+}
+
+/// Creates the layer surface of the panel window (D4, D11): the role is put
+/// on `surface` with the settings' layer and keyboard mode and the
+/// geometry's anchors, margins and size, pinned to `output` when one is
+/// given — `None` lets the compositor choose (D11). The panel surface
+/// claims no zone of its own; the reserve surface owns the strip (D9).
+///
+/// `defer_keyboard` withholds the keyboard mode until the first buffer maps
+/// the surface (row 8.3): the window's first dock and a re-dock inside the
+/// launch-deferral window set it, so no map steals focus (spec "No focus
+/// steal on launch", see [`super::keyboard`]). A re-dock of a panel that
+/// already launched sends the mode the app runs with.
+fn create_layer_surface(
+    layer_shell: &Rc<ZwlrLayerShellV1>,
+    surface: &Rc<WlSurface>,
+    output: Option<&Rc<WlOutput>>,
+    settings: &PanelSettings,
+    geometry: &Geometry,
+    defer_keyboard: bool,
+) -> Rc<ZwlrLayerSurfaceV1> {
+    let layer_surface = layer_shell.new_send_get_layer_surface(
+        surface,
+        output,
+        layer_of(settings.layer()),
+        NAMESPACE,
+    );
+    let (width, height) = geometry.size();
+    layer_surface.send_set_size(width, height);
+    let margins = geometry.margins();
+    layer_surface.send_set_margin(
+        margins.top(),
+        margins.right(),
+        margins.bottom(),
+        margins.left(),
+    );
+    layer_surface.send_set_anchor(anchor_of(geometry.anchors()));
+    let keyboard = keyboard::dock_interactivity(settings.keyboard(), defer_keyboard);
+    layer_surface.send_set_keyboard_interactivity(keyboard);
+    // D9: the panel surface claims no zone of its own; the reserve surface
+    // owns the strip.
+    layer_surface.send_set_exclusive_zone(-1);
+    layer_surface
+}
+
+/// Docks the panel window (D4, D11): creates its layer surface on the
+/// output named by `output_global` — `None` lets the compositor choose —
+/// installs the configure/ack mapping and registers the window with the
+/// routing, so the crop and the size re-apply write through it.
+fn dock_window(
+    routing: &Rc<Routing>,
+    layer_shell: &Rc<ZwlrLayerShellV1>,
+    window: &PanelWindow,
+    geometry: &Geometry,
+    output_global: Option<u32>,
+    defer_keyboard: bool,
+) {
+    let output = output_global.and_then(|global| routing.globals().output_by_global(global));
+    let settings = routing.settings();
+    let layer_surface = create_layer_surface(
+        layer_shell,
+        &window.surface,
+        output.as_ref(),
+        &settings,
+        geometry,
+        defer_keyboard,
+    );
+    layer_surface.set_handler(ProxyLayerSurface {
+        routing: Rc::downgrade(routing),
+        xdg_surface: Rc::clone(&window.xdg_surface),
+        xdg_toplevel: Rc::clone(&window.toplevel),
+        layer_surface: Rc::downgrade(&layer_surface),
+    });
+    routing.set_panel_window(
+        &window.surface,
+        &window.xdg_surface,
+        &window.toplevel,
+        &layer_surface,
+    );
+}
+
+/// The initial dock of the panel window, when its toplevel takes the slot
+/// (D4): the panel pins to the output its settings name, when the proxy has
+/// bound and named it.
+pub(super) fn dock_panel_window(
+    routing: &Rc<Routing>,
+    layer_shell: &Rc<ZwlrLayerShellV1>,
+    window: &PanelWindow,
+    geometry: &Geometry,
+) {
+    let pin = routing.pinned_output();
+    // The commits handler is installed after this first dock, so the launch
+    // takes its pending value from the mode itself (see [`super::keyboard`]).
+    let defer_keyboard = keyboard::deferred_until_map(routing.keyboard());
+    dock_window(
+        routing,
+        layer_shell,
+        window,
+        geometry,
+        pin.as_ref().map(|(_, global)| *global),
+        defer_keyboard,
+    );
+}
+
+/// Changes the layer of the panel window's live layer surface (D11, spec
+/// "Change the layer"): `zwlr_layer_surface_v1.set_layer` is double-buffered
+/// with the surface, so the panel commits the surface through the commit
+/// coordinator (D7) and the window keeps its layer surface — nothing is
+/// destroyed, so the panel stays configured and mapped. The strip follows
+/// the panel into the same layer and commits its own surface, because the
+/// reserve is proxy-owned. A compositor whose layer-shell bind predates
+/// `set_layer` has no in-place change, so the window re-docks there.
+/// Does nothing when the panel holds no window.
+pub(super) fn set_layer(routing: &Rc<Routing>, layer: ZwlrLayerShellV1Layer) {
+    let Some(layer_surface) = routing.panel_layer_surface() else {
+        return;
+    };
+    if !supports_set_layer(layer_surface.version()) {
+        redock(routing, routing.pinned_output().map(|(_, global)| global));
+        return;
+    }
+    let Some((surface, _, _)) = routing.panel_window() else {
+        return;
+    };
+    let Ok(commits) = surface.try_get_handler_ref::<PanelSurfaceCommits>() else {
+        return;
+    };
+    commits.request(Box::new(move || layer_surface.send_set_layer(layer)));
+    if let Some(reserve) = routing.reserve() {
+        reserve.set_layer(layer);
+    }
+}
+
+/// Whether the compositor's layer-shell bind supports changing a live layer
+/// surface's layer (spec "Change the layer"): `set_layer` arrived in
+/// version 2, so an older bind re-docks the window instead.
+fn supports_set_layer(version: u32) -> bool {
+    version >= ZwlrLayerSurfaceV1::MSG__SET_LAYER__SINCE
+}
+
+/// Re-docks the panel window on the output named by `output_global` (D11):
+/// destroys the layer surface and the reserve it had and creates both again
+/// with the same settings, so the app keeps its window and gets the new
+/// surface's configure (spec "Monitor unplugged", "Apply layout without
+/// restarting the app"). Does nothing when the panel holds no window.
+pub(super) fn redock(routing: &Rc<Routing>, output_global: Option<u32>) {
+    let Some((surface, xdg_surface, toplevel)) = routing.panel_window() else {
+        return;
+    };
+    let Some(layer_shell) = routing.layer_shell() else {
+        return;
+    };
+    // D8: the new layer surface sends its own state outside the commit
+    // coordinator and wins over a running tween, so the tween and a frame it
+    // queued are dropped — otherwise a frame would re-send the old surface's
+    // size and margins over the new one (spec "Interrupting an animation").
+    routing.globals().tween().clear();
+    // A re-dock of a panel that already launched uses the real mode at once;
+    // one still inside the launch-deferral window keeps deferring, so the
+    // replacement surface steals no focus (row 8.3, spec "No focus steal on
+    // launch").
+    let defer_keyboard = surface
+        .try_get_handler_ref::<PanelSurfaceCommits>()
+        .is_ok_and(|commits| commits.keyboard_deferred());
+    // The old handler goes first: its delete_id would otherwise free the
+    // app's toplevel id, and the app must not lose its window (D11).
+    if let Some(old) = routing.take_panel_layer_surface() {
+        old.unset_handler();
+        old.send_destroy();
+    }
+    // A percent size resolves against the target output's size when it is
+    // known, so a size that resolves differently arrives with the new
+    // surface's configure (D11, D9). An output that has not reported a size
+    // yet keeps the geometry the panel already runs at.
+    let geometry = output_global
+        .and_then(|global| routing.globals().output_size(global))
+        .map(|size| routing.geometry_against(size))
+        .or_else(|| routing.geometry());
+    let Some(geometry) = geometry else {
+        return;
+    };
+    let window = PanelWindow {
+        surface,
+        xdg_surface,
+        toplevel,
+    };
+    dock_window(
+        routing,
+        &layer_shell,
+        &window,
+        &geometry,
+        output_global,
+        defer_keyboard,
+    );
+    // The fresh layer surface gets its initial configure only from a
+    // bufferless commit of the panel surface (D7, D11): the app is often
+    // already at the same size and commits nothing, and wlroots ends the
+    // connection over a buffer committed before the first configure.
+    open_new_surface(routing, &window.surface);
+    // The strip follows the panel (D9, D11): re-created with the gap it
+    // already holds, on the same output.
+    recreate_reserve(routing, output_global);
+}
+
+/// Opens a fresh layer surface on the panel window (D7, D11): the protocol
+/// wants its first commit without a buffer, so the commit detaches the app's
+/// buffer and the proxy re-attaches the buffer it keeps once the app acks the
+/// new surface's configure (`hide::on_ack`). The commit goes through
+/// the commit coordinator, so it never lands on the app's pending state; an
+/// app attach the detach replaces is released back to the app (D6).
+fn open_new_surface(routing: &Rc<Routing>, surface: &Rc<WlSurface>) {
+    let Ok(commits) = surface.try_get_handler_ref::<PanelSurfaceCommits>() else {
+        surface.send_attach(None, 0, 0);
+        surface.send_commit();
+        return;
+    };
+    // A hidden panel is already unmapped and its show re-attaches the kept
+    // buffer itself, so only a shown panel waits for the ack here.
+    if !routing.hidden.is_hidden() {
+        routing.hidden.mark_awaiting_map();
+    }
+    let routing = Rc::clone(routing);
+    let surface = Rc::clone(surface);
+    commits.request(Box::new(move || {
+        routing.hidden.release_pending_attach();
+        surface.send_attach(None, 0, 0);
+    }));
+}
+
+/// Creates the reserve surface with the panel window (D9): it carries the
+/// exclusive zone from the held gap the panel starts with, pinned to the
+/// panel's output when one is set (D11). A missing compositor, `wl_shm` or
+/// layer-shell global -- or a failed buffer -- leaves the panel docked
+/// without a strip rather than ending it.
+pub(super) fn start_reserve(
+    routing: &Rc<Routing>,
+    geometry: &Geometry,
+    layer: ZwlrLayerShellV1Layer,
+    pin: Option<&(Rc<WlOutput>, u32)>,
+) {
+    let (Some(compositor), Some(shm), Some(layer_shell)) = (
+        routing.globals().compositor(),
+        routing.globals().shm(),
+        routing.layer_shell(),
+    ) else {
+        eprintln!("pinwin: no compositor, shm or layer-shell global: no strip is reserved");
+        return;
+    };
+    let gap = HeldGap::start(*geometry);
+    dock_reserve(routing, &compositor, &shm, &layer_shell, gap, layer, pin);
+}
+
+/// Re-docks the reserve on the output named by `output_global` (D11):
+/// destroys the surface it had and creates a new one carrying the gap it
+/// already holds. `None` lets the compositor choose. Does nothing when no
+/// reserve exists.
+pub(super) fn recreate_reserve(routing: &Rc<Routing>, output_global: Option<u32>) {
+    let Some(gap) = routing.held_gap() else {
+        return;
+    };
+    let (Some(compositor), Some(shm), Some(layer_shell)) = (
+        routing.globals().compositor(),
+        routing.globals().shm(),
+        routing.layer_shell(),
+    ) else {
+        eprintln!("pinwin: no compositor, shm or layer-shell global: no strip is reserved");
+        return;
+    };
+    if let Some(old) = routing.take_reserve() {
+        old.destroy();
+    }
+    let pin = output_global.and_then(|global| {
+        routing
+            .globals()
+            .output_by_global(global)
+            .map(|output| (output, global))
+    });
+    dock_reserve(
+        routing,
+        &compositor,
+        &shm,
+        &layer_shell,
+        gap,
+        layer_of(routing.layer()),
+        pin.as_ref(),
+    );
+}
+
+/// Creates one reserve surface and registers it with the routing, together
+/// with its held gap and output (D9, D11): the body `start_reserve` and
+/// `recreate_reserve` share.
+fn dock_reserve(
+    routing: &Rc<Routing>,
+    compositor: &Rc<WlCompositor>,
+    shm: &Rc<WlShm>,
+    layer_shell: &Rc<ZwlrLayerShellV1>,
+    gap: HeldGap,
+    layer: ZwlrLayerShellV1Layer,
+    pin: Option<&(Rc<WlOutput>, u32)>,
+) {
+    let reserve = Reserve::create(
+        compositor,
+        shm,
+        layer_shell,
+        gap,
+        layer,
+        pin.map(|(output, _)| output),
+        routing.hidden.is_hidden(),
+        routing.weak(),
+    );
+    routing.register_reserve(reserve, gap, pin.map(|(_, global)| *global));
+}
+
+/// The compositor closed the reserve surface (D11, spec "Monitor
+/// unplugged"): the strip follows the panel. A strip that shared the panel's
+/// output is re-created where the compositor chooses, since the panel's
+/// surface is closing too; a strip that sat elsewhere moves to the panel's
+/// output.
+pub(super) fn on_reserve_closed(routing: &Rc<Routing>) {
+    let panel = routing.globals().panel_output();
+    if panel.is_some() && routing.reserve_output() == panel {
+        recreate_reserve(routing, None);
+    } else {
+        recreate_reserve(routing, panel);
+    }
+}
+
+/// The reserve surface entered an output: remember where the strip is and
+/// move it when it is not on the panel's output (D11).
+pub(super) fn on_reserve_entered(routing: &Rc<Routing>, output: &Rc<WlOutput>) {
+    let global = routing.globals().global_of_output(output);
+    routing.set_reserve_output(global);
+    follow_reserve(routing);
+}
+
+/// Moves the strip to the panel's output when it entered another one (D9:
+/// the reservation applies only to the panel's monitor; D11).
+pub(super) fn follow_reserve(routing: &Rc<Routing>) {
+    let Some(panel) = routing.globals().panel_output() else {
+        return;
+    };
+    if routing.reserve_output() == Some(panel) {
+        return;
+    }
+    recreate_reserve(routing, Some(panel));
+}
+
+/// The `set-output` flow (D11, spec "Unknown output"): a name one tracked
+/// output carries pins the panel to it and re-docks the window; any other
+/// name is refused with `invalid_value` and the panel does not move. A
+/// geometry the target output cannot hold is refused with `invalid_layout`
+/// and the panel stays where it is (spec "Panel commands"). A successful
+/// re-dock publishes the panel's geometry change (spec "Event stream").
+pub(super) fn answer_set_output(
+    routing: &Rc<Routing>,
+    requested: &str,
+    panel: &PanelName,
+    bus: &Bus,
+) -> Result<(), ErrorReply> {
+    let tracked = routing.globals().tracked_output_names();
+    let global = match set_output_decision(requested, &tracked) {
+        SetOutputDecision::Pin(global) => global,
+        SetOutputDecision::Unknown => {
+            return Err(ErrorReply::new(
+                ErrorKind::InvalidValue,
+                format!("no output named '{requested}'"),
+            ));
+        }
+    };
+    if let Some(size) = routing.globals().output_size(global)
+        && let Err(error) = routing.geometry_against(size).validate(size)
+    {
+        return Err(ErrorReply::new(ErrorKind::InvalidLayout, error.to_string()));
+    }
+    routing.set_output_name(Some(requested.to_owned()));
+    redock(routing, Some(global));
+    bus.publish_geometry_changed(panel);
+    Ok(())
+}
+
+/// The panel's layer surface handler (D4, D11): the compositor's configure
+/// becomes the app's `xdg_toplevel.configure` and `xdg_surface.configure`
+/// with the same serial, and `closed` re-docks the panel window on a new
+/// layer surface with no output instead of closing the app's window.
+/// `handle_configure` and the handler shape are copied from wl-paper's
+/// `paper.rs` `ProxyZwlrLayerSurfaceV1` (GPL-3.0).
+struct ProxyLayerSurface {
+    routing: Weak<Routing>,
+    xdg_surface: Rc<XdgSurface>,
+    xdg_toplevel: Rc<XdgToplevel>,
+    /// The layer surface this handler answers, kept weak so the handler does
+    /// not keep its own object alive.
+    layer_surface: Weak<ZwlrLayerSurfaceV1>,
+}
+
+impl ZwlrLayerSurfaceV1Handler for ProxyLayerSurface {
+    fn delete_id(&mut self, _slf: &Rc<ZwlrLayerSurfaceV1>) {
+        // Drop this handler first: it holds the app's toplevel and the
+        // panel's xdg_surface, so unsetting it breaks the handler cycle
+        // (wl-paper), and then free the app's toplevel id, which died with
+        // the layer surface the compositor destroyed.
+        if let Some(layer_surface) = self.layer_surface.upgrade() {
+            layer_surface.unset_handler();
+        }
+        self.xdg_toplevel.delete_id();
+    }
+
+    fn handle_configure(
+        &mut self,
+        _slf: &Rc<ZwlrLayerSurfaceV1>,
+        serial: u32,
+        width: u32,
+        height: u32,
+    ) {
+        // D10: the configured size is the size the app draws at, so the focus
+        // ring's bars follow it; a size change rides the commit coordinator.
+        if let Some(routing) = self.routing.upgrade() {
+            routing
+                .globals()
+                .ring()
+                .on_configure(&routing, (width, height));
+            // D8: during a width tween the proxy acks the compositor's
+            // intermediate configures itself and forwards none of them, so
+            // the app gets one new size for the whole tween.
+            if route_configure(is_running(&routing)) == ConfigureRoute::AckOnly {
+                // The handler's own object, kept weak so the cycle through
+                // the routing stays broken.
+                if let Some(layer_surface) = self.layer_surface.upgrade() {
+                    layer_surface.send_ack_configure(serial);
+                }
+                return;
+            }
+        }
+        let states = toplevel_states(&self.xdg_toplevel);
+        if self.xdg_toplevel.version() >= XdgToplevel::MSG__CONFIGURE_BOUNDS__SINCE {
+            self.xdg_toplevel
+                .send_configure_bounds(width.cast_signed(), height.cast_signed());
+        }
+        self.xdg_toplevel
+            .send_configure(width.cast_signed(), height.cast_signed(), &states);
+        self.xdg_surface.send_configure(serial);
+    }
+
+    fn handle_closed(&mut self, _slf: &Rc<ZwlrLayerSurfaceV1>) {
+        // D11 (spec "Monitor unplugged"): the panel's output went away. The
+        // app keeps its window: the proxy re-docks it on a new layer surface
+        // with no output, and the strip follows, instead of forwarding a
+        // close to the app.
+        if let Some(routing) = self.routing.upgrade() {
+            redock(&routing, None);
+        }
+    }
+}
+
+/// Sends the app one window configure with `serial` (D8): the tween's grow
+/// configures the app to the target size at its start and its shrink at the
+/// end, both with a serial the proxy minted. The app's ack of it is
+/// swallowed, because the layer surface never saw that serial.
+pub(in crate::proxy) fn send_app_configure(
+    toplevel: &Rc<XdgToplevel>,
+    xdg_surface: &Rc<XdgSurface>,
+    width: u32,
+    height: u32,
+    serial: u32,
+) {
+    if toplevel.version() >= XdgToplevel::MSG__CONFIGURE_BOUNDS__SINCE {
+        toplevel.send_configure_bounds(width.cast_signed(), height.cast_signed());
+    }
+    let states = toplevel_states(toplevel);
+    toplevel.send_configure(width.cast_signed(), height.cast_signed(), &states);
+    xdg_surface.send_configure(serial);
+}
+
+/// The tiled and constrained states the panel window is configured with (D4,
+/// copied from wl-paper): the app may lay its content out as a tiled window,
+/// and each state is only sent when its version supports it. The states are
+/// a native-endian `u32` array, as the protocol requires.
+fn toplevel_states(toplevel: &XdgToplevel) -> Vec<u8> {
+    // Eight states at four bytes each: the tiled and constrained sets.
+    let mut states = Vec::with_capacity(8 * 4);
+    if toplevel.version() >= XdgToplevel::ENM__STATE_TILED_TOP__SINCE {
+        for state in [
+            XdgToplevelState::TILED_LEFT,
+            XdgToplevelState::TILED_TOP,
+            XdgToplevelState::TILED_RIGHT,
+            XdgToplevelState::TILED_BOTTOM,
+        ] {
+            states.extend_from_slice(&state.0.to_ne_bytes());
+        }
+    }
+    if toplevel.version() >= XdgToplevel::ENM__STATE_CONSTRAINED_TOP__SINCE {
+        for state in [
+            XdgToplevelState::CONSTRAINED_LEFT,
+            XdgToplevelState::CONSTRAINED_TOP,
+            XdgToplevelState::CONSTRAINED_RIGHT,
+            XdgToplevelState::CONSTRAINED_BOTTOM,
+        ] {
+            states.extend_from_slice(&state.0.to_ne_bytes());
+        }
+    }
+    states
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SetOutputDecision, set_output_decision, supports_set_layer};
+
+    fn tracked() -> Vec<(u32, Option<String>)> {
+        vec![
+            (10, Some("DP-1".to_owned())),
+            (11, Some("DP-2".to_owned())),
+            (12, None),
+        ]
+    }
+
+    /// A name one tracked output carries pins the panel to that output's
+    /// global (D11, spec "Opens on the chosen output"): the right output is
+    /// picked among several, whatever the announcement order was.
+    #[test]
+    fn a_known_name_pins_its_output() {
+        let tracked = tracked();
+        assert_eq!(
+            set_output_decision("DP-2", &tracked),
+            SetOutputDecision::Pin(11)
+        );
+        assert_eq!(
+            set_output_decision("DP-1", &tracked),
+            SetOutputDecision::Pin(10)
+        );
+    }
+
+    /// A layer change is in place only where the compositor's layer-shell
+    /// bind knows `set_layer` (spec "Change the layer"): version 1 re-docks
+    /// the window on a new layer surface, version 2 and later keep it.
+    #[test]
+    fn a_layer_change_is_in_place_from_version_two() {
+        assert!(!supports_set_layer(1), "version 1 has no set_layer");
+        assert!(supports_set_layer(2), "set_layer arrived in version 2");
+        assert!(supports_set_layer(5), "the bind clamps at version 5");
+    }
+
+    /// A name no tracked output carries is refused and the panel does not
+    /// move (spec "Unknown output"): an unknown name, a nameless output and
+    /// an empty output list all refuse.
+    #[test]
+    fn an_unknown_name_is_refused() {
+        assert_eq!(
+            set_output_decision("DP-3", &tracked()),
+            SetOutputDecision::Unknown,
+            "a name no output carries does not move the panel"
+        );
+        assert_eq!(
+            set_output_decision("DP-2", &[]),
+            SetOutputDecision::Unknown,
+            "no tracked outputs at all refuses the request"
+        );
+        assert_eq!(
+            set_output_decision("DP-2", &[(12, None)]),
+            SetOutputDecision::Unknown,
+            "an output that has not announced a name yet matches nothing"
+        );
+    }
+}

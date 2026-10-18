@@ -1,569 +1,342 @@
-//! The `pinwin` program: runs a command (default `$SHELL`) in a layer-shell
-//! panel docked to the left edge, until the command exits.
+//! The `pinwin` binary (replace-terminal-with-app-host D2, D12, D15): the
+//! subcommand dispatch, the daemon in the foreground and the client
+//! subcommands that send one request each (spec "One daemon for each Wayland
+//! display", "Command-line client", "Command-line exit codes").
 //!
-//! ```text
-//! pinwin [--] [command...]
-//! COLS=60 GUTTER=8 PINWIN_KEYBOARD=on-demand|exclusive|none
-//! PINWIN_ACCENT=on|off PINWIN_ACCENT_COLOR=#RRGGBB PINWIN_ACCENT_WIDTH=2
-//! PINWIN_NAME=default
-//! pinwin htop
-//! pinwin --toggle [name]   # asks the named running panel to show or hide
-//!                          # itself, for a niri key binding
-//! pinwin --show [name]     # shows the named running panel if it is hidden
-//! ```
+//! `pinwin daemon` binds the display's socket and runs the accept loop until
+//! a `quit` request or SIGINT/SIGTERM ends it (D12). The client subcommands
+//! build their [`ipc::Request`], wait for the daemon's reply and print it:
+//! a success exits 0, a daemon error or no daemon exits 1, and a command line
+//! the parser refuses exits 2 (spec "Command-line exit codes"). `subscribe`
+//! stays connected and prints each event line (spec "Command-line client").
 //!
-//! A thin host over the library API ([`pinwin::panel`]), the port of
-//! `host/main.c` (port-to-rust D8): it owns the pty, the child's environment
-//! and the process lifetime; the library owns the panel. The pure parts live
-//! in testable modules — argument parsing ([`cli`]), environment parsing
-//! ([`settings`]) and the toggle-socket identity ([`pinwin::instance`]); the
-//! process parts (`forkpty`, signals, waiting) stay in [`run`] and
-//! [`host_panel`].
+//! `pinwin run` asks the daemon for a new panel, sets the display the reply
+//! names and replaces itself with the app (D2). When no daemon answers, it
+//! starts one in the background and waits a bounded time for it (row 7.2,
+//! spec "Run starts the daemon"); row 7.3 adds the panel lifetime from the
+//! app's pidfd and its connection count.
 
-use std::env;
-use std::ffi::{CString, OsString};
-use std::io;
-use std::os::fd::AsRawFd;
-use std::os::unix::ffi::OsStrExt;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::ffi::OsString;
+use std::io::{self, Write as _};
+use std::path::Path;
+use std::process::ExitCode;
+use std::sync::Arc;
 
-use pinwin::layout::{Layout, Side};
-use pinwin::panel::{Panel, PinwinError, Startup};
+use crate::cli::Command;
+use crate::config::Config;
+use crate::daemon::DaemonSocket;
+use crate::daemon::SocketError;
+use crate::daemon::lifetime::{Daemon, Lifetime, SignalFd};
+use crate::guard::{Poisoned, guard};
+use crate::ipc::{Answer, CallError, ErrorKind, Request, Subscription};
+use crate::run::Exec;
 
 mod cli;
-mod settings;
+mod config;
+mod daemon;
+mod fd;
+mod geometry;
+mod guard;
+mod ipc;
+mod name;
+mod proxy;
+mod run;
+mod tray;
 
-use cli::{Mode, default_command, parse_args};
-use pinwin::instance::{InstanceName, InstanceSocket, Request, SendError, send};
-use settings::{Settings, Zone, read_settings};
+/// The usage line a refused command line ends with.
+const USAGE: &str = "usage: pinwin <command> [options]";
 
-/// The child's process id, read by the signal handler; zero means "no child
-/// yet". `signal(2)` handlers may only touch async-signal-safe state, which
-/// an atomic store/load is.
-static CHILD_PID: AtomicI32 = AtomicI32::new(0);
+/// The exit code of an invalid config file (spec "Config file": the daemon
+/// prints a message that names the file and line, and exits 2).
+const INVALID_CONFIG: u8 = 2;
 
-/// The host's exit status for a finished child: its own exit status, or 1
-/// when it did not exit normally (a signal, a stop). Ports `host/main.c`'s
-/// `WIFEXITED(status) ? WEXITSTATUS(status) : 1`.
-fn child_exit_status(status: i32) -> i32 {
-    if libc::WIFEXITED(status) {
-        libc::WEXITSTATUS(status)
-    } else {
-        1
-    }
+/// The exit code of a `pinwin run` whose command cannot be executed (spec
+/// "Command not found": pinwin prints a message, exits 127, and the panel
+/// ends).
+const COMMAND_NOT_FOUND: u8 = 127;
+
+/// The exit code of a daemon that cannot start (spec "Command-line exit
+/// codes": a daemon error exits 1).
+const DAEMON_FAILURE: u8 = 1;
+
+/// Why `pinwin daemon` did not start (spec "Run starts the daemon"): the
+/// message the daemon prints and reports to a `pinwin run` that started it,
+/// and the exit code the caller uses.
+struct Failure {
+    code: u8,
+    message: String,
+    /// Another daemon already serves the display, so a `pinwin run` that
+    /// started this one must use the winner (spec "Two first runs").
+    lost_race: bool,
 }
 
-/// SIGINT and SIGTERM are forwarded to the child as SIGHUP (D8): the child
-/// owns the foreground terminal session, and SIGHUP is what its shell and
-/// children expect on a hangup. The handler only loads and kills —
-/// async-signal-safe — and `waitpid` happens back in [`run`].
-extern "C" fn on_term(_sig: i32) {
-    let pid = CHILD_PID.load(Ordering::Relaxed);
-    if pid > 0 {
-        // SAFETY: `pid` is this process's child, `SIGHUP` a plain signal.
-        unsafe { libc::kill(pid, libc::SIGHUP) };
-    }
-}
-
-/// Wait for the child to finish, retrying an interrupted wait; returns the
-/// raw wait status, or 0 (an exited child with status 0) when `waitpid`
-/// failed otherwise — `host/main.c` starts `status` at zero and ignores a
-/// failed wait the same way.
-fn wait_for_child(pid: i32) -> i32 {
-    let mut status: i32 = 0;
-    loop {
-        // SAFETY: `pid` is this process's child and `status` is writable.
-        let rc = unsafe { libc::waitpid(pid, &raw mut status, 0) };
-        if rc == pid {
-            return status;
-        }
-        if rc < 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            eprintln!("pinwin: waitpid: {error}");
-            return status;
+impl Failure {
+    /// A start that reports `message` and exits with `code`.
+    fn fatal(code: u8, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            lost_race: false,
         }
     }
-}
 
-/// Hang the child up and wait for it: the failure and shutdown path shared by
-/// the start failure (`host/main.c` kills and waits before exiting 1).
-fn hang_up_child_and_wait(pid: i32) {
-    // SAFETY: `pid` is this process's child, `SIGHUP` a plain signal.
-    unsafe { libc::kill(pid, libc::SIGHUP) };
-    wait_for_child(pid);
-}
-
-/// The command ready for `execvp`: the argv as `CString`s, with the pointer
-/// array built, so everything allocation-based happens in the parent before
-/// the fork.
-struct ChildCommand {
-    argv: Vec<CString>,
-    /// `argv`'s pointers plus the terminating null, as `execvp` wants them.
-    /// The pointers target the `argv` buffers, which are never moved after
-    /// this is built.
-    pointers: Vec<*const libc::c_char>,
-}
-
-/// Build the child's exec arguments in the parent, before the fork, so the
-/// child between `forkpty` and `exec` only calls `signal`/`execvp`/`_exit`.
-/// An interior NUL in any argument is reported with the program's name here —
-/// the caller exits 127 without any child, matching the status and message
-/// the child produced before (`host/main.c`'s exec path).
-fn build_child_command(command: &[OsString]) -> Result<ChildCommand, String> {
-    let mut argv = Vec::with_capacity(command.len());
-    for arg in command {
-        let Ok(cstring) = CString::new(arg.as_bytes()) else {
-            return Err(format!(
-                "pinwin: {}: argument has an interior NUL",
-                command[0].to_string_lossy()
-            ));
-        };
-        argv.push(cstring);
-    }
-    let mut pointers: Vec<*const libc::c_char> = argv.iter().map(|arg| arg.as_ptr()).collect();
-    pointers.push(std::ptr::null());
-    Ok(ChildCommand { argv, pointers })
-}
-
-/// Restore the default signal dispositions the Rust runtime changed, so the
-/// exec'd command keeps the default contract `host/main.c`'s child had from
-/// its plain C fork: std sets `SIGPIPE` to `SIG_IGN` at startup and an
-/// ignored disposition survives `execve`, so it must go back to `SIG_DFL`.
-/// The `SIGINT`/`SIGTERM` handlers are installed after the fork and `exec`
-/// resets caught dispositions, so they need no reset here.
-fn child_signal_setup() {
-    // SAFETY: a plain signal number, `SIG_DFL` a valid disposition.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
-}
-
-/// Replace this (child) process with the command, exiting 127 when the exec
-/// fails — the child never returns from here. Only async-signal-safe calls
-/// happen here: the arguments and pointer array were built in the parent.
-fn child_exec(child: &ChildCommand) -> ! {
-    child_signal_setup();
-    // SAFETY: the pointers are NUL-terminated C strings and the array is
-    // null-terminated; on success this call never returns.
-    unsafe { libc::execvp(child.argv[0].as_ptr(), child.pointers.as_ptr()) };
-    // execvp only returns on failure.
-    let error = io::Error::last_os_error();
-    eprintln!("pinwin: {}: {error}", child.argv[0].to_string_lossy());
-    // SAFETY: `_exit` never runs atexit handlers or unwinds, which matters in
-    // this forked child.
-    unsafe { libc::_exit(127) }
-}
-
-/// The exit status for a client outcome: `ok` exits 0, an environment
-/// error — no usable socket path — exits 2 like the other environment
-/// errors, and every other failure exits 1.
-fn send_exit(result: &Result<(), SendError>) -> i32 {
-    match result {
-        Ok(()) => 0,
-        Err(SendError::Environment(_)) => 2,
-        Err(_) => 1,
-    }
-}
-
-/// The `--toggle`/`--show` client side (replace-gtk-with-wayland D4;
-/// `--show` is new with `serve-instance-socket`): ask the host that owns the
-/// name's socket to toggle or show its panel and report the reply. The
-/// client reads no environment besides the display — the request itself
-/// carries nothing. `ok` exits 0, a missing or failing host exits 1, and an
-/// environment error — an unusable socket path — exits 2 like the other
-/// environment errors.
-fn run_client(name: Option<InstanceName>, request: Request) -> i32 {
-    let name = name.unwrap_or_else(InstanceName::default_instance);
-    let result = send(&name, request);
-    if let Err(error) = &result {
-        eprintln!("pinwin: {error}");
-    }
-    send_exit(&result)
-}
-
-/// The whole program; returns the exit status.
-fn run() -> i32 {
-    let args: Vec<OsString> = env::args_os().skip(1).collect();
-    let mode = match parse_args(&args) {
-        Ok(mode) => mode,
-        Err(message) => {
-            eprintln!("{message}");
-            return 2;
+    /// A start that lost the bind race: the caller reports readiness and
+    /// exits 0 without changing the winner (spec "Two first runs").
+    fn lost_race(message: impl Into<String>) -> Self {
+        Self {
+            code: 0,
+            message: message.into(),
+            lost_race: true,
         }
-    };
-    let settings = match read_settings(|name| {
-        env::var_os(name).map(|value| value.to_string_lossy().into_owned())
-    }) {
-        Ok(settings) => settings,
-        Err(message) => {
-            eprintln!("{message}");
-            return 2;
-        }
-    };
-    // The client asks the host that owns the name's socket to toggle or
-    // show its panel and reports the reply (replace-gtk-with-wayland D4);
-    // it reads no environment besides the display.
-    let command = match mode {
-        Mode::Client { request, name } => return run_client(name, request),
-        Mode::Host { command } => command,
-    };
-    let command = if command.is_empty() {
-        default_command()
-    } else {
-        command
-    };
-    host_panel(&settings, &command)
+    }
 }
 
-/// Host the panel over the command's pty (the `Mode::Host` path): bind the
-/// instance socket, fork the command onto a new pty, and start the panel on
-/// the master with the bound socket — the panel's own listener thread serves
-/// the requests until the handle drops. Returns the host's exit status.
-fn host_panel(settings: &Settings, command: &[OsString]) -> i32 {
-    // The instance socket must be ours before any surface opens: a live host
-    // with the same name on this display makes this start exit 2 instead
-    // (keyboard-focus-request design).
-    let socket = match InstanceSocket::bind(&settings.name) {
-        Ok(socket) => socket,
+fn main() -> ExitCode {
+    let poisoned = Poisoned::new();
+    let Ok(code) = guard(&poisoned, dispatch) else {
+        eprintln!("pinwin: a panic stopped the command");
+        return ExitCode::FAILURE;
+    };
+    code
+}
+
+/// Parse the command line and run the named command. The whole body runs
+/// under [`main`]'s D5 guard, so a panic in a subcommand reports an internal
+/// failure instead of unwinding out of the process.
+fn dispatch() -> ExitCode {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    match cli::parse_args(&args) {
+        Ok(Command::Run(run)) => run_app(&run),
+        Ok(Command::Daemon) => daemon(),
+        Ok(Command::Client(request)) => client(&request),
+        Err(error) => {
+            eprintln!("{error}");
+            eprintln!("{USAGE}");
+            ExitCode::from(cli::UsageError::EXIT_CODE)
+        }
+    }
+}
+
+/// `pinwin run` (spec "Run an app in a panel", D2): ask the daemon for a new
+/// panel, then replace this process with the app on the display the reply
+/// names. No daemon exits 1 like any other client; a name another panel uses
+/// exits 2 without running the command (spec "Panel names"); a command that
+/// cannot be executed prints the error and exits 127 (spec "Command not
+/// found").
+fn run_app(run: &cli::Run) -> ExitCode {
+    let path = match daemon::socket_path_from_env() {
+        Ok(path) => path,
         Err(error) => {
             eprintln!("pinwin: {error}");
-            return 2;
+            return ExitCode::FAILURE;
         }
     };
-
-    // The layout the C host built: docked left, top/bottom/left gutters zero,
-    // `COLS` columns wide, `GUTTER` on the right. `PINWIN_ZONE=overlay` opts
-    // into a covering start, so nothing is ever reserved and a toggle moves
-    // no window (replace-gtk-with-wayland D4); the library needs no new code
-    // for it, because a covering start already reserves nothing.
-    let layout = Layout::new(Side::Left, settings.cols, 0, 0, 0, settings.right);
-    let layout = match settings.zone {
-        Zone::Reserve => layout,
-        Zone::Overlay => layout.covering(),
+    let request = Request::Create {
+        panel: run.name().clone(),
+        pid: std::process::id(),
+        app: run::app_name(&run.command()[0]),
+        options: run.options().clone(),
     };
-
-    // The library sets no child environment: say we are a colour terminal
-    // before the fork, so the child inherits it.
-    // SAFETY: single-threaded at this point (the fork precedes any thread we
-    // or the library spawn), and the names and values contain no NUL.
-    unsafe {
-        env::set_var("TERM", "xterm-256color");
-        env::set_var("COLORTERM", "truecolor");
-    };
-
-    // Build the child's exec arguments before the fork, so the child between
-    // `forkpty` and `exec` only calls `signal`/`execvp`/`_exit`; an interior
-    // NUL is reported here and exits 127 without any child.
-    let child = match build_child_command(command) {
-        Ok(child) => child,
+    let answer = match create_panel(&path, &request) {
+        Ok(answer) => answer,
         Err(message) => {
-            eprintln!("{message}");
-            return 127;
+            eprintln!("pinwin: {message}");
+            return ExitCode::FAILURE;
         }
     };
-
-    // Fork the child onto a new pty; the parent keeps the master fd.
-    let mut master: libc::c_int = -1;
-    // SAFETY: `master` is writable; the termios and winsize arguments are
-    // null, keeping the child's defaults.
-    let pid = unsafe {
-        libc::forkpty(
-            &raw mut master,
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    };
-    if pid < 0 {
-        eprintln!("pinwin: forkpty: {}", io::Error::last_os_error());
-        return 1;
+    if let Some(error) = answer.reply().as_error() {
+        // A duplicate name is the caller's to fix, as an invalid name is, so
+        // it exits 2 like the parser's own refusal (spec "Panel names").
+        eprintln!("pinwin: {}", error.message());
+        return ExitCode::from(match error.kind() {
+            ErrorKind::DuplicateName => cli::UsageError::EXIT_CODE,
+            _ => 1,
+        });
     }
-    if pid == 0 {
-        child_exec(&child);
-    }
-    CHILD_PID.store(pid, Ordering::Relaxed);
-
-    // Forward SIGINT/SIGTERM to the child as SIGHUP (installed in the parent
-    // only, after the fork, like the C).
-    // SAFETY: `on_term` is async-signal-safe and the libc signal handler
-    // signature matches.
-    unsafe {
-        libc::signal(libc::SIGINT, on_term as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, on_term as *const () as libc::sighandler_t);
+    let Some(display) = answer.reply().display() else {
+        eprintln!("pinwin: the daemon's reply named no display for the new panel");
+        return ExitCode::FAILURE;
     };
-
-    // Start the panel on the pty master, with the bound socket: the panel's
-    // listener thread takes the requests over from here. On failure the child
-    // is hung up and reaped and the host exits 1; dropping the failed start's
-    // startup removes the socket file, so the name is free again.
-    let panel = match Panel::start(
-        Startup::new(
-            master.as_raw_fd(),
-            layout,
-            settings.keyboard,
-            settings.accent,
-        )
-        .with_instance(socket),
-    ) {
-        Ok(panel) => panel,
+    let exec = match Exec::new(run.command(), display) {
+        Ok(exec) => exec,
         Err(error) => {
-            let reason = match error {
-                PinwinError::NoDisplay => "no Wayland display or wlr-layer-shell",
-                _ => "error",
-            };
-            eprintln!("pinwin: cannot start the panel ({reason})");
-            hang_up_child_and_wait(pid);
-            return 1;
+            eprintln!("pinwin: {error}");
+            return ExitCode::from(COMMAND_NOT_FOUND);
         }
     };
-    // The panel serves the socket until the handle drops; the host only
-    // waits for its child.
-    let status = wait_for_child(pid);
-    // Dropping the handle closes the panel and removes the socket file (the
-    // C's `pinwin_stop`).
-    drop(panel);
-    child_exit_status(status)
+    let program = run.command()[0].to_string_lossy();
+    let error = exec.exec();
+    eprintln!("pinwin: could not run '{program}': {error}");
+    ExitCode::from(COMMAND_NOT_FOUND)
 }
 
-fn main() {
-    std::process::exit(run());
+/// Ask the daemon for a new panel, starting one in the background when none
+/// answers (spec "Run starts the daemon", D12). The wait for the started
+/// daemon is bounded, so a daemon that cannot start makes `pinwin run` print
+/// a message and exit 1 instead of hanging.
+fn create_panel(path: &Path, request: &Request) -> Result<Answer, String> {
+    match ipc::call(path, request) {
+        Ok(answer) => Ok(answer),
+        Err(CallError::Connect { .. }) => {
+            daemon::spawn::start_and_wait(path).map_err(|error| error.to_string())?;
+            ipc::call(path, request).map_err(|error| error.to_string())
+        }
+        Err(error) => Err(error.to_string()),
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pinwin::instance::PathError;
-    use std::ffi::OsStr;
-    use std::path::PathBuf;
-
-    /// The exit-status mapping: the child's status when it exited, 1 when it
-    /// did not (killed by a signal). The raw statuses are built the way the
-    /// kernel lays them out: exit code in the high byte.
-    #[test]
-    fn child_exit_status_maps_the_wait_status() {
-        assert_eq!(child_exit_status(7 << 8), 7);
-        assert_eq!(child_exit_status(0 << 8), 0);
-        assert_eq!(child_exit_status(255 << 8), 255);
-        // Killed by SIGHUP (signal 1), core dump bit unset.
-        assert_eq!(child_exit_status(1), 1);
-        // Killed by SIGKILL (signal 9).
-        assert_eq!(child_exit_status(9), 1);
-    }
-
-    /// The `--toggle`/`--show` client maps the outcomes: `ok` exits 0, an
-    /// environment error — no usable socket path — exits 2, and every
-    /// other send failure exits 1. The invalid-name class is covered by
-    /// `InstanceName::parse`'s contract in `instance.rs` and, end to end,
-    /// by `tests/command_line_ipc.rs`; here the exit-code mapping holds
-    /// without touching the process environment.
-    #[test]
-    fn the_client_maps_the_send_errors_to_exit_statuses() {
-        assert_eq!(send_exit(&Ok(())), 0);
-        assert_eq!(
-            send_exit(&Err(SendError::Environment(PathError::NoRuntimeDir))),
-            2
-        );
-        assert_eq!(
-            send_exit(&Err(SendError::NotListening {
-                path: PathBuf::new(),
-                error: io::Error::from_raw_os_error(libc::ENOENT),
-            })),
-            1
-        );
-        assert_eq!(
-            send_exit(&Err(SendError::Refused {
-                request: Request::Show
-            })),
-            1
-        );
-        assert_eq!(
-            send_exit(&Err(SendError::NoAnswer {
-                path: PathBuf::new(),
-                error: None,
-            })),
-            1
-        );
-    }
-
-    /// A name with no listener is a not-answered request, exit 1, for both
-    /// client requests, against a socket path that resolves (the display
-    /// variables are inherited, which only changes the message, not the
-    /// status). The tests never touch the process environment.
-    #[test]
-    fn the_client_without_a_listener_exits_1() {
-        let name = Some(InstanceName::parse("no-such-instance").expect("valid"));
-        assert_eq!(run_client(name.clone(), Request::Toggle), 1);
-        assert_eq!(run_client(name, Request::Show), 1);
-    }
-
-    /// The exec arguments are the C strings of the command, with the pointer
-    /// array terminated, and an interior NUL is reported naming the program.
-    #[test]
-    fn build_child_command_builds_the_exec_arguments() {
-        let os = |slice: &[&str]| -> Vec<OsString> {
-            slice
-                .iter()
-                .map(OsStr::new)
-                .map(OsStr::to_os_string)
-                .collect()
-        };
-
-        let child = build_child_command(&os(&["htop", "-d", "10"])).expect("no NUL");
-        assert_eq!(child.argv.len(), 3);
-        assert_eq!(child.argv[0].to_bytes(), b"htop");
-        assert_eq!(child.argv[2].to_bytes(), b"10");
-        // The pointer array mirrors `argv` and ends on a null.
-        assert_eq!(child.pointers.len(), 4);
-        assert_eq!(child.pointers[0], child.argv[0].as_ptr());
-        assert_eq!(child.pointers[2], child.argv[2].as_ptr());
-        assert!(child.pointers[3].is_null());
-
-        // An interior NUL anywhere names the program, not the offending
-        // argument, like the child's message did.
-        let command = os(&["htop"]);
-        let mut nul = OsString::from("-d");
-        nul.push(OsStr::from_bytes(&[b'a', 0, b'b']));
-        let mut command = command;
-        command.push(nul);
-        let Err(error) = build_child_command(&command) else {
-            panic!("expected the interior-NUL error")
-        };
-        assert_eq!(error, "pinwin: htop: argument has an interior NUL");
-    }
-
-    /// The child's signal reset: `signal` reports the previous disposition,
-    /// so after the reset `SIGPIPE`'s previous handler is `SIG_DFL` — not the
-    /// `SIG_IGN` the Rust runtime installed at startup.
-    #[test]
-    fn child_signal_setup_restores_the_sigpipe_default() {
-        child_signal_setup();
-        // SAFETY: a plain signal number; the ignore is restored below so the
-        // rest of the test process keeps std's contract.
-        let previous = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
-        assert_eq!(previous, libc::SIG_DFL);
-    }
-
-    /// The reset reaches the exec'd program, through the real `child_exec`
-    /// path (`std::process::Command` resets `SIGPIPE` in its own children, so
-    /// it cannot show the inheritance). Fork, dup the reporting pipe onto
-    /// stdout, then either run [`child_exec`] itself or — the control, as
-    /// `child_exec` was before the fix — the same `execve` without the
-    /// signal reset, and read the `SigIgn` mask of the exec'd `cat` back
-    /// through the pipe: the Rust runtime ignores `SIGPIPE` (bit
-    /// `SIGPIPE - 1`), the ignore would survive the exec, and the reset puts
-    /// the default back. Linux-only (`/proc`, `SigIgn`), like the panel.
-    #[test]
-    fn the_execed_child_sees_the_default_sigpipe_disposition() {
-        use std::path::Path;
-
-        /// Drain the reporting pipe's read end, retrying an interrupted
-        /// read and panicking on any other failure.
-        fn drain_read_end(read_end: libc::c_int) -> Vec<u8> {
-            let mut output = Vec::new();
-            loop {
-                let mut chunk = [0u8; 512];
-                // SAFETY: `read_end` is the open read end and `chunk` is
-                // writable.
-                let n = unsafe { libc::read(read_end, chunk.as_mut_ptr().cast(), chunk.len()) };
-                if n == 0 {
-                    return output;
+/// Run the daemon in the foreground (spec "One daemon for each Wayland
+/// display", D12). The readiness pipe a `pinwin run` gave this daemon is
+/// adopted before any work can fail, so every start result reaches that
+/// caller; a manual daemon has no pipe and behaves as before (spec "Run
+/// starts the daemon").
+fn daemon() -> ExitCode {
+    let ready = daemon::ready::ReadyPipe::from_env(
+        std::env::var_os(daemon::ready::READY_FD_ENV).as_deref(),
+    );
+    match start() {
+        Ok((daemon, signals)) => {
+            // Readiness comes after the lifetime and its tray, just before
+            // the accept loop: the socket's listen backlog already holds a
+            // caller's connection, and a failure in the signalfd, the
+            // lifetime or the tray still reports as a start failure (D12).
+            if let Some(pipe) = ready {
+                pipe.report_ready();
+            }
+            // The socket file is removed by the socket's drop when the loop
+            // returns (spec "Daemon socket").
+            match daemon.run(Some(&signals)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("pinwin: the daemon ended: {error}");
+                    ExitCode::FAILURE
                 }
-                if n < 0 {
-                    let error = io::Error::last_os_error();
-                    match error.raw_os_error() {
-                        Some(libc::EINTR) => continue,
-                        _ => panic!("read: {error}"),
-                    }
-                }
-                output.extend_from_slice(&chunk[..n.cast_unsigned()]);
             }
         }
-
-        fn sigpipe_ignored(reset: bool) -> bool {
-            // `cat` installs no signal handlers, so its `SigIgn` mask is
-            // exactly what the exec delivered. Everything is built in the
-            // parent; the absolute program path also keeps `execvp` off its
-            // PATH search in the forked child.
-            let program_path = ["/usr/bin/cat", "/bin/cat"]
-                .into_iter()
-                .find(|path| Path::new(path).exists())
-                .expect("cat at a known absolute path");
-            let child_command = build_child_command(&[
-                OsString::from(program_path),
-                OsString::from("/proc/self/status"),
-            ])
-            .expect("no NUL");
-            let program = CString::new(program_path).expect("no NUL");
-            let arg0 = CString::new("cat").expect("no NUL");
-            let file = CString::new("/proc/self/status").expect("no NUL");
-
-            let mut fds = [0; 2];
-            // SAFETY: `fds` is writable.
-            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
-            // SAFETY: fork in a threaded test process; the child between the
-            // fork and the exec only calls async-signal-safe functions —
-            // close, signal, dup2, exec, _exit — exactly like `child_exec`.
-            let pid = unsafe { libc::fork() };
-            assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
-            if pid == 0 {
-                // SAFETY: single-threaded forked child between fork and exec;
-                // the read end is this child's to close and stdout is the
-                // write end's destination.
-                unsafe {
-                    libc::close(fds[0]);
-                    libc::dup2(fds[1], libc::STDOUT_FILENO)
-                };
-                if reset {
-                    // The real child path, reset and exec included; it
-                    // never returns.
-                    child_exec(&child_command);
-                }
-                // The control: the same exec without the reset; it never
-                // returns.
-                // SAFETY: the C strings are NUL-terminated, the pointer
-                // array null-terminated, and `execve` never returns here.
-                unsafe {
-                    let execve_argv = [arg0.as_ptr(), file.as_ptr(), std::ptr::null()];
-                    libc::execve(program.as_ptr(), execve_argv.as_ptr(), std::ptr::null());
-                    libc::_exit(127);
+        Err(failure) => {
+            eprintln!("pinwin: {}", failure.message);
+            if let Some(pipe) = ready {
+                if failure.lost_race {
+                    pipe.report_ready();
+                } else {
+                    pipe.report_failure(&failure.message);
                 }
             }
-            // SAFETY: each end is closed by its own process only.
-            unsafe { libc::close(fds[1]) };
-            let output = drain_read_end(fds[0]);
-            let mut status: i32 = 0;
-            // SAFETY: `pid` is this test's child, `status` writable.
-            let rc = unsafe { libc::waitpid(pid, &raw mut status, 0) };
-            assert_eq!(rc, pid, "waitpid");
-            assert!(
-                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
-                "cat failed: {:?}",
-                String::from_utf8_lossy(&output)
-            );
-            let text = String::from_utf8(output).expect("utf-8");
-            let line = text
-                .lines()
-                .find(|line| line.starts_with("SigIgn:"))
-                .expect("a SigIgn line");
-            let mask =
-                u64::from_str_radix(line.split_whitespace().nth(1).expect("the mask field"), 16)
-                    .expect("a hex mask");
-            // Signals are numbered from one, so `SIGPIPE` is bit 12.
-            mask & (1u64 << (libc::SIGPIPE - 1)) != 0
+            ExitCode::from(failure.code)
         }
-
-        // The runtime's ignore survives the exec without the reset.
-        assert!(
-            sigpipe_ignored(false),
-            "SIGPIPE should be ignored without the reset"
-        );
-        // The child's reset puts the default back before the exec.
-        assert!(
-            !sigpipe_ignored(true),
-            "SIGPIPE should be default after the reset"
-        );
     }
+}
+
+/// Set the daemon up and return it with its signalfd, or the reason it
+/// cannot start (spec "Run starts the daemon"). The config file is read
+/// first, so an invalid file exits 2 before the daemon takes the display's
+/// socket and creates anything (spec "Invalid config file").
+fn start() -> Result<(Daemon, SignalFd), Failure> {
+    let config_path = config::config_path_from_env().ok_or_else(|| {
+        Failure::fatal(
+            DAEMON_FAILURE,
+            "XDG_CONFIG_HOME and HOME are unset: no config file path",
+        )
+    })?;
+    let config = Config::load(&config_path)
+        .map_err(|error| Failure::fatal(INVALID_CONFIG, error.to_string()))?;
+    // D12: the compositor must offer layer-shell before the daemon takes the
+    // display's socket, so a compositor that lacks it leaves no daemon and no
+    // panel behind (spec "Wayland layer-shell is required", "No
+    // layer-shell").
+    crate::proxy::check::check_layer_shell()
+        .map_err(|error| Failure::fatal(DAEMON_FAILURE, error.to_string()))?;
+    // A live daemon keeps its display: the second start reports it and exits
+    // 0 without changing it (spec "Second daemon"). Every other bind failure
+    // (no runtime directory, an unusable display, an I/O error) exits 1 and
+    // creates nothing (spec "No runtime directory").
+    let socket = DaemonSocket::bind_from_env().map_err(|error| match error {
+        SocketError::Live => Failure::lost_race(error.to_string()),
+        _ => Failure::fatal(DAEMON_FAILURE, error.to_string()),
+    })?;
+    // D12: SIGINT and SIGTERM are blocked and read through one signalfd on
+    // the thread that runs the accept loop, before it starts a connection or
+    // panel thread, so those threads inherit the mask and no signal handler
+    // races them.
+    let signals =
+        SignalFd::open().map_err(|error| Failure::fatal(DAEMON_FAILURE, error.to_string()))?;
+    let lifetime = Lifetime::new(config_path, config, ipc::REPLY_TIMEOUT)
+        .map_err(|error| Failure::fatal(DAEMON_FAILURE, error.to_string()))?;
+    // The tray icon shows only while panels exist (row 11.1, D14), so the
+    // daemon enables it before any panel can start.
+    let lifetime = Arc::new(lifetime);
+    lifetime.enable_tray();
+    Ok((Daemon::new(socket, lifetime), signals))
+}
+
+/// Send one client subcommand to the daemon and print its answer (spec
+/// "Command-line client", "Command-line exit codes").
+fn client(request: &Request) -> ExitCode {
+    if matches!(request, Request::Subscribe) {
+        return finish(subscribe());
+    }
+    // `pinwin status` prints the reply's JSON; the other successes print
+    // nothing (spec "Command-line exit codes").
+    let status = matches!(request, Request::Status { .. });
+    finish(send(request, status))
+}
+
+/// The exit code of a command's result: a failure prints `pinwin: ` and its
+/// message to stderr.
+fn finish(result: Result<(), String>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("pinwin: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Send `request` and, for `status`, print the reply.
+fn send(request: &Request, status: bool) -> Result<(), String> {
+    let path = daemon::socket_path_from_env().map_err(|error| error.to_string())?;
+    let answer = ipc::call(&path, request).map_err(|error| error.to_string())?;
+    if let Some(error) = answer.reply().as_error() {
+        // The daemon's own message, so a script sees why the request failed
+        // (spec "Unknown panel").
+        return Err(error.message().to_string());
+    }
+    if status {
+        write_stdout(answer.line()).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Print each line of the daemon's event stream until the daemon closes it
+/// or the reader goes away (spec "Event stream", "Command-line client").
+fn subscribe() -> Result<(), String> {
+    let path = daemon::socket_path_from_env().map_err(|error| error.to_string())?;
+    let mut subscription = Subscription::connect(&path).map_err(|error| error.to_string())?;
+    let reply = subscription.reply().map_err(|error| error.to_string())?;
+    if let Some(error) = reply.as_error() {
+        return Err(error.message().to_string());
+    }
+    if !reply.is_ok() {
+        return Err("the daemon refused the subscription".to_owned());
+    }
+    while let Some(line) = subscription
+        .next_event()
+        .map_err(|error| error.to_string())?
+    {
+        // A closed pipe (`pinwin subscribe | head -1`) ends the stream:
+        // nobody is left to print the events for.
+        if write_stdout(&line).is_err() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Write one line to stdout and flush it, so a reply or an event reaches the
+/// caller as it arrives.
+fn write_stdout(line: &[u8]) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    stdout.write_all(line)?;
+    stdout.flush()
 }
