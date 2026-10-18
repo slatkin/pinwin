@@ -1,0 +1,37 @@
+---
+# mbv AGENTS.md (Repository map, pinwin): "mbv links no pinwin library."
+# pinwin stays protocol-free outside the panel proxy (pinwin AGENTS.md):
+# the wl-proxy/wayland bindings belong under src/proxy. tray.rs's ksni
+# import is legitimate and deliberately not matched.
+#
+# Census (ast-grep 0.44.1 dry-run over pinwin @ 2026-10-18): 0 hits outside
+# src/proxy and tests/. The tests/command_line_ipc.rs integration test
+# builds a real proxy and imports wl_proxy — sanctioned, ignored below.
+#
+# Fixture blind spot: snippets carry no real path, so the ignores below are
+# dispatch-layer behavior the fixture harness cannot cover; verified by a
+# live dispatch probe instead.
+id: pinwin-wayland-stays-in-proxy
+language: Rust
+severity: warning
+message: "wl-proxy import outside src/proxy"
+note: |
+  The panel proxy owns the Wayland and wlr protocol bindings; the daemon,
+  the IPC wire format and the CLI stay protocol-free. Import wl_proxy or
+  wayland_client only under src/proxy.
+rule:
+  all:
+    - kind: use_declaration
+    - has:
+        kind: identifier
+        regex: '^(wl_proxy|wayland_client)$'
+        stopBy: end
+ignores:
+  - "src/proxy.rs"
+  - "src/proxy/**"
+  - "tests/**"
+has_fix: false
+tags:
+  - rust
+  - pinwin
+  - architecture

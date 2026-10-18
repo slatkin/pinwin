@@ -1,0 +1,7 @@
+---
+# Harness for the pinwin ast-grep rules (fixtures + local scans). pi-lens
+# loads the rule files directly from rules/ and ignores this file.
+ruleDirs:
+  - ./rules
+testConfigs:
+  - testDir: ./rule-tests

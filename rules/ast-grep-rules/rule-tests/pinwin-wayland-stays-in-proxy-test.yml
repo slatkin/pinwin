@@ -1,0 +1,8 @@
+---
+id: pinwin-wayland-stays-in-proxy
+valid:
+  - "use std::io::Write;"
+  - "use crate::fd::owned_fd;"
+invalid:
+  - "use wl_proxy::baseline::Baseline;"
+  - "use wayland_client::Connection;"
