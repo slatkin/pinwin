@@ -25,11 +25,14 @@ binary-only now and every row of its tasks is landed.
   the client subcommands send one request, print the reply (`status` its JSON
   and `subscribe` each event line), and exit 0 on success, 1 on a daemon error
   or no daemon and 2 on a usage error (spec "Command-line exit codes").
-  `pinwin run` resolves the panel's options, asks the daemon for a new panel,
-  sets `WAYLAND_DISPLAY` from the reply and replaces itself with the app, and
-  exits 127 when the command cannot run (spec "Run an app in a panel",
-  "Command not found"); rows 7.2 and 7.3 add the daemon spawn and the pidfd
-  lifetime.
+  Every client, `pinwin run` included, takes its socket path from
+  `PINWIN_SOCKET` when set and otherwise from the display (D1). `pinwin run`
+  resolves the panel's options, asks the daemon for a new panel, sets
+  `WAYLAND_DISPLAY`, `PINWIN_PANEL` and the absolute `PINWIN_SOCKET` from the
+  reply and replaces itself with the app, and exits 127 when the command
+  cannot run (spec "Run an app in a panel", "Command not found"); a path
+  from `PINWIN_SOCKET` that no daemon answers never starts one (D3). Rows 7.2
+  and 7.3 add the daemon spawn and the pidfd lifetime.
 - `src/cli.rs` — the hand-written command line (row 4.3): `run` with the
   options of spec "Run options", `daemon`, and one client subcommand for each
   daemon request. It produces the command value and the `PanelOptions` of the
@@ -63,6 +66,11 @@ binary-only now and every row of its tasks is landed.
   that creates the `pinwin` directory and the 0600 socket file, the
   stale-file replacement and the live-daemon refusal (spec "One daemon for
   each Wayland display"), and the file's removal when the socket drops. It
+  also holds the client's socket lookup (D1): `PINWIN_SOCKET` when it is set
+  and not empty, with a relative path refused as an error that names the
+  variable, and otherwise the display's path, tagged with the source so
+  `pinwin run` knows whether it may start a daemon. `bind_from_env` never
+  reads `PINWIN_SOCKET`, so `pinwin daemon` binds the display's socket. It
   also holds the mutex helper the daemon's threads share. `src/main.rs`
   compiles it for `pinwin daemon`.
 - `src/daemon/panel.rs` — the daemon's handle on one panel thread (D12): the
@@ -386,9 +394,10 @@ binary-only now and every row of its tasks is landed.
 - `src/run.rs` — the app `pinwin run` becomes (row 7.1, D2, spec "Run an app
   in a panel"): the pure exec spec of the program, its arguments and the
   environment the app inherits, with `WAYLAND_DISPLAY` set to the new panel's
-  display, and the `exec` that keeps the process ID the daemon watches. Its
-  test checks the hand-over without replacing the test process
-  (`src/run/tests.rs`).
+  display, `PINWIN_PANEL` to the panel's name and `PINWIN_SOCKET` to the
+  absolute daemon socket path, and the `exec` that keeps the process ID the
+  daemon watches. Its test checks the hand-over without replacing the test
+  process (`src/run/tests.rs`).
 - `src/anim.rs` — the animated width transition's easing and per-tick step,
   which the proxy's tween machine (row 10.1, D8) runs.
 - `src/guard.rs` — the shared panic guard. `src/main.rs` compiles it now

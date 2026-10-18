@@ -22,7 +22,7 @@ use crate::config::{Config, Keyboard, Layer, PanelOptions, PanelSettings};
 use crate::daemon;
 use crate::daemon::panel::{AppId, Command, EventFd, PanelHandle, PanelReply};
 use crate::daemon::registry::Registry;
-use crate::daemon::{PathError, SocketError, socket_path};
+use crate::daemon::{PathError, SocketError, Source, client_socket_path_from, socket_path};
 use crate::geometry::{Edge, ReserveMode, Size};
 use crate::ipc::{ErrorKind, ErrorReply, PanelStatus, Reply, Request};
 use crate::name::PanelName;
@@ -76,6 +76,79 @@ fn the_socket_path_is_named_for_the_display() {
             "raw = {raw:?}"
         );
     }
+}
+
+/// A set `PINWIN_SOCKET` names the client's socket path and is reported as
+/// the variable's, whatever the display says (spec "Client socket lookup":
+/// "Variable wins over the display", D1).
+#[test]
+fn a_set_pinwin_socket_names_the_client_path() {
+    let path = client_socket_path_from(
+        Some(OsStr::new("/run/pinwin/wayland-9.sock")),
+        Some(OsStr::new("/run/user/1000")),
+        Some(OsStr::new("wayland-1")),
+    )
+    .expect("a client socket path");
+    assert_eq!(
+        path,
+        (
+            PathBuf::from("/run/pinwin/wayland-9.sock"),
+            Source::Variable
+        )
+    );
+}
+
+/// An empty `PINWIN_SOCKET` is the same as an unset one: the client uses the
+/// display's path (spec "Client socket lookup": "Empty variable", D1).
+#[test]
+fn an_empty_pinwin_socket_uses_the_display_path() {
+    let expected = (
+        PathBuf::from("/run/user/1000/pinwin/wayland-1.sock"),
+        Source::Display,
+    );
+    assert_eq!(
+        client_socket_path_from(
+            Some(OsStr::new("")),
+            Some(OsStr::new("/run/user/1000")),
+            Some(OsStr::new("wayland-1")),
+        ),
+        Ok(expected)
+    );
+}
+
+/// A relative `PINWIN_SOCKET` is refused before any request, and the
+/// message names the variable (spec "Client socket lookup": "Relative
+/// path", D1).
+#[test]
+fn a_relative_pinwin_socket_is_refused() {
+    let error = client_socket_path_from(
+        Some(OsStr::new("pinwin/wayland-1.sock")),
+        Some(OsStr::new("/run/user/1000")),
+        Some(OsStr::new("wayland-1")),
+    )
+    .expect_err("a relative path");
+    assert_eq!(error, PathError::RelativeSocket);
+    assert!(
+        error.to_string().contains("PINWIN_SOCKET"),
+        "the message names the variable: {error}"
+    );
+}
+
+/// An unset `PINWIN_SOCKET` leaves the display's path in place, as in
+/// 0.4.0 (spec "Client socket lookup", D1).
+#[test]
+fn an_unset_pinwin_socket_uses_the_display_path() {
+    assert_eq!(
+        client_socket_path_from(
+            None,
+            Some(OsStr::new("/run/user/1000")),
+            Some(OsStr::new("wayland-1")),
+        ),
+        Ok((
+            PathBuf::from("/run/user/1000/pinwin/wayland-1.sock"),
+            Source::Display
+        ))
+    );
 }
 
 /// With no `XDG_RUNTIME_DIR` there is no socket path, so the daemon exits 1

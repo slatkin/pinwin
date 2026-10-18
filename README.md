@@ -33,17 +33,25 @@ pinwin <command> [args...]                    # send one request to the daemon
 
 `pinwin run` asks the daemon for a new panel and starts one in the background
 when none answers for the display. It sets `WAYLAND_DISPLAY` to the new
-panel's display and replaces itself with the command, so the app keeps its
-process ID, working folder and environment. A command that cannot run exits
-127; a missing daemon or a daemon error exits 1; a bad command line exits 2.
+panel's display, `PINWIN_PANEL` to the panel's name and `PINWIN_SOCKET` to
+the absolute path of the daemon's socket, then replaces itself with the
+command, so the app keeps its process ID, working folder and every other
+environment variable. These three values replace values the caller
+inherited. A command that cannot run exits 127; a missing daemon or a daemon
+error exits 1; a bad command line exits 2. When `PINWIN_SOCKET` names the
+socket and no daemon answers there, `pinwin run` prints a message and exits
+1 without starting a daemon.
 
 `pinwin daemon` binds the display's socket and runs in the foreground until a
 `quit` request, SIGINT or SIGTERM ends it. The daemon reads the config file
 and requires a compositor with wlr-layer-shell before it creates anything.
 
 pinwin reads `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `XDG_CONFIG_HOME` and
-`HOME` for its socket and config file; it reads no `PINWIN_*` variable. The
-app keeps every other variable unchanged.
+`HOME` for its socket and config file. A client uses `PINWIN_SOCKET` as the
+daemon socket path when the variable is set and not empty; a relative path is
+an error. `pinwin daemon` never reads `PINWIN_SOCKET`. `PINWIN_PANEL` is set
+for an app and is not read by pinwin. The app keeps every other variable
+unchanged.
 
 ## Commands
 
