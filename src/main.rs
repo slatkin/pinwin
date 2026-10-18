@@ -15,6 +15,10 @@
 //! starts one in the background and waits a bounded time for it (row 7.2,
 //! spec "Run starts the daemon"); row 7.3 adds the panel lifetime from the
 //! app's pidfd and its connection count.
+//!
+//! The client's socket path comes from `PINWIN_SOCKET` when it is set, else
+//! from the display (D1). A `pinwin run` whose path came from the variable
+//! never starts a daemon there (D3).
 
 use std::ffi::OsString;
 use std::io::{self, Write as _};
@@ -24,9 +28,8 @@ use std::sync::Arc;
 
 use crate::cli::Command;
 use crate::config::Config;
-use crate::daemon::DaemonSocket;
-use crate::daemon::SocketError;
 use crate::daemon::lifetime::{Daemon, Lifetime, SignalFd};
+use crate::daemon::{DaemonSocket, SocketError, Source};
 use crate::guard::{Poisoned, guard};
 use crate::ipc::{Answer, CallError, ErrorKind, Request, Subscription};
 use crate::run::Exec;
@@ -124,10 +127,19 @@ fn dispatch() -> ExitCode {
 /// cannot be executed prints the error and exits 127 (spec "Command not
 /// found").
 fn run_app(run: &cli::Run) -> ExitCode {
-    let path = match daemon::socket_path_from_env() {
-        Ok(path) => path,
+    let (path, source) = match daemon::client_socket_path() {
+        Ok(found) => found,
         Err(error) => {
             eprintln!("pinwin: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // The app's `PINWIN_SOCKET` must work from any working folder, so a
+    // relative runtime directory becomes an absolute path here (D2).
+    let path = match std::path::absolute(path) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("pinwin: could not resolve the daemon socket path: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -136,8 +148,9 @@ fn run_app(run: &cli::Run) -> ExitCode {
         pid: std::process::id(),
         app: run::app_name(&run.command()[0]),
         options: run.options().clone(),
+        show_existing: run.show_existing(),
     };
-    let answer = match create_panel(&path, &request) {
+    let answer = match create_panel(&path, source, &request) {
         Ok(answer) => answer,
         Err(message) => {
             eprintln!("pinwin: {message}");
@@ -153,11 +166,16 @@ fn run_app(run: &cli::Run) -> ExitCode {
             _ => 1,
         });
     }
+    // The daemon showed the panel that already had the name, so this launch
+    // runs nothing and succeeds (spec "Show an existing panel", D6).
+    if answer.reply().is_existing() {
+        return ExitCode::SUCCESS;
+    }
     let Some(display) = answer.reply().display() else {
         eprintln!("pinwin: the daemon's reply named no display for the new panel");
         return ExitCode::FAILURE;
     };
-    let exec = match Exec::new(run.command(), display) {
+    let exec = match Exec::new(run.command(), display, run.name().as_str(), &path) {
         Ok(exec) => exec,
         Err(error) => {
             eprintln!("pinwin: {error}");
@@ -173,11 +191,19 @@ fn run_app(run: &cli::Run) -> ExitCode {
 /// Ask the daemon for a new panel, starting one in the background when none
 /// answers (spec "Run starts the daemon", D12). The wait for the started
 /// daemon is bounded, so a daemon that cannot start makes `pinwin run` print
-/// a message and exit 1 instead of hanging.
-fn create_panel(path: &Path, request: &Request) -> Result<Answer, String> {
+/// a message and exit 1 instead of hanging. A path from `PINWIN_SOCKET`
+/// starts no daemon (D3): the variable names a daemon that should already
+/// own the panel's display, so starting another would be the wrong one.
+fn create_panel(path: &Path, source: Source, request: &Request) -> Result<Answer, String> {
     match ipc::call(path, request) {
         Ok(answer) => Ok(answer),
         Err(CallError::Connect { .. }) => {
+            if source == Source::Variable {
+                return Err(format!(
+                    "no pinwin daemon answers at the PINWIN_SOCKET path {}",
+                    path.display()
+                ));
+            }
             daemon::spawn::start_and_wait(path).map_err(|error| error.to_string())?;
             ipc::call(path, request).map_err(|error| error.to_string())
         }
@@ -295,7 +321,7 @@ fn finish(result: Result<(), String>) -> ExitCode {
 
 /// Send `request` and, for `status`, print the reply.
 fn send(request: &Request, status: bool) -> Result<(), String> {
-    let path = daemon::socket_path_from_env().map_err(|error| error.to_string())?;
+    let (path, _source) = daemon::client_socket_path().map_err(|error| error.to_string())?;
     let answer = ipc::call(&path, request).map_err(|error| error.to_string())?;
     if let Some(error) = answer.reply().as_error() {
         // The daemon's own message, so a script sees why the request failed
@@ -311,7 +337,7 @@ fn send(request: &Request, status: bool) -> Result<(), String> {
 /// Print each line of the daemon's event stream until the daemon closes it
 /// or the reader goes away (spec "Event stream", "Command-line client").
 fn subscribe() -> Result<(), String> {
-    let path = daemon::socket_path_from_env().map_err(|error| error.to_string())?;
+    let (path, _source) = daemon::client_socket_path().map_err(|error| error.to_string())?;
     let mut subscription = Subscription::connect(&path).map_err(|error| error.to_string())?;
     let reply = subscription.reply().map_err(|error| error.to_string())?;
     if let Some(error) = reply.as_error() {

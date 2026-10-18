@@ -185,7 +185,9 @@ released; showing a window SHALL restore it. The strip SHALL apply only to the p
 An animated change, with a duration above 0 ms, that changes only the panel's width and
 reserve mode (same edge and gutters) SHALL change the visible width continuously over the
 duration, driven by the compositor's frame callbacks. The strip SHALL move with the panel only
-when the target pushes and its strip differs from the held one. The duration SHALL be clamped
+when the panel pushes before the change, the target pushes, and the target's strip differs
+from the held one. A change from covering to pushing SHALL hold the strip still during the
+animation and SHALL set the target's strip when the animation ends. The duration SHALL be clamped
 to 1000 ms. The app's content SHALL stay against the panel's edge in every frame. pinwin SHALL
 NOT read any desktop animation setting.
 
@@ -235,6 +237,19 @@ NOT read any desktop animation setting.
 #### Scenario: Duration clamp
 - **WHEN** a change has `ms` 60000
 - **THEN** the animation lasts at most 1000 ms
+
+#### Scenario: Collapse back to the held strip
+- **WHEN** the held strip is 400 pixels, the panel covers at 1100 pixels, and it gets
+  `set-size` to 400 pixels with `reserve` `push` and `ms` 200
+- **THEN** the panel shrinks to 400 pixels over about 200 ms, the strip stays at 400 pixels,
+  and tiled windows do not move
+
+#### Scenario: Collapse to a new pushing width
+- **WHEN** the held strip is 400 pixels, the panel covers at 1100 pixels, and it gets
+  `set-size` to 500 pixels with `reserve` `push` and `ms` 200
+- **THEN** the panel shrinks to 500 pixels over about 200 ms while the strip holds still at
+  400 pixels, and when the animation ends the strip becomes 500 pixels and tiled windows move
+  once
 
 ### Requirement: Exact final width
 When an animation ends, the panel's width SHALL equal the target width. A pushing target SHALL
@@ -385,6 +400,12 @@ the panel's width or length changes.
 #### Scenario: Change the size
 - **WHEN** a panel's size changes from 640 to 800 pixels
 - **THEN** the app gets one new window size of 800 pixels wide and keeps running
+
+#### Scenario: Change the gutters
+- **WHEN** a left panel with Top 0 gets `set-gutters` with Top 8 and Bottom 8
+- **THEN** the same window shows with its top edge 8 pixels below the output's top edge and
+  its bottom edge 8 pixels above the output's bottom edge, and the app gets one new window
+  height
 
 ### Requirement: Output goes away
 When the panel's output is removed, the panel SHALL move to the output that the compositor

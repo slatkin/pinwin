@@ -204,23 +204,72 @@ fn the_gap_tween_decision_compares_against_the_strip_the_gap_rests_at() {
     // Pushing 360 -> 1080 pixels: the gap rests at 372 and the target
     // strip is 1092, so the gap tweens.
     let expanding = geometry(Edge::Left, 1080, Gutters::new(0, 12, 0, 0));
-    assert!(HeldGap::tweens_with_panel(372, true, expanding, 1080));
+    assert!(HeldGap::tweens_with_panel(
+        372,
+        ReserveMode::Push,
+        true,
+        expanding,
+        1080
+    ));
 
     // Shrinking a covering excursion back to the original pushing width:
     // the target strip is the strip the gap rests at, so it holds still.
     let shrinking_back = geometry(Edge::Left, 360, Gutters::new(0, 12, 0, 0));
-    assert!(!HeldGap::tweens_with_panel(372, true, shrinking_back, 360));
+    assert!(!HeldGap::tweens_with_panel(
+        372,
+        ReserveMode::Push,
+        true,
+        shrinking_back,
+        360
+    ));
+
+    // A panel that covered before the change holds its strip even when the
+    // target pushes and its strip differs (D5, spec "Collapse to a new
+    // pushing width").
+    let new_push = geometry(Edge::Left, 500, Gutters::new(0, 12, 0, 0));
+    assert!(!HeldGap::tweens_with_panel(
+        400,
+        ReserveMode::Cover,
+        true,
+        new_push,
+        500
+    ));
+    assert!(HeldGap::tweens_with_panel(
+        400,
+        ReserveMode::Push,
+        true,
+        new_push,
+        500
+    ));
 
     // A covering target never tweens the gap.
     let cover = covering(Edge::Left, 1080, Gutters::new(0, 12, 0, 0));
-    assert!(!HeldGap::tweens_with_panel(372, true, cover, 1080));
+    assert!(!HeldGap::tweens_with_panel(
+        372,
+        ReserveMode::Push,
+        true,
+        cover,
+        1080
+    ));
 
     // A snap apply (zero duration, no animation, a side or gutter change)
     // applies the strip in one step.
-    assert!(!HeldGap::tweens_with_panel(372, false, expanding, 1080));
+    assert!(!HeldGap::tweens_with_panel(
+        372,
+        ReserveMode::Push,
+        false,
+        expanding,
+        1080
+    ));
 
     // A pushing target whose strip the gap already rests at does not tween.
-    assert!(!HeldGap::tweens_with_panel(1092, true, expanding, 1080));
+    assert!(!HeldGap::tweens_with_panel(
+        1092,
+        ReserveMode::Push,
+        true,
+        expanding,
+        1080
+    ));
 }
 
 #[test]

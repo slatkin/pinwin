@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use super::{CallError, ErrorKind, LineError, MAX_LINE, Reply, Request, read_line, write_line};
 use crate::cli::{self, Command};
+use crate::geometry::GutterChange;
 use crate::name::PanelName;
 
 /// The panel name the request tests use.
@@ -49,6 +50,7 @@ fn the_wire_size_forms_parse() {
             Request::SetSize {
                 panel: notes(),
                 size: crate::geometry::Size::pixels(640).expect("640 pixels"),
+                reserve: None,
                 ms: None,
             },
         ),
@@ -57,6 +59,7 @@ fn the_wire_size_forms_parse() {
             Request::SetSize {
                 panel: notes(),
                 size: crate::geometry::Size::pixels(640).expect("640 pixels"),
+                reserve: None,
                 ms: None,
             },
         ),
@@ -65,6 +68,7 @@ fn the_wire_size_forms_parse() {
             Request::SetSize {
                 panel: notes(),
                 size: crate::geometry::Size::percent(30).expect("30 percent"),
+                reserve: None,
                 ms: Some(0),
             },
         ),
@@ -75,6 +79,7 @@ fn the_wire_size_forms_parse() {
                 by: crate::cli::Amount::shrink(
                     crate::geometry::Size::pixels(40).expect("40 pixels"),
                 ),
+                reserve: None,
                 ms: None,
             },
         ),
@@ -85,6 +90,7 @@ fn the_wire_size_forms_parse() {
                 by: crate::cli::Amount::shrink(
                     crate::geometry::Size::pixels(40).expect("40 pixels"),
                 ),
+                reserve: None,
                 ms: None,
             },
         ),
@@ -95,6 +101,7 @@ fn the_wire_size_forms_parse() {
                 by: crate::cli::Amount::grow(
                     crate::geometry::Size::percent(10).expect("10 percent"),
                 ),
+                reserve: None,
                 ms: Some(200),
             },
         ),
@@ -111,6 +118,53 @@ fn the_wire_size_forms_parse() {
             request
         );
     }
+}
+
+/// `set-size` and `resize` take an optional `reserve` (D4, spec "Size and
+/// reserve in one request"): an absent field parses as no change, so a
+/// 0.4.0 line round-trips unchanged, and a present one parses with the
+/// setting grammar.
+#[test]
+fn the_optional_reserve_parses_with_the_size_commands() {
+    let legacy = br#"{"cmd":"set-size","panel":"notes","size":"640px","ms":200}"#;
+    let request = Request::parse(legacy).expect("a 0.4.0 set-size line");
+    assert_eq!(
+        request,
+        Request::SetSize {
+            panel: notes(),
+            size: crate::geometry::Size::pixels(640).expect("640 pixels"),
+            reserve: None,
+            ms: Some(200),
+        }
+    );
+    assert_eq!(
+        request.to_line(),
+        "{\"cmd\":\"set-size\",\"panel\":\"notes\",\"size\":\"640px\",\"ms\":200}\n",
+        "a 0.4.0 line round-trips without the new field"
+    );
+
+    assert_eq!(
+        Request::parse(
+            br#"{"cmd":"set-size","panel":"notes","size":"1100px","reserve":"cover","ms":200}"#
+        )
+        .expect("a set-size with a reserve mode"),
+        Request::SetSize {
+            panel: notes(),
+            size: crate::geometry::Size::pixels(1100).expect("1100 pixels"),
+            reserve: Some(crate::geometry::ReserveMode::Cover),
+            ms: Some(200),
+        }
+    );
+    assert_eq!(
+        Request::parse(br#"{"cmd":"resize","panel":"notes","by":"-700px","reserve":"push"}"#)
+            .expect("a resize with a reserve mode"),
+        Request::Resize {
+            panel: notes(),
+            by: crate::cli::Amount::shrink(crate::geometry::Size::pixels(700).expect("700 pixels"),),
+            reserve: Some(crate::geometry::ReserveMode::Push),
+            ms: None,
+        }
+    );
 }
 
 /// A line that is not JSON is `invalid_request`, and the reply names it
@@ -149,6 +203,8 @@ fn an_invalid_value_is_invalid_value() {
         br#"{"cmd":"set-size","panel":"notes","size":"wide"}"#,
         br#"{"cmd":"resize","panel":"notes","by":"40px"}"#,
         br#"{"cmd":"set-size","panel":"notes","size":"640px","ms":-1}"#,
+        br#"{"cmd":"set-size","panel":"notes","size":"1100px","reserve":"middle"}"#,
+        br#"{"cmd":"resize","panel":"notes","by":"-40px","reserve":"middle"}"#,
     ] {
         let error = Request::parse(line).expect_err("an invalid value");
         assert_eq!(
@@ -432,7 +488,7 @@ fn the_client_gives_up_when_no_reply_comes() {
 fn every_client_subcommand_has_one_request_variant() {
     assert_eq!(cli::SUBCOMMANDS[2..], super::REQUEST_COMMANDS[..]);
 
-    let samples: [&[&str]; 15] = [
+    let samples: [&[&str]; 16] = [
         &["toggle", "notes"],
         &["show", "notes"],
         &["hide", "notes"],
@@ -440,6 +496,7 @@ fn every_client_subcommand_has_one_request_variant() {
         &["set-edge", "notes", "right"],
         &["set-size", "notes", "640px"],
         &["resize", "notes", "-40px"],
+        &["set-gutters", "notes", "--top", "8"],
         &["set-output", "notes", "eDP-1"],
         &["set-layer", "notes", "overlay"],
         &["set-reserve", "notes", "push"],
@@ -493,6 +550,7 @@ fn a_create_request_carries_the_run_options_and_its_reply_names_the_display() {
         pid: 4242,
         app: "myeditor".to_owned(),
         options,
+        show_existing: false,
     };
     let line = request.to_line();
     let value: serde_json::Value = serde_json::from_str(&line).expect("a request is JSON");
@@ -502,6 +560,9 @@ fn a_create_request_carries_the_run_options_and_its_reply_names_the_display() {
     // The app's name is the command's file name, which the daemon's report
     // names (row 7.4, D3).
     assert_eq!(value["app"], serde_json::json!("myeditor"));
+    // `--show-existing` is absent on the wire when it is false, so a 0.4.0
+    // request line keeps its shape (D6).
+    assert_eq!(value["show_existing"], serde_json::Value::Null);
     assert_eq!(value["options"]["edge"], serde_json::json!("right"));
     assert_eq!(value["options"]["size"], serde_json::json!("30%"));
     assert_eq!(value["options"]["reserve"], serde_json::json!("cover"));
@@ -528,4 +589,156 @@ fn a_create_request_carries_the_run_options_and_its_reply_names_the_display() {
     )
     .expect_err("an invalid option value");
     assert_eq!(error.kind(), ErrorKind::InvalidValue);
+}
+
+/// A `create` request with `--show-existing` carries the flag on the wire, a
+/// line without it parses as false, and the reply of an existing panel says
+/// so (spec "Show an existing panel", D6).
+#[test]
+fn a_create_request_round_trips_show_existing_and_reports_an_existing_panel() {
+    let request = Request::Create {
+        panel: notes(),
+        pid: 4242,
+        app: "myeditor".to_owned(),
+        options: crate::config::PanelOptions::default(),
+        show_existing: true,
+    };
+    let line = request.to_line();
+    let value: serde_json::Value = serde_json::from_str(&line).expect("a request is JSON");
+    assert_eq!(value["show_existing"], serde_json::json!(true));
+    assert_eq!(
+        Request::parse(line.as_bytes()).expect("the request round-trips"),
+        request
+    );
+
+    // A 0.4.0 line has no flag, and the missing field means false.
+    let line = br#"{"cmd":"create","panel":"notes","pid":1,"app":"notes"}"#;
+    let parsed = Request::parse(line).expect("an old request line parses");
+    assert!(matches!(
+        parsed,
+        Request::Create {
+            show_existing: false,
+            ..
+        }
+    ));
+
+    let reply = Reply::existing();
+    assert!(reply.is_ok());
+    assert!(reply.is_existing());
+    assert_eq!(reply.display(), None, "an existing panel runs no app");
+    let line = reply.to_line();
+    assert_eq!(line, "{\"ok\":true,\"existing\":true}\n");
+    assert_eq!(Reply::parse(line.as_bytes()), Ok(reply));
+}
+
+/// A `create` request carries the four gutters as whole numbers of pixels,
+/// an absent one keeps the config file's value, and a fractional one is the
+/// known command's `invalid_value` (spec "Run options", "Gutter request
+/// fields", D7).
+#[test]
+fn a_create_request_carries_the_gutters() {
+    let options = crate::config::PanelOptions {
+        gutter_left: Some(-12),
+        gutter_right: Some(4),
+        gutter_top: Some(8),
+        gutter_bottom: Some(-3),
+        ..crate::config::PanelOptions::default()
+    };
+    let request = Request::Create {
+        panel: notes(),
+        pid: 4242,
+        app: "myeditor".to_owned(),
+        options,
+        show_existing: false,
+    };
+    let line = request.to_line();
+    let value: serde_json::Value = serde_json::from_str(&line).expect("a request is JSON");
+    assert_eq!(value["options"]["gutter_left"], serde_json::json!(-12));
+    assert_eq!(value["options"]["gutter_right"], serde_json::json!(4));
+    assert_eq!(value["options"]["gutter_top"], serde_json::json!(8));
+    assert_eq!(value["options"]["gutter_bottom"], serde_json::json!(-3));
+    assert_eq!(
+        Request::parse(line.as_bytes()).expect("the request round-trips"),
+        request
+    );
+
+    // A 0.4.0 line carries no gutter field, so every gutter stays absent.
+    let line =
+        br#"{"cmd":"create","panel":"notes","pid":1,"app":"notes","options":{"edge":"left"}}"#;
+    let Request::Create { options, .. } = Request::parse(line).expect("an old request line parses")
+    else {
+        panic!("expected a create request");
+    };
+    assert_eq!(options.gutter_left, None);
+    assert_eq!(options.gutter_right, None);
+    assert_eq!(options.gutter_top, None);
+    assert_eq!(options.gutter_bottom, None);
+
+    // A fractional gutter is a bad value of the known command, so the daemon
+    // can name the field it refused.
+    let error = Request::parse(
+        br#"{"cmd":"create","panel":"notes","pid":1,"app":"notes","options":{"gutter_left":1.5}}"#,
+    )
+    .expect_err("a fractional gutter");
+    assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    assert!(
+        error.message().starts_with("gutter_left:"),
+        "the message names the field: {error}"
+    );
+}
+
+/// `set-gutters` carries the gutters it names and leaves the rest absent, so
+/// a client changes one gutter without sending the others (spec "Gutter
+/// request fields", D7).
+#[test]
+fn the_set_gutters_request_round_trips_its_fields() {
+    let one =
+        Request::parse(br#"{"cmd":"set-gutters","panel":"notes","left":-12}"#).expect("one gutter");
+    assert_eq!(
+        one,
+        Request::SetGutters {
+            panel: notes(),
+            change: GutterChange {
+                top: None,
+                bottom: None,
+                left: Some(-12),
+                right: None,
+            },
+        }
+    );
+    assert_eq!(
+        one.to_line(),
+        "{\"cmd\":\"set-gutters\",\"panel\":\"notes\",\"left\":-12}\n",
+        "a negative gutter is valid"
+    );
+
+    let several = Request::parse(br#"{"cmd":"set-gutters","panel":"notes","top":8,"bottom":8}"#)
+        .expect("two gutters");
+    assert_eq!(
+        several.to_line(),
+        "{\"cmd\":\"set-gutters\",\"panel\":\"notes\",\"top\":8,\"bottom\":8}\n"
+    );
+    assert_eq!(
+        Request::parse(several.to_line().as_bytes()).expect("the request round-trips"),
+        several
+    );
+
+    // A line with no gutter field is the known command's `invalid_value`: the
+    // command is known, but its value is incomplete (spec "No gutter field").
+    let error = Request::parse(br#"{"cmd":"set-gutters","panel":"notes"}"#).expect_err("no gutter");
+    assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    assert!(
+        error.message().starts_with("set-gutters:"),
+        "the message names the fields it expects: {error}"
+    );
+
+    // A fractional gutter is a bad value of the known command, so the daemon
+    // can name the field it refused (spec "Non-integer gutter").
+    let error = Request::parse(br#"{"cmd":"set-gutters","panel":"notes","top":1.5}"#)
+        .expect_err("a fractional gutter");
+    assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    assert!(
+        error.message().starts_with("top:"),
+        "the message names the field: {error}"
+    );
 }

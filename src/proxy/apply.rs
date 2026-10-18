@@ -1,7 +1,8 @@
 //! The live apply of a layout change (replace-terminal-with-app-host row 6.6,
 //! spec "Apply layout without restarting the app", "Validate a change before
-//! applying it"): `set-edge`, `set-size`, `resize`, `set-reserve` and
-//! `set-layer` change a running panel's settings and re-send to the
+//! applying it"): `set-edge`, `set-size`, `resize`, `set-gutters`,
+//! `set-reserve` and `set-layer` change a running panel's settings and
+//! re-send to the
 //! compositor what changed, on the layer surface the panel window already
 //! docks with. The app keeps its process and its window.
 //!
@@ -26,10 +27,13 @@
 //!   `set-output` and a `closed` surface still re-dock, because the output
 //!   of a live layer surface is fixed at its creation.
 //!
-//! Gutters have no command of their own (the design keeps them to the options
-//! and the config file), so they reach the apply path only inside the
-//! settings a change carries: an edge move re-reads them into the margins of
-//! the new edge, and every plan validates the geometry they take part in.
+//! `set-gutters` changes one or more of the four gutters (D7): an absent
+//! field keeps the panel's current gutter, so a client can move one gutter
+//! without naming the other three. The change has no duration of its own, so
+//! it always snaps, even when the panel has a `tween_ms`. Gutters also reach
+//! the apply path inside the settings an edge move carries, which re-reads
+//! them into the margins of the new edge, and every plan validates the
+//! geometry they take part in.
 //!
 //! The commit that applies the re-sent state is the app's own (D7): the proxy
 //! sends no separate commit on the app's surface, exactly as the crop's
@@ -44,13 +48,13 @@ use crate::cli::Amount;
 use crate::config::PanelSettings;
 use crate::daemon::events::Bus;
 use crate::daemon::panel::PanelReply;
-use crate::geometry::{Geometry, HeldGap, OutputSize, Size};
+use crate::geometry::{Geometry, HeldGap, OutputSize, ReserveMode, Size};
 use crate::ipc::{ErrorKind, ErrorReply, Request};
 use crate::name::PanelName;
 
 /// What a validated change does to the panel (row 6.6). Built only by
 /// [`plan_change`] (`port-to-rust` D6).
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct Plan {
     /// The settings the panel runs at after the change: what a status reply
     /// reports and what the next dock builds from.
@@ -71,6 +75,9 @@ struct Plan {
     /// The panel's length across the edge before the change, which an
     /// animated change starts from (D8).
     from_across: u32,
+    /// The reserve mode before the change (D5): only a panel that pushed
+    /// before the change moves its strip with the animation.
+    current_reserve: ReserveMode,
     /// The duration of an animated change that only moves the width: the
     /// request's `ms` or the panel's `tween_ms`, clamped (D8). `None` snaps.
     animate: Option<u32>,
@@ -119,6 +126,7 @@ fn is_layout_request(request: &Request) -> bool {
         Request::SetEdge { .. }
             | Request::SetSize { .. }
             | Request::Resize { .. }
+            | Request::SetGutters { .. }
             | Request::SetReserve { .. }
             | Request::SetLayer { .. }
     )
@@ -143,12 +151,18 @@ fn plan_change(
             edge: *edge,
             ..current.clone()
         },
-        Request::SetSize { size, .. } => PanelSettings {
+        Request::SetSize { size, reserve, .. } => PanelSettings {
             size: *size,
+            reserve: reserve.unwrap_or(current.reserve()),
             ..current.clone()
         },
-        Request::Resize { by, .. } => PanelSettings {
+        Request::Resize { by, reserve, .. } => PanelSettings {
             size: resize_size(current, *by, output).ok_or_else(resize_refused)?,
+            reserve: reserve.unwrap_or(current.reserve()),
+            ..current.clone()
+        },
+        Request::SetGutters { change, .. } => PanelSettings {
+            gutters: change.merge(current.gutters()),
             ..current.clone()
         },
         Request::SetReserve { reserve, .. } => PanelSettings {
@@ -186,6 +200,7 @@ fn plan_change(
         size: needs_size.then(|| geometry.size()),
         layer_changed,
         from_across: current_geometry.across(),
+        current_reserve: current.reserve(),
         animate,
         snaps,
     }))
@@ -193,7 +208,8 @@ fn plan_change(
 
 /// The duration a layout command animates over (D8): `set-size` and `resize`
 /// use their `ms` or the panel's `tween_ms`, clamped; every other command
-/// returns `None`.
+/// returns `None`, so `set-gutters` and an edge change always snap even when
+/// the panel has a `tween_ms` (D7, spec "Other fields snap").
 fn request_duration(request: &Request, panel_ms: u32) -> Option<u32> {
     let ms = match request {
         Request::SetSize { ms, .. } | Request::Resize { ms, .. } => *ms,
@@ -311,7 +327,13 @@ fn apply_plan(routing: &Rc<Routing>, plan: Plan, panel: &PanelName, bus: &Bus) {
     // D8: an animated change starts its tween instead of re-sending the
     // target size; the tween's frames re-send the layer state each frame.
     if let Some(ms) = plan.animate
-        && super::tween::start(routing, plan.from_across, plan.geometry, ms)
+        && super::tween::start(
+            routing,
+            plan.from_across,
+            plan.current_reserve,
+            plan.geometry,
+            ms,
+        )
     {
         bus.publish_geometry_changed(panel);
         return;

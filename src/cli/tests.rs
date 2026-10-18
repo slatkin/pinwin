@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::config::{FocusRing, Keyboard, Layer, Rgb};
-use crate::geometry::{Edge, ReserveMode};
+use crate::geometry::Edge;
 use std::num::NonZeroU32;
 
 fn os(raw: &[&str]) -> Vec<OsString> {
@@ -97,6 +97,88 @@ fn run_parses_its_options_and_command() {
     };
     assert_eq!(run.command(), os(&["--toggle"]));
     assert_eq!(run.name(), &name("--toggle"));
+}
+
+/// `--show-existing` asks the daemon to show a panel with the name instead
+/// of starting a new one, and it is absent by default (spec "Show an
+/// existing panel", "Run options").
+#[test]
+fn run_parses_show_existing() {
+    let Command::Run(run) = parse(&[
+        "run",
+        "--name",
+        "notes",
+        "--show-existing",
+        "--",
+        "myeditor",
+    ])
+    .expect("a valid run") else {
+        panic!("expected a run command");
+    };
+    assert!(run.show_existing());
+    assert_eq!(run.name(), &name("notes"));
+    assert_eq!(run.command(), os(&["myeditor"]));
+
+    let Command::Run(run) =
+        parse(&["run", "--name", "notes", "--", "myeditor"]).expect("a valid run")
+    else {
+        panic!("expected a run command");
+    };
+    assert!(!run.show_existing(), "the flag is absent by default");
+}
+
+/// `--gutter-*` sets a gutter of the new panel, and a value that is not a
+/// whole number is a usage error (spec "Run options", "Gutter option wins
+/// over the file").
+#[test]
+fn run_parses_the_gutter_options() {
+    let Command::Run(run) = parse(&[
+        "run",
+        "--name",
+        "notes",
+        "--gutter-left",
+        "-12",
+        "--gutter-top",
+        "8",
+        "--gutter-right",
+        "4",
+        "--gutter-bottom",
+        "-3",
+        "--",
+        "myeditor",
+    ])
+    .expect("a valid run") else {
+        panic!("expected a run command");
+    };
+    assert_eq!(run.options().gutter_left, Some(-12), "a negative gutter");
+    assert_eq!(run.options().gutter_top, Some(8));
+    assert_eq!(run.options().gutter_right, Some(4));
+    assert_eq!(run.options().gutter_bottom, Some(-3));
+
+    let Command::Run(run) =
+        parse(&["run", "--name", "notes", "--", "myeditor"]).expect("a valid run")
+    else {
+        panic!("expected a run command");
+    };
+    assert_eq!(
+        run.options().gutter_left,
+        None,
+        "an absent option leaves the value to the config file"
+    );
+
+    for option in [
+        "--gutter-left",
+        "--gutter-right",
+        "--gutter-top",
+        "--gutter-bottom",
+    ] {
+        let error = usage(&["run", option, "1.5", "--", "myeditor"]);
+        assert_eq!(
+            error.to_string(),
+            format!("pinwin: {option}: expected a whole number of pixels, got '1.5'")
+        );
+    }
+    assert_eq!(UsageError::EXIT_CODE, 2, "a bad gutter is a usage error");
 }
 
 /// An unreadable setting value is a usage error that names the option and
@@ -241,6 +323,7 @@ fn the_client_subcommands_parse_their_values() {
         Request::SetSize {
             panel: name("notes"),
             size: px(640),
+            reserve: None,
             ms: None,
         }
     );
@@ -249,25 +332,22 @@ fn the_client_subcommands_parse_their_values() {
         Request::SetSize {
             panel: name("notes"),
             size: size("30%"),
+            reserve: None,
             ms: Some(0),
         }
     );
-
-    let Request::Resize { panel, by, ms } = client(&["resize", "notes", "-40px", "--ms", "150"])
-    else {
-        panic!("expected resize");
-    };
-    assert_eq!(panel, name("notes"));
-    assert_eq!(by.size(), px(40));
-    assert!(by.shrinks());
-    assert_eq!(ms, Some(150));
-
-    let Request::Resize { by, .. } = client(&["resize", "notes", "+10%"]) else {
-        panic!("expected resize");
-    };
-    assert_eq!(by.size(), size("10%"));
-    assert!(!by.shrinks());
-
+    assert_eq!(
+        client(&["set-gutters", "notes", "--top", "8", "--bottom", "8"]),
+        Request::SetGutters {
+            panel: name("notes"),
+            change: GutterChange {
+                top: Some(8),
+                bottom: Some(8),
+                left: None,
+                right: None,
+            },
+        }
+    );
     assert_eq!(
         client(&["set-output", "notes", "DP-1"]),
         Request::SetOutput {
@@ -309,6 +389,127 @@ fn the_client_subcommands_parse_their_values() {
     assert_eq!(client(&["reload"]), Request::Reload);
 }
 
+/// `set-size` and `resize` take `--reserve push|cover` beside `--ms`, in
+/// any order, and send it with the size (spec "Size with a reserve mode").
+#[test]
+fn the_size_commands_take_a_reserve_mode() {
+    assert_eq!(
+        client(&[
+            "set-size",
+            "notes",
+            "1100px",
+            "--reserve",
+            "cover",
+            "--ms",
+            "200",
+        ]),
+        Request::SetSize {
+            panel: name("notes"),
+            size: px(1100),
+            reserve: Some(ReserveMode::Cover),
+            ms: Some(200),
+        },
+        "the reserve option rides with the size in one request"
+    );
+    assert_eq!(
+        client(&[
+            "resize",
+            "notes",
+            "-700px",
+            "--ms",
+            "200",
+            "--reserve",
+            "push",
+        ]),
+        Request::Resize {
+            panel: name("notes"),
+            by: Amount::shrink(px(700)),
+            reserve: Some(ReserveMode::Push),
+            ms: Some(200),
+        },
+        "the options are accepted in either order"
+    );
+    let Request::Resize {
+        panel,
+        by,
+        reserve,
+        ms,
+    } = client(&["resize", "notes", "-40px", "--ms", "150"])
+    else {
+        panic!("expected resize");
+    };
+    assert_eq!(panel, name("notes"));
+    assert_eq!(by.size(), px(40));
+    assert!(by.shrinks());
+    assert_eq!(reserve, None);
+    assert_eq!(ms, Some(150));
+
+    let Request::Resize { by, .. } = client(&["resize", "notes", "+10%"]) else {
+        panic!("expected resize");
+    };
+    assert_eq!(by.size(), size("10%"));
+    assert!(!by.shrinks());
+}
+
+/// `set-gutters` sends the gutters it names, each a whole number of pixels
+/// (spec "Gutter command", "No gutter option", D7).
+#[test]
+fn the_gutter_command_takes_whole_pixels() {
+    assert_eq!(
+        client(&[
+            "set-gutters",
+            "notes",
+            "--right",
+            "-4",
+            "--left",
+            "12",
+            "--right",
+            "6",
+        ]),
+        Request::SetGutters {
+            panel: name("notes"),
+            change: GutterChange {
+                top: None,
+                bottom: None,
+                left: Some(12),
+                right: Some(6),
+            },
+        },
+        "the options come in any order and a repeated one keeps its last value"
+    );
+
+    let error = usage(&["set-gutters", "notes"]);
+    assert_eq!(
+        error.to_string(),
+        "pinwin: set-gutters: expected at least one of --top, --bottom, --left or --right"
+    );
+    assert_eq!(UsageError::EXIT_CODE, 2);
+
+    let error = usage(&["set-gutters", "notes", "--top", "1.5"]);
+    assert_eq!(
+        error.to_string(),
+        "pinwin: --top: expected a whole number of pixels, got '1.5'"
+    );
+    assert_eq!(UsageError::EXIT_CODE, 2);
+
+    // A gutter option without its value, or one that is not an option, is a
+    // usage error too.
+    for raw in [
+        &["set-gutters", "notes", "--top"][..],
+        &["set-gutters", "notes", "--frobnicate", "8"][..],
+        &["set-gutters"][..],
+    ] {
+        let error = usage(raw);
+        assert!(
+            error
+                .to_string()
+                .starts_with("pinwin: set-gutters: expected <name> [--top N]"),
+            "raw = {raw:?}, error = {error}"
+        );
+        assert_eq!(UsageError::EXIT_CODE, 2, "raw = {raw:?}");
+    }
+}
+
 /// A missing, extra or unreadable client argument is a usage error that
 /// names the subcommand and exits 2 (spec "Command-line exit codes").
 #[test]
@@ -333,11 +534,15 @@ fn client_usage_errors_name_the_subcommand() {
         ),
         (
             &["set-size", "notes"][..],
-            "pinwin: set-size: expected <name> a size [--ms N]",
+            "pinwin: set-size: expected <name> a size [--reserve push|cover] [--ms N]",
         ),
         (
             &["set-size", "notes", "640px", "--ms", "wide"][..],
             "pinwin: --ms: expected a whole number of milliseconds, got 'wide'",
+        ),
+        (
+            &["set-size", "notes", "1100px", "--reserve", "middle"][..],
+            "pinwin: --reserve: expected push or cover, got 'middle'",
         ),
         (
             &["resize", "notes", "40px"][..],

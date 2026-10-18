@@ -7,6 +7,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStringExt as _;
+use std::path::Path;
 
 use super::{Exec, app_name};
 
@@ -20,33 +21,57 @@ fn the_program_and_its_arguments_are_handed_over_unchanged() {
         OsString::from("~/notes.txt"),
         raw.clone(),
     ];
-    let exec = Exec::new(&command, "wayland-1").expect("a command");
+    let exec = Exec::new(
+        &command,
+        "wayland-1",
+        "notes",
+        Path::new("/run/user/1000/pinwin/wayland-1.sock"),
+    )
+    .expect("a command");
     assert_eq!(exec.command.get_program(), OsStr::new("/usr/bin/myeditor"));
     let args: Vec<&OsStr> = exec.command.get_args().collect();
     assert_eq!(args, [OsStr::new("~/notes.txt"), raw.as_os_str()]);
 }
 
-/// The app gets the panel's `WAYLAND_DISPLAY`, and its working folder stays
-/// the caller's: only the display is set, so every other variable and the
+/// The app gets the panel's three variables, and its working folder stays
+/// the caller's: only those are set, so every other variable and the
 /// directory are inherited (spec "Run an app in a panel").
 #[test]
-fn the_panel_display_is_set_and_the_working_folder_is_kept() {
+fn the_panel_variables_are_set_and_the_working_folder_is_kept() {
     let command = [OsString::from("myeditor")];
-    let exec = Exec::new(&command, "wayland-1").expect("a command");
+    let socket = Path::new("/run/user/1000/pinwin/wayland-1.sock");
+    let exec = Exec::new(&command, "wayland-1", "notes", socket).expect("a command");
     // `None` means the command inherits the caller's working folder.
     assert_eq!(exec.command.get_current_dir(), None);
     let envs: Vec<(&OsStr, Option<&OsStr>)> = exec.command.get_envs().collect();
     assert_eq!(
-        envs,
-        [(OsStr::new("WAYLAND_DISPLAY"), Some(OsStr::new("wayland-1")))]
+        envs.len(),
+        3,
+        "only the panel's variables are set: {envs:?}"
     );
+    for (name, value) in [
+        ("WAYLAND_DISPLAY", "wayland-1"),
+        ("PINWIN_PANEL", "notes"),
+        ("PINWIN_SOCKET", "/run/user/1000/pinwin/wayland-1.sock"),
+    ] {
+        assert!(
+            envs.contains(&(OsStr::new(name), Some(OsStr::new(value)))),
+            "{name}={value} is set: {envs:?}"
+        );
+    }
 }
 
 /// A command with no program is not an exec spec, so `pinwin run` reports it
 /// as its own failure rather than replacing itself (spec "No command").
 #[test]
 fn an_empty_command_is_not_an_exec_spec() {
-    let error = Exec::new(&[], "wayland-1").expect_err("no command");
+    let error = Exec::new(
+        &[],
+        "wayland-1",
+        "notes",
+        Path::new("/run/user/1000/pinwin/wayland-1.sock"),
+    )
+    .expect_err("no command");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
 }
 

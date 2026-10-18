@@ -278,6 +278,126 @@ fn a_client_with_no_daemon_exits_1() {
     fs::remove_dir_all(&dir).expect("cleanup");
 }
 
+/// `pinwin daemon` never reads `PINWIN_SOCKET`: it binds the display's
+/// socket, not the path the variable names (spec "Client socket lookup":
+/// "Daemon ignores the variable", D1).
+#[test]
+fn the_daemon_ignores_pinwin_socket() {
+    let dir = temp_dir("daemon-socket-variable");
+    let compositor = FakeCompositor::start(&dir);
+    let ignored = dir.join("ignored.sock");
+    let child = pinwin(&dir, &["daemon"])
+        .env("PINWIN_SOCKET", &ignored)
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("start pinwin daemon");
+    let mut daemon = Daemon {
+        child,
+        path: socket_path(&dir),
+        _compositor: compositor,
+    };
+    daemon.wait_until_answering();
+    assert!(
+        !ignored.exists(),
+        "the daemon binds the display's socket, not PINWIN_SOCKET"
+    );
+    drop(daemon);
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// A client with `PINWIN_SOCKET` set talks to the daemon at that path even
+/// when `WAYLAND_DISPLAY` names another display (spec "Client socket
+/// lookup": "Variable wins over the display", D1).
+#[test]
+fn pinwin_socket_wins_over_the_display() {
+    let dir = temp_dir("socket-variable");
+    let daemon = Daemon::start(&dir);
+    let mut command = pinwin(&dir, &["status"]);
+    command
+        .env("PINWIN_SOCKET", &daemon.path)
+        .env("WAYLAND_DISPLAY", "wayland-other");
+    let output = client_output(command);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the daemon at PINWIN_SOCKET answered: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reply: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the reply is one JSON object");
+    assert_eq!(reply["ok"], true, "status, reply: {reply}");
+    assert!(
+        reply["pid"].as_u64().is_some(),
+        "the daemon at the variable's path owns the socket: {reply}"
+    );
+    drop(daemon);
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// `pinwin run` gives its app the panel's name and the absolute daemon
+/// socket path, replacing values the caller inherited (spec "Run an app in a
+/// panel": "Run an app", D2).
+#[test]
+fn a_run_sets_the_panel_and_socket_variables() {
+    let dir = temp_dir("run-environment");
+    let daemon = Daemon::start(&dir);
+    let mut command = pinwin(&dir, &["run", "--name", "notes", "--", "env"]);
+    command
+        .env("PINWIN_PANEL", "outer")
+        .env("PINWIN_SOCKET", &daemon.path);
+    let output = client_output(command);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "env ran in the panel: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let environment = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        environment.lines().any(|line| line == "PINWIN_PANEL=notes"),
+        "the app gets its own panel name: {environment}"
+    );
+    let socket = format!("PINWIN_SOCKET={}", daemon.path.display());
+    assert!(
+        environment.lines().any(|line| line == socket),
+        "the app gets the daemon's socket path: {environment}"
+    );
+    drop(daemon);
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// A `pinwin run` whose path came from `PINWIN_SOCKET`, with nothing
+/// listening there, prints a message, exits 1 and starts no daemon (spec
+/// "Run starts the daemon": "No daemon at the set socket", D3).
+#[test]
+fn a_set_socket_without_a_daemon_starts_nothing() {
+    let dir = temp_dir("socket-no-daemon");
+    let socket = socket_path(&dir);
+    let marker = dir.join("the-command-ran");
+    let mut command = pinwin(
+        &dir,
+        &[
+            "run",
+            "--name",
+            "notes",
+            "--",
+            "touch",
+            marker.to_str().expect("a UTF-8 marker path"),
+        ],
+    );
+    command.env("PINWIN_SOCKET", &socket);
+    let output = client_output(command);
+    assert_eq!(output.status.code(), Some(1), "the run failed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("PINWIN_SOCKET") && stderr.contains(&socket.display().to_string()),
+        "the message names the variable and its path: {stderr}"
+    );
+    assert!(!marker.exists(), "the command did not run");
+    assert!(!socket.exists(), "no daemon took the set socket");
+    fs::remove_dir_all(&dir).expect("cleanup");
+}
+
 /// A panel command for a name the daemon does not know prints the daemon's
 /// message and exits 1 (spec "Unknown panel").
 #[test]
@@ -373,7 +493,12 @@ impl FirstRuns {
     /// Start `pinwin run` with `name` and the harmless `sleep` app, so the
     /// panel stays until the test ends it.
     fn start(&mut self, name: &str) {
-        let child = pinwin(&self.dir, &["run", "--name", name, "--", "sleep", "30"])
+        self.start_with(&["run", "--name", name, "--", "sleep", "30"]);
+    }
+
+    /// Start `pinwin run` with the given arguments.
+    fn start_with(&mut self, args: &[&str]) {
+        let child = pinwin(&self.dir, args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -647,3 +772,6 @@ fn an_invalid_config_file_exits_2() {
     );
     fs::remove_dir_all(&dir).expect("cleanup");
 }
+
+#[path = "command_line_ipc/show_existing.rs"]
+mod show_existing;

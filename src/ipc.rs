@@ -36,12 +36,13 @@ use serde_json::Number;
 
 use crate::cli::Amount;
 use crate::config::{Keyboard, Layer, PanelOptions};
-use crate::geometry::{Edge, ReserveMode, Size};
+use crate::geometry::{Edge, GutterChange, ReserveMode, Size};
 use crate::name::PanelName;
 
 mod client;
 mod options;
 mod reply;
+mod requests;
 
 pub use client::{Answer, CallError, Subscription, call};
 pub use reply::{ErrorKind, ErrorReply, PanelEntry, PanelStatus, Reply};
@@ -62,7 +63,7 @@ pub const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 /// "Command-line client"). The drift test checks the two lists against each
 /// other in both directions.
 #[cfg(test)]
-pub const REQUEST_COMMANDS: [&str; 15] = [
+pub const REQUEST_COMMANDS: [&str; 16] = [
     "toggle",
     "show",
     "hide",
@@ -70,6 +71,7 @@ pub const REQUEST_COMMANDS: [&str; 15] = [
     "set-edge",
     "set-size",
     "resize",
+    "set-gutters",
     "set-output",
     "set-layer",
     "set-reserve",
@@ -141,20 +143,34 @@ pub enum Request {
     Focus { panel: PanelName },
     /// Dock the panel at another edge.
     SetEdge { panel: PanelName, edge: Edge },
-    /// Set the panel's size, over `ms` milliseconds or its `tween_ms`.
+    /// Set the panel's size and, when given, its reserve mode, over `ms`
+    /// milliseconds or its `tween_ms` (spec "Size and reserve in one
+    /// request").
     SetSize {
         panel: PanelName,
         size: Size,
         #[serde(skip_serializing_if = "Option::is_none")]
+        reserve: Option<ReserveMode>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         ms: Option<u32>,
     },
-    /// Change the panel's size by `by`, over `ms` milliseconds or its
-    /// `tween_ms`.
+    /// Change the panel's size by `by` and, when given, its reserve mode,
+    /// over `ms` milliseconds or its `tween_ms`.
     Resize {
         panel: PanelName,
         by: Amount,
         #[serde(skip_serializing_if = "Option::is_none")]
+        reserve: Option<ReserveMode>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         ms: Option<u32>,
+    },
+    /// Change one or more of the panel's four gutters; an absent field keeps
+    /// the panel's current gutter (spec "Set gutters", "Gutter request
+    /// fields", D7).
+    SetGutters {
+        panel: PanelName,
+        #[serde(flatten)]
+        change: GutterChange,
     },
     /// Open the panel on another output.
     SetOutput { panel: PanelName, output: String },
@@ -189,6 +205,11 @@ pub enum Request {
         app: String,
         #[serde(serialize_with = "options::serialize")]
         options: PanelOptions,
+        /// Show a panel with this name instead of starting a new one (spec
+        /// "Show an existing panel", D6). Absent on the wire means false,
+        /// so a 0.4.0 request line still parses.
+        #[serde(skip_serializing_if = "Absent::absent")]
+        show_existing: bool,
     },
     /// Receive one line for each event.
     Subscribe,
@@ -225,69 +246,96 @@ impl Request {
 
     /// Turn the checked-shape line into the typed request: the panel name
     /// and every setting value are parsed with the config file's grammar.
+    ///
+    /// Each family of commands builds its request in its own helper, so the
+    /// dispatcher only decides which family a line belongs to.
     fn from_raw(raw: RawRequest) -> Result<Self, RequestError> {
-        Ok(match raw {
-            RawRequest::Toggle { panel } => Self::Toggle {
-                panel: panel_name(&panel)?,
-            },
-            RawRequest::Show { panel } => Self::Show {
-                panel: panel_name(&panel)?,
-            },
-            RawRequest::Hide { panel } => Self::Hide {
-                panel: panel_name(&panel)?,
-            },
-            RawRequest::Focus { panel } => Self::Focus {
-                panel: panel_name(&panel)?,
-            },
-            RawRequest::SetEdge { panel, edge } => Self::SetEdge {
-                panel: panel_name(&panel)?,
-                edge: setting("edge", &edge)?,
-            },
-            RawRequest::SetSize { panel, size, ms } => Self::SetSize {
-                panel: panel_name(&panel)?,
-                size: wire_size(size)?,
-                ms: millis(ms)?,
-            },
-            RawRequest::Resize { panel, by, ms } => Self::Resize {
-                panel: panel_name(&panel)?,
-                by: amount(by)?,
-                ms: millis(ms)?,
-            },
-            RawRequest::SetOutput { panel, output } => Self::SetOutput {
-                panel: panel_name(&panel)?,
-                output,
-            },
-            RawRequest::SetLayer { panel, layer } => Self::SetLayer {
-                panel: panel_name(&panel)?,
-                layer: setting("layer", &layer)?,
-            },
-            RawRequest::SetReserve { panel, reserve } => Self::SetReserve {
-                panel: panel_name(&panel)?,
-                reserve: setting("reserve", &reserve)?,
-            },
-            RawRequest::SetKeyboard { panel, keyboard } => Self::SetKeyboard {
-                panel: panel_name(&panel)?,
-                keyboard: setting("keyboard", &keyboard)?,
-            },
-            RawRequest::Status { panel } => Self::Status {
-                panel: panel.map(|name| panel_name(&name)).transpose()?,
-            },
+        match raw {
+            RawRequest::Toggle { panel } => {
+                requests::panel_only(&panel, requests::PanelCommand::Toggle)
+            }
+            RawRequest::Show { panel } => {
+                requests::panel_only(&panel, requests::PanelCommand::Show)
+            }
+            RawRequest::Hide { panel } => {
+                requests::panel_only(&panel, requests::PanelCommand::Hide)
+            }
+            RawRequest::Focus { panel } => {
+                requests::panel_only(&panel, requests::PanelCommand::Focus)
+            }
+            RawRequest::SetEdge { panel, edge } => {
+                requests::setting_value(&panel, &edge, "edge", |panel, edge| Self::SetEdge {
+                    panel,
+                    edge,
+                })
+            }
+            RawRequest::SetSize {
+                panel,
+                size,
+                reserve,
+                ms,
+            } => requests::set_size(&panel, size, reserve.as_deref(), ms),
+            RawRequest::Resize {
+                panel,
+                by,
+                reserve,
+                ms,
+            } => requests::resize(&panel, by, reserve.as_deref(), ms),
+            RawRequest::SetGutters {
+                panel,
+                top,
+                bottom,
+                left,
+                right,
+            } => requests::gutters(
+                &panel,
+                RawGutters {
+                    top,
+                    bottom,
+                    left,
+                    right,
+                },
+            ),
+            RawRequest::SetOutput { panel, output } => requests::output(&panel, output),
+            RawRequest::SetLayer { panel, layer } => {
+                requests::setting_value(&panel, &layer, "layer", |panel, layer| Self::SetLayer {
+                    panel,
+                    layer,
+                })
+            }
+            RawRequest::SetReserve { panel, reserve } => {
+                requests::setting_value(&panel, &reserve, "reserve", |panel, reserve| {
+                    Self::SetReserve { panel, reserve }
+                })
+            }
+            RawRequest::SetKeyboard { panel, keyboard } => {
+                requests::setting_value(&panel, &keyboard, "keyboard", |panel, keyboard| {
+                    Self::SetKeyboard { panel, keyboard }
+                })
+            }
+            RawRequest::Status { panel } => requests::status(panel.as_deref()),
             RawRequest::Create {
                 panel,
                 pid,
                 app,
                 options,
-            } => Self::Create {
-                panel: panel_name(&panel)?,
-                pid,
-                app,
-                options: options::parse(options)?,
-            },
-            RawRequest::Subscribe => Self::Subscribe,
-            RawRequest::Quit => Self::Quit,
-            RawRequest::Reload => Self::Reload,
-        })
+                show_existing,
+            } => requests::create(&panel, pid, app, *options, show_existing),
+            RawRequest::Subscribe => Ok(Self::Subscribe),
+            RawRequest::Quit => Ok(Self::Quit),
+            RawRequest::Reload => Ok(Self::Reload),
+        }
     }
+}
+
+/// The four optional gutters of a `set-gutters` line as the wire carries
+/// them (D7): each is still a JSON number, so a fractional or over-`i32`
+/// value is the known command's `invalid_value` when the request is built.
+struct RawGutters {
+    top: Option<Number>,
+    bottom: Option<Number>,
+    left: Option<Number>,
+    right: Option<Number>,
 }
 
 /// A request line before its values are checked: every setting keeps the
@@ -316,13 +364,28 @@ enum RawRequest {
         panel: String,
         size: RawSize,
         #[serde(default)]
+        reserve: Option<String>,
+        #[serde(default)]
         ms: Option<Number>,
     },
     Resize {
         panel: String,
         by: RawAmount,
         #[serde(default)]
+        reserve: Option<String>,
+        #[serde(default)]
         ms: Option<Number>,
+    },
+    SetGutters {
+        panel: String,
+        #[serde(default)]
+        top: Option<Number>,
+        #[serde(default)]
+        bottom: Option<Number>,
+        #[serde(default)]
+        left: Option<Number>,
+        #[serde(default)]
+        right: Option<Number>,
     },
     SetOutput {
         panel: String,
@@ -348,8 +411,11 @@ enum RawRequest {
         panel: String,
         pid: u32,
         app: String,
+        // Boxed, so the raw enum's largest variant does not dwarf the rest.
         #[serde(default)]
-        options: options::WireOptions,
+        options: Box<options::WireOptions>,
+        #[serde(default)]
+        show_existing: bool,
     },
     Subscribe,
     Quit,
@@ -393,10 +459,60 @@ where
         .map_err(|error| RequestError::InvalidValue(format!("{field}: {error}")))
 }
 
+/// The `create` request's wire rule for a false `show_existing` flag: it is
+/// absent, so a 0.4.0 request line keeps its shape (D6). The predicate takes
+/// `&self` as serde's `skip_serializing_if` requires.
+trait Absent {
+    fn absent(&self) -> bool;
+}
+
+impl Absent for bool {
+    fn absent(&self) -> bool {
+        !*self
+    }
+}
+
+/// An optional setting: an absent field keeps the panel's value, a present
+/// one goes through the same grammar (D4).
+fn optional_setting<T>(field: &str, raw: Option<&str>) -> Result<Option<T>, RequestError>
+where
+    T: FromStr,
+    T::Err: fmt::Display,
+{
+    raw.map(|raw| setting(field, raw)).transpose()
+}
+
 /// A wire number as a whole number of its field's unit: a fractional or an
 /// over-`i64` value is none, so the field turns it into `invalid_value`.
 fn whole(number: &Number) -> Option<i64> {
     number.to_string().parse().ok()
+}
+
+/// One wire gutter: an absent field keeps the panel's current gutter, and a
+/// fractional or an over-`i32` value is the known command's `invalid_value`,
+/// not a request line the parser cannot read (spec "Gutter request fields",
+/// D7).
+fn gutter(field: &str, raw: Option<Number>) -> Result<Option<i32>, RequestError> {
+    let Some(number) = raw else {
+        return Ok(None);
+    };
+    whole(&number)
+        .and_then(|value| i32::try_from(value).ok())
+        .map(Some)
+        .ok_or_else(|| {
+            RequestError::InvalidValue(format!(
+                "{field}: expected a whole number of pixels, got {number}"
+            ))
+        })
+}
+
+/// The `set-gutters` request that names no gutter: the command is known but
+/// incomplete, so it is `invalid_value` with the fields it expects (spec
+/// "Gutter request fields", D7).
+fn no_gutter_field() -> RequestError {
+    RequestError::InvalidValue(
+        "set-gutters: expected at least one of top, bottom, left or right".to_owned(),
+    )
 }
 
 /// The value error of a `by` number the grammar cannot hold.

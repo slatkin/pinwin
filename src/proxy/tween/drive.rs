@@ -33,10 +33,10 @@ use super::super::dock;
 use super::super::routing::Routing;
 use super::super::viewport;
 use super::{
-    Fraction, Frame, GROW_HANDSHAKE_US, GrowHandshake, GrowResult, MintedSerials, Step, Tween,
-    animates, waits_for_app,
+    Continuation, Fraction, Frame, GROW_HANDSHAKE_US, GrowHandshake, GrowResult, MintedSerials,
+    Step, Tween, animates, waits_for_app,
 };
-use crate::geometry::{Geometry, HeldGap};
+use crate::geometry::{Geometry, HeldGap, ReserveMode};
 
 /// How long the panel loop sleeps between two tween frames.
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -156,23 +156,17 @@ impl Slot {
         self.driver.borrow_mut()
     }
 
-    /// The length, surface and gap a retarget continues from (D8): the
-    /// waiting handshake's or the running tween's.
-    fn running(&self) -> Option<(u32, (u32, u32), HeldGap)> {
+    /// The state a retarget continues from (D8, D5): the waiting handshake's
+    /// or the running tween's. The reserve mode is the one the change started
+    /// from, so a retarget of a covering panel keeps holding its strip.
+    fn running(&self) -> Option<Continuation> {
         if let Some(pending) = self.pending.borrow().as_ref() {
-            return Some((
-                pending.handshake.visible(),
-                pending.handshake.surface(),
-                pending.handshake.current_gap(),
-            ));
+            return Some(pending.handshake.continuation());
         }
-        self.driver.borrow().as_ref().map(|driver| {
-            (
-                driver.tween.visible(),
-                driver.tween.surface(),
-                driver.tween.current_gap(),
-            )
-        })
+        self.driver
+            .borrow()
+            .as_ref()
+            .map(|driver| driver.tween.retarget_continuation())
     }
 
     /// The gap the reserve holds once the running change ends (D8): the
@@ -232,6 +226,7 @@ pub(in crate::proxy) fn is_running(routing: &Routing) -> bool {
 pub(in crate::proxy) fn start(
     routing: &Rc<Routing>,
     from: u32,
+    current_reserve: ReserveMode,
     geometry: Geometry,
     duration_ms: u32,
 ) -> bool {
@@ -251,8 +246,11 @@ pub(in crate::proxy) fn start(
         let slot = globals.tween();
         slot.running()
     };
-    let (from, surface, resting) = if let Some((visible, surface, gap)) = running {
-        (visible, app_surface(routing).unwrap_or(surface), gap)
+    let continuation = if let Some(running) = running {
+        Continuation {
+            surface: app_surface(routing).unwrap_or(running.surface),
+            ..running
+        }
     } else {
         let surface = match app_surface(routing) {
             Some(surface) => surface,
@@ -271,24 +269,28 @@ pub(in crate::proxy) fn start(
                 }
             }
         };
-        let resting = routing
-            .held_gap()
-            .unwrap_or_else(|| HeldGap::start(geometry));
-        (from, surface, resting)
+        Continuation {
+            from,
+            surface,
+            resting_gap: routing
+                .held_gap()
+                .unwrap_or_else(|| HeldGap::start(geometry)),
+            reserve: current_reserve,
+        }
     };
     // D8: a change that grows the app configures it once to the target and
     // then waits for the configure handshake; a shrink, or a retarget inside
     // the buffer it has, configures it when the last frame arrives.
-    if waits_for_app(geometry.edge(), surface, geometry.across()) {
+    if waits_for_app(geometry.edge(), continuation.surface, geometry.across()) {
         globals.tween().set_pending(Pending {
-            handshake: GrowHandshake::new(geometry, from, surface, resting, duration_ms),
+            handshake: GrowHandshake::new(geometry, continuation, duration_ms),
             begun: Instant::now(),
         });
         let serial = globals.tween().mint();
         send_configure(routing, geometry, serial);
         return true;
     }
-    let Some(tween) = Tween::start(geometry, from, surface, resting, duration_ms) else {
+    let Some(tween) = Tween::start(geometry, continuation, duration_ms) else {
         return false;
     };
     globals.tween().set_driver(Driver {
@@ -574,140 +576,4 @@ fn micros(elapsed: Duration) -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Instant;
-
-    use super::{Driver, GrowHandshake, Pending, Slot, Tween};
-    use crate::geometry::{Edge, Geometry, Gutters, HeldGap, ReserveMode};
-
-    /// A pushing geometry of `across` pixels on `edge` with no gutters (D9).
-    fn push(edge: Edge, across: u32) -> Geometry {
-        Geometry::new(edge, across, Gutters::new(0, 0, 0, 0), ReserveMode::Push)
-    }
-
-    /// The tween an answered 200 ms grow of the panel from 400 to 600 pixels
-    /// starts (D8).
-    fn tween() -> Tween {
-        Tween::start(
-            push(Edge::Left, 600),
-            400,
-            (400, 1080),
-            HeldGap::start(push(Edge::Left, 400)),
-            200,
-        )
-        .expect("a 200 ms grow")
-    }
-
-    /// A 200 ms grow of the panel from 400 to 600 pixels still waiting for
-    /// its configure handshake (D8).
-    fn pending() -> Pending {
-        Pending {
-            handshake: GrowHandshake::new(
-                push(Edge::Left, 600),
-                400,
-                (400, 1080),
-                HeldGap::start(push(Edge::Left, 400)),
-                200,
-            ),
-            begun: Instant::now(),
-        }
-    }
-
-    /// A tween that ends naturally keeps the generation, so its final frame —
-    /// which the dirty app surface may leave in the commit coordinator — still
-    /// applies (D8, spec "Exact final width", "Animation completes").
-    #[test]
-    fn a_natural_finish_keeps_its_queued_frame() {
-        let slot = Slot::new();
-        let queued = slot.generation();
-        slot.finish();
-        assert!(
-            slot.is_current(queued),
-            "the final frame of a finished tween still applies"
-        );
-    }
-
-    /// A tween that ends naturally keeps its final minted serial: the app
-    /// acks the configure it sent after the tween drops (D8).
-    #[test]
-    fn a_natural_finish_keeps_its_minted_serial() {
-        let slot = Slot::new();
-        let minted = slot.mint();
-        slot.finish();
-        assert!(
-            slot.swallow_ack(minted),
-            "the app acks the final configure after the tween ends"
-        );
-    }
-
-    /// A panel window that ends forgets its minted serials: the app's
-    /// `xdg_surface` is gone, so no ack can still name one (D8).
-    #[test]
-    fn a_reset_forgets_the_minted_serials() {
-        let slot = Slot::new();
-        let minted = slot.mint();
-        slot.reset();
-        assert!(!slot.swallow_ack(minted), "the old xdg_surface is gone");
-    }
-
-    /// A waiting configure handshake counts as a running change, holds the
-    /// crop at the old surface, and a tween that answers it or a clear drops
-    /// the frames it queued (D8).
-    #[test]
-    fn a_pending_handshake_runs_until_its_answer() {
-        let slot = Slot::new();
-        assert!(!slot.is_running(), "a new slot runs nothing");
-        let queued = slot.generation();
-        slot.set_pending(pending());
-        assert!(slot.is_running(), "a waiting handshake runs");
-        assert_eq!(
-            slot.running().map(|(from, surface, _)| (from, surface)),
-            Some((400, (400, 1080))),
-            "the handshake holds the old length and surface"
-        );
-        assert_eq!(
-            slot.final_gap(),
-            Some(HeldGap::start(push(Edge::Left, 400)).after_publish(push(Edge::Left, 600))),
-            "the handshake ends on the target's strip"
-        );
-        slot.set_driver(Driver {
-            tween: tween(),
-            begun: Instant::now(),
-        });
-        assert!(
-            !slot.is_current(queued),
-            "the answered grow drops the handshake's frames"
-        );
-        assert!(slot.is_running(), "the answered tween runs");
-
-        let abandoned = Slot::new();
-        abandoned.set_pending(pending());
-        abandoned.clear();
-        assert!(
-            !abandoned.is_running(),
-            "a clear drops the waiting handshake"
-        );
-    }
-
-    /// A frame queued by a tween is stale once a new tween takes the slot or a
-    /// clear abandons it, which is what a hide, a snap, a re-apply and a
-    /// re-dock do (D8, spec "Snap interrupts").
-    #[test]
-    fn a_new_tween_and_a_clear_drop_queued_frames() {
-        let renamed = Slot::new();
-        let queued = renamed.generation();
-        renamed.set_driver(Driver {
-            tween: tween(),
-            begun: Instant::now(),
-        });
-        assert!(!renamed.is_current(queued), "a new tween drops old frames");
-
-        let superseded = Slot::new();
-        let queued = superseded.generation();
-        superseded.clear();
-        assert!(
-            !superseded.is_current(queued),
-            "a snap or re-dock drops queued frames"
-        );
-    }
-}
+mod tests;

@@ -9,15 +9,14 @@
 //! serialization here is the one place a value gets its wire text, so the
 //! options and the panel commands cannot drift apart.
 
-use std::fmt;
-use std::str::FromStr;
-
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
+use serde_json::Number;
 
-use super::{RequestError, setting};
+use super::{RequestError, gutter, optional_setting};
 use crate::cli::Amount;
 use crate::config::{FocusRing, Keyboard, Layer, PanelOptions};
-use crate::geometry::{Edge, ReserveMode, Size};
+use crate::geometry::{Edge, GutterChange, ReserveMode, Size};
 use crate::name::PanelName;
 
 /// The run options on the wire (spec "Run options", D2, D13): the same text
@@ -44,6 +43,14 @@ pub(super) struct WireOptions {
     hidden: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus_ring: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gutter_left: Option<Number>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gutter_right: Option<Number>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gutter_top: Option<Number>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gutter_bottom: Option<Number>,
 }
 
 /// The run options as the wire carries them, each value in its setting
@@ -58,6 +65,10 @@ fn wire_options(options: &PanelOptions) -> WireOptions {
         output: options.output.clone(),
         hidden: options.hidden,
         focus_ring: options.focus_ring.map(focus_ring_text),
+        gutter_left: options.gutter_left.map(Number::from),
+        gutter_right: options.gutter_right.map(Number::from),
+        gutter_top: options.gutter_top.map(Number::from),
+        gutter_bottom: options.gutter_bottom.map(Number::from),
     }
 }
 
@@ -74,25 +85,20 @@ pub(super) fn serialize<S: Serializer>(
 /// command.
 pub(super) fn parse(raw: WireOptions) -> Result<PanelOptions, RequestError> {
     Ok(PanelOptions {
-        edge: option_setting("edge", raw.edge.as_deref())?,
-        size: option_setting("size", raw.size.as_deref())?,
-        reserve: option_setting("reserve", raw.reserve.as_deref())?,
-        layer: option_setting("layer", raw.layer.as_deref())?,
-        keyboard: option_setting("keyboard", raw.keyboard.as_deref())?,
+        edge: optional_setting("edge", raw.edge.as_deref())?,
+        size: optional_setting("size", raw.size.as_deref())?,
+        reserve: optional_setting("reserve", raw.reserve.as_deref())?,
+        layer: optional_setting("layer", raw.layer.as_deref())?,
+        keyboard: optional_setting("keyboard", raw.keyboard.as_deref())?,
         output: raw.output,
         hidden: raw.hidden,
-        focus_ring: option_setting("focus_ring", raw.focus_ring.as_deref())?,
+        focus_ring: optional_setting("focus_ring", raw.focus_ring.as_deref())?,
+        gutter_left: gutter("gutter_left", raw.gutter_left)?,
+        gutter_right: gutter("gutter_right", raw.gutter_right)?,
+        gutter_top: gutter("gutter_top", raw.gutter_top)?,
+        gutter_bottom: gutter("gutter_bottom", raw.gutter_bottom)?,
         ..PanelOptions::default()
     })
-}
-
-/// An optional setting, absent when its field is absent.
-fn option_setting<T>(field: &str, raw: Option<&str>) -> Result<Option<T>, RequestError>
-where
-    T: FromStr,
-    T::Err: fmt::Display,
-{
-    raw.map(|text| setting(field, text)).transpose()
 }
 
 /// The wire text of a size: `640px` or `30%`.
@@ -132,6 +138,25 @@ fn focus_ring_text(ring: FocusRing) -> String {
             let [red, green, blue] = color.channels();
             format!("#{red:02x}{green:02x}{blue:02x}:{}", width.get())
         }
+    }
+}
+
+impl Serialize for GutterChange {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(top) = self.top {
+            map.serialize_entry("top", &top)?;
+        }
+        if let Some(bottom) = self.bottom {
+            map.serialize_entry("bottom", &bottom)?;
+        }
+        if let Some(left) = self.left {
+            map.serialize_entry("left", &left)?;
+        }
+        if let Some(right) = self.right {
+            map.serialize_entry("right", &right)?;
+        }
+        map.end()
     }
 }
 

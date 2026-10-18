@@ -33,17 +33,31 @@ pinwin <command> [args...]                    # send one request to the daemon
 
 `pinwin run` asks the daemon for a new panel and starts one in the background
 when none answers for the display. It sets `WAYLAND_DISPLAY` to the new
-panel's display and replaces itself with the command, so the app keeps its
-process ID, working folder and environment. A command that cannot run exits
-127; a missing daemon or a daemon error exits 1; a bad command line exits 2.
+panel's display, `PINWIN_PANEL` to the panel's name and `PINWIN_SOCKET` to
+the absolute path of the daemon's socket, then replaces itself with the
+command, so the app keeps its process ID, working folder and every other
+environment variable. These three values replace values the caller
+inherited. A command that cannot run exits 127; a missing daemon or a daemon
+error exits 1; a bad command line exits 2. When `PINWIN_SOCKET` names the
+socket and no daemon answers there, `pinwin run` prints a message and exits
+1 without starting a daemon.
+
+With `--show-existing`, a panel that already has the name shows as `pinwin
+show` would show it, the other run options do not change it, and `pinwin run`
+exits 0 without running the command. The daemon decides, so two such launches
+at the same time give one panel. Without the flag, a used name is a usage
+error that exits 2.
 
 `pinwin daemon` binds the display's socket and runs in the foreground until a
 `quit` request, SIGINT or SIGTERM ends it. The daemon reads the config file
 and requires a compositor with wlr-layer-shell before it creates anything.
 
 pinwin reads `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `XDG_CONFIG_HOME` and
-`HOME` for its socket and config file; it reads no `PINWIN_*` variable. The
-app keeps every other variable unchanged.
+`HOME` for its socket and config file. A client uses `PINWIN_SOCKET` as the
+daemon socket path when the variable is set and not empty; a relative path is
+an error. `pinwin daemon` never reads `PINWIN_SOCKET`. `PINWIN_PANEL` is set
+for an app and is not read by pinwin. The app keeps every other variable
+unchanged.
 
 ## Commands
 
@@ -62,8 +76,9 @@ foreground. The other subcommands send one request to the daemon and exit:
 | `hide` | Hide a shown panel. |
 | `focus` | Show a hidden panel and give it the keyboard. |
 | `set-edge` | Move a panel to another edge. |
-| `set-size` | Set a panel's size, optionally with `--ms <N>`. |
-| `resize` | Change a panel's size by a signed amount, optionally with `--ms <N>`. |
+| `set-size` | Set a panel's size, optionally with `--reserve push\|cover` and `--ms <N>`. |
+| `resize` | Change a panel's size by a signed amount, optionally with `--reserve push\|cover` and `--ms <N>`. |
+| `set-gutters` | Change one or more of a panel's gutters with `--top`, `--bottom`, `--left` and `--right`, each a whole number of pixels. |
 | `set-output` | Move a panel to another output. |
 | `set-layer` | Change the layer-shell layer of a panel. |
 | `set-reserve` | Change whether a panel pushes or covers tiled windows. |
@@ -119,6 +134,11 @@ panel name is `--name`, else the file name of the command.
 | `--output` | an output name | the compositor chooses | The output the panel opens on. |
 | `--hidden` | none (a flag) | shown | Start hidden. |
 | `--focus-ring` | `off`, `#RRGGBB` or `#RRGGBB:<width>` | `#dabc7f`, 1 pixel | The ring the panel draws while it has the keyboard; `<width>` is in pixels and at least 1. |
+| `--gutter-left` | a whole number of pixels, possibly negative | `0` | Pixels between the panel and the output's left edge. |
+| `--gutter-right` | a whole number of pixels, possibly negative | `0` | Pixels between the panel and the output's right edge. |
+| `--gutter-top` | a whole number of pixels, possibly negative | `0` | Pixels between the panel and the output's top edge. |
+| `--gutter-bottom` | a whole number of pixels, possibly negative | `0` | Pixels between the panel and the output's bottom edge. |
+| `--show-existing` | none (a flag) | off | Show a panel that already has the name, without running the command; start a new panel when the name is free. |
 
 The options win over the config file for the values they set: the option wins
 over `[panel.<name>]`, which wins over `[panel.defaults]`, which wins over the

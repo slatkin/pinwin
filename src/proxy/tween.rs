@@ -44,7 +44,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
 use super::anim::{Advance, Tween as Anim};
-use crate::geometry::{Edge, Geometry, HeldGap, Margins};
+use crate::geometry::{Edge, Geometry, HeldGap, Margins, ReserveMode};
 
 use super::compose::Fraction;
 
@@ -118,6 +118,24 @@ pub(super) enum GrowResult {
     Unanswered,
 }
 
+/// The state a change continues from (D8, D5): the length the panel shows,
+/// the app surface the crop reads, the gap the panel holds and the reserve
+/// mode the change started from. A retarget takes all four from the running
+/// change and a fresh change takes them from its plan, so they travel as one
+/// value: a path that misses one of them cannot compile.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Continuation {
+    /// The length across the edge the panel shows now.
+    pub(super) from: u32,
+    /// The app surface's extent the crop reads, width first (D8).
+    pub(super) surface: (u32, u32),
+    /// The gap the panel held before the change.
+    pub(super) resting_gap: HeldGap,
+    /// The reserve mode before the change (D5): only a panel that pushed
+    /// before the change moves its strip with the animation.
+    pub(super) reserve: ReserveMode,
+}
+
 /// The configure handshake of a grow (D8): the proxy configured the app once
 /// to the target and holds the panel's current length until the app commits
 /// a buffer that reports that size. The handshake owns the bound; the tween
@@ -126,31 +144,26 @@ pub(super) enum GrowResult {
 pub(super) struct GrowHandshake {
     /// The target geometry the frames resolve against.
     geometry: Geometry,
-    /// The length the panel shows while the handshake waits.
-    from: u32,
-    /// The app surface's extent the crop reads while the handshake waits.
-    surface: (u32, u32),
-    /// The gap the panel held before the change.
-    resting_gap: HeldGap,
+    /// The length the panel shows, the surface the crop reads, the gap it
+    /// holds and the reserve mode it started from.
+    continuation: Continuation,
     /// The duration the answered grow animates over.
     duration_ms: u32,
 }
 
 impl GrowHandshake {
-    /// The handshake of a grow from `from` to `geometry.across()` (D8), with
-    /// the app surface the crop reads until the answer arrives.
+    /// The handshake of a grow from the length `continuation` names to
+    /// `geometry.across()` (D8), with the app surface the crop reads until
+    /// the answer arrives.
     pub(super) fn new(
         geometry: Geometry,
-        from: u32,
-        surface: (u32, u32),
-        resting_gap: HeldGap,
+        mut continuation: Continuation,
         duration_ms: u32,
     ) -> Self {
+        continuation.surface = (continuation.surface.0.max(1), continuation.surface.1.max(1));
         Self {
             geometry,
-            from,
-            surface: (surface.0.max(1), surface.1.max(1)),
-            resting_gap,
+            continuation,
             duration_ms,
         }
     }
@@ -160,36 +173,33 @@ impl GrowHandshake {
         self.geometry
     }
 
-    /// The length the panel shows while the handshake waits (D8).
-    pub(super) const fn visible(self) -> u32 {
-        self.from
+    /// The state the change continues from (D8, D5): a retarget takes all of
+    /// it from the running change.
+    pub(super) const fn continuation(self) -> Continuation {
+        self.continuation
     }
 
     /// The app surface's extent the crop reads while the handshake waits
     /// (D8).
     pub(super) const fn surface(self) -> (u32, u32) {
-        self.surface
-    }
-
-    /// The gap the panel holds while the handshake waits (D8).
-    pub(super) const fn current_gap(self) -> HeldGap {
-        self.resting_gap
+        self.continuation.surface
     }
 
     /// The visible fraction of the app surface the crop shows while the
     /// handshake waits (D8): the panel's current length over the surface's
     /// length across the edge.
     pub(super) fn fraction(self) -> Fraction {
-        Fraction::of(self.from, across(self.geometry.edge(), self.surface))
-            .unwrap_or_else(Fraction::whole)
+        Fraction::of(
+            self.continuation.from,
+            across(self.geometry.edge(), self.continuation.surface),
+        )
+        .unwrap_or_else(Fraction::whole)
     }
 
-    /// The gap the reserve holds once the grow ends (D8): a pushing target's
+    /// The gap the reserve holds once the grow ends (D5): a pushing target's
     /// own strip at the target length, a covering target's resting gap.
     pub(super) fn final_gap(self) -> HeldGap {
-        let to = self.geometry.across();
-        let tweens = HeldGap::tweens_with_panel(self.resting_gap.zone(), true, self.geometry, to);
-        self.resting_gap.reserve(tweens, self.geometry, to)
+        final_gap(self.continuation.resting_gap, self.geometry)
     }
 
     /// The handshake's answer to the app's commit (D8 finding 4): `Answered`
@@ -201,7 +211,7 @@ impl GrowHandshake {
             return None;
         }
         let reported = reported.max(1);
-        let mut surface = self.surface;
+        let mut surface = self.continuation.surface;
         if self.geometry.edge().across_is_width() {
             surface.0 = reported;
         } else {
@@ -222,9 +232,10 @@ impl GrowHandshake {
     pub(super) fn start(self, surface: (u32, u32)) -> Option<Tween> {
         Tween::start(
             self.geometry,
-            self.from,
-            surface,
-            self.resting_gap,
+            Continuation {
+                surface,
+                ..self.continuation
+            },
             self.duration_ms,
         )
     }
@@ -238,8 +249,11 @@ impl GrowHandshake {
             layer: self.geometry.size_at(visible),
             margins: self.geometry.margins(),
             gap: self.final_gap(),
-            fraction: Fraction::of(visible, across(self.geometry.edge(), self.surface))
-                .unwrap_or_else(Fraction::whole),
+            fraction: Fraction::of(
+                visible,
+                across(self.geometry.edge(), self.continuation.surface),
+            )
+            .unwrap_or_else(Fraction::whole),
         }
     }
 }
@@ -402,20 +416,18 @@ pub(super) struct Tween {
     /// The target geometry: the edge, the target across and the gutters the
     /// frames resolve their margins and strip against.
     geometry: Geometry,
-    from: u32,
     to: u32,
-    /// The app surface's extent the visible fraction is taken over (D8):
-    /// the window geometry the app reports, its own viewport destination, or
-    /// the size the panel configures. Width first, height second — the
-    /// surface-local order the proxy's window geometry, viewport destination
-    /// and panel size all carry; [`Tween::across`] picks the axis by the
-    /// edge, so a top or bottom panel crops against the height.
-    surface: (u32, u32),
+    /// The length the tween started from, the app surface the visible
+    /// fraction is taken over, the gap the panel held and the reserve mode
+    /// the change started from. The surface is the window geometry the app
+    /// reports, its own viewport destination, or the size the panel
+    /// configures; width first, height second — the surface-local order the
+    /// proxy's window geometry, viewport destination and panel size all
+    /// carry, so [`Tween::across`] picks the axis by the edge and a top or
+    /// bottom panel crops against the height.
+    continuation: Continuation,
     phase: Phase,
     anim: Anim,
-    /// The gap the panel held before the change: a covering target keeps it
-    /// and a pushing one moves it.
-    resting_gap: HeldGap,
     /// Whether the gap moves with the panel (D9): only a pushing target whose
     /// strip differs from the resting strip.
     gap_tweening: bool,
@@ -423,9 +435,11 @@ pub(super) struct Tween {
 }
 
 impl Tween {
-    /// The tween of a change from `from` to `geometry.across()` over
-    /// `duration_ms`. `surface` is the app's current extent in surface-local
-    /// pixels, width first, the source of the visible fraction's denominator.
+    /// The tween of a change from the length `continuation` names to
+    /// `geometry.across()` over `duration_ms`. The continuation carries the
+    /// app's current extent in surface-local pixels, width first, the source
+    /// of the visible fraction's denominator, and the panel's mode before the
+    /// change, which decides whether the strip moves with the frames (D5).
     /// `None` for a change with no distance, no duration or a size the
     /// easing's integer step cannot carry.
     ///
@@ -433,15 +447,15 @@ impl Tween {
     /// ([`GrowHandshake::start`]); a shrink starts moving at once.
     pub(super) fn start(
         geometry: Geometry,
-        from: u32,
-        surface: (u32, u32),
-        resting_gap: HeldGap,
+        mut continuation: Continuation,
         duration_ms: u32,
     ) -> Option<Self> {
+        let from = continuation.from;
         let to = geometry.across();
         if from == to || duration_ms == 0 {
             return None;
         }
+        continuation.surface = (continuation.surface.0.max(1), continuation.surface.1.max(1));
         let mut anim = Anim::begin(
             i32::try_from(from).ok()?,
             i32::try_from(to).ok()?,
@@ -453,13 +467,17 @@ impl Tween {
         anim.advance(0);
         Some(Self {
             geometry,
-            from,
             to,
-            surface: (surface.0.max(1), surface.1.max(1)),
+            gap_tweening: HeldGap::tweens_with_panel(
+                continuation.resting_gap.zone(),
+                continuation.reserve,
+                true,
+                geometry,
+                to,
+            ),
+            continuation,
             phase: Phase::Running,
             anim,
-            resting_gap,
-            gap_tweening: HeldGap::tweens_with_panel(resting_gap.zone(), true, geometry, to),
             visible: from,
         })
     }
@@ -494,10 +512,23 @@ impl Tween {
         self.visible
     }
 
+    /// The state a retarget continues from (D8, D5): the length the panel
+    /// shows now and the gap it holds now, on the surface it crops, with the
+    /// reserve mode the change started from. A running strip tween therefore
+    /// hands the retarget the strip it applied, not the one it started from.
+    pub(super) fn retarget_continuation(self) -> Continuation {
+        Continuation {
+            from: self.visible(),
+            resting_gap: self.current_gap(),
+            ..self.continuation
+        }
+    }
+
     /// The gap the panel holds now (D8): what a retarget to a covering target
     /// keeps still.
     pub(super) fn current_gap(self) -> HeldGap {
-        self.resting_gap
+        self.continuation
+            .resting_gap
             .reserve(self.gap_tweening, self.geometry, self.visible)
     }
 
@@ -511,12 +542,12 @@ impl Tween {
     /// The app surface's extent the composition crops (D8), while no window
     /// geometry reports a fresh one.
     pub(super) const fn surface(self) -> (u32, u32) {
-        self.surface
+        self.continuation.surface
     }
 
     /// The app surface's length across the tween axis (D8).
     fn across(self) -> u32 {
-        across(self.geometry.edge(), self.surface)
+        across(self.geometry.edge(), self.continuation.surface)
     }
 
     /// The visible fraction of the app surface the viewport composition
@@ -526,11 +557,10 @@ impl Tween {
         Fraction::of(self.visible, self.across()).unwrap_or_else(Fraction::whole)
     }
 
-    /// The gap the reserve holds once the tween ends: a pushing target's own
-    /// strip at the target length, a covering target's resting gap.
+    /// The gap the reserve holds once the tween ends (D5): a pushing target's
+    /// own strip at the target length, a covering target's resting gap.
     pub(super) fn final_gap(self) -> HeldGap {
-        self.resting_gap
-            .reserve(self.gap_tweening, self.geometry, self.to)
+        final_gap(self.continuation.resting_gap, self.geometry)
     }
 
     /// One step at `elapsed_us` microseconds after the tween began (D8).
@@ -542,10 +572,10 @@ impl Tween {
         match self.phase {
             Phase::Running => match self.anim.advance(elapsed_us) {
                 Advance::Frame(px) => {
-                    self.visible = px
-                        .max(0)
-                        .unsigned_abs()
-                        .clamp(self.from.min(self.to), self.from.max(self.to));
+                    self.visible = px.max(0).unsigned_abs().clamp(
+                        self.continuation.from.min(self.to),
+                        self.continuation.from.max(self.to),
+                    );
                     Step::Frame(self.frame())
                 }
                 Advance::Finished => {
@@ -558,18 +588,32 @@ impl Tween {
         }
     }
 
-    /// This frame's values (D8).
+    /// This frame's values (D8). The last frame carries the end gap, which
+    /// the target mode decides (D5): a collapse to a pushing width sets the
+    /// strip on that frame even though the frames before it held it.
     fn frame(self) -> Frame {
+        let gap = if matches!(self.phase, Phase::Finished) {
+            self.final_gap()
+        } else {
+            self.continuation
+                .resting_gap
+                .reserve(self.gap_tweening, self.geometry, self.visible)
+        };
         Frame {
             visible: self.visible,
             layer: self.geometry.size_at(self.visible),
             margins: self.geometry.margins(),
-            gap: self
-                .resting_gap
-                .reserve(self.gap_tweening, self.geometry, self.visible),
+            gap,
             fraction: self.fraction(),
         }
     }
+}
+
+/// The gap a change leaves at its target (D5): a pushing target lands on its
+/// own strip, so a collapse from a covering panel still moves the strip once
+/// the animation ends; a covering target holds the resting gap.
+fn final_gap(resting_gap: HeldGap, geometry: Geometry) -> HeldGap {
+    resting_gap.reserve(true, geometry, geometry.across())
 }
 
 #[cfg(test)]

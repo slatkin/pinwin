@@ -19,7 +19,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::str::FromStr;
 
 use crate::config::{InvalidValue, PanelOptions, parse_digits};
-use crate::geometry::Size;
+use crate::geometry::{GutterChange, ReserveMode, Size};
 use crate::ipc::Request;
 use crate::name::PanelName;
 
@@ -27,7 +27,7 @@ use crate::name::PanelName;
 /// "Command-line client"). The README's command table is checked against
 /// this list in both directions, as the configuration keys are.
 #[cfg(test)]
-pub const SUBCOMMANDS: [&str; 17] = [
+pub const SUBCOMMANDS: [&str; 18] = [
     "run",
     "daemon",
     "toggle",
@@ -37,6 +37,7 @@ pub const SUBCOMMANDS: [&str; 17] = [
     "set-edge",
     "set-size",
     "resize",
+    "set-gutters",
     "set-output",
     "set-layer",
     "set-reserve",
@@ -70,6 +71,7 @@ pub enum Command {
 pub struct Run {
     name: PanelName,
     options: PanelOptions,
+    show_existing: bool,
     command: Vec<OsString>,
 }
 
@@ -86,6 +88,14 @@ impl Run {
     #[must_use]
     pub const fn options(&self) -> &PanelOptions {
         &self.options
+    }
+
+    /// Whether `--show-existing` asks the daemon to show a panel with this
+    /// name instead of starting a new one (spec "Show an existing panel",
+    /// D6).
+    #[must_use]
+    pub const fn show_existing(&self) -> bool {
+        self.show_existing
     }
 
     /// The command and its arguments, never empty (spec "No command").
@@ -216,7 +226,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Command, UsageError> {
 /// Parse the `run` options and the command after the first non-option or
 /// `--` (spec "Run options").
 fn parse_run(args: &[OsString]) -> Result<Command, UsageError> {
-    let (name, options, command) = run_arguments(args)?;
+    let (name, options, show_existing, command) = run_arguments(args)?;
     let Some(first) = command.first() else {
         return Err(UsageError::new(
             "run: no command; pass -- <command> [args...]",
@@ -231,6 +241,7 @@ fn parse_run(args: &[OsString]) -> Result<Command, UsageError> {
     Ok(Command::Run(Run {
         name,
         options,
+        show_existing,
         command,
     }))
 }
@@ -240,22 +251,30 @@ fn parse_run(args: &[OsString]) -> Result<Command, UsageError> {
 /// after `--` (spec "Run options").
 fn run_arguments(
     args: &[OsString],
-) -> Result<(Option<PanelName>, PanelOptions, Vec<OsString>), UsageError> {
+) -> Result<(Option<PanelName>, PanelOptions, bool, Vec<OsString>), UsageError> {
     let mut name = None;
     let mut options = PanelOptions::default();
+    let mut show_existing = false;
     let mut index = 0;
     while let Some(argument) = args.get(index) {
         let bytes = argument.as_os_str().as_bytes();
         if bytes == b"--" {
-            return Ok((name, options, args[index + 1..].to_vec()));
+            return Ok((name, options, show_existing, args[index + 1..].to_vec()));
         }
         if !bytes.starts_with(b"--") {
-            return Ok((name, options, args[index..].to_vec()));
+            return Ok((name, options, show_existing, args[index..].to_vec()));
         }
-        run_option(args, &mut index, argument, &mut name, &mut options)?;
+        run_option(
+            args,
+            &mut index,
+            argument,
+            &mut name,
+            &mut options,
+            &mut show_existing,
+        )?;
         index += 1;
     }
-    Ok((name, options, Vec::new()))
+    Ok((name, options, show_existing, Vec::new()))
 }
 
 /// One `--option` of `run`, whose value is the next argument; it changes
@@ -266,6 +285,7 @@ fn run_option(
     argument: &OsStr,
     name: &mut Option<PanelName>,
     options: &mut PanelOptions,
+    show_existing: &mut bool,
 ) -> Result<(), UsageError> {
     let option = text("option", argument)?;
     match option {
@@ -278,15 +298,34 @@ fn run_option(
             options.output = Some(text(option, raw)?.to_owned());
         }
         "--hidden" => options.hidden = Some(true),
-        "--edge" => setting_option(args, index, option, &mut options.edge)?,
-        "--size" => setting_option(args, index, option, &mut options.size)?,
-        "--reserve" => setting_option(args, index, option, &mut options.reserve)?,
-        "--layer" => setting_option(args, index, option, &mut options.layer)?,
-        "--keyboard" => setting_option(args, index, option, &mut options.keyboard)?,
-        "--focus-ring" => setting_option(args, index, option, &mut options.focus_ring)?,
-        other => return Err(UsageError::new(format!("unknown option '{other}'"))),
+        "--show-existing" => *show_existing = true,
+        setting => return setting_run_option(args, index, setting, options),
     }
     Ok(())
+}
+
+/// A `run` option that sets one setting of the new panel (spec "Run
+/// options"): a value that parses with the config file's grammar, or one of
+/// the four gutters as a whole number of pixels (D7).
+fn setting_run_option(
+    args: &[OsString],
+    index: &mut usize,
+    option: &str,
+    options: &mut PanelOptions,
+) -> Result<(), UsageError> {
+    match option {
+        "--edge" => setting_option(args, index, option, &mut options.edge),
+        "--size" => setting_option(args, index, option, &mut options.size),
+        "--reserve" => setting_option(args, index, option, &mut options.reserve),
+        "--layer" => setting_option(args, index, option, &mut options.layer),
+        "--keyboard" => setting_option(args, index, option, &mut options.keyboard),
+        "--focus-ring" => setting_option(args, index, option, &mut options.focus_ring),
+        "--gutter-top" => gutter_option(args, index, option, &mut options.gutter_top),
+        "--gutter-bottom" => gutter_option(args, index, option, &mut options.gutter_bottom),
+        "--gutter-left" => gutter_option(args, index, option, &mut options.gutter_left),
+        "--gutter-right" => gutter_option(args, index, option, &mut options.gutter_right),
+        other => Err(UsageError::new(format!("unknown option '{other}'"))),
+    }
 }
 
 /// A `run` option whose value parses with the config file's grammar.
@@ -305,6 +344,31 @@ where
     Ok(())
 }
 
+/// A `run` gutter option: a whole number of logical pixels, which may be
+/// negative (spec "Run options", D7).
+fn gutter_option(
+    args: &[OsString],
+    index: &mut usize,
+    option: &str,
+    slot: &mut Option<i32>,
+) -> Result<(), UsageError> {
+    let raw = next_value(args, index, option)?;
+    *slot = Some(gutter(option, raw)?);
+    Ok(())
+}
+
+/// A gutter value: a whole number of logical pixels, which may be negative
+/// (spec "Run options", "Gutter request fields"). A fractional value is a
+/// usage error, so a bad gutter never reaches the daemon.
+fn gutter(context: &str, raw: &OsStr) -> Result<i32, UsageError> {
+    let raw = text(context, raw)?;
+    raw.parse::<i32>().map_err(|_error| {
+        UsageError::new(format!(
+            "{context}: expected a whole number of pixels, got '{raw}'"
+        ))
+    })
+}
+
 /// The command one client subcommand asks for; each helper owns its own
 /// arguments and its own usage message.
 fn client_command(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
@@ -313,11 +377,25 @@ fn client_command(subcommand: &str, args: &[OsString]) -> Result<Request, UsageE
         "show" => panel_command(|panel| Request::Show { panel }, subcommand, args),
         "hide" => panel_command(|panel| Request::Hide { panel }, subcommand, args),
         "focus" => panel_command(|panel| Request::Focus { panel }, subcommand, args),
+        "status" => status_command(subcommand, args),
+        "subscribe" => no_arg_command(Request::Subscribe, subcommand, args),
+        "quit" => no_arg_command(Request::Quit, subcommand, args),
+        "reload" => no_arg_command(Request::Reload, subcommand, args),
+        value => value_command(value, args),
+    }
+}
+
+/// A client command that reads a value from its arguments (`set-edge`,
+/// `set-size`, `resize`, `set-gutters`, `set-output`, `set-layer`,
+/// `set-reserve` and `set-keyboard`).
+fn value_command(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
+    match subcommand {
         "set-edge" => setting_command(subcommand, args, "an edge", |panel, edge| {
             Request::SetEdge { panel, edge }
         }),
         "set-size" => set_size(subcommand, args),
         "resize" => resize(subcommand, args),
+        "set-gutters" => set_gutters(subcommand, args),
         "set-output" => set_output(subcommand, args),
         "set-layer" => setting_command(subcommand, args, "a layer", |panel, layer| {
             Request::SetLayer { panel, layer }
@@ -330,10 +408,6 @@ fn client_command(subcommand: &str, args: &[OsString]) -> Result<Request, UsageE
                 Request::SetKeyboard { panel, keyboard }
             })
         }
-        "status" => status_command(subcommand, args),
-        "subscribe" => no_arg_command(Request::Subscribe, subcommand, args),
-        "quit" => no_arg_command(Request::Quit, subcommand, args),
-        "reload" => no_arg_command(Request::Reload, subcommand, args),
         other => Err(unknown_command(other)),
     }
 }
@@ -373,24 +447,58 @@ where
     Ok(build(panel, setting(subcommand, raw)?))
 }
 
-/// `set-size <name> <size> [--ms N]`.
+/// `set-size <name> <size> [--reserve push|cover] [--ms N]`.
 fn set_size(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
-    let (panel, raw, ms) = panel_value_ms(subcommand, args, "a size")?;
+    let (panel, raw, reserve, ms) = panel_value_options(subcommand, args, "a size")?;
     Ok(Request::SetSize {
         panel,
         size: setting(subcommand, &raw)?,
+        reserve,
         ms,
     })
 }
 
-/// `resize <name> <amount> [--ms N]`.
+/// `resize <name> <amount> [--reserve push|cover] [--ms N]`.
 fn resize(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
-    let (panel, raw, ms) = panel_value_ms(subcommand, args, "an amount")?;
+    let (panel, raw, reserve, ms) = panel_value_options(subcommand, args, "an amount")?;
     Ok(Request::Resize {
         panel,
         by: setting(subcommand, &raw)?,
+        reserve,
         ms,
     })
+}
+
+/// `set-gutters <name> [--top N] [--bottom N] [--left N] [--right N]`
+/// (spec "Gutter command", D7): at least one gutter, each a whole number of
+/// pixels, the options in any order after the name, and a repeated option
+/// keeps its last value.
+fn set_gutters(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
+    let expected = || {
+        UsageError::new(format!(
+            "{subcommand}: expected <name> [--top N] [--bottom N] [--left N] [--right N]"
+        ))
+    };
+    let (raw_panel, mut rest) = args.split_first().ok_or_else(expected)?;
+    let panel = panel(subcommand, raw_panel)?;
+    let mut change = GutterChange::default();
+    while let Some((option, tail)) = rest.split_first() {
+        let (raw, next) = tail.split_first().ok_or_else(expected)?;
+        match text("option", option)? {
+            "--top" => change.top = Some(gutter("--top", raw)?),
+            "--bottom" => change.bottom = Some(gutter("--bottom", raw)?),
+            "--left" => change.left = Some(gutter("--left", raw)?),
+            "--right" => change.right = Some(gutter("--right", raw)?),
+            _ => return Err(expected()),
+        }
+        rest = next;
+    }
+    if change.is_empty() {
+        return Err(UsageError::new(format!(
+            "{subcommand}: expected at least one of --top, --bottom, --left or --right"
+        )));
+    }
+    Ok(Request::SetGutters { panel, change })
 }
 
 /// `set-output <name> <output>`.
@@ -479,29 +587,33 @@ fn panel_and_value<'a>(
     }
 }
 
-/// A panel name, a value and the optional `--ms N`.
-fn panel_value_ms(
+/// A panel name, a value, and the optional `--reserve push|cover` and
+/// `--ms N` in any order after them (D4).
+fn panel_value_options(
     subcommand: &str,
     args: &[OsString],
     value: &str,
-) -> Result<(PanelName, OsString, Option<u32>), UsageError> {
-    let (raw_panel, rest) = args.split_first().ok_or_else(|| {
-        UsageError::new(format!("{subcommand}: expected <name> {value} [--ms N]"))
-    })?;
-    let (raw_value, rest) = rest.split_first().ok_or_else(|| {
-        UsageError::new(format!("{subcommand}: expected <name> {value} [--ms N]"))
-    })?;
-    let panel = panel(subcommand, raw_panel)?;
-    let ms = match rest {
-        [] => None,
-        [option, raw] if option.as_os_str().as_bytes() == b"--ms" => Some(millis(raw)?),
-        _ => {
-            return Err(UsageError::new(format!(
-                "{subcommand}: expected <name> {value} [--ms N]"
-            )));
-        }
+) -> Result<(PanelName, OsString, Option<ReserveMode>, Option<u32>), UsageError> {
+    let expected = || {
+        UsageError::new(format!(
+            "{subcommand}: expected <name> {value} [--reserve push|cover] [--ms N]"
+        ))
     };
-    Ok((panel, raw_value.clone(), ms))
+    let (raw_panel, rest) = args.split_first().ok_or_else(expected)?;
+    let (raw_value, mut rest) = rest.split_first().ok_or_else(expected)?;
+    let panel = panel(subcommand, raw_panel)?;
+    let mut reserve = None;
+    let mut ms = None;
+    while let Some((option, tail)) = rest.split_first() {
+        let (raw, next) = tail.split_first().ok_or_else(expected)?;
+        match text("option", option)? {
+            "--reserve" => reserve = Some(setting("--reserve", raw)?),
+            "--ms" => ms = Some(millis(raw)?),
+            _ => return Err(expected()),
+        }
+        rest = next;
+    }
+    Ok((panel, raw_value.clone(), reserve, ms))
 }
 
 /// A whole number of milliseconds; `0` is the snap animation (spec

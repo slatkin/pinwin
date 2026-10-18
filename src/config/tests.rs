@@ -156,6 +156,21 @@ fn a_run_option_wins_over_the_panel_table() {
     );
 }
 
+/// A gutter run option wins over the panel's own table and leaves the
+/// gutters it does not name (spec "Gutter option wins over the file",
+/// "Option wins", D7).
+#[test]
+fn a_gutter_run_option_wins_over_the_panel_table() {
+    let config = parse("[panel.notes]\ngutter_left = 4\ngutter_right = 6\n").expect("a valid file");
+    let options = PanelOptions {
+        gutter_left: Some(12),
+        ..PanelOptions::default()
+    };
+
+    let notes = config.panel(&name("notes"), &options);
+    assert_eq!(notes.gutters(), Gutters::new(12, 6, 0, 0));
+}
+
 /// The built-in defaults are the spec's (spec "Defaults").
 #[test]
 fn the_built_in_defaults_match_the_spec() {

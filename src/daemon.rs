@@ -17,6 +17,12 @@
 //! [`socket_path_from_env`] and [`DaemonSocket::bind_from_env`] read
 //! `XDG_RUNTIME_DIR` and `WAYLAND_DISPLAY`.
 //!
+//! A client's socket path has one more source (D1): [`client_socket_path`]
+//! uses `PINWIN_SOCKET` when it is set and not empty, with a relative path
+//! refused, and falls back to the display's path. [`DaemonSocket::
+//! bind_from_env`] never reads that variable, so `pinwin daemon` binds the
+//! display's socket as before (spec "Client socket lookup").
+//!
 //! The panel handles live in [`panel`]: a command channel, an eventfd that
 //! wakes the panel's poll loop and a bounded wait for the answer. [`registry`]
 //! maps a panel name to its handle and routes a decoded request, so one
@@ -80,6 +86,8 @@ pub enum PathError {
     /// path with no file name. The variant carries the name as it would
     /// print, so the message can point at it.
     BadDisplay(String),
+    /// `PINWIN_SOCKET` is set and is not an absolute path (D1).
+    RelativeSocket,
 }
 
 impl fmt::Display for PathError {
@@ -92,6 +100,9 @@ impl fmt::Display for PathError {
                 f,
                 "WAYLAND_DISPLAY: expected the name of the display's socket, got '{raw}'"
             ),
+            Self::RelativeSocket => {
+                f.write_str("PINWIN_SOCKET: expected an absolute path to the daemon's socket")
+            }
         }
     }
 }
@@ -160,6 +171,56 @@ pub fn socket_path_from_env() -> Result<PathBuf, PathError> {
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
     let display = std::env::var_os("WAYLAND_DISPLAY");
     socket_path(runtime_dir.as_deref(), display.as_deref())
+}
+
+/// Where a client's daemon socket path came from (D1): a `pinwin run` uses
+/// the tag to decide whether it may start a daemon on that path (D3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// `PINWIN_SOCKET` named the path.
+    Variable,
+    /// The path came from `XDG_RUNTIME_DIR` and `WAYLAND_DISPLAY`.
+    Display,
+}
+
+/// The socket path a client uses (spec "Client socket lookup", D1):
+/// `PINWIN_SOCKET` when it is set and not empty, else the display's path.
+/// The tag says which source won, so only [`Source::Display`] may start a
+/// daemon (D3).
+///
+/// # Errors
+///
+/// [`PathError::RelativeSocket`] when `PINWIN_SOCKET` is set to a relative
+/// path, as no daemon socket can be found from it, and the display path's
+/// own errors when the variable is unset or empty.
+pub fn client_socket_path() -> Result<(PathBuf, Source), PathError> {
+    let socket = std::env::var_os("PINWIN_SOCKET");
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+    let display = std::env::var_os("WAYLAND_DISPLAY");
+    client_socket_path_from(
+        socket.as_deref(),
+        runtime_dir.as_deref(),
+        display.as_deref(),
+    )
+}
+
+/// [`client_socket_path`] with its environment values as parameters, so the
+/// tests never change the process environment (`port-to-rust` D10). An empty
+/// `PINWIN_SOCKET` is the same as an unset one (spec "Client socket
+/// lookup").
+pub fn client_socket_path_from(
+    socket: Option<&OsStr>,
+    runtime_dir: Option<&OsStr>,
+    display: Option<&OsStr>,
+) -> Result<(PathBuf, Source), PathError> {
+    let Some(socket) = socket.filter(|path| !path.as_bytes().is_empty()) else {
+        return socket_path(runtime_dir, display).map(|path| (path, Source::Display));
+    };
+    let path = PathBuf::from(socket);
+    if !path.is_absolute() {
+        return Err(PathError::RelativeSocket);
+    }
+    Ok((path, Source::Variable))
 }
 
 /// Take the daemon socket at `path`, before any panel exists:
