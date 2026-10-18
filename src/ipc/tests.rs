@@ -628,3 +628,59 @@ fn a_create_request_round_trips_show_existing_and_reports_an_existing_panel() {
     assert_eq!(line, "{\"ok\":true,\"existing\":true}\n");
     assert_eq!(Reply::parse(line.as_bytes()), Ok(reply));
 }
+
+/// A `create` request carries the four gutters as whole numbers of pixels,
+/// an absent one keeps the config file's value, and a fractional one is the
+/// known command's `invalid_value` (spec "Run options", "Gutter request
+/// fields", D7).
+#[test]
+fn a_create_request_carries_the_gutters() {
+    let options = crate::config::PanelOptions {
+        gutter_left: Some(-12),
+        gutter_right: Some(4),
+        gutter_top: Some(8),
+        gutter_bottom: Some(-3),
+        ..crate::config::PanelOptions::default()
+    };
+    let request = Request::Create {
+        panel: notes(),
+        pid: 4242,
+        app: "myeditor".to_owned(),
+        options,
+        show_existing: false,
+    };
+    let line = request.to_line();
+    let value: serde_json::Value = serde_json::from_str(&line).expect("a request is JSON");
+    assert_eq!(value["options"]["gutter_left"], serde_json::json!(-12));
+    assert_eq!(value["options"]["gutter_right"], serde_json::json!(4));
+    assert_eq!(value["options"]["gutter_top"], serde_json::json!(8));
+    assert_eq!(value["options"]["gutter_bottom"], serde_json::json!(-3));
+    assert_eq!(
+        Request::parse(line.as_bytes()).expect("the request round-trips"),
+        request
+    );
+
+    // A 0.4.0 line carries no gutter field, so every gutter stays absent.
+    let line =
+        br#"{"cmd":"create","panel":"notes","pid":1,"app":"notes","options":{"edge":"left"}}"#;
+    let Request::Create { options, .. } = Request::parse(line).expect("an old request line parses")
+    else {
+        panic!("expected a create request");
+    };
+    assert_eq!(options.gutter_left, None);
+    assert_eq!(options.gutter_right, None);
+    assert_eq!(options.gutter_top, None);
+    assert_eq!(options.gutter_bottom, None);
+
+    // A fractional gutter is a bad value of the known command, so the daemon
+    // can name the field it refused.
+    let error = Request::parse(
+        br#"{"cmd":"create","panel":"notes","pid":1,"app":"notes","options":{"gutter_left":1.5}}"#,
+    )
+    .expect_err("a fractional gutter");
+    assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    assert!(
+        error.message().starts_with("gutter_left:"),
+        "the message names the field: {error}"
+    );
+}

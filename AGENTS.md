@@ -37,7 +37,8 @@ binary-only now and every row of its tasks is landed.
   spec "Show an existing panel"). Rows 7.2 and 7.3 add the daemon spawn and
   the pidfd lifetime.
 - `src/cli.rs` — the hand-written command line (row 4.3): `run` with the
-  options of spec "Run options", `daemon`, and one client subcommand for each
+  options of spec "Run options", the four `--gutter-*` values among them as
+  whole numbers of pixels, `daemon`, and one client subcommand for each
   daemon request. It produces the command value and the `PanelOptions` of the
   config file and opens no socket. `src/main.rs` compiles it and dispatches
   its commands; its unit tests are `src/cli/tests.rs`.
@@ -59,8 +60,9 @@ binary-only now and every row of its tasks is landed.
   compiles it; its unit tests are `src/ipc/tests.rs`.
 - `src/ipc/options.rs` — the wire text of a setting value (row 7.1, D13,
   spec "Run options"): the `create` request's run options in the config
-  file's grammar, and the one `Serialize` place for the types a request
-  carries, so the options and the panel commands cannot drift apart.
+  file's grammar, the four gutters among them, and the one `Serialize`
+  place for the types a request carries, so the options and the panel
+  commands cannot drift apart.
 - `src/ipc/client.rs` — the daemon's client (row 5.6, spec "Command-line exit
   codes"): the connect, the one request line and reply line with a bounded
   wait, the `Answer` that keeps the reply line for `pinwin status`, and the
@@ -159,7 +161,8 @@ binary-only now and every row of its tasks is landed.
 - `src/config.rs` — the config file (spec "Config file" and "Panel settings
   and precedence", D13): the `[daemon]`, `[panel.defaults]` and
   `[panel.<name>]` tables, the setting grammar the run options share, the
-  built-in defaults and the precedence of the options over the file, plus
+  built-in defaults and the precedence of the options over the file, which
+  each `--gutter-*` option takes as the other settings do, plus
   the path rule of `$XDG_CONFIG_HOME/pinwin/config.toml` (default
   `~/.config/pinwin/config.toml`). `src/cli.rs` parses the run options with
   the same grammar and `src/main.rs` reads the file; its unit tests are

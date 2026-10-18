@@ -133,6 +133,10 @@ panel name is `--name`, else the file name of the command.
 | `--output` | an output name | the compositor chooses | The output the panel opens on. |
 | `--hidden` | none (a flag) | shown | Start hidden. |
 | `--focus-ring` | `off`, `#RRGGBB` or `#RRGGBB:<width>` | `#dabc7f`, 1 pixel | The ring the panel draws while it has the keyboard; `<width>` is in pixels and at least 1. |
+| `--gutter-left` | a whole number of pixels, possibly negative | `0` | Pixels between the panel and the output's left edge. |
+| `--gutter-right` | a whole number of pixels, possibly negative | `0` | Pixels between the panel and the output's right edge. |
+| `--gutter-top` | a whole number of pixels, possibly negative | `0` | Pixels between the panel and the output's top edge. |
+| `--gutter-bottom` | a whole number of pixels, possibly negative | `0` | Pixels between the panel and the output's bottom edge. |
 | `--show-existing` | none (a flag) | off | Show a panel that already has the name, without running the command; start a new panel when the name is free. |
 
 The options win over the config file for the values they set: the option wins

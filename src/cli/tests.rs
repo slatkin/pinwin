@@ -127,6 +127,60 @@ fn run_parses_show_existing() {
     assert!(!run.show_existing(), "the flag is absent by default");
 }
 
+/// `--gutter-*` sets a gutter of the new panel, and a value that is not a
+/// whole number is a usage error (spec "Run options", "Gutter option wins
+/// over the file").
+#[test]
+fn run_parses_the_gutter_options() {
+    let Command::Run(run) = parse(&[
+        "run",
+        "--name",
+        "notes",
+        "--gutter-left",
+        "-12",
+        "--gutter-top",
+        "8",
+        "--gutter-right",
+        "4",
+        "--gutter-bottom",
+        "-3",
+        "--",
+        "myeditor",
+    ])
+    .expect("a valid run") else {
+        panic!("expected a run command");
+    };
+    assert_eq!(run.options().gutter_left, Some(-12), "a negative gutter");
+    assert_eq!(run.options().gutter_top, Some(8));
+    assert_eq!(run.options().gutter_right, Some(4));
+    assert_eq!(run.options().gutter_bottom, Some(-3));
+
+    let Command::Run(run) =
+        parse(&["run", "--name", "notes", "--", "myeditor"]).expect("a valid run")
+    else {
+        panic!("expected a run command");
+    };
+    assert_eq!(
+        run.options().gutter_left,
+        None,
+        "an absent option leaves the value to the config file"
+    );
+
+    for option in [
+        "--gutter-left",
+        "--gutter-right",
+        "--gutter-top",
+        "--gutter-bottom",
+    ] {
+        let error = usage(&["run", option, "1.5", "--", "myeditor"]);
+        assert_eq!(
+            error.to_string(),
+            format!("pinwin: {option}: expected a whole number of pixels, got '1.5'")
+        );
+        assert_eq!(UsageError::EXIT_CODE, 2, "option = {option:?}");
+    }
+}
+
 /// An unreadable setting value is a usage error that names the option and
 /// exits 2 (spec "Invalid option value" and "Command-line exit codes").
 #[test]

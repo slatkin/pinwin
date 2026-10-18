@@ -13,6 +13,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize, Serializer};
+use serde_json::Number;
 
 use super::{RequestError, setting};
 use crate::cli::Amount;
@@ -44,6 +45,14 @@ pub(super) struct WireOptions {
     hidden: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus_ring: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gutter_left: Option<Number>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gutter_right: Option<Number>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gutter_top: Option<Number>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gutter_bottom: Option<Number>,
 }
 
 /// The run options as the wire carries them, each value in its setting
@@ -58,6 +67,10 @@ fn wire_options(options: &PanelOptions) -> WireOptions {
         output: options.output.clone(),
         hidden: options.hidden,
         focus_ring: options.focus_ring.map(focus_ring_text),
+        gutter_left: options.gutter_left.map(Number::from),
+        gutter_right: options.gutter_right.map(Number::from),
+        gutter_top: options.gutter_top.map(Number::from),
+        gutter_bottom: options.gutter_bottom.map(Number::from),
     }
 }
 
@@ -82,6 +95,10 @@ pub(super) fn parse(raw: WireOptions) -> Result<PanelOptions, RequestError> {
         output: raw.output,
         hidden: raw.hidden,
         focus_ring: option_setting("focus_ring", raw.focus_ring.as_deref())?,
+        gutter_left: option_gutter("gutter_left", raw.gutter_left)?,
+        gutter_right: option_gutter("gutter_right", raw.gutter_right)?,
+        gutter_top: option_gutter("gutter_top", raw.gutter_top)?,
+        gutter_bottom: option_gutter("gutter_bottom", raw.gutter_bottom)?,
         ..PanelOptions::default()
     })
 }
@@ -93,6 +110,23 @@ where
     T::Err: fmt::Display,
 {
     raw.map(|text| setting(field, text)).transpose()
+}
+
+/// An optional gutter of the run options (D7): an absent field keeps the
+/// config file's value, while a fractional or an over-`i32` value is the
+/// known command's `invalid_value`, not a request line the parser cannot
+/// read (spec "Run options", "Gutter request fields").
+fn option_gutter(field: &str, raw: Option<Number>) -> Result<Option<i32>, RequestError> {
+    raw.map(|number| {
+        super::whole(&number)
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or_else(|| {
+                RequestError::InvalidValue(format!(
+                    "{field}: expected a whole number of pixels, got {number}"
+                ))
+            })
+    })
+    .transpose()
 }
 
 /// The wire text of a size: `640px` or `30%`.

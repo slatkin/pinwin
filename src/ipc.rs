@@ -305,7 +305,7 @@ impl Request {
                 panel: panel_name(&panel)?,
                 pid,
                 app,
-                options: options::parse(options)?,
+                options: options::parse(*options)?,
                 show_existing,
             },
             RawRequest::Subscribe => Self::Subscribe,
@@ -377,8 +377,9 @@ enum RawRequest {
         panel: String,
         pid: u32,
         app: String,
+        // Boxed, so the raw enum's largest variant does not dwarf the rest.
         #[serde(default)]
-        options: options::WireOptions,
+        options: Box<options::WireOptions>,
         #[serde(default)]
         show_existing: bool,
     },

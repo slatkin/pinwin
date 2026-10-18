@@ -304,6 +304,10 @@ fn run_option(
         "--layer" => setting_option(args, index, option, &mut options.layer)?,
         "--keyboard" => setting_option(args, index, option, &mut options.keyboard)?,
         "--focus-ring" => setting_option(args, index, option, &mut options.focus_ring)?,
+        "--gutter-top" => gutter_option(args, index, option, &mut options.gutter_top)?,
+        "--gutter-bottom" => gutter_option(args, index, option, &mut options.gutter_bottom)?,
+        "--gutter-left" => gutter_option(args, index, option, &mut options.gutter_left)?,
+        "--gutter-right" => gutter_option(args, index, option, &mut options.gutter_right)?,
         other => return Err(UsageError::new(format!("unknown option '{other}'"))),
     }
     Ok(())
@@ -323,6 +327,31 @@ where
     let raw = next_value(args, index, option)?;
     *slot = Some(setting(option, raw)?);
     Ok(())
+}
+
+/// A `run` gutter option: a whole number of logical pixels, which may be
+/// negative (spec "Run options", D7).
+fn gutter_option(
+    args: &[OsString],
+    index: &mut usize,
+    option: &str,
+    slot: &mut Option<i32>,
+) -> Result<(), UsageError> {
+    let raw = next_value(args, index, option)?;
+    *slot = Some(gutter(option, raw)?);
+    Ok(())
+}
+
+/// A gutter value: a whole number of logical pixels, which may be negative
+/// (spec "Run options", "Gutter request fields"). A fractional value is a
+/// usage error, so a bad gutter never reaches the daemon.
+fn gutter(context: &str, raw: &OsStr) -> Result<i32, UsageError> {
+    let raw = text(context, raw)?;
+    raw.parse::<i32>().map_err(|_error| {
+        UsageError::new(format!(
+            "{context}: expected a whole number of pixels, got '{raw}'"
+        ))
+    })
 }
 
 /// The command one client subcommand asks for; each helper owns its own
