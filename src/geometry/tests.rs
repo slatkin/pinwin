@@ -299,7 +299,8 @@ fn invalid_size() {
     assert_eq!(Size::pixels(0), None);
     assert_eq!(Size::percent(0), None);
     assert_eq!(Size::percent(150), None);
-    assert!(Size::percent(100).is_some());
+    let whole = Size::percent(100).expect("100 percent is a valid size");
+    assert_eq!(whole.resolve(Edge::Left, output(1000, 1000)), 1000);
 }
 
 #[test]
