@@ -79,15 +79,15 @@ impl Registry {
         locked(&self.panels).is_empty()
     }
 
-    /// The hosted app's `app_id` for every panel, in start order (row 11.1,
-    /// D14): the tray icon names the first app that set one. A panel whose
-    /// app has not named itself yet contributes `None`.
+    /// The app id that names the tray icon (row 11.1, D14): the oldest
+    /// panel's, or `None` when no panel exists or its app has not named
+    /// itself yet. Only the oldest panel is read, because a later panel's
+    /// app id never stands in for it.
     #[must_use]
-    pub fn app_ids(&self) -> Vec<Option<String>> {
+    pub fn oldest_app_id(&self) -> Option<String> {
         locked(&self.panels)
-            .iter()
-            .map(|(_, handle)| handle.app_id())
-            .collect()
+            .first()
+            .and_then(|(_, handle)| handle.app_id())
     }
 
     /// Route one decoded request (D12). `None` means the daemon answers it

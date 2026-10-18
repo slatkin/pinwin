@@ -270,39 +270,54 @@ impl PinwinTray {
     /// registry answers in start order, so the submenus stay in that order
     /// after a panel ends (spec "Submenus follow panels").
     fn refresh(&mut self) {
-        let poisoned = self.poisoned.clone();
-        let _ = guard(&poisoned, || {
-            let Some(lifetime) = self.lifetime.upgrade() else {
-                return;
-            };
+        let Self {
+            lifetime,
+            wait,
+            model,
+            poisoned,
+        } = self;
+        let refreshed = guard(poisoned, || {
+            let lifetime = lifetime.upgrade()?;
             let reply = lifetime
                 .registry()
-                .route(&Request::Status { panel: None }, self.wait);
-            if let Some(reply) = reply {
-                self.model = MenuModel::from_reply(&reply);
-            }
+                .route(&Request::Status { panel: None }, *wait)?;
+            Some(MenuModel::from_reply(&reply))
         });
+        if let Ok(Some(refreshed)) = refreshed {
+            *model = refreshed;
+        }
     }
 
     /// Send one menu action through the same registry the IPC routes to
     /// (D14), then refresh the menu so the item shows the new state.
+    ///
+    /// The action's reply only reports success or the refusal, never the
+    /// panels' state, so the refresh stays: it is what updates the shown
+    /// state, edge and reserve the menu displays after the click.
     fn act(&mut self, request: &Request) {
-        let poisoned = self.poisoned.clone();
-        let _ = guard(&poisoned, || {
-            let Some(lifetime) = self.lifetime.upgrade() else {
+        let Self {
+            lifetime,
+            wait,
+            poisoned,
+            ..
+        } = self;
+        let _ = guard(poisoned, || {
+            let Some(lifetime) = lifetime.upgrade() else {
                 return;
             };
-            let _ = lifetime.registry().route(request, self.wait);
-            self.refresh();
+            let _ = lifetime.registry().route(request, *wait);
         });
+        self.refresh();
     }
 
     /// End every panel and then the daemon, as the `quit` request does
     /// (spec "Quit from the menu", D14).
     fn quit(&mut self) {
-        let poisoned = self.poisoned.clone();
-        let _ = guard(&poisoned, || {
-            if let Some(lifetime) = self.lifetime.upgrade() {
+        let Self {
+            lifetime, poisoned, ..
+        } = self;
+        let _ = guard(poisoned, || {
+            if let Some(lifetime) = lifetime.upgrade() {
                 lifetime.quit();
             }
         });
@@ -388,12 +403,14 @@ impl ksni::Tray for PinwinTray {
     /// `ksni` to re-read it when an app names itself or the oldest panel
     /// ends.
     fn icon_name(&self) -> String {
-        let poisoned = self.poisoned.clone();
-        guard(&poisoned, || {
-            let Some(lifetime) = self.lifetime.upgrade() else {
+        let Self {
+            lifetime, poisoned, ..
+        } = self;
+        guard(poisoned, || {
+            let Some(lifetime) = lifetime.upgrade() else {
                 return ICON_NAME.to_owned();
             };
-            icon_for(&lifetime.registry().app_ids())
+            icon_for(&[lifetime.registry().oldest_app_id()])
         })
         .unwrap_or_else(|_| ICON_NAME.to_owned())
     }

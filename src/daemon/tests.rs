@@ -231,6 +231,7 @@ fn defaults_status() -> PanelStatus {
 fn panel_thread(
     name: &str,
     pid: u32,
+    app_id: AppId,
     answer: impl Fn(&Request) -> PanelReply + Send + 'static,
 ) -> (PanelName, PanelHandle, JoinHandle<()>) {
     let (commands, incoming) = mpsc::channel::<Command>();
@@ -244,11 +245,7 @@ fn panel_thread(
         }
     });
     let name = PanelName::parse(name).expect("a panel name");
-    (
-        name,
-        PanelHandle::new(pid, commands, wake, AppId::default()),
-        thread,
-    )
+    (name, PanelHandle::new(pid, commands, wake, app_id), thread)
 }
 
 /// A panel that reports `status` when the daemon asks for it and carries
@@ -258,7 +255,7 @@ fn answering_panel(
     pid: u32,
     status: PanelStatus,
 ) -> (PanelName, PanelHandle, JoinHandle<()>) {
-    panel_thread(name, pid, move |request| match request {
+    panel_thread(name, pid, AppId::default(), move |request| match request {
         Request::Status { .. } => PanelReply::Status(status.clone()),
         _ => PanelReply::Done,
     })
@@ -366,6 +363,37 @@ fn a_duplicate_name_is_refused_and_the_panel_is_unchanged() {
     drop(registry);
     thread.join().expect("the panel thread ends");
     taken_thread.join().expect("the refused panel thread ends");
+}
+
+/// The tray icon's app id is the oldest panel's only (row 11.1, D14): a
+/// later panel's app id does not stand in for it, and no panel gives none.
+#[test]
+fn the_oldest_panels_app_id_names_the_icon() {
+    let registry = Registry::new();
+    assert_eq!(registry.oldest_app_id(), None, "no panel names an icon");
+
+    let notes_id = AppId::default();
+    notes_id.set("org.example.Notes");
+    let (name, handle, notes_thread) = panel_thread("notes", 4242, notes_id, |_| PanelReply::Done);
+    registry.add(name, handle).expect("the name is free");
+    assert_eq!(
+        registry.oldest_app_id(),
+        Some("org.example.Notes".to_owned())
+    );
+
+    let chat_id = AppId::default();
+    chat_id.set("chat");
+    let (name, handle, chat_thread) = panel_thread("chat", 4343, chat_id, |_| PanelReply::Done);
+    registry.add(name, handle).expect("the name is free");
+    assert_eq!(
+        registry.oldest_app_id(),
+        Some("org.example.Notes".to_owned()),
+        "the oldest panel still names the icon"
+    );
+
+    drop(registry);
+    notes_thread.join().expect("the notes thread ends");
+    chat_thread.join().expect("the chat thread ends");
 }
 
 /// When a panel ends and leaves the registry its name is free again, and a
@@ -529,7 +557,7 @@ fn a_panel_that_does_not_answer_fails_with_internal() {
 #[test]
 fn a_panel_refusal_keeps_its_kind() {
     let registry = Registry::new();
-    let (name, handle, thread) = panel_thread("notes", 7, |_| {
+    let (name, handle, thread) = panel_thread("notes", 7, AppId::default(), |_| {
         PanelReply::Refused(ErrorReply::new(
             ErrorKind::InvalidLayout,
             "the output cannot hold it",
