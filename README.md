@@ -23,9 +23,6 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-The library API is removed: the crate is binary-only now, with no `Panel`,
-`Startup`, `PinwinError` or layout/instance types to depend on.
-
 ## Usage
 
 ```text
@@ -155,26 +152,6 @@ surface scaling through a viewport keeps that mapping and is not cropped.
 An app that hands a launch to a running copy opens no window of its own, so it
 puts nothing in the panel; the running copy keeps its own window. See "Known
 limits".
-
-## Migrating to 0.4.0
-
-Version 0.4.0 replaces the terminal and its environment variables with a
-daemon, `pinwin run` and the client subcommands. A command line that used the
-old form changes as follows.
-
-| Before | After |
-| --- | --- |
-| `pinwin cmd` | `pinwin run -- ghostty -e cmd` |
-| `pinwin -- cmd` | `pinwin run -- cmd` |
-| `COLS` | `--size`, for example `--size 640px` |
-| `GUTTER` | the `gutter_*` settings in the config file |
-| `PINWIN_KEYBOARD` | `--keyboard` |
-| `PINWIN_ZONE` | `--reserve` |
-| `PINWIN_ACCENT*` | `--focus-ring` |
-| `PINWIN_NAME` | `--name` |
-| `pinwin --toggle name` | `pinwin toggle name` |
-| `pinwin --show name` | `pinwin show name` |
-| `pinwin --focus name` | `pinwin focus name` |
 
 ## Configuration
 
