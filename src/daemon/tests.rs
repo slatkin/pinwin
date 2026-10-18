@@ -293,7 +293,8 @@ fn the_wake_counts_and_clears() {
     assert_eq!(wake.drain().expect("drain"), 0, "a fresh wake is clear");
     wake.notify().expect("notify");
     wake.notify().expect("notify");
-    assert_eq!(wake.drain().expect("drain"), 2, "both commands woke it");
+    wake.notify().expect("notify");
+    assert_eq!(wake.drain().expect("drain"), 3, "every command woke it");
     assert_eq!(
         wake.drain().expect("drain"),
         0,

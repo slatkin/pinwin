@@ -14,8 +14,9 @@
 //! plain test thread stands in for a panel (`port-to-rust` D10).
 
 use std::fmt;
-use std::io;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::fs::File;
+use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -248,7 +249,7 @@ impl PendingCall {
 /// [`drain`](Self::drain) reads the whole count in one go, so no wake is
 /// lost between commands.
 #[derive(Debug)]
-pub struct EventFd(OwnedFd);
+pub struct EventFd(File);
 
 impl EventFd {
     /// A fresh eventfd, close-on-exec and non-blocking, so a panel's poll
@@ -260,32 +261,19 @@ impl EventFd {
         let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
         // SAFETY: `fd` is either a fresh descriptor that the call above
         // returned or negative, and nothing else owns a fresh one.
-        Ok(Self(unsafe { owned_fd(fd.into()) }?))
+        Ok(Self(File::from(unsafe { owned_fd(fd.into()) }?)))
     }
 
     /// Wake the panel: one more on the count. A counter that is already full
     /// means the panel has more wake-ups than it can take, which is not a
     /// failure of this call.
     pub fn notify(&self) -> io::Result<()> {
-        let one = 1_u64;
-        loop {
-            // SAFETY: the buffer is a live `u64` and the length is its size,
-            // as `eventfd` requires; the descriptor belongs to `self`.
-            let written = unsafe {
-                libc::write(
-                    self.0.as_raw_fd(),
-                    std::ptr::addr_of!(one).cast(),
-                    size_of::<u64>(),
-                )
-            };
-            if written >= 0 {
-                return Ok(());
-            }
-            match io::Error::last_os_error() {
-                error if error.kind() == io::ErrorKind::Interrupted => {}
-                error if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-                error => return Err(error),
-            }
+        // An eventfd write is always the whole `u64` and `write_all` retries
+        // `EINTR` itself.
+        match (&self.0).write_all(&1_u64.to_ne_bytes()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
+            Err(error) => Err(error),
         }
     }
 
@@ -293,21 +281,13 @@ impl EventFd {
     /// carried, so the panel's loop handles them all in one read; zero means
     /// nothing was waiting.
     pub fn drain(&self) -> io::Result<u64> {
+        // An eventfd read is always the whole `u64` and `read_exact` retries
+        // `EINTR` itself, so a partial read cannot happen.
         let mut count = [0_u8; size_of::<u64>()];
-        loop {
-            // SAFETY: the buffer is `size_of::<u64>()` bytes long, which is
-            // the length `eventfd` reads and writes, and the descriptor
-            // belongs to `self`.
-            let read =
-                unsafe { libc::read(self.0.as_raw_fd(), count.as_mut_ptr().cast(), count.len()) };
-            if read >= 0 {
-                return Ok(u64::from_ne_bytes(count));
-            }
-            match io::Error::last_os_error() {
-                error if error.kind() == io::ErrorKind::Interrupted => {}
-                error if error.kind() == io::ErrorKind::WouldBlock => return Ok(0),
-                error => return Err(error),
-            }
+        match (&self.0).read_exact(&mut count) {
+            Ok(()) => Ok(u64::from_ne_bytes(count)),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(0),
+            Err(error) => Err(error),
         }
     }
 }
