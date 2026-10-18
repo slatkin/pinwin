@@ -33,8 +33,8 @@ use super::super::dock;
 use super::super::routing::Routing;
 use super::super::viewport;
 use super::{
-    Fraction, Frame, GROW_HANDSHAKE_US, GrowHandshake, GrowResult, MintedSerials, Step, Tween,
-    animates, waits_for_app,
+    Continuation, Fraction, Frame, GROW_HANDSHAKE_US, GrowHandshake, GrowResult, MintedSerials,
+    Step, Tween, animates, waits_for_app,
 };
 use crate::geometry::{Geometry, HeldGap, ReserveMode};
 
@@ -156,27 +156,17 @@ impl Slot {
         self.driver.borrow_mut()
     }
 
-    /// The length, surface, gap and reserve mode a retarget continues from
-    /// (D8, D5): the waiting handshake's or the running tween's. The reserve
-    /// mode is the one the change started from, so a retarget of a covering
-    /// panel keeps holding its strip.
-    fn running(&self) -> Option<(u32, (u32, u32), HeldGap, ReserveMode)> {
+    /// The state a retarget continues from (D8, D5): the waiting handshake's
+    /// or the running tween's. The reserve mode is the one the change started
+    /// from, so a retarget of a covering panel keeps holding its strip.
+    fn running(&self) -> Option<Continuation> {
         if let Some(pending) = self.pending.borrow().as_ref() {
-            return Some((
-                pending.handshake.visible(),
-                pending.handshake.surface(),
-                pending.handshake.current_gap(),
-                pending.handshake.current_reserve(),
-            ));
+            return Some(pending.handshake.continuation());
         }
-        self.driver.borrow().as_ref().map(|driver| {
-            (
-                driver.tween.visible(),
-                driver.tween.surface(),
-                driver.tween.current_gap(),
-                driver.tween.current_reserve(),
-            )
-        })
+        self.driver
+            .borrow()
+            .as_ref()
+            .map(|driver| driver.tween.continuation())
     }
 
     /// The gap the reserve holds once the running change ends (D8): the
@@ -256,64 +246,51 @@ pub(in crate::proxy) fn start(
         let slot = globals.tween();
         slot.running()
     };
-    let (from, surface, resting, current_reserve) =
-        if let Some((visible, surface, gap, reserve)) = running {
-            (
-                visible,
-                app_surface(routing).unwrap_or(surface),
-                gap,
-                reserve,
-            )
-        } else {
-            let surface = match app_surface(routing) {
-                Some(surface) => surface,
-                // D8: a change that grows the app and cannot see its size
-                // never knows when the wide buffer arrives, so it snaps.
-                None if geometry.across() > from => return false,
-                // D8: the pair is width first, like every other surface
-                // extent the composition reads, so a top or bottom panel's
-                // length across its edge is the height.
-                None => {
-                    let length = panel_length(routing, geometry);
-                    if geometry.edge().across_is_width() {
-                        (from, length)
-                    } else {
-                        (length, from)
-                    }
+    let continuation = if let Some(running) = running {
+        Continuation {
+            surface: app_surface(routing).unwrap_or(running.surface),
+            ..running
+        }
+    } else {
+        let surface = match app_surface(routing) {
+            Some(surface) => surface,
+            // D8: a change that grows the app and cannot see its size
+            // never knows when the wide buffer arrives, so it snaps.
+            None if geometry.across() > from => return false,
+            // D8: the pair is width first, like every other surface
+            // extent the composition reads, so a top or bottom panel's
+            // length across its edge is the height.
+            None => {
+                let length = panel_length(routing, geometry);
+                if geometry.edge().across_is_width() {
+                    (from, length)
+                } else {
+                    (length, from)
                 }
-            };
-            let resting = routing
-                .held_gap()
-                .unwrap_or_else(|| HeldGap::start(geometry));
-            (from, surface, resting, current_reserve)
+            }
         };
+        Continuation {
+            from,
+            surface,
+            resting_gap: routing
+                .held_gap()
+                .unwrap_or_else(|| HeldGap::start(geometry)),
+            reserve: current_reserve,
+        }
+    };
     // D8: a change that grows the app configures it once to the target and
     // then waits for the configure handshake; a shrink, or a retarget inside
     // the buffer it has, configures it when the last frame arrives.
-    if waits_for_app(geometry.edge(), surface, geometry.across()) {
+    if waits_for_app(geometry.edge(), continuation.surface, geometry.across()) {
         globals.tween().set_pending(Pending {
-            handshake: GrowHandshake::new(
-                geometry,
-                from,
-                surface,
-                resting,
-                current_reserve,
-                duration_ms,
-            ),
+            handshake: GrowHandshake::new(geometry, continuation, duration_ms),
             begun: Instant::now(),
         });
         let serial = globals.tween().mint();
         send_configure(routing, geometry, serial);
         return true;
     }
-    let Some(tween) = Tween::start(
-        geometry,
-        from,
-        surface,
-        resting,
-        current_reserve,
-        duration_ms,
-    ) else {
+    let Some(tween) = Tween::start(geometry, continuation, duration_ms) else {
         return false;
     };
     globals.tween().set_driver(Driver {
@@ -602,7 +579,7 @@ fn micros(elapsed: Duration) -> i64 {
 mod tests {
     use std::time::Instant;
 
-    use super::{Driver, GrowHandshake, Pending, Slot, Tween};
+    use super::{Continuation, Driver, GrowHandshake, Pending, Slot, Tween};
     use crate::geometry::{Edge, Geometry, Gutters, HeldGap, ReserveMode};
 
     /// A pushing geometry of `across` pixels on `edge` with no gutters (D9).
@@ -615,10 +592,12 @@ mod tests {
     fn tween() -> Tween {
         Tween::start(
             push(Edge::Left, 600),
-            400,
-            (400, 1080),
-            HeldGap::start(push(Edge::Left, 400)),
-            ReserveMode::Push,
+            Continuation {
+                from: 400,
+                surface: (400, 1080),
+                resting_gap: HeldGap::start(push(Edge::Left, 400)),
+                reserve: ReserveMode::Push,
+            },
             200,
         )
         .expect("a 200 ms grow")
@@ -630,10 +609,12 @@ mod tests {
         Pending {
             handshake: GrowHandshake::new(
                 push(Edge::Left, 600),
-                400,
-                (400, 1080),
-                HeldGap::start(push(Edge::Left, 400)),
-                ReserveMode::Push,
+                Continuation {
+                    from: 400,
+                    surface: (400, 1080),
+                    resting_gap: HeldGap::start(push(Edge::Left, 400)),
+                    reserve: ReserveMode::Push,
+                },
                 200,
             ),
             begun: Instant::now(),
@@ -688,7 +669,8 @@ mod tests {
         slot.set_pending(pending());
         assert!(slot.is_running(), "a waiting handshake runs");
         assert_eq!(
-            slot.running().map(|(from, surface, ..)| (from, surface)),
+            slot.running()
+                .map(|running| (running.from, running.surface)),
             Some((400, (400, 1080))),
             "the handshake holds the old length and surface"
         );

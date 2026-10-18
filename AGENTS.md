@@ -315,7 +315,10 @@ binary-only now and every row of its tasks is landed.
   length, layer size, margins, held-gap zone and viewport fraction, whose
   strip holds still when the panel covered before the change and whose end
   gap the target mode decides, plus
-  the `GrowHandshake` that owns a grow's wait as a first-class result: it
+  the `Continuation` that bundles the state a change starts from — the
+  length, app surface, held gap and reserve mode a retarget takes from the
+  running change — so no path can drop one of them, the `GrowHandshake` that
+  owns a grow's wait as a first-class result: it
   sends one configure and settles `Answered` when the app commits a buffer
   whose reported size reaches the target, or `Unanswered` at 500 ms, which
   snaps the panel to the target. It also owns the
