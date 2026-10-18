@@ -355,14 +355,22 @@ fn a_collapse_to_a_new_pushing_width_lands_on_it_at_the_end() {
         500,
         "the target strip is the new width"
     );
-    let _ = tween.step(0);
-    let mid = frame(tween.step(100_000));
-    assert!(
-        mid.visible > 500 && mid.visible < 1100,
-        "the panel is still collapsing at {}",
-        mid.visible
-    );
-    assert_eq!(mid.gap.zone(), 400, "the strip holds during the animation");
+    let first = frame(tween.step(0));
+    assert_eq!(first.visible, 1100, "the collapse starts at the old width");
+    assert_eq!(first.gap.zone(), 400, "the first frame holds the strip");
+    for elapsed in [50_000, 100_000, 150_000] {
+        let frame = frame(tween.step(elapsed));
+        assert!(
+            frame.visible > 500 && frame.visible < 1100,
+            "the panel is still collapsing at {elapsed} microseconds, visible {}",
+            frame.visible
+        );
+        assert_eq!(
+            frame.gap.zone(),
+            400,
+            "the strip holds during the animation"
+        );
+    }
     let last = frame(tween.step(200_000));
     assert_eq!(last.visible, 500);
     assert_eq!(
