@@ -187,7 +187,8 @@ and several modules wait for the rows that wire them in (D15).
   panel's output and validates them, the app-size rule (a pure edge move
   sends no new size, a size change exactly one), the re-send of the layer
   surface's size, anchors and margins on the surface the window already
-  docks with, the `set-layer` re-dock, the resize arithmetic, the gap
+  docks with, the in-place `set-layer` layer change, the resize arithmetic,
+  the gap
   publish and the `Event::GeometryChanged` a successful apply sends, plus
   the output-driven re-apply the routing calls. Its pure part
   is display-free, so its tests run without a compositor
@@ -226,8 +227,12 @@ and several modules wait for the rows that wire them in (D15).
   configure and ack to the app's toplevel (copied from wl-paper's
   `apps/wl-paper/src/paper.rs`, GPL-3.0), the `set-output` decision and
   reply — a name no tracked output carries is refused with `invalid_value`
-  and the panel does not move — the re-dock on `set-output` and on a
-  `closed` layer surface (the app keeps its window), the
+  and the panel does not move — the in-place `set-layer` layer change
+  (`zwlr_layer_surface_v1.set_layer` plus a commit through the coordinator,
+  so the window keeps its surface; a layer-shell bind older than version 2
+  re-docks), the re-dock on `set-output` and on a `closed` layer surface
+  (the app keeps its window; the fresh surface is opened with a bufferless
+  commit and the kept buffer re-attaches on the app's configure ack), the
   `Event::GeometryChanged` a successful `set-output` sends, and the
   reserve lifecycle that pins the strip to the panel's output and follows
   it.

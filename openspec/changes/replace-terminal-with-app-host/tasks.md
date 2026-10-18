@@ -381,15 +381,26 @@ below). Its code does not enter pinwin; only the findings do.
     ~370 times a second. Fix: `global_of_output` consults `client_output_names` first, then the
     proxy's own binds. Verified: the reserve stays mapped, no oscillation, `cargo nextest run
     -p pinwin` 306/306.
-  - DEFECT, second bug in the same `redock` (open 2026-10-18): with the flicker gone, the
-    moved panel's window stays unmapped and the compositor ends its connection:
-    `zwlr_layer_surface_v1#60 code 2: layer_surface has never been configured`; the panel ends.
-    The re-dock creates a new `zwlr_layer_surface_v1` for the app's `wl_surface` but sends no
-    commit, and the app (already showing the same size) sends none either, so the new surface
-    is never configured and the app's next buffer commit is a protocol error. `redock` also
-    serves `set-output` and the `closed` re-dock (monitor unplug), so the fix belongs there:
-    change the layer in place with `zwlr_layer_surface_v1.set_layer` plus a commit through the
-    commit coordinator, and keep the destroy/recreate re-dock only for a real output change.
+  - DEFECT, second bug in the same `redock` (FIXED 2026-10-18, commit 85ab6a3): with the
+    flicker gone, the moved panel's window stayed unmapped and the compositor ended its
+    connection: `zwlr_layer_surface_v1#60 code 2: layer_surface has never been configured`; the
+    panel ended. Root cause: the re-dock created a new `zwlr_layer_surface_v1` for the app's
+    `wl_surface` but sent no commit, and the app (already showing the same size) sent none
+    either, so the new surface was never configured — and wlroots ends the connection over a
+    buffer committed before the first configure. Fix: `set-layer` now changes the live layer
+    surface in place (`zwlr_layer_surface_v1.set_layer` plus a commit through the D7
+    coordinator; the reserve does the same on its own surface; a layer-shell bind older than
+    version 2 falls back to a re-dock), so the window keeps its surface and stays mapped; and
+    the shared `redock` (`set-output`, `closed`) opens the fresh surface with a bufferless
+    commit that detaches the app's buffer and re-attaches the kept buffer on the app's
+    configure ack (the D6 hide/show path). Verified live (umbriel, DP-1/DP-2): `set-layer`
+    top/bottom/overlay keep the panel mapped and the reserve follows, six rapid `umbriel
+    layers` samples show no unmap, a same-output `set-output` stays mapped, a DP-1→DP-2
+    re-dock maps the panel at 640 px, and hide/show plus `set-layer` while hidden behave;
+    `pinwin quit` exits 0. `cargo nextest run -p pinwin` 307/307.
+  - OPEN, pre-existing and unrelated to the fix above (found 2026-10-18): after a cross-output
+    re-dock of a percent-size panel the reserve's exclusive zone is right (640) but its surface
+    width stays at the old output's resolution (860) until a later gap publish.
 
 ## Workflow follow-up
 
