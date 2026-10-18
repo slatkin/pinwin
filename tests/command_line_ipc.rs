@@ -372,7 +372,7 @@ fn a_run_sets_the_panel_and_socket_variables() {
 #[test]
 fn a_set_socket_without_a_daemon_starts_nothing() {
     let dir = temp_dir("socket-no-daemon");
-    let socket = dir.join("pinwin").join(format!("{DISPLAY}.sock"));
+    let socket = socket_path(&dir);
     let marker = dir.join("the-command-ran");
     let mut command = pinwin(
         &dir,

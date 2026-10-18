@@ -209,7 +209,7 @@ impl Reply {
 /// object, and for a status, the daemon's process ID and its panels. The
 /// reader keeps the parsed reply only; the line itself is kept beside it for
 /// a client that prints it.
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 struct ReplyJson<'a> {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -229,43 +229,28 @@ impl Serialize for Reply {
         let json = match self {
             Self::Ok => ReplyJson {
                 ok: true,
-                error: None,
-                display: None,
-                existing: None,
-                pid: None,
-                panels: None,
+                ..ReplyJson::default()
             },
             Self::Created { display } => ReplyJson {
                 ok: true,
-                error: None,
                 display: Some(display),
-                existing: None,
-                pid: None,
-                panels: None,
+                ..ReplyJson::default()
             },
             Self::Existing => ReplyJson {
                 ok: true,
-                error: None,
-                display: None,
                 existing: Some(true),
-                pid: None,
-                panels: None,
+                ..ReplyJson::default()
             },
             Self::Status(status) => ReplyJson {
                 ok: true,
-                error: None,
-                display: None,
-                existing: None,
                 pid: Some(status.pid),
                 panels: Some(&status.panels),
+                ..ReplyJson::default()
             },
             Self::Error(error) => ReplyJson {
                 ok: false,
                 error: Some(error),
-                display: None,
-                existing: None,
-                pid: None,
-                panels: None,
+                ..ReplyJson::default()
             },
         };
         json.serialize(serializer)

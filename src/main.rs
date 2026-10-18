@@ -22,7 +22,7 @@
 
 use std::ffi::OsString;
 use std::io::{self, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -128,7 +128,7 @@ fn dispatch() -> ExitCode {
 /// found").
 fn run_app(run: &cli::Run) -> ExitCode {
     let (path, source) = match daemon::client_socket_path() {
-        Ok((path, source)) => (path, source),
+        Ok(found) => found,
         Err(error) => {
             eprintln!("pinwin: {error}");
             return ExitCode::FAILURE;
@@ -136,7 +136,7 @@ fn run_app(run: &cli::Run) -> ExitCode {
     };
     // The app's `PINWIN_SOCKET` must work from any working folder, so a
     // relative runtime directory becomes an absolute path here (D2).
-    let path = match absolute_socket_path(path) {
+    let path = match std::path::absolute(path) {
         Ok(path) => path,
         Err(error) => {
             eprintln!("pinwin: could not resolve the daemon socket path: {error}");
@@ -209,15 +209,6 @@ fn create_panel(path: &Path, source: Source, request: &Request) -> Result<Answer
         }
         Err(error) => Err(error.to_string()),
     }
-}
-
-/// The socket path the app receives in `PINWIN_SOCKET` (D2): absolute, so
-/// the app may change its working folder before it runs another `pinwin`.
-fn absolute_socket_path(path: PathBuf) -> io::Result<PathBuf> {
-    if path.is_absolute() {
-        return Ok(path);
-    }
-    std::env::current_dir().map(|folder| folder.join(path))
 }
 
 /// Run the daemon in the foreground (spec "One daemon for each Wayland

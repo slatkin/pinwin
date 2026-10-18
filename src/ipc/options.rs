@@ -9,13 +9,10 @@
 //! serialization here is the one place a value gets its wire text, so the
 //! options and the panel commands cannot drift apart.
 
-use std::fmt;
-use std::str::FromStr;
-
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Number;
 
-use super::{RequestError, setting};
+use super::{RequestError, gutter, optional_setting};
 use crate::cli::Amount;
 use crate::config::{FocusRing, Keyboard, Layer, PanelOptions};
 use crate::geometry::{Edge, ReserveMode, Size};
@@ -87,46 +84,20 @@ pub(super) fn serialize<S: Serializer>(
 /// command.
 pub(super) fn parse(raw: WireOptions) -> Result<PanelOptions, RequestError> {
     Ok(PanelOptions {
-        edge: option_setting("edge", raw.edge.as_deref())?,
-        size: option_setting("size", raw.size.as_deref())?,
-        reserve: option_setting("reserve", raw.reserve.as_deref())?,
-        layer: option_setting("layer", raw.layer.as_deref())?,
-        keyboard: option_setting("keyboard", raw.keyboard.as_deref())?,
+        edge: optional_setting("edge", raw.edge.as_deref())?,
+        size: optional_setting("size", raw.size.as_deref())?,
+        reserve: optional_setting("reserve", raw.reserve.as_deref())?,
+        layer: optional_setting("layer", raw.layer.as_deref())?,
+        keyboard: optional_setting("keyboard", raw.keyboard.as_deref())?,
         output: raw.output,
         hidden: raw.hidden,
-        focus_ring: option_setting("focus_ring", raw.focus_ring.as_deref())?,
-        gutter_left: option_gutter("gutter_left", raw.gutter_left)?,
-        gutter_right: option_gutter("gutter_right", raw.gutter_right)?,
-        gutter_top: option_gutter("gutter_top", raw.gutter_top)?,
-        gutter_bottom: option_gutter("gutter_bottom", raw.gutter_bottom)?,
+        focus_ring: optional_setting("focus_ring", raw.focus_ring.as_deref())?,
+        gutter_left: gutter("gutter_left", raw.gutter_left)?,
+        gutter_right: gutter("gutter_right", raw.gutter_right)?,
+        gutter_top: gutter("gutter_top", raw.gutter_top)?,
+        gutter_bottom: gutter("gutter_bottom", raw.gutter_bottom)?,
         ..PanelOptions::default()
     })
-}
-
-/// An optional setting, absent when its field is absent.
-fn option_setting<T>(field: &str, raw: Option<&str>) -> Result<Option<T>, RequestError>
-where
-    T: FromStr,
-    T::Err: fmt::Display,
-{
-    raw.map(|text| setting(field, text)).transpose()
-}
-
-/// An optional gutter of the run options (D7): an absent field keeps the
-/// config file's value, while a fractional or an over-`i32` value is the
-/// known command's `invalid_value`, not a request line the parser cannot
-/// read (spec "Run options", "Gutter request fields").
-fn option_gutter(field: &str, raw: Option<Number>) -> Result<Option<i32>, RequestError> {
-    raw.map(|number| {
-        super::whole(&number)
-            .and_then(|value| i32::try_from(value).ok())
-            .ok_or_else(|| {
-                RequestError::InvalidValue(format!(
-                    "{field}: expected a whole number of pixels, got {number}"
-                ))
-            })
-    })
-    .transpose()
 }
 
 /// The wire text of a size: `640px` or `30%`.

@@ -610,11 +610,7 @@ impl Tween {
 /// own strip, so a collapse from a covering panel still moves the strip once
 /// the animation ends; a covering target holds the resting gap.
 fn final_gap(resting_gap: HeldGap, geometry: Geometry) -> HeldGap {
-    if geometry.reserve() == ReserveMode::Push {
-        resting_gap.reserve(true, geometry, geometry.across())
-    } else {
-        resting_gap
-    }
+    resting_gap.reserve(true, geometry, geometry.across())
 }
 
 #[cfg(test)]

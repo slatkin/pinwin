@@ -26,7 +26,7 @@ use super::events::Bus;
 use super::lifetime::Lifetime;
 use crate::config::PanelOptions;
 use crate::guard::{Poisoned, guard};
-use crate::ipc::{self, ErrorKind, ErrorReply, MAX_LINE, Reply, Request};
+use crate::ipc::{self, ErrorKind, MAX_LINE, Reply, Request};
 use crate::name::PanelName;
 use crate::proxy::{self, StartError};
 
@@ -151,8 +151,7 @@ fn create_or_show(
             };
             match lifetime.registry().route(&show, timeout) {
                 Some(reply) if reply.is_ok() => return Reply::existing(),
-                Some(reply)
-                    if reply.as_error().map(ErrorReply::kind) == Some(ErrorKind::NoPanel) => {}
+                Some(Reply::Error(error)) if error.kind() == ErrorKind::NoPanel => {}
                 Some(reply) => return reply,
                 // The registry answers every panel command, `show` included.
                 None => {
