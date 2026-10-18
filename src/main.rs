@@ -34,6 +34,7 @@ use crate::run::Exec;
 mod cli;
 mod config;
 mod daemon;
+mod fd;
 mod geometry;
 mod guard;
 mod ipc;

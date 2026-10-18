@@ -40,7 +40,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::io::{self, Write as _};
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::rc::{Rc, Weak};
 
 use wl_proxy::object::ObjectCoreApi;
@@ -67,12 +67,9 @@ pub(super) fn memfd(name: &CStr) -> io::Result<OwnedFd> {
     // SAFETY: `memfd_create` takes a NUL-terminated name and flags and reads
     // no other pointer; a failure is a negative return, not a panic.
     let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: `fd` is a fresh descriptor the call above returned and nothing
-    // else owns, so this `OwnedFd` is its only owner.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    // SAFETY: `fd` is either a fresh descriptor the call above returned or
+    // negative, and nothing else owns a fresh one.
+    unsafe { crate::fd::owned_fd(fd.into()) }
 }
 
 /// An opaque `wl_shm` ARGB8888 buffer holding `pixels`, `width` by `height`

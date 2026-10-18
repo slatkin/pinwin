@@ -20,7 +20,7 @@
 //! D10).
 
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
 /// Whether the panel has ended (D3, spec "Panel lifetime follows the app"):
 /// the app's process has exited and no connection of the app is left.
@@ -53,17 +53,9 @@ impl PidFd {
         // SAFETY: `pidfd_open` takes the process ID and no flags and reads no
         // pointer; a failure is a negative return, not a panic.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let Ok(fd) = RawFd::try_from(fd) else {
-            return Err(io::Error::other(
-                "pidfd_open returned a descriptor that does not fit a RawFd",
-            ));
-        };
-        // SAFETY: `fd` is a fresh descriptor the call above returned and
-        // nothing else owns, so this `OwnedFd` is its only owner.
-        Ok(Self(unsafe { OwnedFd::from_raw_fd(fd) }))
+        // SAFETY: `fd` is either a fresh descriptor the call above returned
+        // or negative, and nothing else owns a fresh one.
+        Ok(Self(unsafe { crate::fd::owned_fd(fd) }?))
     }
 }
 
@@ -95,7 +87,6 @@ pub(super) const fn pidfd_watch(pidfd: RawFd, app_exited: bool) -> libc::pollfd 
 
 #[cfg(test)]
 mod tests {
-    use std::io;
     use std::os::fd::AsRawFd;
     use std::process::Command;
     use std::time::Duration;
@@ -196,13 +187,9 @@ mod tests {
     /// Whether one poll entry reports an event within `timeout`, so a test
     /// never waits without a bound.
     fn triggered(watched: libc::pollfd, timeout: Duration) -> bool {
-        let mut watched = watched;
-        let timeout = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
-        // SAFETY: `watched` is one live `pollfd` and the count is its length;
-        // `poll` reads and writes only that value.
-        let ready = unsafe { libc::poll(std::ptr::addr_of_mut!(watched), 1, timeout) };
-        assert!(ready >= 0, "poll failed: {}", io::Error::last_os_error());
-        ready > 0 && watched.revents != 0
+        let mut watched = [watched];
+        let ready = crate::fd::poll(&mut watched, Some(timeout)).expect("poll");
+        ready > 0 && watched[0].revents != 0
     }
 
     /// Whether `pidfd` is readable within `timeout`, which is how the panel's

@@ -27,7 +27,7 @@
 //! parameters, so a test runs fast (`port-to-rust` D10).
 
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -41,6 +41,7 @@ use super::panel::{EventFd, PanelHandle};
 use super::registry::Registry;
 use super::{DaemonSocket, locked};
 use crate::config::{Config, DaemonSettings, PanelOptions, PanelSettings};
+use crate::fd::owned_fd;
 use crate::ipc::{ErrorKind, ErrorReply, Reply};
 use crate::name::PanelName;
 use crate::tray::TrayService;
@@ -450,12 +451,9 @@ impl SignalFd {
                 libc::SFD_CLOEXEC | libc::SFD_NONBLOCK,
             )
         };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: `fd` is a fresh descriptor from the call above and nothing
-        // else owns it, so this `OwnedFd` is its only owner.
-        Ok(Self(unsafe { OwnedFd::from_raw_fd(fd) }))
+        // SAFETY: `fd` is a fresh descriptor from the call above or
+        // negative, and nothing else owns a fresh one.
+        Ok(Self(unsafe { owned_fd(fd.into()) }?))
     }
 
     /// The next pending signal, or `None` when none is queued. A signal
@@ -564,18 +562,8 @@ impl Daemon {
                     revents: 0,
                 },
             ];
-            // SAFETY: `watched` is a live array of valid `pollfd` entries for
-            // the duration of the call, and `poll` writes only its `revents`
-            // fields. A negative timeout waits until one of them is ready.
-            let ready =
-                unsafe { libc::poll(watched.as_mut_ptr(), watched.len() as libc::nfds_t, -1) };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error);
-            }
+            // No timeout waits until one of them is ready.
+            crate::fd::poll(&mut watched, None)?;
             if watched[2].revents & libc::POLLIN != 0 {
                 self.on_signals(signals)?;
             }

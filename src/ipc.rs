@@ -567,8 +567,11 @@ impl LineReader {
                 Ok(read) => self.pending.extend_from_slice(&chunk[..read]),
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero()
-                        || !poll_ready(stream.as_raw_fd(), libc::POLLIN, remaining)
+                    if remaining.is_zero() {
+                        return Err(LineError::Timeout);
+                    }
+                    if !poll_ready(stream.as_raw_fd(), libc::POLLIN, remaining)
+                        .map_err(LineError::Io)?
                     {
                         return Err(LineError::Timeout);
                     }
@@ -601,7 +604,11 @@ pub fn write_line(
             Ok(count) => written += count,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() || !poll_ready(stream.as_raw_fd(), libc::POLLOUT, remaining)
+                if remaining.is_zero() {
+                    return Err(LineError::Timeout);
+                }
+                if !poll_ready(stream.as_raw_fd(), libc::POLLOUT, remaining)
+                    .map_err(LineError::Io)?
                 {
                     return Err(LineError::Timeout);
                 }
@@ -614,17 +621,20 @@ pub fn write_line(
 }
 
 /// Wait until `fd` reports `events` (`POLLIN`/`POLLOUT`), at most `timeout`.
-/// False when the wait expired or poll failed.
-fn poll_ready(fd: std::os::fd::RawFd, events: libc::c_short, timeout: Duration) -> bool {
-    let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-    let mut fds = libc::pollfd {
+/// False when the wait expired, and an error when poll itself failed, so a
+/// real failure never reports as a timeout (spec "Command-line exit codes").
+fn poll_ready(
+    fd: std::os::fd::RawFd,
+    events: libc::c_short,
+    timeout: Duration,
+) -> io::Result<bool> {
+    let mut fds = [libc::pollfd {
         fd,
         events,
         revents: 0,
-    };
-    // SAFETY: `fds` is one valid pollfd entry for the duration of the call.
-    let ready = unsafe { libc::poll(std::ptr::addr_of_mut!(fds), 1, timeout_ms) };
-    ready > 0 && fds.revents & events != 0
+    }];
+    let ready = crate::fd::poll(&mut fds, Some(timeout))?;
+    Ok(ready > 0 && fds[0].revents & events != 0)
 }
 
 #[cfg(test)]

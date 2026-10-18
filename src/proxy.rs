@@ -635,20 +635,7 @@ impl Panel {
         // A running tween wakes the loop at its next frame (D8); otherwise
         // the tick is what ends a panel whose daemon dropped its handle.
         let sleep = frame_wait.unwrap_or(TICK).min(TICK);
-        let timeout = libc::c_int::try_from(sleep.as_millis()).unwrap_or(libc::c_int::MAX);
-        loop {
-            // SAFETY: `watched` is a live array of three `pollfd` values and
-            // the count is its length; `poll` reads and writes only that
-            // array.
-            let ready = unsafe { libc::poll(watched.as_mut_ptr(), 3, timeout) };
-            if ready >= 0 {
-                break;
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
-            }
-        }
+        crate::fd::poll(&mut watched, Some(sleep))?;
         // A hangup is an exit for the pidfd and work for the state, so any
         // reported event counts.
         Ok(Ready {

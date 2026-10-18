@@ -165,8 +165,9 @@ fn peer_closed(stream: &UnixStream) -> bool {
         events: libc::POLLIN,
         revents: 0,
     };
-    // SAFETY: `polled` is one valid descriptor entry for the duration of the
-    // call, and poll writes only its `revents` field.
-    let ready = unsafe { libc::poll(std::ptr::addr_of_mut!(polled), 1, 0) };
+    let Ok(ready) = crate::fd::poll(std::slice::from_mut(&mut polled), Some(Duration::ZERO)) else {
+        // A failed poll leaves the connection open until the next pass.
+        return false;
+    };
     ready > 0 && polled.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
 }

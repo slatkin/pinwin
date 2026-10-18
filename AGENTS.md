@@ -34,6 +34,13 @@ and several modules wait for the rows that wire them in (D15).
   daemon request. It produces the command value and the `PanelOptions` of the
   config file and opens no socket. `src/main.rs` compiles it and dispatches
   its commands; its unit tests are `src/cli/tests.rs`.
+- `src/fd.rs` — the raw descriptors the daemon, the proxy and the client
+  share (D12): the one `poll` wait, which takes `None` for an endless wait,
+  retries `EINTR` with the time left against its deadline and returns a real
+  poll error as an error (spec "Command-line exit codes"), and `owned_fd`,
+  the one unsafe place a C call's fresh descriptor becomes an `OwnedFd`, so
+  the eventfd, the signalfd, the memfd and the pidfd constructors cannot
+  drift apart. `src/main.rs` compiles it; its tests are `src/fd/tests.rs`.
 - `src/ipc.rs` — the daemon's wire format (D13): the request enum with one
   variant for each client subcommand and the `create` request `pinwin run`
   sends (D2), the reply with its error kinds, its display for a new panel and

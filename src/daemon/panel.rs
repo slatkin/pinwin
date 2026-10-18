@@ -15,12 +15,13 @@
 
 use std::fmt;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::locked;
+use crate::fd::owned_fd;
 use crate::ipc::{ErrorReply, PanelStatus, Request};
 
 /// What a panel answers (spec "The daemon survives bad input"): the command
@@ -257,12 +258,9 @@ impl EventFd {
         // returns and reads no pointer; the flags are plain constants, and a
         // failure is a negative return, not a panic.
         let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: `fd` is a fresh descriptor that the call above returned and
-        // nothing else owns, so this `OwnedFd` is its only owner.
-        Ok(Self(unsafe { OwnedFd::from_raw_fd(fd) }))
+        // SAFETY: `fd` is either a fresh descriptor that the call above
+        // returned or negative, and nothing else owns a fresh one.
+        Ok(Self(unsafe { owned_fd(fd.into()) }?))
     }
 
     /// Wake the panel: one more on the count. A counter that is already full
