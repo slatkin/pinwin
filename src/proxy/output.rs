@@ -12,13 +12,11 @@
 //! window: the event names the app's own `wl_output`, which is correlated to
 //! the proxy's bind through the global name both registries share.
 //!
-//! Until the panel's output reports a size, a percent size resolves against
-//! the placeholder below — a layer surface anchored on only its near edge
-//! must still carry a size across that edge, and 1920x1080 turns the
-//! built-in 25% default into a 480 pixel panel. When the first size
-//! arrives, the routing re-applies the resolved geometry ([`super::routing`]
-//! `reapply_geometry`). The placeholder stays as the documented "not yet
-//! known" fallback, not as a stand-in for real behavior.
+//! A percent size resolves against the panel's output size, and a panel
+//! whose size needs that output does not dock until the size is known (see
+//! [`super::dock::size`]). The proxy never invents an output size: a percent
+//! panel waits for the compositor to report one, and an absolute-pixel panel
+//! docks without it.
 //!
 //! The proxy-owned output objects here have no client on the far side, so
 //! their event handlers observe and never forward: the generated default
@@ -59,13 +57,6 @@ const SUBCOMPOSITOR_VERSION: u32 = 1;
 const VIEWPORTER_VERSION: u32 = 1;
 const OUTPUT_VERSION: u32 = 4;
 const XDG_OUTPUT_MANAGER_VERSION: u32 = 3;
-
-/// The output size a percent panel resolves against until the panel's own
-/// output reports one (D9): a whole output, so its two dimensions are valid
-/// by construction.
-pub(super) fn placeholder_output() -> OutputSize {
-    OutputSize::new(1920, 1080).expect("the placeholder output has a width and a height")
-}
 
 /// The logical size implied by a `wl_output` mode and scale (D9's fallback
 /// when the compositor has no `zxdg_output_v1`): the mode's pixel size
@@ -276,6 +267,21 @@ impl Globals {
         self.outputs.borrow_mut().insert(global_name, tracker);
     }
 
+    /// Seeds one tracked output with a known size, for the display-free tests
+    /// of the code that resolves against it (`port-to-rust` D10). The object
+    /// is minted in a client-side state and never sent anywhere.
+    #[cfg(test)]
+    pub(super) fn install_test_output(&self, global: u32, size: OutputSize) {
+        let state = wl_proxy::state::State::builder(wl_proxy::baseline::Baseline::V6)
+            .without_server()
+            .build()
+            .expect("a client-side state needs no compositor");
+        let wl_output = state.create_object::<WlOutput>(OUTPUT_VERSION);
+        let tracker = Rc::new(OutputTracker::new(global, wl_output));
+        tracker.logical.set(Some(size));
+        self.add_output(global, tracker);
+    }
+
     /// Forgets the output bound under `global`, when one is tracked (D11):
     /// the compositor removed the global, so the object is dead and its name
     /// must stop answering `set-output` (spec "Unknown output") and must
@@ -376,6 +382,28 @@ impl Globals {
             .borrow()
             .get(&global_name)
             .and_then(|tracker| tracker.size())
+    }
+
+    /// The size of the only tracked output, when the compositor has exactly
+    /// one: a panel the compositor chooses an output for can only land on
+    /// that output, so its percent size is already decidable (D9).
+    pub(super) fn sole_output_size(&self) -> Option<OutputSize> {
+        let outputs = self.outputs.borrow();
+        let mut remaining = outputs.values();
+        let only = remaining.next()?;
+        if remaining.next().is_some() {
+            return None;
+        }
+        only.size()
+    }
+
+    /// The first known output size in global-name order, when one is known:
+    /// the last resort for a first dock whose own output is still unknown.
+    pub(super) fn first_known_output_size(&self) -> Option<OutputSize> {
+        self.outputs
+            .borrow()
+            .values()
+            .find_map(|tracker| tracker.size())
     }
 
     /// Whether the surface named `surface_id` carries an app viewport (D8).
@@ -526,6 +554,9 @@ impl WlRegistryHandler for ProxyRegistry {
         let Some(wl_output) = self.globals.remove_output(name) else {
             return;
         };
+        // D9: a removal can leave a sole tracked output behind, which is the
+        // size a waiting first dock was missing.
+        super::routing::resume_pending(&self.routing);
         // The client destroys the object its bind created (the contract of
         // `wl_registry.global_remove`); `release` is `wl_output`'s
         // destructor since version 3, and the version the proxy bound is
@@ -651,147 +682,4 @@ impl WlSurfaceHandler for PanelSurfaceWatch {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::rc::Rc;
-
-    use super::{
-        Globals, OUTPUT_VERSION, OutputTracker, effective_output_size, logical_from_mode,
-        placeholder_output,
-    };
-    use crate::geometry::OutputSize;
-    use crate::proxy::dock::{SetOutputDecision, set_output_decision};
-    use wl_proxy::baseline::Baseline;
-    use wl_proxy::protocols::wayland::wl_output::WlOutput;
-    use wl_proxy::state::State;
-
-    /// The fallback divides the current mode by the integer scale (D9):
-    /// a 2x-scaled 4K output is 1920x1080 logical.
-    #[test]
-    fn mode_and_scale_fallback_divides_by_the_scale() {
-        assert_eq!(
-            logical_from_mode(Some((3840, 2160)), 2),
-            OutputSize::new(1920, 1080)
-        );
-        assert_eq!(
-            logical_from_mode(Some((1920, 1080)), 1),
-            OutputSize::new(1920, 1080)
-        );
-    }
-
-    /// A missing mode, a non-positive scale and a division that collapses to
-    /// zero give no fallback size — `OutputSize` never carries a zero axis.
-    #[test]
-    fn the_fallback_refuses_unknown_or_degenerate_inputs() {
-        assert_eq!(logical_from_mode(None, 2), None);
-        assert_eq!(logical_from_mode(Some((3840, 2160)), 0), None);
-        assert_eq!(logical_from_mode(Some((0, 0)), 1), None);
-        assert_eq!(logical_from_mode(Some((1, 1)), 2), None);
-    }
-
-    /// The `zxdg_output_v1` logical size wins over the mode-and-scale
-    /// fallback whenever it has been announced (D9).
-    #[test]
-    fn the_logical_size_wins_over_the_fallback() {
-        let logical = OutputSize::new(2560, 1440);
-        assert_eq!(
-            effective_output_size(logical, Some((3840, 2160)), 2),
-            logical
-        );
-        assert_eq!(
-            effective_output_size(None, Some((3840, 2160)), 2),
-            OutputSize::new(1920, 1080)
-        );
-        assert_eq!(effective_output_size(None, None, 2), None);
-    }
-
-    /// The placeholder is a whole output, so percent resolution against it
-    /// never divides by zero: the built-in default becomes 480 pixels wide.
-    #[test]
-    fn the_placeholder_resolves_the_built_in_default() {
-        let output = placeholder_output();
-        assert_eq!(output.across(crate::geometry::Edge::Left), 1920);
-    }
-
-    /// A proxy-bound output with its compositor name pre-announced, for the
-    /// removal tests: the object is minted in a client-side state and never
-    /// sent anywhere, so the tests run without a compositor (`port-to-rust`
-    /// D10).
-    fn tracked_output(state: &Rc<State>, global: u32, name: Option<&str>) -> Rc<OutputTracker> {
-        let wl_output = state.create_object::<WlOutput>(OUTPUT_VERSION);
-        let tracker = Rc::new(OutputTracker::new(global, Rc::clone(&wl_output)));
-        if let Some(name) = name {
-            *tracker.output_name.borrow_mut() = Some(name.to_owned());
-        }
-        tracker
-    }
-
-    /// A client-side state the removal tests mint their objects in: no
-    /// server is attached, so nothing is sent and no compositor is needed.
-    fn object_state() -> Rc<State> {
-        State::builder(Baseline::V6)
-            .without_server()
-            .build()
-            .expect("a client-side state needs no compositor")
-    }
-
-    /// A removed output is refused like an unknown one (spec "Unknown
-    /// output"): once the `global_remove` has dropped its tracker, its name
-    /// answers neither a `set-output`'s decision nor a new panel's pin
-    /// (D11), while the still-tracked outputs answer as before.
-    #[test]
-    fn a_removed_output_is_refused_like_an_unknown_one() {
-        let state = object_state();
-        let globals = Globals::new();
-        for (global, name) in [(10, Some("DP-1")), (11, Some("DP-2"))] {
-            globals.add_output(global, tracked_output(&state, global, name));
-        }
-        assert_eq!(
-            set_output_decision("DP-2", &globals.tracked_output_names()),
-            SetOutputDecision::Pin(11),
-            "the test starts with the output tracked, so the removal is what changes it"
-        );
-
-        globals.remove_output(11);
-
-        assert_eq!(
-            set_output_decision("DP-2", &globals.tracked_output_names()),
-            SetOutputDecision::Unknown,
-            "a removed output is refused like an unknown name"
-        );
-        assert_eq!(globals.named_output("DP-2"), None);
-        assert!(
-            globals.output_by_global(11).is_none(),
-            "a removed output pins no layer surface"
-        );
-        assert_eq!(
-            set_output_decision("DP-1", &globals.tracked_output_names()),
-            SetOutputDecision::Pin(10),
-            "the still-tracked outputs answer as before"
-        );
-    }
-
-    /// A removed output leaves no stale panel state (D11): the panel's
-    /// output reverts to the compositor's choice and an app `wl_output`
-    /// bind of the dead global no longer claims a size the proxy tracks.
-    #[test]
-    fn a_removed_output_leaves_no_stale_panel_state() {
-        let state = object_state();
-        let globals = Globals::new();
-        globals.add_output(11, tracked_output(&state, 11, Some("DP-2")));
-        globals.record_client_output(11, 99);
-        assert!(globals.set_panel_output(99));
-        assert_eq!(globals.panel_output(), Some(11));
-
-        globals.remove_output(11);
-
-        assert_eq!(
-            globals.panel_output(),
-            None,
-            "the panel is no longer pinned to the dead output"
-        );
-        assert!(
-            !globals.set_panel_output(99),
-            "a stale app bind names no size the proxy tracks"
-        );
-    }
-}
+mod tests;

@@ -383,7 +383,9 @@ fn extent(value: i32) -> u32 {
 /// geometry.
 fn panel_length(routing: &Routing, geometry: Geometry) -> u32 {
     let edge = geometry.edge();
-    let output = routing.known_output();
+    let Some(output) = routing.dock_output() else {
+        return 1;
+    };
     let gutters = geometry.gutters();
     let length = i64::from(output.length(edge))
         - i64::from(gutters.along_start(edge))

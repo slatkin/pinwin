@@ -523,6 +523,10 @@ impl Panel {
         // D8: a running tween applies the frames its clock owes and says how
         // soon the loop has to wake again.
         let frame_wait = tween::advance(&self.routing);
+        // D9: a first dock that waits for an output size has its deadline
+        // checked on every tick; a size arrival or the panel's `enter` also
+        // resumes it.
+        routing::resume_pending(&self.routing);
         let ready = self.wait(*app_exited, frame_wait)?;
         if ready.wake {
             self.wake.drain().map_err(io::Error::other)?;

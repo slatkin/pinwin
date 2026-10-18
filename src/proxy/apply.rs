@@ -89,13 +89,38 @@ pub(super) fn answer(
     panel: &PanelName,
     bus: &Bus,
 ) -> Option<PanelReply> {
-    let plan = match plan_change(&routing.settings(), request, routing.known_output()) {
+    if !is_layout_request(request) {
+        return None;
+    }
+    // A layout change validates against the panel's output (D9). A panel
+    // that has not learned that size yet cannot be validated, so the change
+    // is refused instead of resolving against an invented output.
+    let Some(output) = routing.dock_output() else {
+        return Some(PanelReply::Refused(ErrorReply::new(
+            ErrorKind::InvalidLayout,
+            "the panel's output size is not known yet",
+        )));
+    };
+    let plan = match plan_change(&routing.settings(), request, output) {
         Ok(Some(plan)) => plan,
         Ok(None) => return None,
         Err(error) => return Some(PanelReply::Refused(error)),
     };
     apply_plan(routing, plan, panel, bus);
     Some(PanelReply::Done)
+}
+
+/// Whether `request` is one of the layout commands this module applies (row
+/// 6.6). Every one needs the panel's output size for its plan.
+fn is_layout_request(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::SetEdge { .. }
+            | Request::SetSize { .. }
+            | Request::Resize { .. }
+            | Request::SetReserve { .. }
+            | Request::SetLayer { .. }
+    )
 }
 
 /// The plan of one layout command (row 6.6): the settings the change would

@@ -649,7 +649,9 @@ fn send_layer_state(routing: &Routing) {
     let Some(layer) = routing.panel_layer_surface() else {
         return;
     };
-    let geometry = routing.geometry();
+    let Some(geometry) = routing.geometry() else {
+        return;
+    };
     let (width, height) = geometry.size();
     layer.send_set_size(width, height);
     let margins = geometry.margins();

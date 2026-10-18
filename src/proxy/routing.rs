@@ -25,10 +25,12 @@
 //! size, margins, layer and keyboard mode from [`PanelSettings`], an
 //! exclusive zone of -1 (D9: the reserve surface owns the strip), and a
 //! percent size resolved against the panel's output size, tracked from
-//! `zxdg_output_v1` — the mode-and-scale fallback and a 1920x1080 placeholder
-//! cover the window before that size is known ([`super::output`]). The reserve
-//! is created and destroyed with the panel window ([`super::reserve`]), and the
-//! panel window's buffer is cropped through a proxy-owned `wp_viewport`
+//! `zxdg_output_v1`. A percent panel whose output size is not known yet
+//! holds its window back instead of docking at an invented size
+//! ([`super::dock::size`]); an absolute-pixel panel docks without waiting.
+//! The reserve is created and destroyed with the panel window
+//! ([`super::reserve`]), and the panel window's buffer is cropped through a
+//! proxy-owned `wp_viewport`
 //! ([`super::viewport`]). A popup of the panel window becomes a popup of its
 //! layer surface with the anchor rectangle moved by the window geometry
 //! ([`super::popup`]), and each decoration object is routed by its toplevel
@@ -36,34 +38,47 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
+use std::time::{Duration, Instant};
 
 use wl_proxy::client::Client;
-use wl_proxy::object::{Object, ObjectCoreApi, ObjectUtils};
+use wl_proxy::object::{ObjectCoreApi, ObjectUtils};
 use wl_proxy::protocols::viewporter::wp_viewport::WpViewport;
 use wl_proxy::protocols::wayland::wl_output::WlOutput;
 use wl_proxy::protocols::wayland::wl_surface::WlSurface;
 use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 use wl_proxy::protocols::xdg_decoration_unstable_v1::zxdg_decoration_manager_v1::ZxdgDecorationManagerV1;
-use wl_proxy::protocols::xdg_shell::xdg_popup::XdgPopup;
-use wl_proxy::protocols::xdg_shell::xdg_positioner::XdgPositioner;
-use wl_proxy::protocols::xdg_shell::xdg_surface::{XdgSurface, XdgSurfaceHandler};
+use wl_proxy::protocols::xdg_shell::xdg_surface::XdgSurface;
 use wl_proxy::protocols::xdg_shell::xdg_toplevel::XdgToplevel;
-use wl_proxy::protocols::xdg_shell::xdg_wm_base::XdgWmBase;
 
 use super::apply;
-use super::commit::PanelSurfaceCommits;
 use super::dock;
-use super::mapping::layer_of;
-use super::output::{Globals, placeholder_output};
-use super::popup::{ClientXdgPopup, ClientXdgPositioner, offset_anchor_rect};
+use super::dock::size::DockDecision;
+use super::output::Globals;
 use super::reserve::Reserve;
 use super::slot::{Route, Slot};
-use super::viewport::{StaticCrop, apply_steady_crop, settle_forwarded, write_crop};
-use super::window::ClientXdgToplevel;
+use super::viewport::{StaticCrop, write_crop};
 use crate::config::{FocusRing, Keyboard, Layer, PanelSettings};
-use crate::daemon::panel::AppId;
 use crate::geometry::{Geometry, HeldGap, OutputSize, Size};
+
+mod xdg_surface;
+
+pub(super) use xdg_surface::ClientXdgSurface;
+
+/// How long a percent panel's first dock waits for its output size before
+/// taking the first tracked size instead (D9). A normal compositor reports
+/// its outputs with the registry roundtrip, so this only bounds a missing or
+/// late announcement.
+const DOCK_WAIT: Duration = Duration::from_millis(500);
+
+/// A panel window whose first dock waits for an output size (D9): the app
+/// surface whose handler holds the waiting toplevel, the slot's window id,
+/// and when the wait gives up.
+struct PendingDock {
+    xdg_surface: Weak<XdgSurface>,
+    window: u64,
+    deadline: Instant,
+}
 
 /// The routing state one panel shares between all its app connections (D4):
 /// the slot, the settings the panel's layer surface is built from, the
@@ -135,6 +150,8 @@ pub(super) struct Routing {
     /// The across size the panel last applied, so a size re-apply only
     /// sends when the resolution actually changed.
     last_resolved_across: Cell<Option<u32>>,
+    /// The panel window whose first dock waits for an output size (D9).
+    pending_dock: RefCell<Option<PendingDock>>,
 }
 
 impl Routing {
@@ -164,6 +181,7 @@ impl Routing {
             reserve_output: Cell::new(None),
             held_gap: RefCell::new(None),
             last_resolved_across: Cell::new(None),
+            pending_dock: RefCell::new(None),
         })
     }
 
@@ -341,20 +359,74 @@ impl Routing {
         *self.decoration_manager.borrow_mut() = Some(manager);
     }
 
-    /// The output size the panel is docked to, when it is known; the
-    /// placeholder otherwise (D9).
-    pub(super) fn known_output(&self) -> OutputSize {
-        self.globals
-            .panel_output_size()
-            .unwrap_or_else(placeholder_output)
+    /// The output size the first dock resolves a percent size against, when
+    /// it is known (D9): the pinned output's, the output the panel entered,
+    /// or a sole tracked output's. `None` leaves the compositor's choice
+    /// open, so a percent panel waits for it.
+    pub(super) fn dock_output(&self) -> Option<OutputSize> {
+        self.pinned_output()
+            .and_then(|(_, global)| self.globals.output_size(global))
+            .or_else(|| self.globals.panel_output_size())
+            .or_else(|| self.globals.sole_output_size())
     }
 
-    /// The panel surface's geometry: its anchors, margins and size across
-    /// its edge from the settings, with a percent resolved against the
-    /// panel's output size — the placeholder until the first size arrives
-    /// (D4, D9).
-    pub(super) fn geometry(&self) -> Geometry {
-        self.geometry_against(self.known_output())
+    /// What the panel's first dock does about its size (D4, D9): an
+    /// absolute-pixel size docks at once, and a percent size waits until
+    /// [`Routing::dock_output`] names the output it resolves against.
+    pub(super) fn dock_decision(&self) -> DockDecision {
+        super::dock::size::decide(&self.settings(), self.dock_output())
+    }
+
+    /// The decision a timed-out wait falls back to (D9): any tracked
+    /// output's known size, in global-name order. `None` when no output has
+    /// reported one, which forwards the window instead of inventing a size.
+    pub(super) fn fallback_dock_decision(&self) -> Option<DockDecision> {
+        self.globals
+            .first_known_output_size()
+            .map(|output| super::dock::size::decide(&self.settings(), Some(output)))
+    }
+
+    /// The panel surface's geometry, when its size resolves now: its
+    /// anchors, margins and size across its edge from the settings, with a
+    /// percent resolved against the panel's output size (D4, D9).
+    pub(super) fn geometry(&self) -> Option<Geometry> {
+        match self.dock_decision() {
+            DockDecision::Ready { geometry, .. } => Some(geometry),
+            DockDecision::Wait => None,
+        }
+    }
+
+    /// Records that the panel window's first dock waits for its output size
+    /// (D9): the surface handler holds the toplevel, and the panel loop or an
+    /// output event resumes it.
+    pub(super) fn defer_dock(&self, xdg_surface: &Rc<XdgSurface>, window: u64) {
+        *self.pending_dock.borrow_mut() = Some(PendingDock {
+            xdg_surface: Rc::downgrade(xdg_surface),
+            window,
+            deadline: Instant::now() + DOCK_WAIT,
+        });
+    }
+
+    /// The waiting dock's surface, window and deadline, for the resume path.
+    pub(super) fn pending_snapshot(&self) -> Option<(Weak<XdgSurface>, u64, Instant)> {
+        self.pending_dock.borrow().as_ref().map(|pending| {
+            (
+                Weak::clone(&pending.xdg_surface),
+                pending.window,
+                pending.deadline,
+            )
+        })
+    }
+
+    /// Forgets the waiting dock of `window`, when it is that window's (D9).
+    pub(super) fn clear_pending_dock(&self, window: u64) {
+        let mut pending = self.pending_dock.borrow_mut();
+        if pending
+            .as_ref()
+            .is_some_and(|pending| pending.window == window)
+        {
+            *pending = None;
+        }
     }
 
     /// The panel surface's geometry with a percent resolved against
@@ -512,9 +584,11 @@ impl Routing {
         write_crop(&viewport, Some(crop));
     }
 
-    /// The output the panel entered is now known or its size changed: one
-    /// re-apply pass (D9).
-    pub(super) fn on_output_size_ready(&self, global_name: u32) {
+    /// An output's size is now known or changed (D9): a waiting first dock
+    /// resumes when the size decides it, and a docked panel whose output
+    /// changed takes one re-apply pass.
+    pub(super) fn on_output_size_ready(self: &Rc<Self>, global_name: u32) {
+        resume_pending(self);
         if self.globals.panel_output() != Some(global_name) {
             return;
         }
@@ -530,6 +604,7 @@ impl Routing {
         if !self.globals.set_panel_output(client_output_id) {
             return;
         }
+        resume_pending(self);
         apply::reapply(self);
         dock::follow_reserve(self);
     }
@@ -538,6 +613,7 @@ impl Routing {
     /// the reserve and the hidden buffers go, and the surface references clear.
     pub(super) fn on_panel_window_destroyed(&self, window: u64) {
         self.release(window);
+        self.clear_pending_dock(window);
         self.slot_owner.borrow_mut().take();
         self.hidden.reset();
         if let Some(reserve) = self.reserve.borrow_mut().take() {
@@ -558,260 +634,21 @@ impl Routing {
     }
 }
 
-/// One app `xdg_surface` (D4): held back until its toplevel role appears,
-/// then either the panel's layer surface or a forwarded normal window.
-pub(super) struct ClientXdgSurface {
-    routing: Rc<Routing>,
-    wl_surface: Rc<WlSurface>,
-    xdg_surface: Rc<XdgSurface>,
-    xdg_wm_base: Rc<XdgWmBase>,
-    /// Whether the compositor has this `xdg_surface` as an upstream object:
-    /// false while the surface is held back, true after a pass-through
-    /// forward.
-    has_server: bool,
-    /// The window geometry the app set on this surface, `[x, y, width,
-    /// height]` (D5): a popup of the panel window offsets its anchor
-    /// rectangle by the panel window's one, and the panel window's buffer is
-    /// cropped to it through a proxy-owned viewport (D8). A surface the app
-    /// set none on keeps `None`.
-    geometry: Option<[i32; 4]>,
-    /// The hosted app's `app_id`, recorded when this surface becomes the
-    /// panel window (row 11.1, D14).
-    app_id: AppId,
-}
-
-impl ClientXdgSurface {
-    /// A held-back surface whose role is not yet known (D4): it carries no
-    /// layer surface, has nothing upstream and no window geometry.
-    pub(super) fn held_back(
-        routing: Rc<Routing>,
-        wl_surface: Rc<WlSurface>,
-        xdg_surface: Rc<XdgSurface>,
-        xdg_wm_base: Rc<XdgWmBase>,
-        app_id: AppId,
-    ) -> Self {
-        Self {
-            routing,
-            wl_surface,
-            xdg_surface,
-            xdg_wm_base,
-            has_server: false,
-            geometry: None,
-            app_id,
-        }
-    }
-
-    /// The panel window's current layer surface when this surface is the
-    /// panel window (D4, D11): the routing's live reference, so popups and
-    /// acks stay on the surface that is actually docked across a re-dock.
-    fn panel_layer_surface(&self) -> Option<Rc<ZwlrLayerSurfaceV1>> {
-        if !self.routing.is_panel_surface(self.wl_surface.unique_id()) {
-            return None;
-        }
-        self.routing.panel_layer_surface()
-    }
-
-    /// Forwards this surface and its new toplevel to the compositor unchanged
-    /// (D4: `get_toplevel` while the slot is full). This surface can no
-    /// longer be the panel's, so an app viewport it created before the
-    /// window mapping settles now instead of waiting for the slot (D8).
-    fn forward(&mut self, id: &Rc<XdgToplevel>) {
-        self.xdg_wm_base
-            .send_get_xdg_surface(&self.xdg_surface, &self.wl_surface);
-        self.has_server = true;
-        self.xdg_surface.send_get_toplevel(id);
-        settle_forwarded(&self.routing, self.wl_surface.unique_id());
-    }
-
-    /// Turns this surface into the panel's layer surface (D4: `get_toplevel`
-    /// while the slot is empty). Copied from wl-paper's `paper.rs`
-    /// `ClientXdgSurface::handle_get_toplevel` (GPL-3.0); the geometry comes
-    /// from pinwin's settings, and the layer surface's creation and handler
-    /// live in [`super::dock`] (D11).
-    fn take_slot(&mut self, layer_shell: &Rc<ZwlrLayerShellV1>, id: &Rc<XdgToplevel>) {
-        let geometry = self.routing.geometry();
-        if id.version() >= XdgToplevel::MSG__WM_CAPABILITIES__SINCE {
-            id.send_wm_capabilities(&[]);
-        }
-        // The toplevel stays local: the app sees a normal window, but every
-        // request on this role is answered by the proxy (D4).
-        id.set_forward_to_server(false);
-        id.set_handler(ClientXdgToplevel::new(
-            Rc::clone(&self.routing),
-            id,
-            id.unique_id(),
-            self.app_id.clone(),
-        ));
-        let window = dock::PanelWindow {
-            surface: Rc::clone(&self.wl_surface),
-            xdg_surface: Rc::clone(&self.xdg_surface),
-            toplevel: Rc::clone(id),
-        };
-        // D11: the settings' output pins the panel when the proxy has bound
-        // it; otherwise the compositor chooses.
-        dock::dock_panel_window(&self.routing, layer_shell, &window, &geometry);
-        // D9, D11: the reserve surface is created with the panel window and
-        // owns the exclusive zone the panel surface does not claim, pinned
-        // to the panel's output when one is set.
-        dock::start_reserve(
-            &self.routing,
-            &geometry,
-            layer_of(self.routing.layer()),
-            self.routing.pinned_output().as_ref(),
-        );
-        // D9: the surface watch learns which output the compositor docked
-        // the panel on; the D7 commits handler sits on top of it and sees
-        // each pending-state request and the app's commit.
-        self.wl_surface
-            .set_handler(PanelSurfaceCommits::new(&self.routing, &self.wl_surface));
-        // A window geometry the app set before its toplevel crops from here.
-        apply_steady_crop(&self.routing, self.geometry);
-    }
-}
-
-impl XdgSurfaceHandler for ClientXdgSurface {
-    fn handle_destroy(&mut self, _slf: &Rc<XdgSurface>) {
-        self.xdg_surface.unset_handler();
-        if self.has_server {
-            self.xdg_surface.send_destroy();
-            self.has_server = false;
-        } else {
-            self.xdg_surface.delete_id();
-        }
-    }
-
-    fn handle_get_toplevel(&mut self, _slf: &Rc<XdgSurface>, id: &Rc<XdgToplevel>) {
-        let Some(layer_shell) = self.routing.layer_shell() else {
-            self.forward(id);
-            return;
-        };
-        let owner = id.core().client();
-        if self.routing.route(id.unique_id(), owner.as_ref()) == Route::PassedThrough {
-            self.forward(id);
-            return;
-        }
-        // D9: validate before applying. A geometry the output cannot hold
-        // never docks — the window passes through as a normal window and the
-        // slot stays empty (spec "Validate a change before applying it").
-        if let Err(error) = self
-            .routing
-            .geometry()
-            .validate(self.routing.known_output())
-        {
-            eprintln!(
-                "pinwin: the panel geometry cannot apply: {error}; the window opens as a normal window"
-            );
-            self.routing.release(id.unique_id());
-            self.forward(id);
-            return;
-        }
-        self.take_slot(&layer_shell, id);
-    }
-
-    fn handle_set_window_geometry(
-        &mut self,
-        _slf: &Rc<XdgSurface>,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-    ) {
-        // The window geometry drives the popup anchor offset (D5) and the
-        // panel window's viewport crop (D8); every surface keeps
-        // what the app asked for, and a held surface sends nothing upstream
-        // yet.
-        self.geometry = Some([x, y, width, height]);
-        if self.has_server {
-            self.xdg_surface
-                .send_set_window_geometry(x, y, width, height);
-        }
-        // D5/D8: the panel window's buffer is cropped to the window geometry
-        // through the proxy-owned viewport, so a client-side title bar and
-        // shadow stay outside the panel. The values are double-buffered
-        // viewport state: they apply with the app's next commit (D7 is row
-        // 8.1).
-        if self.panel_layer_surface().is_some() {
-            apply_steady_crop(&self.routing, self.geometry);
-        }
-    }
-
-    fn handle_get_popup(
-        &mut self,
-        _slf: &Rc<XdgSurface>,
-        id: &Rc<XdgPopup>,
-        parent: Option<&Rc<XdgSurface>>,
-        positioner: &Rc<XdgPositioner>,
-    ) {
-        // The popup's parent decides its route (D5): a popup of the panel
-        // window becomes a popup of the panel's layer surface, moved by the
-        // window geometry, and every other popup is forwarded unchanged.
-        // Copied from wl-paper's `paper.rs`
-        // `ClientXdgSurface::handle_get_popup` (GPL-3.0); the geometry the
-        // offset moves by is the one [`Self::handle_set_window_geometry`]
-        // keeps.
-        if !self.has_server {
-            // The upstream popup is created from this surface's upstream
-            // `xdg_surface`, so the held-back surface goes first.
-            self.xdg_wm_base
-                .send_get_xdg_surface(&self.xdg_surface, &self.wl_surface);
-            self.has_server = true;
-        }
-        if let Some([x, y, width, height]) = self.geometry {
-            self.xdg_surface
-                .send_set_window_geometry(x, y, width, height);
-        }
-        let mut layer_surface = None;
-        let mut proxy_parent = parent;
-        let mut parent_geometry = None;
-        if let Some(parent) = parent
-            && let Ok(parent_handler) = parent.try_get_handler_ref::<ClientXdgSurface>()
-            && let Some(parent_layer) = parent_handler.panel_layer_surface()
-        {
-            layer_surface = Some(parent_layer);
-            proxy_parent = None;
-            parent_geometry = parent_handler.geometry;
-        }
-        let anchor = positioner
-            .try_get_handler_ref::<ClientXdgPositioner>()
-            .ok()
-            .and_then(|handler| handler.anchor_rect());
-        if let Some(geometry) = parent_geometry
-            && let Some([ax, ay, aw, ah]) = anchor
-        {
-            let [x, y, width, height] = offset_anchor_rect([ax, ay, aw, ah], Some(geometry));
-            positioner.send_set_anchor_rect(x, y, width, height);
-        }
-        self.xdg_surface
-            .send_get_popup(id, proxy_parent, positioner);
-        if parent_geometry.is_some()
-            && let Some([ax, ay, aw, ah]) = anchor
-        {
-            // The upstream positioner keeps the app's rectangle: the offset
-            // was only for this popup's creation (wl-paper).
-            positioner.send_set_anchor_rect(ax, ay, aw, ah);
-        }
-        if let Some(layer_surface) = layer_surface {
-            layer_surface.send_get_popup(id);
-        }
-        if let Some(geometry) = parent_geometry {
-            id.set_handler(ClientXdgPopup::new(id, geometry));
-        }
-    }
-
-    fn handle_ack_configure(&mut self, _slf: &Rc<XdgSurface>, serial: u32) {
-        // D8: a minted configure's ack is swallowed; any other ack is forwarded.
-        if self.routing.globals().tween().swallow_ack(serial) {
-            return;
-        }
-        if let Some(layer) = self.panel_layer_surface() {
-            // The app acks the layer surface's configure through its local
-            // xdg_surface (D4); after a re-dock it reaches the live surface
-            // (D11).
-            layer.send_ack_configure(serial);
-            // D6: a show waits for this ack to attach the kept buffer.
-            super::hide::on_ack(&self.routing, &self.wl_surface);
-        } else if self.has_server {
-            self.xdg_surface.send_ack_configure(serial);
-        }
-    }
+/// Resumes a first dock that waits for its output size (D9): one attempt per
+/// lane that can decide it — a size arrival, the panel's `enter`, an output
+/// removal, and the panel loop's tick, which also carries the wait's
+/// deadline. A wait still open does nothing.
+pub(super) fn resume_pending(routing: &Rc<Routing>) {
+    let Some((xdg_surface, window, deadline)) = routing.pending_snapshot() else {
+        return;
+    };
+    let Some(xdg_surface) = xdg_surface.upgrade() else {
+        routing.clear_pending_dock(window);
+        return;
+    };
+    let Ok(mut handler) = xdg_surface.try_get_handler_mut::<ClientXdgSurface>() else {
+        routing.clear_pending_dock(window);
+        return;
+    };
+    handler.resume(routing, Instant::now() >= deadline);
 }

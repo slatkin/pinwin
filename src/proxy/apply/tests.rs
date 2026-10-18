@@ -1,7 +1,8 @@
+use std::rc::Rc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
-use super::{Plan, Routing, app_size, needs_new_app_size, plan_change, resize_size};
+use super::{Plan, app_size, needs_new_app_size, plan_change, resize_size};
 use crate::cli::Amount;
 use crate::config::{Layer, PanelSettings};
 use crate::daemon::events::{Bus, Event};
@@ -9,6 +10,7 @@ use crate::daemon::panel::PanelReply;
 use crate::geometry::{Edge, Gutters, OutputSize, ReserveMode, Size};
 use crate::ipc::{ErrorKind, Request};
 use crate::name::PanelName;
+use crate::proxy::routing::Routing;
 
 /// An output of `width` by `height` logical pixels.
 fn output(width: u32, height: u32) -> OutputSize {
@@ -19,6 +21,14 @@ fn output(width: u32, height: u32) -> OutputSize {
 /// left, with no gutters (spec "Built-in defaults").
 fn settings() -> PanelSettings {
     PanelSettings::built_in()
+}
+
+/// A routing with one tracked output of 1920x1080, so the percent settings
+/// resolve and the live apply validates against it (D9).
+fn routing() -> Rc<Routing> {
+    let routing = Routing::new(settings());
+    routing.globals().install_test_output(1, output(1920, 1080));
+    routing
 }
 
 /// A pixel size the test knows is valid.
@@ -414,7 +424,7 @@ fn a_negative_reservation_is_refused() {
 fn a_successful_apply_publishes_the_geometry_change() {
     let bus = Bus::new();
     let events = bus.subscribe();
-    let routing = Routing::new(settings());
+    let routing = routing();
     let panel = notes();
     let reply = super::answer(
         &routing,
@@ -438,7 +448,7 @@ fn a_successful_apply_publishes_the_geometry_change() {
 fn a_refused_apply_publishes_no_geometry_change() {
     let bus = Bus::new();
     let events = bus.subscribe();
-    let routing = Routing::new(settings());
+    let routing = routing();
     let panel = notes();
     let reply = super::answer(
         &routing,

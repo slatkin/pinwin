@@ -111,7 +111,9 @@ pub(super) fn recompose(routing: &Routing) {
     let surface_id = surface.unique_id();
     let globals = routing.globals();
     let state = globals.viewport();
-    let geometry = routing.geometry();
+    let Some(geometry) = routing.geometry() else {
+        return;
+    };
     let window = state.window();
     let has_app_viewport = routing.panel_has_app_viewport();
     let crop = if window.is_some() || has_app_viewport || routing.tween_surface().is_some() {

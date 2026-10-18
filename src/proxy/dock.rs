@@ -55,6 +55,8 @@ use crate::geometry::{Geometry, HeldGap};
 use crate::ipc::{ErrorKind, ErrorReply};
 use crate::name::PanelName;
 
+pub(super) mod size;
+
 /// The layer-shell namespace of a panel surface. One namespace keeps every
 /// panel out of the special namespaces compositors reserve for their own
 /// panels.
@@ -231,9 +233,15 @@ pub(super) fn redock(routing: &Rc<Routing>, output_global: Option<u32>) {
     }
     // A percent size resolves against the target output's size when it is
     // known, so a size that resolves differently arrives with the new
-    // surface's configure (D11, D9).
-    let target_size = output_global.and_then(|global| routing.globals().output_size(global));
-    let geometry = routing.geometry_against(target_size.unwrap_or_else(|| routing.known_output()));
+    // surface's configure (D11, D9). An output that has not reported a size
+    // yet keeps the geometry the panel already runs at.
+    let geometry = output_global
+        .and_then(|global| routing.globals().output_size(global))
+        .map(|size| routing.geometry_against(size))
+        .or_else(|| routing.geometry());
+    let Some(geometry) = geometry else {
+        return;
+    };
     let window = PanelWindow {
         surface,
         xdg_surface,
