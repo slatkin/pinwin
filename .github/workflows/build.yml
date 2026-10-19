@@ -40,7 +40,8 @@ jobs:
     # base-devel-... literal in the cargo cache key below in sync.
     container: archlinux/archlinux:base-devel-20260818.0.575430
     permissions:
-      contents: read
+      # The release tag's PKGBUILD checksum commit below pushes to main.
+      contents: write
 
     steps:
       # The pinned archlinux base-devel image ships no git, and
@@ -200,6 +201,42 @@ jobs:
           sha256sum "pinwin-${version}-linux-x86_64.tar.gz" \
             > "pinwin-${version}-linux-x86_64.tar.gz.sha256"
 
+      - name: Commit PKGBUILD with sha256 to main
+        if: startsWith(github.ref, 'refs/tags/')
+        # Non-fatal: the retries below handle the common non-fast-forward race
+        # (main advanced since checkout on a detached HEAD), but losing every
+        # retry must not abort the job before the AUR publish trigger. AUR
+        # reads the sha256 from the release asset, not this commit, so a missed
+        # PKGBUILD commit is cosmetic and can be redone by hand.
+        continue-on-error: true
+        run: |
+          # Checkout runs as root in this image, so the repo is root-owned;
+          # user steps run as a different uid. Git's safe.directory protection
+          # then refuses every command ("dubious ownership"); the exception
+          # checkout itself writes lands in a temp HOME, invisible here.
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          version=${GITHUB_REF_NAME#v}
+          sha256=$(sha256sum "pinwin-${version}-linux-x86_64.tar.gz" \
+            | cut -d' ' -f1)
+          sed -i "s/^pkgver=.*/pkgver=${version}/" PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${sha256}')/" PKGBUILD
+          git config user.name "pinwin release"
+          git config user.email "github@poo.town"
+          git add PKGBUILD
+          if git diff --staged --quiet; then
+            exit 0
+          fi
+          git commit -m "Set the ${version} AUR package checksum"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}), rebasing" >&2
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; exit 1; }
+          done
+          exit 1
+
       - name: Upload release artifacts
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v7
@@ -218,6 +255,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # The AUR trigger below dispatches aur.yml through the API.
+      actions: write
 
     steps:
       - name: Download release artifacts
@@ -255,3 +294,15 @@ jobs:
               "$view_output"
             exit 1
           fi
+
+      # Fire-and-forget, as in mbv: AUR publishing runs in its own workflow
+      # (aur.yml) from the published release, so an AUR failure can never fail
+      # this build, and a failed publish can be retried by dispatching aur.yml
+      # by hand. The trigger waits for the release above, because aur.yml reads
+      # the tarball from the release asset.
+      - name: Trigger AUR publish
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run aur.yml -f version="${GITHUB_REF_NAME#v}"
