@@ -310,7 +310,8 @@ fn apply_plan(routing: &Rc<Routing>, plan: Plan, panel: &PanelName, bus: &Bus) {
     routing.set_settings(plan.settings);
     if plan.layer_changed {
         // D11: the window keeps its layer surface and stays mapped; the
-        // strip follows it into the same layer (spec "Change the layer").
+        // strip keeps its own background layer (spec "Changing the layer
+        // leaves the strip in place").
         dock::set_layer(routing, layer_of(routing.settings().layer()));
         bus.publish_geometry_changed(panel);
         return;

@@ -4,8 +4,9 @@
 //! `zwlr_layer_shell_v1` arguments the compositor expects.
 //!
 //! Shared by the window routing ([`super::routing`]) and the reserve surface
-//! ([`super::reserve`]), which must anchor to the same edge and carry the
-//! same layer so the strip and the panel line up on one monitor.
+//! ([`super::reserve`]), which must anchor to the same edge and length so the
+//! strip and the panel line up on one monitor. The strip's layer is its own,
+//! fixed below every other reservation.
 
 use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_shell_v1::ZwlrLayerShellV1Layer;
 use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::{
