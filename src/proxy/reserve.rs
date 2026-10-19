@@ -13,6 +13,14 @@
 //! entered an output the panel is not on is moved back to the panel's
 //! monitor (spec "The reservation SHALL apply only to the panel's monitor").
 //!
+//! The strip always lives on the `background` layer, whatever layer the panel
+//! draws on. A compositor that applies exclusive zones layer by layer claims
+//! the area of the higher layers first (overlay, then top, bottom and
+//! background), so a strip on the panel's layer would take its space before a
+//! bar on a lower layer and push the bar aside. On the last layer its zone is
+//! applied after every other reservation, with the strip placed in what is
+//! left. The strip is transparent, so its own layer never shows.
+//!
 //! Ported in structure from the spike's `src/reserve.rs`, which followed
 //! wl-paper's `apps/wl-paper/src/paper.rs`
 //! (<https://github.com/mahkoh/wl-proxy>, GPL-3.0, the licence of this
@@ -44,6 +52,11 @@ use crate::geometry::HeldGap;
 /// The layer-shell namespace of the reserve. Compositors show it in their
 /// logs and rules; it is not a visible name.
 const RESERVE_NAMESPACE: &str = "pinwin-reserve";
+
+/// The layer of the reserve surface, fixed for every panel: the last layer a
+/// compositor applies an exclusive zone from, so no other layer's reservation
+/// moves for this strip.
+const RESERVE_LAYER: ZwlrLayerShellV1Layer = ZwlrLayerShellV1Layer::BACKGROUND;
 
 /// The reserve's buffer is 1x1: the compositor scales it to the strip, and
 /// a transparent pixel stays transparent at any size.
@@ -83,7 +96,6 @@ impl Reserve {
         shm: &Rc<WlShm>,
         layer_shell: &Rc<ZwlrLayerShellV1>,
         gap: HeldGap,
-        layer: ZwlrLayerShellV1Layer,
         output: Option<&Rc<WlOutput>>,
         hidden: bool,
         routing: Weak<Routing>,
@@ -94,8 +106,12 @@ impl Reserve {
         let region = compositor.new_send_create_region();
         surface.send_set_input_region(Some(&region));
         region.send_destroy();
-        let layer_surface =
-            layer_shell.new_send_get_layer_surface(&surface, output, layer, RESERVE_NAMESPACE);
+        let layer_surface = layer_shell.new_send_get_layer_surface(
+            &surface,
+            output,
+            RESERVE_LAYER,
+            RESERVE_NAMESPACE,
+        );
         let reserve = Rc::new(Self {
             surface: Rc::clone(&surface),
             layer_surface: Rc::clone(&layer_surface),
@@ -134,15 +150,6 @@ impl Reserve {
     pub(super) fn apply_gap(&self, gap: HeldGap) {
         let (size, anchor, zone) = gap_state(gap);
         self.send_gap_state(size, anchor, zone);
-    }
-
-    /// Changes the layer of the strip so it stays beside the panel (D9,
-    /// D11): a `set-layer` moves the panel in place, and the layer is
-    /// double-buffered, so the reserve commits its own surface — it is
-    /// proxy-owned and shares no commit with the app.
-    pub(super) fn set_layer(&self, layer: ZwlrLayerShellV1Layer) {
-        self.layer_surface.send_set_layer(layer);
-        self.surface.send_commit();
     }
 
     /// Releases the strip while the panel is hidden (D6, spec "Hide releases
@@ -279,9 +286,10 @@ impl WlSurfaceHandler for ReserveSurfaceWatch {
 
 #[cfg(test)]
 mod tests {
+    use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_shell_v1::ZwlrLayerShellV1Layer;
     use wl_proxy::protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1Anchor;
 
-    use super::gap_state;
+    use super::{RESERVE_LAYER, gap_state};
     use crate::geometry::{Edge, Geometry, Gutters, HeldGap, ReserveMode};
 
     /// A pushing geometry of 320 pixels on `edge` with no gutters.
@@ -291,6 +299,15 @@ mod tests {
 
     fn anchors(gap: HeldGap) -> ZwlrLayerSurfaceV1Anchor {
         gap_state(gap).1
+    }
+
+    #[test]
+    fn the_strip_lives_on_the_background_layer() {
+        assert_eq!(
+            RESERVE_LAYER,
+            ZwlrLayerShellV1Layer::BACKGROUND,
+            "a compositor applies the strip's zone after every other layer's"
+        );
     }
 
     #[test]

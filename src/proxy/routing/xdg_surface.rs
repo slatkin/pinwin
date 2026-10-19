@@ -33,7 +33,6 @@ use wl_proxy::protocols::xdg_shell::xdg_wm_base::XdgWmBase;
 use super::super::commit::PanelSurfaceCommits;
 use super::super::dock;
 use super::super::dock::size::DockDecision;
-use super::super::mapping::layer_of;
 use super::super::popup::{ClientXdgPopup, ClientXdgPositioner, offset_anchor_rect};
 use super::super::viewport::{apply_steady_crop, settle_forwarded};
 use super::super::window::ClientXdgToplevel;
@@ -272,7 +271,6 @@ impl ClientXdgSurface {
         dock::start_reserve(
             &self.routing,
             &geometry,
-            layer_of(self.routing.layer()),
             self.routing.pinned_output().as_ref(),
         );
         // D9: the surface watch learns which output the compositor docked

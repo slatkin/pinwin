@@ -245,6 +245,10 @@ creates nothing.
   Gutters are directional and may be negative; the reservation sum may not
   be, and must leave some output width for other windows. A covering panel
   uses the same insets and reserves nothing: it draws over the tiled windows.
+  The strip's layer-shell surface is on the `background` layer whatever layer
+  the panel draws on, so a bar or dock that reserves another edge keeps its
+  position and width; the strip takes the space that is left. `set-layer`
+  moves the panel's window only.
 - A layout change keeps the app process and its window. The app gets a new
   window size only when the panel's width or length changes, and an animated
   change sends exactly one new size for the whole animation. While the panel

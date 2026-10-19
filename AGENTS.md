@@ -265,8 +265,9 @@ binary-only now and every row of its tasks is landed.
   reply — a name no tracked output carries is refused with `invalid_value`
   and the panel does not move — the in-place `set-layer` layer change
   (`zwlr_layer_surface_v1.set_layer` plus a commit through the coordinator,
-  so the window keeps its surface; a layer-shell bind older than version 2
-  re-docks), the re-dock on `set-output` and on a `closed` layer surface
+  so the window keeps its surface and the strip keeps its background layer;
+  a layer-shell bind older than version 2 re-docks), the re-dock on
+  `set-output` and on a `closed` layer surface
   (the app keeps its window; the fresh surface is opened with a bufferless
   commit and the kept buffer re-attaches on the app's configure ack), the
   `Event::GeometryChanged` a successful `set-output` sends, and the
@@ -285,9 +286,12 @@ binary-only now and every row of its tasks is landed.
   window, carrying the exclusive zone the panel surface does not claim — the
   `HeldGap`'s strip for a pushing start, nothing for a covering one — with
   an empty input region and no keyboard, pinned to the panel's output when
-  one is set and re-docked when the panel's output changes. Ported from the
-  spike's `src/reserve.rs` (wl-paper structure, GPL-3.0); the strip and zone
-  math is `src/geometry.rs`.
+  one is set and re-docked when the panel's output changes. The strip is
+  created on the `background` layer whatever layer the panel draws on, so a
+  compositor that applies exclusive zones layer by layer applies its zone
+  after every other layer's reservation; `set-layer` never moves it. Ported
+  from the spike's `src/reserve.rs` (wl-paper structure, GPL-3.0); the strip
+  and zone math is `src/geometry.rs`.
 - `src/proxy/popup.rs` — the popups of the panel window (D5): the recorded
   `xdg_positioner` anchor rectangle, the `offset_anchor_rect` that moves it
   by the parent window geometry at creation and on `xdg_popup.reposition`,

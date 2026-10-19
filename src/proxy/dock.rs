@@ -207,11 +207,11 @@ pub(super) fn dock_panel_window(
 /// "Change the layer"): `zwlr_layer_surface_v1.set_layer` is double-buffered
 /// with the surface, so the panel commits the surface through the commit
 /// coordinator (D7) and the window keeps its layer surface — nothing is
-/// destroyed, so the panel stays configured and mapped. The strip follows
-/// the panel into the same layer and commits its own surface, because the
-/// reserve is proxy-owned. A compositor whose layer-shell bind predates
-/// `set_layer` has no in-place change, so the window re-docks there.
-/// Does nothing when the panel holds no window.
+/// destroyed, so the panel stays configured and mapped. The strip stays on
+/// its own background layer (spec "Changing the layer leaves the strip in
+/// place"), so another layer's reservation keeps its area. A compositor whose
+/// layer-shell bind predates `set_layer` has no in-place change, so the window
+/// re-docks there. Does nothing when the panel holds no window.
 pub(super) fn set_layer(routing: &Rc<Routing>, layer: ZwlrLayerShellV1Layer) {
     let Some(layer_surface) = routing.panel_layer_surface() else {
         return;
@@ -227,9 +227,6 @@ pub(super) fn set_layer(routing: &Rc<Routing>, layer: ZwlrLayerShellV1Layer) {
         return;
     };
     commits.request(Box::new(move || layer_surface.send_set_layer(layer)));
-    if let Some(reserve) = routing.reserve() {
-        reserve.set_layer(layer);
-    }
 }
 
 /// Whether the compositor's layer-shell bind supports changing a live layer
@@ -330,13 +327,14 @@ fn open_new_surface(routing: &Rc<Routing>, surface: &Rc<WlSurface>) {
 
 /// Creates the reserve surface with the panel window (D9): it carries the
 /// exclusive zone from the held gap the panel starts with, pinned to the
-/// panel's output when one is set (D11). A missing compositor, `wl_shm` or
-/// layer-shell global -- or a failed buffer -- leaves the panel docked
-/// without a strip rather than ending it.
+/// panel's output when one is set (D11). The strip is created on its own
+/// background layer, not the panel's (spec "Reserve space so tiles start
+/// beside the panel"). A missing compositor, `wl_shm` or layer-shell global
+/// -- or a failed buffer -- leaves the panel docked without a strip rather
+/// than ending it.
 pub(super) fn start_reserve(
     routing: &Rc<Routing>,
     geometry: &Geometry,
-    layer: ZwlrLayerShellV1Layer,
     pin: Option<&(Rc<WlOutput>, u32)>,
 ) {
     let (Some(compositor), Some(shm), Some(layer_shell)) = (
@@ -348,7 +346,7 @@ pub(super) fn start_reserve(
         return;
     };
     let gap = HeldGap::start(*geometry);
-    dock_reserve(routing, &compositor, &shm, &layer_shell, gap, layer, pin);
+    dock_reserve(routing, &compositor, &shm, &layer_shell, gap, pin);
 }
 
 /// Re-docks the reserve on the output named by `output_global` (D11):
@@ -376,15 +374,7 @@ pub(super) fn recreate_reserve(routing: &Rc<Routing>, output_global: Option<u32>
             .output_by_global(global)
             .map(|output| (output, global))
     });
-    dock_reserve(
-        routing,
-        &compositor,
-        &shm,
-        &layer_shell,
-        gap,
-        layer_of(routing.layer()),
-        pin.as_ref(),
-    );
+    dock_reserve(routing, &compositor, &shm, &layer_shell, gap, pin.as_ref());
 }
 
 /// Creates one reserve surface and registers it with the routing, together
@@ -396,7 +386,6 @@ fn dock_reserve(
     shm: &Rc<WlShm>,
     layer_shell: &Rc<ZwlrLayerShellV1>,
     gap: HeldGap,
-    layer: ZwlrLayerShellV1Layer,
     pin: Option<&(Rc<WlOutput>, u32)>,
 ) {
     let reserve = Reserve::create(
@@ -404,7 +393,6 @@ fn dock_reserve(
         shm,
         layer_shell,
         gap,
-        layer,
         pin.map(|(output, _)| output),
         routing.hidden.is_hidden(),
         routing.weak(),

@@ -58,7 +58,7 @@ use super::output::Globals;
 use super::reserve::Reserve;
 use super::slot::{Route, Slot};
 use super::viewport::{StaticCrop, write_crop};
-use crate::config::{FocusRing, Keyboard, Layer, PanelSettings};
+use crate::config::{FocusRing, Keyboard, PanelSettings};
 use crate::geometry::{Geometry, HeldGap, OutputSize, Size};
 
 mod xdg_surface;
@@ -207,11 +207,6 @@ impl Routing {
     /// (D11, row 6.6).
     pub(super) fn settings(&self) -> PanelSettings {
         self.settings.borrow().clone()
-    }
-
-    /// The panel's live layer, read without cloning the settings.
-    pub(super) fn layer(&self) -> Layer {
-        self.settings.borrow().layer()
     }
 
     /// The panel's live keyboard mode, read without cloning the settings.

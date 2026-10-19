@@ -159,6 +159,10 @@ windows beside it. A covering panel leaves the strip as the last pushing setting
 tiled windows do not move while the panel draws over them. A panel that has never pushed
 SHALL reserve nothing. While the panel is hidden or holds no window, the strip SHALL be
 released; showing a window SHALL restore it. The strip SHALL apply only to the panel's output.
+The strip SHALL be a separate layer-shell surface on the `background` layer, whatever layer
+the panel window draws on, so a compositor that applies exclusive zones layer by layer applies
+the strip's zone after the zones of every other layer. A `set-layer` request SHALL move the
+panel window only and SHALL NOT move the strip.
 
 #### Scenario: Tiles move right
 - **WHEN** a panel docks left with width 320, Left 0 and Right 12
@@ -180,6 +184,17 @@ released; showing a window SHALL restore it. The strip SHALL apply only to the p
 #### Scenario: Hidden panel reserves nothing
 - **WHEN** the held strip is 332 pixels on the left and the panel hides
 - **THEN** tiled windows take the strip, and they move back beside it when the panel shows
+
+#### Scenario: A reserved top bar keeps its place
+- **WHEN** a bar on the `top` layer reserves 30 pixels at the top edge and a left panel on the
+  `overlay` layer pushes a 400 pixel strip
+- **THEN** the bar keeps its position and width, and tiled windows start at least 400 pixels
+  from the left edge and 30 pixels from the top edge
+
+#### Scenario: Changing the layer leaves the strip in place
+- **WHEN** a shown panel that pushes a 400 pixel strip gets `set-layer` with `bottom`
+- **THEN** the panel window shows on the bottom layer, the bar keeps its position, and tiled
+  windows stay beside the 400 pixel strip
 
 ### Requirement: Animated width transition
 An animated change, with a duration above 0 ms, that changes only the panel's width and
