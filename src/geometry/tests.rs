@@ -140,6 +140,21 @@ fn covering_layout_holds_the_gap() {
     );
 }
 
+/// Regression (2026-10-24): a covering start holds a zero zone, and layer
+/// shell refuses a zero size on an axis whose two anchors are not both set —
+/// the strip anchors to one edge and both ends, never both across anchors —
+/// so the reserve surface must ask for one pixel, not zero. umbriel ended
+/// the connection on `width 0 requested without setting left and right
+/// anchors`, which killed every `--reserve cover` launch.
+#[test]
+fn a_zero_zone_sizes_the_strip_to_one_pixel_across() {
+    let left = HeldGap::start(covering(Edge::Left, 320, Gutters::new(0, 0, 0, 0)));
+    assert_eq!(left.zone(), 0);
+    assert_eq!(left.size(), (1, 0));
+    let top = HeldGap::start(covering(Edge::Top, 320, Gutters::new(0, 0, 0, 0)));
+    assert_eq!(top.size(), (0, 1));
+}
+
 #[test]
 fn side_switch_moves_the_gap() {
     // The pushing size is `25%` of a 1920 pixel wide output, which is 480

@@ -696,11 +696,14 @@ impl HeldGap {
     }
 
     /// The reserve surface's size: the held zone on the panel's edge axis and 0
-    /// on the other, which the compositor fills between the ends. A zero zone
-    /// gives a zero size, so a gap that reserves nothing shows nothing.
+    /// on the other, which the compositor fills between the ends. The across
+    /// size never drops to zero: layer shell refuses a zero size on an axis
+    /// whose two anchors are not both set, and the strip anchors to the panel's
+    /// edge and its ends, never both across anchors — so a gap that reserves
+    /// nothing is one transparent pixel.
     #[must_use]
     pub fn size(self) -> (u32, u32) {
-        let zone = self.zone.max(0).unsigned_abs();
+        let zone = self.zone.max(1).unsigned_abs();
         if self.edge.across_is_width() {
             (zone, 0)
         } else {
