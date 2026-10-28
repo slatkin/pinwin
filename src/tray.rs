@@ -89,8 +89,11 @@ const EDGES: [(Edge, &str); 4] = [
 ];
 
 /// The reserve choices of a panel submenu.
-const RESERVES: [(ReserveMode, &str); 2] =
-    [(ReserveMode::Push, "push"), (ReserveMode::Cover, "cover")];
+const RESERVES: [(ReserveMode, &str); 3] = [
+    (ReserveMode::Push, "push"),
+    (ReserveMode::Cover, "cover"),
+    (ReserveMode::None, "none"),
+];
 
 /// One panel as its tray submenu shows it (spec "Menu for each panel"): its
 /// name, whether it is shown, its edge and its reserve mode.
@@ -104,7 +107,7 @@ pub struct PanelMenu {
 
 impl PanelMenu {
     /// The submenu state of `name`, which is shown or hidden, docks at `edge`
-    /// and pushes or covers with `reserve`.
+    /// and sets its reserve mode with `reserve`.
     #[must_use]
     pub const fn new(name: PanelName, shown: bool, edge: Edge, reserve: ReserveMode) -> Self {
         Self {
@@ -133,7 +136,7 @@ impl PanelMenu {
         self.edge
     }
 
-    /// Whether the panel pushes or covers, which its reserve group selects.
+    /// The panel's reserve mode, which its reserve group selects.
     #[must_use]
     pub const fn reserve(&self) -> ReserveMode {
         self.reserve

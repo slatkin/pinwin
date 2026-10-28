@@ -181,7 +181,8 @@ binary-only now and every row of its tasks is landed.
   it to the panel's gutters, `ReserveMode`, the
   layer-surface anchors, margins and size, the reserved strip and the held
   gap (D9), whose strip follows an animation only when the panel pushed
-  before the change. `src/main.rs` compiles it; the option parser, the apply
+  before the change, and whose `none` mode zeroes the held strip at start
+  and on every apply. `src/main.rs` compiles it; the option parser, the apply
   path and the reserve surface are its users.
 - `src/proxy.rs` — the panel thread (D1, D2, D3, D5, D12): one wl-proxy
   `State` with its acceptor, the loop that polls the state's `poll_fd`, the

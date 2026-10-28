@@ -17,6 +17,11 @@ fn cover(edge: Edge, across: u32) -> Geometry {
     geometry(edge, across, ReserveMode::Cover)
 }
 
+/// A `none` geometry of `across` pixels on `edge`.
+fn none(edge: Edge, across: u32) -> Geometry {
+    geometry(edge, across, ReserveMode::None)
+}
+
 /// The app surface `across` pixels across the tween axis on `edge`, with
 /// 1080 along it: the width-first pair the driver hands the tween (D8).
 fn surface(edge: Edge, across: u32) -> (u32, u32) {
@@ -393,6 +398,70 @@ fn a_collapse_to_a_new_pushing_width_lands_on_it_at_the_end() {
         500,
         "the strip becomes the new width at the end"
     );
+}
+
+/// A push to none holds the strip during the animation and releases it
+/// when the animation ends (D5, spec "Push to none").
+#[test]
+fn a_push_to_none_holds_the_strip_and_releases_it_at_the_end() {
+    let mut tween = Tween::start(
+        none(Edge::Left, 300),
+        continuing(
+            Edge::Left,
+            400,
+            HeldGap::start(push(Edge::Left, 400)),
+            ReserveMode::Push,
+        ),
+        200,
+    )
+    .expect("a 200 ms shrink to none");
+    assert_eq!(tween.final_gap().zone(), 0, "the end releases the strip");
+    let first = frame(tween.step(0));
+    assert_eq!(first.visible, 400, "the shrink starts at the old width");
+    assert_eq!(first.gap.zone(), 400, "the first frame holds the strip");
+    for elapsed in [50_000, 100_000, 150_000] {
+        let frame = frame(tween.step(elapsed));
+        assert_eq!(
+            frame.gap.zone(),
+            400,
+            "the strip holds at {elapsed} microseconds"
+        );
+    }
+    let last = frame(tween.step(200_000));
+    assert_eq!(last.visible, 300);
+    assert_eq!(last.gap.zone(), 0, "the strip becomes zero at the end");
+}
+
+/// A cover to none follows the same rule: the strip holds during the
+/// animation and becomes zero when it ends (D5).
+#[test]
+fn a_cover_to_none_holds_the_strip_and_releases_it_at_the_end() {
+    let mut tween = Tween::start(
+        none(Edge::Left, 900),
+        continuing(
+            Edge::Left,
+            1100,
+            HeldGap::start(push(Edge::Left, 400)),
+            ReserveMode::Cover,
+        ),
+        200,
+    )
+    .expect("a 200 ms shrink to none");
+    assert_eq!(tween.final_gap().zone(), 0, "the end releases the strip");
+    let first = frame(tween.step(0));
+    assert_eq!(first.visible, 1100, "the shrink starts at the old width");
+    assert_eq!(first.gap.zone(), 400, "the first frame holds the strip");
+    for elapsed in [50_000, 100_000, 150_000] {
+        let frame = frame(tween.step(elapsed));
+        assert_eq!(
+            frame.gap.zone(),
+            400,
+            "the strip holds at {elapsed} microseconds"
+        );
+    }
+    let last = frame(tween.step(200_000));
+    assert_eq!(last.visible, 900);
+    assert_eq!(last.gap.zone(), 0, "the strip becomes zero at the end");
 }
 
 /// While a tween runs every compositor configure is acked by the proxy

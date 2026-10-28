@@ -205,6 +205,14 @@ fn the_setting_forms_parse() {
     assert_eq!("bottom".parse::<Edge>(), Ok(Edge::Bottom));
     assert_eq!("push".parse::<ReserveMode>(), Ok(ReserveMode::Push));
     assert_eq!("cover".parse::<ReserveMode>(), Ok(ReserveMode::Cover));
+    assert_eq!("none".parse::<ReserveMode>(), Ok(ReserveMode::None));
+    for mode in [ReserveMode::Push, ReserveMode::Cover, ReserveMode::None] {
+        assert_eq!(
+            mode.as_str().parse::<ReserveMode>(),
+            Ok(mode),
+            "the text form round-trips"
+        );
+    }
     assert_eq!("top".parse::<Layer>(), Ok(Layer::Top));
     assert_eq!("overlay".parse::<Layer>(), Ok(Layer::Overlay));
     assert_eq!("none".parse::<Keyboard>(), Ok(Keyboard::None));

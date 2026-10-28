@@ -276,6 +276,9 @@ pub enum ReserveMode {
     Push,
     /// Cover: leave the strip where the last pushing setting put it.
     Cover,
+    /// None: draw over tiled windows and hold a strip of zero, releasing
+    /// any strip an earlier push held.
+    None,
 }
 
 impl ReserveMode {
@@ -285,6 +288,7 @@ impl ReserveMode {
         match self {
             Self::Push => "push",
             Self::Cover => "cover",
+            Self::None => "none",
         }
     }
 }
@@ -571,10 +575,10 @@ impl Geometry {
                     return Err(InvalidLayout::NoWidth);
                 }
             }
-            ReserveMode::Cover if self.across > output.across(self.edge) => {
+            ReserveMode::Cover | ReserveMode::None if self.across > output.across(self.edge) => {
                 return Err(InvalidLayout::NoWidth);
             }
-            ReserveMode::Cover => {}
+            ReserveMode::Cover | ReserveMode::None => {}
         }
         Ok(())
     }
@@ -602,12 +606,13 @@ pub struct HeldGap {
 
 impl HeldGap {
     /// The gap a panel starts with: a pushing geometry reserves its own strip
-    /// from the first frame; a covering start holds an empty strip on its edge.
+    /// from the first frame; a covering or `none` start holds an empty strip
+    /// on its edge.
     #[must_use]
     pub fn start(geometry: Geometry) -> Self {
         let zone = match geometry.reserve() {
             ReserveMode::Push => geometry.strip().unwrap_or(0),
-            ReserveMode::Cover => 0,
+            ReserveMode::Cover | ReserveMode::None => 0,
         };
         Self {
             edge: geometry.edge(),
@@ -618,12 +623,15 @@ impl HeldGap {
     /// The gap after a validated apply: a pushing geometry resets both the
     /// edge and the zone to its own strip; a covering geometry never touches
     /// the zone and moves the edge only when the panel changed edges — the
-    /// gap follows the panel to the new edge at the last pushing size.
+    /// gap follows the panel to the new edge at the last pushing size; a
+    /// `none` geometry zeroes the zone, releasing any strip an earlier push
+    /// held, and the zone stays zero through later applies.
     #[must_use]
     pub fn after_publish(self, geometry: Geometry) -> Self {
         let zone = match geometry.reserve() {
             ReserveMode::Push => geometry.strip().unwrap_or(self.zone),
             ReserveMode::Cover => self.zone,
+            ReserveMode::None => 0,
         };
         Self {
             edge: geometry.edge(),

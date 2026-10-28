@@ -447,7 +447,7 @@ where
     Ok(build(panel, setting(subcommand, raw)?))
 }
 
-/// `set-size <name> <size> [--reserve push|cover] [--ms N]`.
+/// `set-size <name> <size> [--reserve push|cover|none] [--ms N]`.
 fn set_size(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
     let (panel, raw, reserve, ms) = panel_value_options(subcommand, args, "a size")?;
     Ok(Request::SetSize {
@@ -458,7 +458,7 @@ fn set_size(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> 
     })
 }
 
-/// `resize <name> <amount> [--reserve push|cover] [--ms N]`.
+/// `resize <name> <amount> [--reserve push|cover|none] [--ms N]`.
 fn resize(subcommand: &str, args: &[OsString]) -> Result<Request, UsageError> {
     let (panel, raw, reserve, ms) = panel_value_options(subcommand, args, "an amount")?;
     Ok(Request::Resize {
@@ -587,7 +587,7 @@ fn panel_and_value<'a>(
     }
 }
 
-/// A panel name, a value, and the optional `--reserve push|cover` and
+/// A panel name, a value, and the optional `--reserve push|cover|none` and
 /// `--ms N` in any order after them (D4).
 fn panel_value_options(
     subcommand: &str,
@@ -596,7 +596,7 @@ fn panel_value_options(
 ) -> Result<(PanelName, OsString, Option<ReserveMode>, Option<u32>), UsageError> {
     let expected = || {
         UsageError::new(format!(
-            "{subcommand}: expected <name> {value} [--reserve push|cover] [--ms N]"
+            "{subcommand}: expected <name> {value} [--reserve push|cover|none] [--ms N]"
         ))
     };
     let (raw_panel, rest) = args.split_first().ok_or_else(expected)?;

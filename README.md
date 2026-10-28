@@ -79,12 +79,12 @@ foreground. The other subcommands send one request to the daemon and exit:
 | `hide` | Hide a shown panel. |
 | `focus` | Show a hidden panel and give it the keyboard. |
 | `set-edge` | Move a panel to another edge. |
-| `set-size` | Set a panel's size, optionally with `--reserve push\|cover` and `--ms <N>`. |
-| `resize` | Change a panel's size by a signed amount, optionally with `--reserve push\|cover` and `--ms <N>`. |
+| `set-size` | Set a panel's size, optionally with `--reserve push\|cover\|none` and `--ms <N>`. |
+| `resize` | Change a panel's size by a signed amount, optionally with `--reserve push\|cover\|none` and `--ms <N>`. |
 | `set-gutters` | Change one or more of a panel's gutters with `--top`, `--bottom`, `--left` and `--right`, each a whole number of pixels. |
 | `set-output` | Move a panel to another output. |
 | `set-layer` | Change the layer-shell layer of a panel. |
-| `set-reserve` | Change whether a panel pushes or covers tiled windows. |
+| `set-reserve` | Change how a panel reserves space: `push`, `cover` or `none`. |
 | `set-keyboard` | Change the keyboard interactivity of a panel. |
 | `status` | Print the daemon's reply as JSON, for all panels or one name. |
 | `subscribe` | Print one JSON line for each event until the connection closes. |
@@ -106,7 +106,7 @@ own placeholder.
 Its menu has one submenu for each panel, labelled with the panel name, in the
 order the panels started. A panel submenu has a `Shown` check item that hides
 or shows that panel, an edge choice of `left`, `right`, `top` and `bottom`,
-and a reserve choice of `push` and `cover`; each item shows the panel's
+and a reserve choice of `push`, `cover` and `none`; each item shows the panel's
 current state. `Quit pinwin` follows the panel submenus and does the same as
 the `quit` command. The menu is also a client of the daemon's IPC: a change
 made by `pinwin`, a key binding or a script shows in the menu the next time
@@ -131,7 +131,7 @@ panel name is `--name`, else the file name of the command.
 | `--name` | 1..=64 characters from `[A-Za-z0-9_-]` | the command's file name | The panel name. |
 | `--edge` | `left`, `right`, `top`, `bottom` | `left` | The output edge the panel docks to. |
 | `--size` | pixels as `640px` or a percent as `30%` | `25%` | The size across the docking edge. |
-| `--reserve` | `push`, `cover` | `push` | `push` reserves the panel's strip; `cover` draws over tiled windows. |
+| `--reserve` | `push`, `cover`, `none` | `push` | `push` reserves the panel's strip; `cover` draws over tiled windows and holds the strip; `none` draws over tiled windows and reserves nothing. |
 | `--layer` | `background`, `bottom`, `top`, `overlay` | `overlay` | The layer-shell layer. |
 | `--keyboard` | `none`, `on-demand`, `exclusive` | `on-demand` | The keyboard interactivity. |
 | `--output` | an output name | the compositor chooses | The output the panel opens on. |
@@ -209,7 +209,7 @@ edge = "right"
 | `[daemon]` | `exit_when_idle` | boolean | `true` | Exit after the last panel ends; `false` keeps the daemon running with no panels. |
 | `[panel.*]` | `edge` | string: `left`, `right`, `top`, `bottom` | `"left"` | The output edge the panel docks to. |
 | `[panel.*]` | `size` | string: pixels as `640px` or a percent as `30%` | `"25%"` | The size across the docking edge; a percent is of the output's width on a side edge and of its height on a top or bottom edge. |
-| `[panel.*]` | `reserve` | string: `push`, `cover` | `"push"` | `push` reserves the panel's strip so tiled windows start beside it; `cover` draws over the tiled windows. |
+| `[panel.*]` | `reserve` | string: `push`, `cover`, `none` | `"push"` | `push` reserves the panel's strip so tiled windows start beside it; `cover` draws over the tiled windows and holds the strip; `none` draws over the tiled windows and reserves nothing. |
 | `[panel.*]` | `layer` | string: `background`, `bottom`, `top`, `overlay` | `"overlay"` | The layer-shell layer the panel draws in. |
 | `[panel.*]` | `keyboard` | string: `none`, `on-demand`, `exclusive` | `"on-demand"` | The keyboard interactivity of the panel's layer surface. |
 | `[panel.*]` | `output` | string: an output name | none, the compositor chooses | The output the panel opens on. |
@@ -244,7 +244,12 @@ creates nothing.
   `near + width + far` pixels, so the compositor tiles windows beside it.
   Gutters are directional and may be negative; the reservation sum may not
   be, and must leave some output width for other windows. A covering panel
-  uses the same insets and reserves nothing: it draws over the tiled windows.
+  uses the same insets and holds the strip where the last pushing setting
+  left it: it draws over the tiled windows without moving them. A `none`
+  panel also draws over the tiled windows and sets the strip to zero,
+  releasing any strip an earlier push held; a change that lands in `none`
+  with an animation holds the strip during the animation and drops it to
+  zero when the animation ends.
   The strip's layer-shell surface is on the `background` layer whatever layer
   the panel draws on, so a bar or dock that reserves another edge keeps its
   position and width; the strip takes the space that is left. `set-layer`

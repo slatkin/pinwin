@@ -389,7 +389,7 @@ fn the_client_subcommands_parse_their_values() {
     assert_eq!(client(&["reload"]), Request::Reload);
 }
 
-/// `set-size` and `resize` take `--reserve push|cover` beside `--ms`, in
+/// `set-size` and `resize` take `--reserve push|cover|none` beside `--ms`, in
 /// any order, and send it with the size (spec "Size with a reserve mode").
 #[test]
 fn the_size_commands_take_a_reserve_mode() {
@@ -534,7 +534,7 @@ fn client_usage_errors_name_the_subcommand() {
         ),
         (
             &["set-size", "notes"][..],
-            "pinwin: set-size: expected <name> a size [--reserve push|cover] [--ms N]",
+            "pinwin: set-size: expected <name> a size [--reserve push|cover|none] [--ms N]",
         ),
         (
             &["set-size", "notes", "640px", "--ms", "wide"][..],
@@ -542,7 +542,7 @@ fn client_usage_errors_name_the_subcommand() {
         ),
         (
             &["set-size", "notes", "1100px", "--reserve", "middle"][..],
-            "pinwin: --reserve: expected push or cover, got 'middle'",
+            "pinwin: --reserve: expected push, cover or none, got 'middle'",
         ),
         (
             &["resize", "notes", "40px"][..],

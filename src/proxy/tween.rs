@@ -611,8 +611,13 @@ impl Tween {
 
 /// The gap a change leaves at its target (D5): a pushing target lands on its
 /// own strip, so a collapse from a covering panel still moves the strip once
-/// the animation ends; a covering target holds the resting gap.
+/// the animation ends; a covering target holds the resting gap; a `none`
+/// target releases the strip to zero when the animation ends (D2, spec
+/// "Push to none").
 fn final_gap(resting_gap: HeldGap, geometry: Geometry) -> HeldGap {
+    if geometry.reserve() == ReserveMode::None {
+        return HeldGap::start(geometry);
+    }
     resting_gap.reserve(true, geometry, geometry.across())
 }
 

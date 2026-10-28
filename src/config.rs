@@ -224,7 +224,8 @@ impl FromStr for ReserveMode {
         match raw {
             "push" => Ok(Self::Push),
             "cover" => Ok(Self::Cover),
-            _ => Err(InvalidValue::new(raw, "push or cover")),
+            "none" => Ok(Self::None),
+            _ => Err(InvalidValue::new(raw, "push, cover or none")),
         }
     }
 }

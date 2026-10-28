@@ -8,6 +8,10 @@ fn covering(edge: Edge, across: u32, gutters: Gutters) -> Geometry {
     Geometry::new(edge, across, gutters, ReserveMode::Cover)
 }
 
+fn none(edge: Edge, across: u32, gutters: Gutters) -> Geometry {
+    Geometry::new(edge, across, gutters, ReserveMode::None)
+}
+
 fn held(gap: HeldGap) -> (Edge, i32) {
     (gap.edge(), gap.zone())
 }
@@ -320,6 +324,39 @@ fn the_held_gap_follows_a_publish_by_reserve_mode() {
     assert_eq!(held(gap.after_publish(cover)), (Edge::Right, 372));
 }
 
+/// A `none` geometry zeroes the held strip at start, releases a push's
+/// strip, stays zero through later applies and is restored by a push
+/// (spec "None start reserves nothing", "None releases the held strip",
+/// "None stays released", "Pushing again after none").
+#[test]
+fn a_none_geometry_releases_the_held_strip() {
+    let gutters = Gutters::new(0, 12, 0, 0);
+
+    // A none start reserves nothing.
+    assert_eq!(
+        held(HeldGap::start(none(Edge::Left, 360, gutters))),
+        (Edge::Left, 0)
+    );
+
+    // A none publish releases a 372 pixel push strip.
+    let gap = HeldGap::start(geometry(Edge::Left, 360, gutters));
+    assert_eq!(held(gap), (Edge::Left, 372));
+    let released = gap.after_publish(none(Edge::Left, 360, gutters));
+    assert_eq!(held(released), (Edge::Left, 0));
+
+    // A later none publish stays zero.
+    assert_eq!(
+        held(released.after_publish(none(Edge::Left, 1080, gutters))),
+        (Edge::Left, 0)
+    );
+
+    // A push after none restores the strip.
+    assert_eq!(
+        held(released.after_publish(geometry(Edge::Left, 360, gutters))),
+        (Edge::Left, 372)
+    );
+}
+
 #[test]
 fn percent_of_the_output() {
     let screen = output(2560, 1080);
@@ -432,6 +469,13 @@ fn covering_panel_wider_than_the_output() {
     // holds the last pushing strip, so the wider strip it would reserve
     // never fails the change.
     let fits = covering(Edge::Left, 1920, Gutters::new(0, 0, 0, 0));
+    assert_eq!(fits.validate(output), Ok(()));
+
+    // A none panel validates like a covering panel: its strip is zero, so
+    // only the panel's own width can fail the change.
+    let wider = none(Edge::Left, 1921, Gutters::new(0, 0, 0, 0));
+    assert_eq!(wider.validate(output), Err(InvalidLayout::NoWidth));
+    let fits = none(Edge::Left, 1920, Gutters::new(0, 0, 0, 0));
     assert_eq!(fits.validate(output), Ok(()));
 }
 

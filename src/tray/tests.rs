@@ -91,8 +91,8 @@ fn an_error_reply_gives_an_empty_model() {
 
 /// The menu has one submenu for each panel in start order, then "Quit
 /// pinwin"; each submenu has the "Shown" check item, the four edge choices
-/// and the two reserve choices, with the panel's state selected (spec "Menu
-/// for each panel", "Quit from the menu").
+/// and the three reserve choices, with the panel's state selected (spec
+/// "Menu for each panel", "Quit from the menu").
 #[test]
 fn the_menu_has_a_submenu_for_each_panel_and_then_quit() {
     let model = MenuModel::new(vec![
@@ -129,6 +129,11 @@ fn the_menu_has_a_submenu_for_each_panel_and_then_quit() {
         panic!("the third item of a panel submenu is the reserve choice");
     };
     assert_eq!(reserves.selected, reserve_index(ReserveMode::Push));
+    assert_eq!(
+        reserves.options.len(),
+        RESERVES.len(),
+        "push, cover and none"
+    );
     assert_eq!(
         reserves
             .options
