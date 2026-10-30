@@ -60,8 +60,9 @@ show on it while panels exist.
 ### Requirement: Menu for each panel
 The icon's menu SHALL have one submenu for each panel, labelled with the panel name, in the
 order the panels started. Each submenu SHALL have: a "Shown" check item that toggles the panel;
-an edge choice of left, right, top and bottom; and a reserve choice of push and cover. Each item
-SHALL show the panel's current state and SHALL act through the same commands as the IPC.
+an edge choice of left, right, top and bottom; and a reserve choice of push, cover and none.
+Each item SHALL show the panel's current state and SHALL act through the same commands as the
+IPC.
 
 #### Scenario: Hide from the menu
 - **WHEN** the `notes` panel is shown and the user unchecks "Shown" in the `notes` submenu
@@ -75,6 +76,9 @@ SHALL show the panel's current state and SHALL act through the same commands as 
 - **WHEN** panels `notes` and `chat` exist and `chat` ends
 - **THEN** the menu has only the `notes` submenu
 
+#### Scenario: Release the strip from the menu
+- **WHEN** the `notes` panel pushes and the user chooses none in the reserve choice
+- **THEN** the `notes` panel changes to `none` and its strip becomes zero
 ### Requirement: Quit from the menu
 The icon's menu SHALL have a "Quit pinwin" item after the panel submenus. It SHALL do the same
 as the `quit` request.

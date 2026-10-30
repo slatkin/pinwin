@@ -12,7 +12,7 @@
 ## 3. Surfaces and docs
 
 - [x] 3.1 Add `none` to the tray `RESERVES` list (`src/tray.rs`) and the `--reserve push|cover` usage strings in `src/cli.rs`; verify the tray menu test shows three reserve choices and the CLI usage tests pass.
-- [ ] 3.2 Update the `README.md` option tables (`--reserve`, `[panel.*] reserve`, `set-size`, `resize`, `set-reserve`, tray menu text) and the held-strip description in `AGENTS.md`; verify `rg "push\|cover" README.md AGENTS.md` shows no stale two-mode list.
+- [x] 3.2 Update the `README.md` option tables (`--reserve`, `[panel.*] reserve`, `set-size`, `resize`, `set-reserve`, tray menu text) and the held-strip description in `AGENTS.md`; verify `rg "push\|cover" README.md AGENTS.md` shows no stale two-mode list.
 - [x] 3.3 Run `cargo test` and the project's lint gates; verify they pass with the `none` cases included.
 
 ## Workflow follow-up

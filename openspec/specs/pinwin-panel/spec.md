@@ -156,7 +156,9 @@ that output, and SHALL NOT show on other outputs.
 The panel SHALL hold one reservation: a strip at one edge of its output. A pushing panel sets
 the strip to its edge with the size `near + width + far`, so the compositor places tiled
 windows beside it. A covering panel leaves the strip as the last pushing setting made it, so
-tiled windows do not move while the panel draws over them. A panel that has never pushed
+tiled windows do not move while the panel draws over them. A panel in `none` mode draws over
+tiled windows like a covering panel and sets the strip to zero, releasing any strip an earlier
+push held. A panel that has never pushed
 SHALL reserve nothing. While the panel is hidden or holds no window, the strip SHALL be
 released; showing a window SHALL restore it. The strip SHALL apply only to the panel's output.
 The strip SHALL be a separate layer-shell surface on the `background` layer, whatever layer
@@ -181,6 +183,23 @@ panel window only and SHALL NOT move the strip.
   larger width on the same edge
 - **THEN** tiled windows keep their position and the panel extends past the strip
 
+#### Scenario: None start reserves nothing
+- **WHEN** a panel starts with `--reserve none`
+- **THEN** tiled windows stay where they are and the panel draws over them
+
+#### Scenario: None releases the held strip
+- **WHEN** the held strip is 332 pixels on the left and the shown panel changes to `none`
+- **THEN** the strip becomes zero, tiled windows take the space, and the panel keeps drawing
+  over them
+
+#### Scenario: None stays released
+- **WHEN** a `none` panel changes its size
+- **THEN** the strip stays zero and tiled windows do not move
+
+#### Scenario: Pushing again after none
+- **WHEN** a `none` panel changes to `push` at 332 pixels
+- **THEN** the strip becomes 332 pixels and tiled windows move beside it
+
 #### Scenario: Hidden panel reserves nothing
 - **WHEN** the held strip is 332 pixels on the left and the panel hides
 - **THEN** tiled windows take the strip, and they move back beside it when the panel shows
@@ -202,7 +221,9 @@ reserve mode (same edge and gutters) SHALL change the visible width continuously
 duration, driven by the compositor's frame callbacks. The strip SHALL move with the panel only
 when the panel pushes before the change, the target pushes, and the target's strip differs
 from the held one. A change from covering to pushing SHALL hold the strip still during the
-animation and SHALL set the target's strip when the animation ends. The duration SHALL be clamped
+animation and SHALL set the target's strip when the animation ends. A change to `none` SHALL
+hold the strip still during the animation and SHALL set it to zero when the animation ends.
+The duration SHALL be clamped
 to 1000 ms. The app's content SHALL stay against the panel's edge in every frame. pinwin SHALL
 NOT read any desktop animation setting.
 
@@ -266,11 +287,17 @@ NOT read any desktop animation setting.
   400 pixels, and when the animation ends the strip becomes 500 pixels and tiled windows move
   once
 
+#### Scenario: Push to none
+- **WHEN** the held strip is 400 pixels, the panel pushes at 400 pixels, and it gets
+  `set-size` to 300 pixels with `reserve` `none` and `ms` 200
+- **THEN** the panel shrinks to 300 pixels over about 200 ms while the strip holds still at
+  400 pixels, and when the animation ends the strip becomes zero and tiled windows move once
+
 ### Requirement: Exact final width
 When an animation ends, the panel's width SHALL equal the target width. A pushing target SHALL
 leave the reservation at `near + width + far`; a covering target SHALL leave it at the held
-strip, with no offset left from intermediate frames. The final state SHALL be the same as a
-change with `ms` 0 to the same target.
+strip; a `none` target SHALL leave it at zero, with no offset left from intermediate frames.
+The final state SHALL be the same as a change with `ms` 0 to the same target.
 
 #### Scenario: Animation completes
 - **WHEN** an animated pushing change to 600 pixels ends
@@ -281,10 +308,13 @@ change with `ms` 0 to the same target.
 - **THEN** the panel is exactly 1000 pixels wide and the reservation still equals the 400 pixel
   strip
 
+#### Scenario: None animation completes
+- **WHEN** an animated change to 1000 pixels with `reserve` `none` ends over a 400 pixel gap
+- **THEN** the panel is exactly 1000 pixels wide and the reservation is zero
+
 #### Scenario: Stalled frame clock
 - **WHEN** the compositor sends no frame callbacks for the duration plus 100 ms
 - **THEN** the panel snaps to the exact target width
-
 ### Requirement: Interrupting an animation
 A change made while an animation runs SHALL win over it. An animated change SHALL continue from
 the current animated width. A change with `ms` 0, a hide, or the end of the panel SHALL stop the

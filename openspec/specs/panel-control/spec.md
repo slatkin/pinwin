@@ -124,7 +124,7 @@ no daemon and run nothing.
 
 ### Requirement: Run options
 `pinwin run` SHALL accept `--name <name>`, `--edge <left|right|top|bottom>`,
-`--size <size>`, `--reserve <push|cover>`, `--layer <background|bottom|top|overlay>`,
+`--size <size>`, `--reserve <push|cover|none>`, `--layer <background|bottom|top|overlay>`,
 `--keyboard <none|on-demand|exclusive>`, `--output <output name>`, `--hidden`,
 `--focus-ring <off|#RRGGBB[:width]>`, `--gutter-top <pixels>`, `--gutter-bottom <pixels>`,
 `--gutter-left <pixels>`, `--gutter-right <pixels>` and `--show-existing`. A gutter value
@@ -152,6 +152,10 @@ exit 2.
 - **WHEN** the user runs `pinwin run --name notes --gutter-left 12 -- myeditor` and
   `[panel.notes]` sets `gutter_left = 4`
 - **THEN** the panel starts 12 pixels from the left output edge
+
+#### Scenario: Reserve none at start
+- **WHEN** the user runs `pinwin run --name notes --reserve none -- myeditor`
+- **THEN** the `notes` panel starts with reserve mode `none` and reserves nothing
 
 ### Requirement: Panel names
 Each panel SHALL have a name of 1..=64 characters from `[A-Za-z0-9_-]`. Without `--name`, the
@@ -317,8 +321,8 @@ error kind `invalid_request` and the daemon SHALL close that connection.
 ### Requirement: Command-line client
 The `pinwin` command SHALL offer one subcommand for each request: `toggle <name>`,
 `show <name>`, `hide <name>`, `focus <name>`, `set-edge <name> <edge>`,
-`set-size <name> <size> [--reserve push|cover] [--ms N]`,
-`resize <name> <amount> [--reserve push|cover] [--ms N]`,
+`set-size <name> <size> [--reserve push|cover|none] [--ms N]`,
+`resize <name> <amount> [--reserve push|cover|none] [--ms N]`,
 `set-gutters <name> [--top N] [--bottom N] [--left N] [--right N]`,
 `set-output <name> <output>`, `set-layer <name> <layer>`, `set-reserve <name> <mode>`,
 `set-keyboard <name> <mode>`, `status [name]`, `subscribe`, `quit` and `reload`.
@@ -497,8 +501,8 @@ SHALL NOT change the existing panel. When the daemon has no panel with the name,
 - **THEN** pinwin prints a message that names `--name`, exits 2 and runs nothing
 
 ### Requirement: Size and reserve in one request
-`set-size` and `resize` SHALL accept an optional `reserve` field, `push` or `cover`. The
-daemon SHALL validate the new size and the new reserve mode together, with the rules for the
+`set-size` and `resize` SHALL accept an optional `reserve` field, `push`, `cover` or `none`.
+The daemon SHALL validate the new size and the new reserve mode together, with the rules for the
 new reserve mode, and SHALL apply them as one change with the request's `ms` or the panel's
 `tween_ms`. A refusal SHALL change neither the size nor the reserve mode. A `reserve` equal
 to the panel's mode SHALL change only the size. A request without `reserve` SHALL behave as
@@ -529,6 +533,9 @@ before.
 - **WHEN** a client sends a `set-size` with `"reserve":"middle"`
 - **THEN** the reply has error kind `invalid_value` and the panel does not change
 
+#### Scenario: Release the strip of a running panel
+- **WHEN** a pushing panel with a 400 pixel strip gets `{"cmd":"set-reserve","panel":"notes","reserve":"none"}`
+- **THEN** the reply is a success, the strip becomes zero, and `status` reports the mode `none`
 ### Requirement: Set gutters
 The `set-gutters` command SHALL change one or more of the panel's four gutters and SHALL
 validate the result with requirement "Validate a change before applying it". It SHALL apply
